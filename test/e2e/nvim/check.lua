@@ -292,14 +292,15 @@ local function check()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
-  -- Hover over the same use shows the class's signature in a Virgil code block.
+  -- Hover over the same use shows the class's signature in a Virgil code block,
+  -- then the comment above the class in the closed library file.
   response, err = client:request_sync("textDocument/hover", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
   }, 10000, words_buf)
   assert(response and not response.err, "hover failed: " .. vim.inspect(err or response.err))
   local hover = response.result
   assert(hover and hover.contents and hover.contents.kind == "markdown"
-    and hover.contents.value == "```virgil\nclass StringBuilder\n```"
+    and vim.startswith(hover.contents.value, "```virgil\nclass StringBuilder\n```\n\nUtility for building")
     and hover.range.start.line == use_line and hover.range.start.character == start - 1
     and hover.range["end"].line == use_line and hover.range["end"].character == start - 1 + #"StringBuilder",
     "unexpected hover: " .. vim.inspect(hover))

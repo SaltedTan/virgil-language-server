@@ -23,6 +23,12 @@ def X = [
 	T("LspHover:shared_waiting_bound", test_shared_waiting_bound),
 	T("LspHover:markdown_fences", test_markdown_fences),
 	T("LspHover:plaintext", test_plaintext),
+	T("LspHover:documentation", test_documentation),
+	T("LspHover:documentation_unsaved_target", test_documentation_unsaved),
+	T("LspHover:documentation_stale_target", test_documentation_stale),
+	T("LspHover:documentation_substituted_target", test_documentation_substituted),
+	T("LspHover:documentation_plaintext", test_documentation_plaintext),
+	T("LspHover:documentation_escaping", test_documentation_escaping),
 	T("LspHover:params", test_params),
 	()
 ];
@@ -42,6 +48,16 @@ def WIDE_HOVER = 37;
 def DECL = "component Decl {\n\tdef thing = 1;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
 def DECL_BOOL = "component Decl {\n\tdef thing = false;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
 def USES_DECL = "component UsesDecl {\n\tdef get(g: Grid) -> int {\n\t\tvar t = Decl.thing;\n\t\treturn g[0];\n\t}\n}\n";
+// Decl.v3 with leading comments, which the documentation tests write or open
+// instead. Its first comment is detached from Decl by an empty line, and
+// UsesDocs.v3, appended to SOURCE, uses each declaration. DOCS_BROKEN breaks
+// the body of Grid's index method, which method-body fallback substitutes.
+def DOCS = "// Declarations that Hover.v3 uses.\n\n// Things.\ncomponent Decl {\n\t// The thing, which <b>matters</b>.\n\tdef thing = 1;\n\t// Returns {x}.\n\tdef id<T>(x: T) -> T { return x; }\n}\n// A grid.\nclass Grid {\n\t// Reads cell i.\n\t//\n\t//   - one\n\tdef [i: int] -> int { return i; }\n}\n";
+def DOCS_EDITED = "// Declarations that Hover.v3 uses.\n\n// Things.\ncomponent Decl {\n\t// The thing, edited.\n\tdef thing = 1;\n\t// Returns {x}.\n\tdef id<T>(x: T) -> T { return x; }\n}\n// A grid.\nclass Grid {\n\t// Reads cell i.\n\t//\n\t//   - one\n\tdef [i: int] -> int { return i; }\n}\n";
+def DOCS_BROKEN = "// Declarations that Hover.v3 uses.\n\n// Things.\ncomponent Decl {\n\t// The thing, which <b>matters</b>.\n\tdef thing = 1;\n\t// Returns {x}.\n\tdef id<T>(x: T) -> T { return x; }\n}\n// A grid.\nclass Grid {\n\t// Reads cell i.\n\t//\n\t//   - one\n\tdef [i: int] -> int { var x = ; return i; }\n}\n";
+def USES_DOCS = "// Counts.\ncomponent Counter {\n\t// How many.\n\tdef count = 0;\n\tdef get(g: Grid) -> int {\n\t\tvar t = Decl.thing;\n\t\tvar u = Decl.id(t);\n\t\treturn g[0] + count;\n\t}\n}\n";
+def THING_DOC = "The thing, which \\<b>matters\\</b>.";
+def GRID_DOC = "Reads cell i.\n\n\\- one";
 
 class HoverTestSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
@@ -132,8 +148,12 @@ class HoverTestSession {
 	}
 	// Sends a {method} request for {line}:{character} and returns its id.
 	def request(method: string, line: int, character: int) -> int {
+		return requestIn(uri(), method, line, character);
+	}
+	// Sends a {method} request for {line}:{character} in {fileUri} and returns its id.
+	def requestIn(fileUri: string, method: string, line: int, character: int) -> int {
 		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
-		doc["uri"] = JsonValue.String(uri());
+		doc["uri"] = JsonValue.String(fileUri);
 		position["line"] = JsonValue.Int(line);
 		position["character"] = JsonValue.Int(character);
 		params["textDocument"] = JsonValue.JObject(doc);
@@ -509,4 +529,121 @@ def test_params(t: Tester) {
 		}
 	}
 	s.server.close();
+}
+// The Markdown of {texts} and then a comment's Markdown, {doc}.
+def documented(texts: Array<string>, doc: string) -> string {
+	return Strings.format2("%s\n\n%s", markdown(texts), doc);
+}
+// The hover {skip} bytes into {needle} in {text} shows {value} over its
+// {length} bytes from there, in Markdown unless {plain}.
+def expectIn(t: Tester, s: HoverTestSession, text: string, needle: string, skip: int, length: int, value: string, plain: bool) {
+	var p = at(text, needle, skip);
+	t.assert(p.0 >= 0, needle);
+	expectHover(t, s.hover(t, p.0, p.1), if(plain, "plaintext", "markdown"), value, p.0, p.1, p.1 + length);
+}
+// A use shows its target's leading comment after the signature and any
+// use-site type, from the target's file, closed here, and a declaration's
+// name shows its own. A comment detached by an empty line, a local, and a
+// builtin show none.
+def test_documentation(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	s.write(t, "Decl.v3", DOCS);
+	var text = Strings.format2("%s%s", SOURCE, USES_DOCS);
+	s.open(1, text);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	expectIn(t, s, text, "Decl.thing", 0, 4, documented(["component Decl"], "Things."), false);
+	expectIn(t, s, text, "Decl.id(t)", 5, 2, documented(["def id<T>(x: T) -> T", "int -> int"], "Returns {x}."), false);
+	expectIn(t, s, text, "g[0]", 1, 1, documented(["def [i: int] -> int"], GRID_DOC), false);
+	expectIn(t, s, text, "get(g: Grid)", 7, 4, documented(["class Grid"], "A grid."), false);
+	expectIn(t, s, text, "def count", 4, 5, documented(["def count: int"], "How many."), false);
+	expectIn(t, s, text, "+ count", 2, 5, documented(["def count: int"], "How many."), false);
+	expectIn(t, s, text, "component Counter", 10, 7, documented(["component Counter"], "Counts."), false);
+	expectIn(t, s, text, "var u", 4, 1, markdown(["var u: int"]), false);
+	expectIn(t, s, text, "\"abc\".length", 6, 6, markdown(["int"]), false);
+	expectIn(t, s, text, "class Box", 6, 3, markdown(["class Box"]), false);
+	s.write(t, "Decl.v3", DECL);
+	s.server.close();
+}
+// A target open with unsaved text shows the comment of the text analyzed.
+def test_documentation_unsaved(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DOCS);
+	s.open(1, text);
+	s.openFile("Decl.v3", 1, DOCS);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	s.changeFile("Decl.v3", 2, DOCS_EDITED);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], "The thing, edited."), false);
+	s.server.close();
+}
+// A target whose bytes are no longer the ones analyzed shows nothing, as
+// before, whether it is closed and changed on disk or open and changed.
+def test_documentation_stale(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	s.write(t, "Decl.v3", DOCS);
+	var text = Strings.format2("%s%s", SOURCE, USES_DOCS);
+	s.open(1, text);
+	s.settle();
+	var thing = at(text, "Decl.thing", 5);
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	s.write(t, "Decl.v3", DOCS_EDITED);
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target changed on disk");
+	s.write(t, "Decl.v3", DOCS);
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	s.openFile("Decl.v3", 1, DOCS);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	t.assert(s.store.change(s.fileUri("Decl.v3"), 2, DOCS_EDITED) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target's overlay changed");
+	s.write(t, "Decl.v3", DECL);
+	s.server.close();
+}
+// A target in a file that method-body fallback substituted keeps its
+// signature but shows no comment, from a use or at the declaration's name:
+// the analyzed text is the cached one, not the current one.
+def test_documentation_substituted(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DOCS);
+	s.open(1, text);
+	s.openFile("Decl.v3", 1, DOCS);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, documented(["def thing: int"], THING_DOC), false);
+	s.changeFile("Decl.v3", 2, DOCS_BROKEN);
+	s.settle();
+	var snapshot = s.context().snapshot, j = snapshot.documentIndex(s.fileUri("Decl.v3"));
+	t.assert(snapshot.parsed && j >= 0 && snapshot.documentVersions[j].substitution != null, "Decl.v3 substituted");
+	expectIn(t, s, text, "Decl.thing", 5, 5, markdown(["def thing: int"]), false);
+	expectIn(t, s, text, "g[0]", 1, 1, markdown(["def [i: int] -> int"]), false);
+	expectIn(t, s, text, "def count", 4, 5, documented(["def count: int"], "How many."), false);
+	var p = at(DOCS_BROKEN, "def thing", 4);
+	var id = s.requestIn(s.fileUri("Decl.v3"), "textDocument/hover", p.0, p.1);
+	expectHover(t, s.result(t, id), "markdown", markdown(["def thing: int"]), p.0, p.1, p.1 + 5);
+	s.server.close();
+}
+// A plain-text client gets the comment as it is, after an empty line.
+def test_documentation_plaintext(t: Tester) {
+	var s = HoverTestSession.new(t, ["plaintext"]);
+	s.write(t, "Decl.v3", DOCS);
+	var text = Strings.format2("%s%s", SOURCE, USES_DOCS);
+	s.open(1, text);
+	s.settle();
+	expectIn(t, s, text, "Decl.thing", 5, 5, "def thing: int\n\nThe thing, which <b>matters</b>.", true);
+	expectIn(t, s, text, "Decl.id(t)", 5, 2, "def id<T>(x: T) -> T\nint -> int\n\nReturns {x}.", true);
+	expectIn(t, s, text, "g[0]", 1, 1, "def [i: int] -> int\n\nReads cell i.\n\n  - one", true);
+	s.write(t, "Decl.v3", DECL);
+	s.server.close();
+}
+// Markdown that a comment could hold is escaped, and its lines stay apart.
+def test_documentation_escaping(t: Tester) {
+	var h = LspHover.new();
+	t.assert_string("\\<b>x\\</b> \\[l\\](command:c) !\\[i\\](u) \\`c\\` \\*e\\* \\_u\\_ \\&amp; \\~\\~s\\~\\~ a\\|b \\<http://x>",
+		h.prose("<b>x</b> [l](command:c) ![i](u) `c` *e* _u_ &amp; ~~s~~ a|b <http://x>"));
+	t.assert_string("\\# h  \n\\> q  \n\\- i  \n\\+ j  \n\\= k  \na - b # c > d  \n1\\. one  \n2\\) two  \n1234567890. ten  \n\\`\\`\\`  \n\\~\\~\\~",
+		h.prose("# h\n> q\n- i\n+ j\n= k\na - b # c > d\n1. one\n2) two\n1234567890. ten\n```\n~~~"));
+	t.assert_string("indented  \nnext\n\nparagraph", h.prose("    indented\n\tnext\n\nparagraph"));
+	t.assert_string("back\\slash \\n \\\\\\ end\\\\", h.prose("back\\slash \\n \\\\ end\\"));
+	t.assert_string("\xC3\xA9 \xF0\x9D\x84\x9E", h.prose("\xC3\xA9 \xF0\x9D\x84\x9E"));
 }

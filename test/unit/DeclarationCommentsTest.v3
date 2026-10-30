@@ -1,0 +1,232 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// AeneasAdapter.declarationComment: which comment documents a declaration,
+// found by its name's bytes and kind, as hover gives them from a snapshot.
+def T = UnitTests.register;
+def X = [
+	T("DeclarationComments:adjacent", test_adjacent),
+	T("DeclarationComments:modifiers", test_modifiers),
+	T("DeclarationComments:cases_layouts_packings", test_cases),
+	T("DeclarationComments:shared_and_parameters", test_shared),
+	T("DeclarationComments:non_ascii_and_indentation", test_non_ascii),
+	T("DeclarationComments:blank_lines_and_detached", test_blank_lines),
+	T("DeclarationComments:literals_and_trailing", test_literals),
+	T("DeclarationComments:block_comments", test_block_comments),
+	T("DeclarationComments:over_limit", test_over_limit),
+	T("DeclarationComments:parse_failures_and_kinds", test_failures),
+	T("DeclarationComments:dense_bound", test_dense_bound),
+	()
+];
+def FIELD = AnalysisDeclKind.FIELD;
+def METHOD = AnalysisDeclKind.METHOD;
+def CLASS = AnalysisDeclKind.CLASS;
+
+// The comment of the {kind} declaration named by the identifier {skip}
+// bytes into the first {needle} in {text}.
+def comment(t: Tester, text: string, needle: string, skip: int, kind: AnalysisDeclKind) -> string {
+	var at = find(text, needle);
+	t.assert(at >= 0, needle);
+	if (at < 0) return null;
+	var begin = at + skip, end = begin;
+	while (end < text.length && (Char.isIdentMiddle(text[end]) || (end == begin && text[end] == '['))) end++;
+	return AeneasAdapter.declarationComment("c.v3", text, [], kind, begin, end);
+}
+def find(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return i;
+	}
+	return -1;
+}
+def expect(t: Tester, want: string, got: string, what: string) {
+	if (want == null || got == null) {
+		t.assert(want == got, Strings.format2("%s: got %s", what, if(got == null, "null", got)));
+		return;
+	}
+	t.assert_string(want, got);
+}
+def check(t: Tester, text: string, cases: Array<(string, int, AnalysisDeclKind, string)>) {
+	t.asserti(0, AeneasAdapter.parseFile("c.v3", text, []).diagnostics.length);
+	for (c in cases) expect(t, c.3, comment(t, text, c.0, c.1, c.2), c.0);
+}
+
+// Each declaration takes the comment directly above it, never a sibling's,
+// and one with code on the line above has none.
+def test_adjacent(t: Tester) {
+	var text = "// The box.\nclass Box {\n\t// Its size.\n\tvar size: int;\n\t// Makes one.\n\tnew(size) { }\n\t// Grows it.\n\tdef grow(by: int) -> int { return size + by; }\n\tdef plain() { }\n}\n// Utilities.\ncomponent Util {\n\t// One.\n\tdef unit = 1;\n}\n// A top-level function.\ndef top() { }\ntype V {\n\tcase A {\n\t\t// In a case.\n\t\tdef m() { }\n\t}\n}\n";
+	check(t, text, [
+		("class Box", 6, CLASS, "The box."),
+		("var size", 4, FIELD, "Its size."),
+		("new(size)", 0, AnalysisDeclKind.CONSTRUCTOR, "Makes one."),
+		("def grow", 4, METHOD, "Grows it."),
+		("def plain", 4, METHOD, null),
+		("component Util", 10, AnalysisDeclKind.COMPONENT, "Utilities."),
+		("def unit", 4, FIELD, "One."),
+		("def top", 4, METHOD, "A top-level function."),
+		("def m", 4, METHOD, "In a case.")
+	]);
+	// A file that starts with the comment, and a declaration with nothing before it.
+	check(t, "// First.\ndef f() { }\n", [("def f", 4, METHOD, "First.")]);
+	check(t, "def g() { }\n", [("def g", 4, METHOD, null)]);
+}
+// A declaration starts at its first modifier, so the comment goes above that.
+def test_modifiers(t: Tester) {
+	var text = "class M {\n\t// Hidden.\n\tprivate def hidden() { }\n\t// Counts.\n\tprivate var count: int;\n\t// Before the modifier.\n\tprivate\n\tdef split() { }\n\tprivate\n\t// Between the modifier and the name.\n\tdef between() { }\n}\n";
+	check(t, text, [
+		("def hidden", 4, METHOD, "Hidden."),
+		("var count", 4, FIELD, "Counts."),
+		("def split", 4, METHOD, "Before the modifier."),
+		("def between", 4, METHOD, null)
+	]);
+}
+def test_cases(t: Tester) {
+	var text = "// Colors.\nenum Color {\n\t// Red.\n\tRED,\n\t// Green.\n\tGREEN\n}\nenum Flat { A, B }\n// Shapes.\ntype Shape {\n\t// A circle.\n\tcase Circle(r: int);\n\t// A dot.\n\tcase Dot;\n}\n// Tags.\nlayout Tag {\n\t// Its kind.\n\t+0 kind: u8;\n\t=1;\n}\n// Low bits.\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\n";
+	check(t, text, [
+		("enum Color", 5, AnalysisDeclKind.ENUM, "Colors."),
+		("RED", 0, AnalysisDeclKind.ENUM_CASE, "Red."),
+		("GREEN", 0, AnalysisDeclKind.ENUM_CASE, "Green."),
+		("{ A, B", 2, AnalysisDeclKind.ENUM_CASE, null),
+		("{ A, B", 5, AnalysisDeclKind.ENUM_CASE, null),
+		("type Shape", 5, CLASS, "Shapes."),
+		("case Circle", 5, AnalysisDeclKind.VARIANT_CASE, "A circle."),
+		("case Dot", 5, AnalysisDeclKind.VARIANT_CASE, "A dot."),
+		("layout Tag", 7, AnalysisDeclKind.LAYOUT, "Tags."),
+		("kind: u8", 0, AnalysisDeclKind.LAYOUT_FIELD, "Its kind."),
+		("packing Low", 8, AnalysisDeclKind.PACKING, "Low bits.")
+	]);
+}
+// Fields that share one declaration, and header parameters, have no comment.
+def test_shared(t: Tester) {
+	var text = "class P(\n\t// Not documentation.\n\tx: int,\n\t// Nor this.\n\tvar y: int) {\n\t// Shared.\n\tvar a, b: int;\n\t// Alone.\n\tvar c: int;\n}\ntype S {\n\t// A case.\n\tcase One(\n\t\t// A case parameter.\n\t\tz: int);\n}\n";
+	check(t, text, [
+		("x: int", 0, FIELD, null),
+		("var y", 4, FIELD, null),
+		("var a", 4, FIELD, null),
+		("a, b", 3, FIELD, null),
+		("var c", 4, FIELD, "Alone."),
+		("case One", 5, AnalysisDeclKind.VARIANT_CASE, "A case."),
+		("z: int", 0, FIELD, null)
+	]);
+}
+// Text is kept byte for byte after "//" and one space: non-ASCII text, a
+// tab, and indentation beyond that space.
+def test_non_ascii(t: Tester) {
+	var text = "component N {\n\t\t// Gr\xC3\xB6\xC3\x9Fe \xF0\x9D\x84\x9E \xC3\xA9.\n\t//   indented\n\t//\ttabbed\n\t//no space\n\tdef wide() { }\n}\n";
+	check(t, text, [("def wide", 4, METHOD, "Gr\xC3\xB6\xC3\x9Fe \xF0\x9D\x84\x9E \xC3\xA9.\n  indented\n\ttabbed\nno space")]);
+	// CRLF line ends, which the outline's parse sees as a space and a newline.
+	expect(t, "One.\nTwo.", comment(t, "// One.\r\n// Two.\r\ndef f() { }\r\n", "def f", 4, METHOD), "CRLF");
+}
+// An empty line ends a run; empty comment lines inside it are kept, and
+// those at either end dropped. A file's license block, separated by an empty
+// line, is detached.
+def test_blank_lines(t: Tester) {
+	var text = "// Copyright 2026 Someone.\n// SPDX-License-Identifier: Apache-2.0\n\nclass Licensed { }\n// Detached.\n\n//\n// Attached.\n//\n//   indented\n//\ndef f() { }\n// Not attached.\n\ndef g() { }\n// Spaces only.\n  \t\ndef h() { }\n//\n//\ndef empty() { }\n";
+	check(t, text, [
+		("class Licensed", 6, CLASS, null),
+		("def f", 4, METHOD, "Attached.\n\n  indented"),
+		("def g", 4, METHOD, null),
+		("def h", 4, METHOD, null),
+		("def empty", 4, METHOD, null)
+	]);
+	check(t, "// Copyright 2026 Someone.\n\n// The class.\nclass C { }\n", [("class C", 6, CLASS, "The class.")]);
+}
+// Comment markers in literals are not comments, and a comment after code on
+// its line is that code's, not the next declaration's.
+def test_literals(t: Tester) {
+	var text = "component L {\n\tdef v = \"//\";\n\tdef w() { }\n\tdef u = \"\\n// fake\";\n\tdef w2() { }\n\tdef c = '/';\n\tdef w3() { }\n\tvar x = 1; // About x.\n\tdef after() { }\n\tvar y = 2; // About y.\n\t// Leading.\n\tdef after2() { }\n}\n";
+	check(t, text, [
+		("def w()", 4, METHOD, null),
+		("def w2", 4, METHOD, null),
+		("def w3", 4, METHOD, null),
+		("def after()", 4, METHOD, null),
+		("def after2", 4, METHOD, "Leading.")
+	]);
+}
+// Block comments document nothing, and a run of line comments stops at one.
+// A line that holds "*/" could be the end of a block comment, so a run with
+// one documents nothing.
+def test_block_comments(t: Tester) {
+	var text = "/* Block. */\ndef b1() { }\n/*\n * Block.\n */\ndef b2() { }\n/* x */ def b3() { }\n// Line.\n/* mixed */\ndef b4() { }\n/*\n// inside a block comment */\ndef b5() { }\n/* before */\n// After a block comment.\ndef b6() { }\n// Mentions */ in text.\ndef b7() { }\n// Mentions /* in text.\ndef b8() { }\n";
+	check(t, text, [
+		("def b1", 4, METHOD, null),
+		("def b2", 4, METHOD, null),
+		("def b3", 4, METHOD, null),
+		("def b4", 4, METHOD, null),
+		("def b5", 4, METHOD, null),
+		("def b6", 4, METHOD, "After a block comment."),
+		("def b7", 4, METHOD, null),
+		("def b8", 4, METHOD, "Mentions /* in text.")
+	]);
+}
+// Text over the bound is cut at a code point, with an ellipsis, and a run
+// that starts too far back documents nothing.
+def test_over_limit(t: Tester) {
+	var max = DeclarationComments.MAX_BYTES, ellipsis = DeclarationComments.ELLIPSIS;
+	// 50 lines of 99 ASCII bytes and a newline each.
+	var buf = StringBuilder.new(), line = Array<byte>.new(99);
+	for (i < line.length) line[i] = 'a' + byte.!(i % 26);
+	for (i < 50) buf.puts("// ").puts(line).putc('\n');
+	var text = buf.puts("def f() { }\n").toString();
+	var got = comment(t, text, "def f", 4, METHOD);
+	t.assert(got != null, "a cut comment");
+	if (got == null) return;
+	t.asserti(max, got.length);
+	t.assert_string(ellipsis, Arrays.range(got, max - 3, max));
+	t.assert_string(Arrays.range(line, 0, 93), Arrays.range(got, 4000, 4093));
+	// One line of two-byte characters: the cut is at the last whole one.
+	buf = StringBuilder.new().puts("// ");
+	for (i < 3000) buf.puts("\xC3\xA9");
+	text = buf.puts("\ndef g() { }\n").toString();
+	got = comment(t, text, "def g", 4, METHOD);
+	t.assert(got != null, "a cut comment");
+	if (got == null) return;
+	t.asserti(2046 * 2 + 3, got.length);
+	t.assert_string(ellipsis, Arrays.range(got, got.length - 3, got.length));
+	t.asserti(0xC3, got[got.length - 5]);
+	// A run whose first line starts more than MAX_SCAN bytes back, and one
+	// that starts within it.
+	var lines = DeclarationComments.MAX_SCAN / 100;
+	for (extra in [1, 0]) {
+		buf = StringBuilder.new();
+		for (i < lines + extra) buf.puts("// ").puts(Arrays.range(line, 0, 96)).putc('\n');
+		text = buf.puts("def h() { }\n").toString();
+		got = comment(t, text, "def h", 4, METHOD);
+		if (extra == 1) expect(t, null, got, "a run beyond the scan");
+		else t.assert(got != null && got.length == max, "a run within the scan");
+	}
+	buf = StringBuilder.new().puts("// ");
+	for (i < DeclarationComments.MAX_SCAN) buf.putc('x');
+	expect(t, null, comment(t, buf.puts("\ndef k() { }\n").toString(), "def k", 4, METHOD), "a line beyond the scan");
+}
+// A file that does not parse, or is too large to parse, a name and kind that
+// the outline does not list together, and the kinds it never lists.
+def test_failures(t: Tester) {
+	var text = "// Broken.\ndef f() {\n";
+	t.assert(AeneasAdapter.parseFile("c.v3", text, []).diagnostics.length > 0, "a syntax error");
+	expect(t, null, comment(t, text, "def f", 4, METHOD), "a parse failure");
+	text = "// Doc.\ndef f(p: int) { var q = p; }\n";
+	expect(t, "Doc.", comment(t, text, "def f", 4, METHOD), "the method");
+	expect(t, null, comment(t, text, "def f", 4, FIELD), "another kind");
+	expect(t, null, comment(t, text, "def f", 5, METHOD), "part of the name");
+	expect(t, null, comment(t, text, "p: int", 0, AnalysisDeclKind.PARAMETER), "a parameter");
+	expect(t, null, comment(t, text, "var q", 4, AnalysisDeclKind.LOCAL), "a local");
+	// The file's options apply: a fun expression parses only with its option.
+	text = "// Doc.\ndef h() { var g = fun () { }; }\n";
+	var h = find(text, "def h") + 4;
+	expect(t, "Doc.", AeneasAdapter.declarationComment("c.v3", text, [], METHOD, h, h + 1), "with the option");
+	expect(t, null, AeneasAdapter.declarationComment("c.v3", text, ["-lang:fun-exprs=false"], METHOD, h, h + 1), "without it");
+	var buf = StringBuilder.new().puts("// Large.\ndef big() { }\n");
+	while (buf.length <= DeclarationComments.MAX_INPUT) buf.puts("// padding\n");
+	expect(t, null, comment(t, buf.toString(), "def big", 4, METHOD), "a file over the parse bound");
+}
+// The densest text of issue #372, "var a,a,a,...;", at the parse bound,
+// parses within this process's heap, the server's default.
+def test_dense_bound(t: Tester) {
+	var tail = "// Last.\ndef last() { }\n", buf = StringBuilder.new().puts("component D {\n\tvar a");
+	while (buf.length + 2 + 4 + tail.length <= DeclarationComments.MAX_INPUT) buf.puts(",a");
+	buf.puts(";\n}\n");
+	while (buf.length + tail.length < DeclarationComments.MAX_INPUT) buf.putc('\n');
+	var text = buf.puts(tail).toString();
+	t.asserti(DeclarationComments.MAX_INPUT, text.length);
+	expect(t, "Last.", comment(t, text, "def last", 4, METHOD), "the densest text at the bound");
+}

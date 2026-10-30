@@ -1,0 +1,29 @@
+# Hover shows a declaration's leading comment, its run of full-line // comments, after the
+# signature, with Markdown escaped. Project docs selects *.v3: main.v3, open with unsaved comments,
+# uses lib.v3, which stays closed. An empty line detaches lib.v3's copyright line.
+{"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"docs\",\"sources\":[\"*.v3\"]}]}"]}
+{"write":["lib.v3","// Copyright 2026 Someone.\n\n// Counts <b>things</b>; see [the docs](command:x).\n//\n//   - one\n//   - two\ncomponent Lib {\n\t// The count, after `def`.\n\tdef count = 1;\n\tdef plain = 2;\n}\n"]}
+{"write":["main.v3","component Main {\n\tdef main() -> int { return Lib.count + Lib.plain; }\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"callHierarchyProvider":true,"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"typeDefinitionProvider":true,"typeHierarchyProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":true,"selectionRangeProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenModifiers":["declaration","readonly"],"tokenTypes":["namespace","class","enum","enumMember","struct","type","typeParameter","parameter","variable","property","function","method"]}},"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/main.v3","languageId":"virgil","version":1,"text":"// Runs the program.\ncomponent Main {\n\t// Adds them.\n\tdef main() -> int { return Lib.count + Lib.plain; }\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
+# A use of a field in the closed file shows its comment, whose backquotes are escaped. The
+# request waits for the first analysis if it has not completed.
+{"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":32}}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef count: int\n```\n\nThe count, after \\`def\\`."},"range":{"end":{"character":37,"line":3},"start":{"line":3,"character":32}}}}}
+# The component's comment loses the indentation of its list, whose lines stay apart, and its
+# HTML and link are escaped, so neither is rendered.
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":28}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"contents":{"kind":"markdown","value":"```virgil\ncomponent Lib\n```\n\nCounts \\<b>things\\</b>; see \\[the docs\\](command:x).\n\n\\- one  \n\\- two"},"range":{"end":{"character":31,"line":3},"start":{"line":3,"character":28}}}}}
+# A field with code on the line above has no comment.
+{"send":{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":44}}}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef plain: int\n```"},"range":{"end":{"character":49,"line":3},"start":{"line":3,"character":44}}}}}
+# A declaration's own name in the unsaved file shows the comment of its unsaved text.
+{"send":{"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":5}}}}
+{"recv":{"jsonrpc":"2.0","id":5,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef main() -> int\n```\n\nAdds them."},"range":{"end":{"character":9,"line":3},"start":{"line":3,"character":5}}}}}
+{"send":{"jsonrpc":"2.0","id":6,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
