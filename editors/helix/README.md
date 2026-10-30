@@ -33,5 +33,5 @@ With Helix 25.07.1 and a server built from `main` after `0.1.0-alpha.5`, laid ou
 
 ## Troubleshooting
 
-- `hx --health virgil` (or `:healthcheck` inside Helix) shows whether the server is on `PATH` and executable.
+- `hx --health virgil` shows whether the server is on `PATH` and executable.
 - [Troubleshooting](../../docs/troubleshooting.md) covers a server that doesn't start, files without diagnostics or navigation, and the Virgil root. The [privacy statement](../../PRIVACY.md) says what the server and the editor integrations read, write, and start.
