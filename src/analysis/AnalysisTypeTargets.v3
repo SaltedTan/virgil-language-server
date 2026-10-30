@@ -30,6 +30,22 @@ class AnalysisSnapshotTypeTargets(data: Array<byte>, checkpoints: Array<int>) {
 	}
 }
 
+// One writer that an encoder reuses for many short records, taking each at
+// its exact length. A new writer for each record grows by doubling and leaves
+// up to about three times the record's length as garbage, which the worker's
+// heap has no room for; this one grows only to the longest record.
+class AnalysisRecordWriter extends DataWriter {
+	private def none = Array<byte>.new(0);
+	// The bytes written since the last take, in a new array of their length.
+	// The writer is then empty again.
+	def take() -> Range<byte> {
+		var length = end();
+		var record = if(length == 0, none, Ranges.dup(data[0 ... length]));
+		trim(0);
+		return record;
+	}
+}
+
 // Numeric declaration indexing and sparse type-target preparation share the
 // encoder's existing passes. Defaults are chosen while indexing names, then
 // translated once per declaration. Merging the three source-ordered streams
@@ -48,6 +64,9 @@ class AnalysisTypeTargetEncoding(workerCount: int, declarations: AnalysisIndexMa
 	// Token occurrence count, typed occurrence count, and builtin count.
 	def counts = Array<(int, int, int)>.new(fileCount);
 	def compactCoordinates = Array<bool>.new(fileCount);
+	// Writes each file's prepared records here: typed uses, builtin uses,
+	// overrides, hints, and calls.
+	def records = AnalysisRecordWriter.new();
 	def add(d: AnalysisDeclaration) -> int {
 		var i = declaration(d);
 		if (i >= 0) return i;
@@ -78,7 +97,7 @@ class AnalysisTypeTargetEncoding(workerCount: int, declarations: AnalysisIndexMa
 	}
 	def prepareFile(f: int, sites: Array<AnalysisDeclaration>, occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>) {
 		compactCoordinates[f] = true;
-		var changes = DataWriter.new(), previousOffset = 0, changeCount = 0;
+		var changes = records, previousOffset = 0, changeCount = 0;
 		var si = 0, oi = 0, bi = 0, count = 0, typed = 0, builtinCount = 0;
 		while (true) {
 			while (oi < occurrences.length && !occurrences[oi].range.isTokenSpan()) oi++;
@@ -116,7 +135,7 @@ class AnalysisTypeTargetEncoding(workerCount: int, declarations: AnalysisIndexMa
 				changeCount++;
 			}
 		}
-		overrides[f] = changes.alias();
+		overrides[f] = changes.take();
 		overrideCounts[f] = changeCount;
 		counts[f] = (count, typed, builtinCount);
 	}

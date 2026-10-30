@@ -60,7 +60,7 @@ class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTab
 		return ids[id];
 	}
 	def encode(path: string, declarations: Array<AnalysisDeclaration>) -> Range<byte> {
-		var output = DataWriter.new(), previous = 0;
+		var output = targets.records, previous = 0;
 		count = 0;
 		for (d in declarations) {
 			if (!AnalysisWorkerDeclaration.?(d)) continue;
@@ -71,7 +71,7 @@ class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTab
 			previous = d.range.beginOffset;
 			count++;
 		}
-		return output.alias();
+		return output.take();
 	}
 }
 
