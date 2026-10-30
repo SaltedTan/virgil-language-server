@@ -312,10 +312,10 @@ class LspCompletion extends LspQueryRequests {
 	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System
 	// The client's textDocument.completion.completionItemKind.
 	var clientKinds = LspSymbolKind.completions(null);
-	// Whether the client declares
-	// textDocument.completion.completionItem.insertReplaceSupport, so that an
-	// item's edit has the insertion range and the replacement range, which
-	// also replaces the identifier's bytes after the cursor.
+	// Whether the client sets
+	// textDocument.completion.completionItem.insertReplaceSupport to JSON true,
+	// so that an item's edit has the insertion range and the replacement range,
+	// which also replaces the identifier's bytes after the cursor.
 	var insertReplace = false;
 
 	new(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) super(store, projects, send, "completion") { }
@@ -450,8 +450,8 @@ class LspCompletion extends LspQueryRequests {
 		return JsonRpcReply.Result(list(r.keywords, incomplete));
 	}
 	// An item whose edit inserts {label} in place of {insert}, the prefix, or,
-	// when {replace} is not null, replaces {replace} instead: the whole
-	// identifier that the cursor is in or just past.
+	// when {replace} is not null, lets the client replace {replace} instead:
+	// the whole identifier that the cursor is in or just past.
 	private def item(label: string, kind: int, detail: string, sortText: string, insert: JsonValue, replace: JsonValue) -> JsonValue {
 		var edit = Strings.newMap<JsonValue>(), item = Strings.newMap<JsonValue>();
 		edit["newText"] = JsonValue.String(label);
@@ -485,14 +485,15 @@ class LspCompletion extends LspQueryRequests {
 		obj["character"] = JsonValue.Int(p.character);
 		return JsonValue.JObject(obj);
 	}
-	// The range that a client with insertReplaceSupport replaces when it
-	// accepts an item: the prefix's start and the end of the identifier that
-	// the cursor is in or just past, so that a completion in the middle of
-	// "wh|ile" replaces all of the word. The identifier continues over
-	// letters, digits, and underscores, as an Aeneas identifier does, and
-	// nothing else: a ".", whitespace, a delimiter, a quote, or a comment
-	// starts a different token. It is computed once per request from the open
-	// text, not per item, and at an identifier's end it is the prefix's range.
+	// The range that a client with insertReplaceSupport can use when it
+	// accepts an item in replace mode: the prefix's start and the end of the
+	// identifier that the cursor is in or just past, so that a completion in
+	// the middle of "wh|ile" replaces all of the word. The identifier continues
+	// over ASCII letters, digits, and underscores, as an Aeneas identifier
+	// does, and nothing else: a ".", whitespace, a delimiter, a quote, or a
+	// comment starts a different token. It is computed once per request from
+	// the open text, not per item, and at an identifier's end it is the prefix's
+	// range.
 	private def replacement(map: PositionMap, ctx: LspCursorContext, text: Array<byte>) -> JsonValue {
 		var end = ctx.cursor;
 		while (end < text.length && isIdentifierByte(text[end])) end++;
