@@ -64,7 +64,7 @@ def run(exe):
             assert fixed != text
             s.send('textDocument/didChange', {'textDocument': {'uri': main.as_uri(), 'version': 2},
                                              'contentChanges': [{'text': fixed}]}, request=False)
-            # The fix lengthens the line by one, so the call site moves with it.
+            # The fix replaces int with string, three bytes longer, so the call site moves with it.
             query = {'textDocument': {'uri': main.as_uri()}, 'position': call_site(fixed)}
             hover = s.result(s.send('textDocument/hover', query))
             diagnostics = published(s, main.as_uri())
