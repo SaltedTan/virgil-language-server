@@ -1120,7 +1120,16 @@ program with the intended semantic edit retained and only the syntax error
 removed. JSON retains these answers, source overlays, configuration, and each
 state's answers and scores. Disposable URI prefixes become `project:///`; target
 paths and every range remain significant. Hover text and ranges compare exactly;
-reference and diagnostic items compare exactly, ignoring set ordering. `available` counts a nonempty
+reference and diagnostic items compare exactly, ignoring set ordering. One
+exception follows the server's rule for [hover documentation](architecture.md#hover):
+when a hover's target declaration is in a file that the measured state's
+snapshot substituted, the expected hover is the oracle's without its
+documentation, the text after the first empty line, because the server shows a
+substituted file's signatures but none of its comments. The target's file is
+the oracle's definition's, or the queried file where the oracle has no
+definition, as at a declaration's own name. Everywhere else, and in editing
+sessions too, the oracle's hover is expected exactly, so a comment missing from
+a state that substituted no target file is still a wrong answer. `available` counts a nonempty
 answer or an oracle-matching legitimate empty answer. `correct` counts an exact
 match. Missing a nonempty oracle is unavailable and incorrect, but is not a
 `wrong` binding. For references and diagnostics, a nonempty proper subset of the
@@ -2430,7 +2439,8 @@ sources in the closed-file-on-disk states must have null versions in both modes.
 Every other open source must be at version 1 in both modes.
 
 It rescores every recorded verdict, including each injection's, from
-the recorded answers with `bench-tolerance.py`'s own scoring, so it refuses any
+the recorded answers with `bench-tolerance.py`'s own scoring and its rule for
+the hovers of substituted targets, so it refuses any
 capture that an incomplete, filtered, interrupted, or buggy run could produce,
 or whose verdicts its answers don't support; it can't detect answers and
 verdicts that were rewritten consistently, which only rerunning the benchmark

@@ -550,6 +550,23 @@ component AeneasAdapter {
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
+	// The leading comment of the declaration of {kind} whose name is the
+	// bytes {begin} to {end} of {input}, as DocumentCommentCollector finds it
+	// in the outline, or null if it has none or the outline cannot place it
+	// unambiguously. A file over DeclarationComments.MAX_INPUT bytes, or one
+	// that does not parse, has none. The parse is released on return.
+	def declarationComment(path: string, input: Array<byte>, options: Array<string>,
+			kind: AnalysisDeclKind, begin: int, end: int) -> string {
+		if (!DeclarationComments.documents(kind) || begin < 0 || input.length > DeclarationComments.MAX_INPUT) return null;
+		var normalized = normalizeLineTerminators(input);
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
+		if (errors.numErrors > 0) return null;
+		var symbols = DocumentSymbolCollector.new(file, syntax).collect();
+		return DocumentCommentCollector.new(normalized, syntax.tokens).find(symbols, kind, begin, end);
+	}
 	// Foldable brace blocks and comments from the current text, without
 	// verification. A failed parse keeps only what ends before its first
 	// error; an error whose position the parser could not resolve drops

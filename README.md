@@ -30,7 +30,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - go-to-definition for locals, members, methods, and named types
 - go-to-type-definition from resolved value and call-result types, including generic types and type parameters
 - inlay hints for inferred local types and direct-call parameter names
-- hover with declaration signatures and inferred types
+- [hover](docs/architecture.md#hover) with declaration signatures and inferred types; on `main`, leading comments also appear below them
 - a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 
 Incremental analysis comes after v0.1. Some later features are already available: [references](docs/architecture.md#references) and [signature help](docs/architecture.md#signature-help) since `0.1.0-alpha.1`, and [rename](docs/architecture.md#rename) and [completion](docs/architecture.md#completion) of keywords, in-scope declarations, and [members](docs/architecture.md#member-completion) since `0.1.0-alpha.2`. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
