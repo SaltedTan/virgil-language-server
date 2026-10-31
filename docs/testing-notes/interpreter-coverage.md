@@ -35,7 +35,7 @@ The matcher is a method pattern such as `'*'`, `'DocumentUri.*'`, or `'Main.pick
 - **Granularity:** one probe per basic block, inserted when the interpreter first builds a method's SSA, after the control-flow and post-pass optimizations of the default `-O1` (and early inlining at `-O3`). There are no line, branch, or instruction counts, and no source locations: a branch shows only as a block that didn't run.
 - **Denominator:** the interpreter builds SSA lazily, on a method's first call, so a method that is never called is left out of the report rather than listed at 0%.
 - **With `-ra`:** reachability analysis lists every statically reachable method, but each one at 0%, including ones that ran. Normalization copies the probes (`SsaRebuilder.visitProbe` calls `dup()`), the interpreter runs the copies, and the report counts the originals.
-- **Output:** one line per method, sorted by percentage, printed to standard output in color when `main` returns: a percentage and a method name, with no block counts. Names aren't unique; `JsonParser.new` appears twice below.
+- **Output:** one line per method, sorted by percentage, printed to standard output in color when `main` returns: a percentage and a method name, with no block counts. Names aren't unique; `JsonParser.new` appears twice in the subset report below.
 - **With a target:** `-run` with `-target=x86-64-linux` compiles for the target, writes the executable, and then interprets the machine-lowered SSA. That stops at the first call, which is a `CallAddress` the evaluator doesn't implement. `scripts/v3c.sh` always adds the target, so `scripts/v3c.sh -run` fails the same way, and the experiments call `Aeneas` directly with no target.
 
 ### A minimal program
@@ -71,7 +71,7 @@ component Main {
 }
 ```
 
-Each run below exits with status 3, the value `main` returns; color codes are removed from the output.
+The first two runs below exit with status 3, the value `main` returns, and the target run exits with status 0 after printing the exception. Color codes are removed from the output.
 
 ```console
 $ $A -run -coverage='*' -output="$SCRATCH" "$SCRATCH/min.v3"
@@ -175,7 +175,30 @@ All 24 `JsonRpcJson` tests pass in each mode:
 | Interpreter | 0.89–0.91 s | 172 MB |
 | Interpreter with `-coverage='*'` | 1.08–1.13 s | 172 MB |
 
-The same command with a pattern that matches no test takes under 0.01 s, so the time is spent running the tests, not compiling. The coverage report has 151 lines, identical across runs, after the tests' own output. Every method of `JsonRpcJson` and `JsonRpcJsonParser` is listed, all at 100% except `96% JsonRpcJson.render`. The `DocumentUri` group also passes this way, in 0.01 s.
+The same command with a pattern that matches no test takes under 0.01 s, so the time is spent running the tests, not compiling. The coverage report has 151 lines, identical across runs, after the tests' own output. An excerpt, with color codes removed:
+
+```text
+100% UnitTests.new
+100% JsonRpcJsonTest.new
+100% Strings.new
+100% HashMap<K, V>.new
+100% Strings.newMap<V=?>
+100% List<T>.new
+100% UnitTests.register
+100% JsonParser.new
+...
+100% JsonRpcJsonTest.test_json_round_trip
+ 96% JsonRpcJson.render
+ 91% Ints.renderPosDecimal
+...
+ 40% StringBuilder.putArg<T=?>
+ 22% Tester.assert_string
+ 14% JsonValue.render
+```
+
+The full report lists 151 methods, including library methods the tests call, 109 of them at 100%, and `JsonParser.new` appears twice, on lines 8 and 30.
+
+Every method of `JsonRpcJson` and `JsonRpcJsonParser` is listed, all at 100% except `96% JsonRpcJson.render`. The `DocumentUri` group also passes this way, in 0.01 s.
 
 `ProjectExpansion` and `LspWorkspaceSymbols` can't be run this way: they need `HostOs` or the Aeneas adapter, which brings in `AnalysisSingleFileParser`.
 
