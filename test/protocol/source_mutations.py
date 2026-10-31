@@ -790,24 +790,58 @@ class MutationSession(Session):
         # server is reaped, so killing the group never reaches another
         # process. The sentinel reads a pipe from this harness, so it exits if
         # the harness does. No waitid: macOS has it only from Python 3.13.
-        super().__init__(exe, *options, preexec_fn=os.setpgrp)
-        group = self.proc.pid
-        self.sentinel = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL, preexec_fn=lambda: os.setpgid(0, group))
-        self.deadlines = deadlines
-        self.validator = validator
-        self.expected = {}
-        self.requests = Counter()
-        self.sent_at = {}
-        self.replies = {}
-        self.boundaries = []
-        self.diagnostics = {}
-        self.messages = []
-        self.unchecked = []
-        self.stamps = []
-        self.started = time.monotonic()
-        self.eof = False
-        self.final_log = b""
+        signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+        self.proc = self.sentinel = None
+        try:
+            try:
+                super().__init__(exe, *options, preexec_fn=lambda: (
+                    os.setpgrp(), signal.pthread_sigmask(signal.SIG_SETMASK, previous)))
+                group = self.proc.pid
+                self.sentinel = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                                 stderr=subprocess.DEVNULL, preexec_fn=lambda: (
+                                                     os.setpgid(0, group),
+                                                     signal.pthread_sigmask(signal.SIG_SETMASK, previous)))
+                self.deadlines = deadlines
+                self.validator = validator
+                self.expected = {}
+                self.requests = Counter()
+                self.sent_at = {}
+                self.replies = {}
+                self.boundaries = []
+                self.diagnostics = {}
+                self.messages = []
+                self.unchecked = []
+                self.stamps = []
+                self.started = time.monotonic()
+                self.eof = False
+                self.final_log = b""
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        except BaseException:
+            cleanup_mask = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+            try:
+                if self.proc is not None:
+                    try:
+                        os.killpg(self.proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                processes = [p for p in (self.proc, self.sentinel) if p is not None]
+                for process in processes:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                for process in processes:
+                    process.wait()
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+                if hasattr(self, "err"):
+                    self.err.close()
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, cleanup_mask)
+            raise
 
     def stamp(self):
         self.stamps.extend([round(time.monotonic() - self.started, 4)] * (len(self.transcript) - len(self.stamps)))

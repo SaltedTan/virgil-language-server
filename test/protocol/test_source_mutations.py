@@ -95,6 +95,8 @@ FAKE = textwrap.dedent("""\
             reply = {"jsonrpc": "2.0", "id": ident, "result": result}
             write(reply)
             write(reply)
+            sys.stdin.buffer.read()
+            sys.exit(0)
         elif MODE.startswith("restoration-") and str(ident).startswith("restored-"):
             if method == "textDocument/hover":
                 result = {"contents": {"kind": "plaintext", "value": "stable(x: int) -> int"}}
@@ -113,7 +115,8 @@ FAKE = textwrap.dedent("""\
                 result = [{"name": "Wrong" if MODE == "restoration-failure" else "MutationBase"}]
             write({"jsonrpc": "2.0", "id": ident, "result": result})
         elif MODE == "hang":
-            time.sleep(60)
+            sys.stdin.buffer.read()
+            sys.exit(0)
         elif MODE == "stopped-group":
             import subprocess
             child = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -435,13 +438,84 @@ class StandIn(unittest.TestCase):
     """Oracle failures from a scripted server; no build needed."""
 
     def run_fake(self, mode, limits=None, record=None):
-        limits = limits or sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20})
+        limits = limits or sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 0.4, "run_timeout": 0.6})
         record = record or single_case("component Mutant { def f() {} }\n", limits=limits)
         with tempfile.TemporaryDirectory() as directory:
             started = time.monotonic()
             result, transcript, _, _ = sm.run_case(record, fake_server(directory, mode),
                                                    started + limits["run_timeout"], Path(directory), VALIDATOR)
             return result, transcript, time.monotonic() - started
+
+    def test_startup_failure_kills_and_reaps_children(self):
+        popen = subprocess.Popen
+        for phase in ("sentinel", "initialized"):
+            for error in (RuntimeError, KeyboardInterrupt, SystemExit):
+                with self.subTest(phase=phase, error=error), tempfile.TemporaryDirectory() as directory:
+                    processes = []
+
+                    def start(*args, **kwargs):
+                        if phase == "sentinel" and processes:
+                            raise error("startup interrupted")
+                        process = popen(*args, **kwargs)
+                        processes.append(process)
+                        return process
+
+                    now = time.monotonic()
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                    try:
+                        with contextlib.ExitStack() as stack:
+                            stack.enter_context(mock.patch.object(sm.subprocess, "Popen", start))
+                            if phase == "initialized":
+                                stack.enter_context(mock.patch.object(sm.time, "monotonic", side_effect=error("startup interrupted")))
+                            with self.assertRaises(error):
+                                sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 2, now + 1, LIMITS),
+                                                   VALIDATOR)
+                        self.assertEqual(len(processes), 1 if phase == "sentinel" else 2)
+                        for process in processes:
+                            self.assertIsNotNone(process.returncode)
+                            self.assertFalse(alive(process.pid))
+                            with self.assertRaises(ChildProcessError):
+                                os.waitpid(process.pid, os.WNOHANG)
+                        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                    finally:
+                        for process in processes:
+                            process.kill()
+                            process.wait()
+
+    def test_cancellation_during_either_process_start_cleans_both(self):
+        popen = subprocess.Popen
+        for at in (1, 2):
+            for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                with self.subTest(at=at, signum=signum), tempfile.TemporaryDirectory() as directory:
+                    processes = []
+
+                    def start(*args, **kwargs):
+                        process = popen(*args, **kwargs)
+                        processes.append(process)
+                        if len(processes) == at:
+                            os.kill(os.getpid(), signum)
+                        return process
+
+                    now = time.monotonic()
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+                    try:
+                        error = KeyboardInterrupt if signum == signal.SIGINT else SystemExit
+                        with self.assertRaises(error) as caught, sm.cancellation(), mock.patch.object(sm.subprocess, "Popen", start):
+                            sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 2, now + 1, LIMITS),
+                                               VALIDATOR)
+                        if signum != signal.SIGINT:
+                            self.assertEqual(caught.exception.code, 128 + signum)
+                        self.assertEqual(len(processes), 2)
+                        for process in processes:
+                            self.assertIsNotNone(process.returncode)
+                            self.assertFalse(alive(process.pid))
+                            with self.assertRaises(ChildProcessError):
+                                os.waitpid(process.pid, os.WNOHANG)
+                        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), mask)
+                    finally:
+                        for process in processes:
+                            process.kill()
+                            process.wait()
 
     @unittest.skipUnless(shutil.which("ps"), "needs ps to check owned process groups")
     def test_cancellation_cleans_a_stopped_server_group(self):
@@ -455,12 +529,21 @@ class StandIn(unittest.TestCase):
                 with self.subTest(entry=entry, signum=signum), tempfile.TemporaryDirectory() as directory:
                     exe = fake_server(directory, "stopped-group")
                     ready = Path(str(exe) + ".group")
+                    closing = Path(directory) / "closing"
                     script = textwrap.dedent("""\
                         import runpy, sys, time, unittest
+                        from pathlib import Path
                         sys.path.insert(0, %r)
                         import source_mutations as sm
+                        from worker import Session
                         from reply_shapes import ReplyValidator
                         mode = %r
+                        close_input = Session.close_input
+                        def close(session):
+                            session.deadlines.run = min(session.deadlines.run, time.monotonic() + 0.2)
+                            close_input(session)
+                            Path(%r).touch()
+                        Session.close_input = close
                         class Probe(unittest.TestCase):
                             def runTest(self):
                                 limits = sm.resolve_limits({"request_timeout": 30, "case_timeout": 60, "run_timeout": 60})
@@ -469,20 +552,27 @@ class StandIn(unittest.TestCase):
                                 try:
                                     session.call("initialize", {}, 1)
                                     key, deadline = session.request("textDocument/hover", {}, 2)
-                                    if mode != "closing":
+                                    if mode == "closing":
+                                        while not Path(%r).exists():
+                                            time.sleep(0.005)
+                                    else:
                                         session.collect({key: deadline})
                                 finally:
                                     session.close()
                         if mode in ("direct", "closing"):
                             with sm.cancellation():
                                 Probe().runTest()
-                        else:
+                        elif mode == "helpers":
                             unittest.main = lambda: unittest.TextTestRunner().run(unittest.TestSuite([Probe()]))
                             runpy.run_path(%r, run_name="__main__")
-                        """) % (str(Path(sm.__file__).parent), entry, str(exe), str(Path(__file__)))
-                    command = ([sys.executable, str(Path(sm.__file__)), str(exe), "--cases", "1", "--artifacts", directory]
-                               if entry == "harness" else [sys.executable, "-c", script])
-                    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        else:
+                            sys.argv = [%r, %r, "--cases", "1", "--artifacts", %r]
+                            runpy.run_path(sys.argv[0], run_name="__main__")
+                        """) % (str(Path(sm.__file__).parent), entry, str(closing), str(exe), str(closing) + ".start",
+                                  str(Path(__file__)),
+                                  str(Path(sm.__file__)), str(exe), directory)
+                    process = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE)
                     group = None
                     try:
                         deadline = time.monotonic() + 8
@@ -501,9 +591,18 @@ class StandIn(unittest.TestCase):
                         else:
                             self.fail("the stand-in server group did not stop before cancellation")
                         self.assertIn(owned["worker"], live)
+                        if entry == "closing":
+                            Path(str(closing) + ".start").touch()
+                            deadline = time.monotonic() + 2
+                            while not closing.exists() and process.poll() is None and time.monotonic() < deadline:
+                                time.sleep(0.005)
+                            self.assertTrue(closing.exists())
                         process.send_signal(signum)
-                        time.sleep(0.1)
-                        if process.poll() is None:
+                        deadline = time.monotonic() + 2
+                        while not closing.exists() and process.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.005)
+                        self.assertTrue(closing.exists())
+                        if entry != "closing" and process.poll() is None:
                             process.send_signal(signal.SIGHUP if signum == signal.SIGTERM else signal.SIGTERM)
                         stdout, stderr = process.communicate(timeout=8)
                         self.assertEqual(process.returncode, 128 + signum, (stdout, stderr))
@@ -606,7 +705,7 @@ class StandIn(unittest.TestCase):
         self.assertIn("malformed error for textDocument/rename: its message is not a string", result["error"])
 
     def test_writes_honor_request_deadlines(self):
-        limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 5, "run_timeout": 10})
+        limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 0.3, "run_timeout": 0.4})
         write = os.write
 
         def bounded_write(fd, data):
@@ -616,7 +715,7 @@ class StandIn(unittest.TestCase):
         for request in (False, True):
             with self.subTest(request=request), tempfile.TemporaryDirectory() as directory:
                 now = time.monotonic()
-                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 10, now + 5, limits),
+                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 0.4, now + 0.3, limits),
                                        VALIDATOR)
                 try:
                     with mock.patch.object(sm.select, "PIPE_BUF", 512), mock.patch.object(sm.os, "write", bounded_write):
@@ -921,17 +1020,17 @@ class RealServer(unittest.TestCase):
         stalled.mkdir()
         shutil.copy2(EXE, stalled / "virgil-lsp")
         shutil.copy2(STALL, stalled / "virgil-lsp-worker")
-        limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20})
+        limits = sm.resolve_limits({"request_timeout": 0.3, "case_timeout": 1, "run_timeout": 2})
         workers, original = [], sm.MutationSession.collect
 
         def collect(session, keys):
             # Once the stalling analysis has a worker, stop the server.
             if (int, 2) in keys and not workers:
-                deadline = time.monotonic() + 5
+                deadline = min(keys[(int, 2)], time.monotonic() + 1)
                 while not workers and time.monotonic() < deadline:
                     workers.extend(children(session.proc.pid))
                     time.sleep(0.02)
-                time.sleep(0.2)
+                session.deadlines.run = min(session.deadlines.run, time.monotonic() + 0.5)
                 os.kill(session.proc.pid, signal.SIGSTOP)
             return original(session, keys)
         with mock.patch.object(sm.MutationSession, "collect", collect):
