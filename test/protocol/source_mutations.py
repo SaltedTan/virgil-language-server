@@ -279,9 +279,6 @@ KNOWN_WORKER_FAILURES = (
      "source": lambda t: _nesting(t) >= DEEP},
     {"known": "crash-path row 25", "what": CRASHED, "trap": "!StackOverflow", "function": None,
      "source": lambda t: re.search(r"(?:(?:\.|[-+*/])\s*\w+\s*){%d}" % DEEP, t)},
-    # ADR-0004's decoded result budget, which a long chain's analysis can exceed.
-    {"known": "ADR-0004 result budget", "what": "sent a result exceeding the allocation budget and was replaced",
-     "trap": None, "function": None, "source": lambda t: re.search(r"(?:(?:\.|[-+*/])\s*\w+\s*){%d}" % DEEP, t)},
 )
 
 PASSING = ("pass", "known-worker-trap")

@@ -180,6 +180,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			item["endColumn"] = JsonValue.Int(d.endColumn);
 			item["kind"] = if(d.kind == null, JsonValue.Null, JsonValue.String(d.kind));
 			item["message"] = JsonValue.String(Strings.nonnull(d.message));
+			if (d.omitted > 0) item["omitted"] = JsonValue.Int(d.omitted);
 			diagnostics[i] = JsonValue.JObject(item);
 		}
 		obj["diagnostics"] = JsonValue.JArray(diagnostics);

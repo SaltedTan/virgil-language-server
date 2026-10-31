@@ -11,7 +11,7 @@ def X = [
 def base(count: int, site: bool) -> DataWriter {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(5);
 	for (i < 7) w.put_sleb32(-1);
-	w.put_sleb32(0); // diagnostics
+	w.put_sleb32(0).put_sleb32(0); // diagnostics, none capped
 	w.put_sleb32(1).put_sleb32(3).puta("abc"); // string table
 	w.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0);
 	w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(4).put_sleb32(0).put_sleb32(3).put_sleb32(0).put_sleb32(1).put_sleb32(0);

@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 15;
+	def PROTOCOL_VERSION = 16;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -161,8 +161,10 @@ component AnalysisWire {
 	}
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
-	// diagnostics, and, if {files} is not null, a string table, the distinct
-	// declarations, and each file's index. {files} must be the request's
+	// diagnostics, the diagnostics that more of their path's follow unsent
+	// (AnalysisDiagnostic.omitted), as a count, then each one's index and that
+	// number, in increasing order, and, if {files} is not null, a string
+	// table, the distinct declarations, and each file's index. {files} must be the request's
 	// distinct paths in request order, and a path is sent as its index there;
 	// every declaration is in one of them. A declaration is its kind, with
 	// FLAGGED if it is flagged (see AnalysisDeclaration.flagged), its
@@ -280,6 +282,13 @@ component AnalysisWire {
 				w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
 				putString(w, d.kind);
 				putString(w, d.message);
+			}
+			var capped = 0;
+			for (d in analysis.diagnostics) if (d.omitted > 0) capped++;
+			w.put_sleb32(capped);
+			for (i < analysis.diagnostics.length) {
+				var omitted = analysis.diagnostics[i].omitted;
+				if (omitted > 0) w.put_sleb32(i).put_sleb32(omitted);
 			}
 		};
 		if (files != null) return encodeOccurrences(prefix, analysis, files, calls, uses, scope, members, call);
@@ -718,6 +727,16 @@ component AnalysisWire {
 			d.beginOffset = beginOffset;
 			d.endOffset = endOffset;
 			diagnostics[i] = d;
+		}
+		// The diagnostics that more of their path's follow unsent. Each sets a
+		// field that its record's charge covers, so they allocate nothing.
+		var capped = r.readInt(), previous = -1;
+		if (capped < 0 || capped > diagnostics.length) r.fail("invalid count");
+		for (i = 0; r.ok() && i < capped; i++) {
+			var index = r.readInt(), omitted = r.readInt();
+			if (index <= previous || index >= diagnostics.length || omitted < 1) r.fail("invalid omitted diagnostics");
+			else diagnostics[index].omitted = omitted;
+			previous = index;
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];

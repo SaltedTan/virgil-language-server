@@ -314,7 +314,10 @@ component VirgilLsp {
 	// Writes everything an analysis reports, so that runs can be compared.
 	def writeReport(out: AnalysisReport, snapshot: AnalysisSnapshot, paths: Vector<string>, bindings: bool, display: bool) {
 		var buf = StringBuilder.new();
-		for (d in snapshot.diagnostics) buf.puts(d.toString()).ln();
+		for (d in snapshot.diagnostics) {
+			buf.puts(d.toString()).ln();
+			if (d.omitted > 0) buf.put2("%s: %d more errors in this file are not shown\n", if(d.path == null, "<program>", d.path), d.omitted);
+		}
 		if (snapshot.verified) buf.put1("ok: %d files parsed and verified\n", paths.length);
 		out.write(buf);
 		if (!(bindings || display) || !snapshot.parsed) return;

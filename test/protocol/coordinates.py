@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 15, self.hello
+        assert self.hello["protocol"] == 16, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -135,6 +135,15 @@ class Worker:
                                                 "beginOffset", "endOffset"),
                                                [reader.integer() for _ in range(6)])),
                                     kind=reader.string(), message=reader.string()))
+        # The diagnostics that more of their path's follow unsent: each its
+        # index, in increasing order, and how many follow, which only they
+        # have, as in the development reply.
+        previous = -1
+        for _ in range(reader.integer()):
+            index, omitted = reader.integer(), reader.integer()
+            assert previous < index < len(diagnostics) and omitted > 0, (index, omitted)
+            diagnostics[index]["omitted"] = omitted
+            previous = index
         declarations, occurrences, builtins, calls = [], [], [], []
         if flags & 4:
             # A path is an index into the request's distinct paths.
@@ -439,12 +448,20 @@ def main():
             evidence.append(dict(scenario='bounded malformed string replay', escapedQuotes=count,
                                  sourceBytes=len(text), elapsedSeconds=elapsed, result=result))
         check('worker recovery after malformed strings', 'component C {}', [])
+        # A field with an error for each operator (#393): the worker sends a
+        # file's first 100 and, with the last, how many more there were.
+        text = 'component C { var b = 0; def chain = c' + '+1' * 3000 + '; }\n'
+        result = worker.analyze([('chain.v3', text)])
+        diagnostics = result['diagnostics']
+        assert len(diagnostics) == 100 and diagnostics[-1]['omitted'] == 2901, diagnostics[-1]
+        assert all('omitted' not in d for d in diagnostics[:-1]), diagnostics
+        assert [d['beginOffset'] for d in diagnostics[1:]] == list(range(38, 38 + 2 * 99, 2)), diagnostics
     finally:
         worker.close()
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
             (args.evidence_dir / 'coordinates-live.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n')
-    print('Real worker offsets, language options, CLI coordinates, binding and display exports, stdio overlays, allocation guard, and malformed-string bounds passed.')
+    print('Real worker offsets, language options, CLI coordinates, binding and display exports, stdio overlays, allocation guard, malformed-string bounds, and the diagnostic cap passed.')
 
 
 if __name__ == '__main__':
