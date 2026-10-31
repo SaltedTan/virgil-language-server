@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+import reply_shapes
+from reply_shapes import ReplyValidator
 from shape_model import (EXTENSIONS, MODEL_SHA256, Model, REQUESTS,
                          TEXT, URI, generated_cases, session_validity,
                          unsupported_number)
@@ -30,6 +32,56 @@ METHOD_ERRORS = {
 }
 
 
+# The reply kinds each validated method must reach in a whole run: a populated,
+# source-backed reply and its lawful null or empty alternative. The model gives
+# initialize no null or empty alternative.
+REPLY_COVERAGE = {
+    "initialize": ("populated",),
+    "textDocument/hover": ("populated", "null"),
+    "textDocument/completion": ("populated", "empty"),
+    "textDocument/documentSymbol": ("populated", "empty"),
+    "workspace/symbol": ("populated", "empty"),
+    "textDocument/publishDiagnostics": ("populated", "empty"),
+}
+
+
+def reply_kind(value):
+    if value is None:
+        return "null"
+    # A completion list's items and diagnostics params' list decide emptiness.
+    if isinstance(value, dict):
+        value = value.get("items", value.get("diagnostics", value))
+    return "populated" if value else "empty"
+
+
+# The server never sends WorkspaceSymbol, so a workspace/symbol result must
+# also be the SymbolInformation[] alternative, a model type. Structures are
+# open, so the model's union alone accepts a SymbolInformation whose
+# location.range is malformed as WorkspaceSymbol's { uri } location.
+SYMBOL_INFORMATION = {"kind": "array", "element": {"kind": "reference", "name": "SymbolInformation"}}
+
+
+class Replies:
+    """Check successful replies of the bounded method set and count their kinds."""
+    def __init__(self, model):
+        self.validator = ReplyValidator(model)
+        self.seen = Counter()
+
+    def result(self, method, value):
+        self.validator.result(method, value)
+        if method == "workspace/symbol" and value is not None:
+            self.validator.check(SYMBOL_INFORMATION, value, method + " result (SymbolInformation[], as the server sends)")
+        self.seen[method, reply_kind(value)] += 1
+
+    def params(self, method, value):
+        self.validator.params(method, value)
+        self.seen[method, reply_kind(value)] += 1
+
+    def missing(self):
+        return ["%s %s" % (method, kind) for method, kinds in REPLY_COVERAGE.items()
+                for kind in kinds if not self.seen[method, kind]]
+
+
 def frame(message):
     payload = json.dumps(message, separators=(",", ":")).encode()
     return ("Content-Length: %d\r\n\r\n" % len(payload)).encode() + payload
@@ -41,9 +93,13 @@ class ShapeSession(Session):
     Match IDs by both type and value (Session.reply's dictionary alone cannot
     detect a server changing a numeric ID into a string). Sequential calls also
     let any unsolicited response fail immediately, including notification replies.
+    Successful results of the bounded method set, and diagnostics params, are
+    checked against the model as they arrive; error replies keep only the
+    envelope and error-code checks.
     """
-    def __init__(self, exe):
+    def __init__(self, exe, replies):
         super().__init__(exe, "--worker-timeout-ms=5000")
+        self.replies = replies
         self.frames = []
         self.expected = {}
         self.case = None
@@ -78,6 +134,10 @@ class ShapeSession(Session):
                 assert ("result" in msg) != ("error" in msg), ("invalid reply envelope", msg)
                 if "error" in msg:
                     assert type(msg["error"]["code"]) is int, msg
+                elif self.expected[key] in reply_shapes.RESULTS:
+                    self.replies.result(self.expected[key], msg["result"])
+            elif msg["method"] in reply_shapes.NOTIFICATIONS:
+                self.replies.params(msg["method"], msg.get("params"))
             return msg
 
     def reply(self, ident, timeout=10):
@@ -356,8 +416,10 @@ def version(s, mode, work):
     (fixture / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": [
         {"name": "shapes", "sources": ["*.v3"]}]}))
     uri = source.as_uri()
-    s.start({"processId": None, "rootUri": fixture.as_uri(), "capabilities": {
-        "workspace": {"workspaceEdit": {"documentChanges": True}}}})
+    caps = {"workspace": {"workspaceEdit": {"documentChanges": True}}}
+    if mode == "full-change-version-control":
+        caps["textDocument"] = {"completion": {"completionItem": {"insertReplaceSupport": True}}}
+    s.start({"processId": None, "rootUri": fixture.as_uri(), "capabilities": caps})
     open_document(s, uri, text)
     at = {"textDocument": {"uri": uri}, "position": {"line": 0, "character": text.index("foo")},
           "newName": "bar"}
@@ -380,6 +442,42 @@ def version(s, mode, work):
     if mode == "ranged-change-rejected":
         s.barrier()
         assert "incremental changes are not supported" in s.logs(), s.logs()
+    if mode == "full-change-version-control":
+        source_backed_replies(s, uri, text)
+
+
+def source_backed_replies(s, uri, text):
+    """Request populated, project-backed replies for ShapeSession's reply-shape checks.
+
+    Untitled documents get no semantic analysis, so generated hovers are null
+    and workspace symbols empty. This also requests their null and empty
+    alternatives, and diagnostics for a syntax error, without another case.
+    """
+    def at(character):
+        return {"textDocument": {"uri": uri}, "position": {"line": 0, "character": character}}
+    hover = s.success("textDocument/hover", at(text.index("foo")))
+    assert hover and "def foo(a: int) -> int" in hover["contents"]["value"], hover
+    assert s.success("textDocument/hover", at(text.index("{"))) is None
+    items = s.success("textDocument/completion", at(text.index("a;")))["items"]
+    assert "a" in [item["label"] for item in items], items
+    # A shape-valid TextEdit would still be wrong once insertReplaceSupport is negotiated.
+    assert all({"insert", "replace"} <= item["textEdit"].keys() for item in items), (
+        "negotiated insertReplaceSupport: expected InsertReplaceEdit", items)
+    # A declaration's own name has no candidates; this reply is not an oracle.
+    s.success("textDocument/completion", at(text.index("C")))
+    assert [sym["name"] for sym in s.success("workspace/symbol", {"query": "foo"})] == ["foo"]
+    assert s.success("workspace/symbol", {"query": "NoSuchSymbol"}) == []
+    broken = "untitled:shape-diagnostics"
+    open_document(s, broken, "component D { def y = ; }\n")
+    deadline = time.monotonic() + 10
+    while True:
+        msg = s.receive(deadline)
+        if msg.get("params", {}).get("uri") == broken:
+            break
+    diagnostics = msg["params"]["diagnostics"]
+    assert [d["code"] for d in diagnostics] == ["ParseError"], msg
+    s.send("textDocument/didClose", {"textDocument": {"uri": broken}}, request=False)
+    s.barrier()
 
 
 def oracle(s, case, work):
@@ -464,8 +562,8 @@ def failure(s, args, exc):
     print("artifacts: " + str(dest) + "\nrerun: " + command, file=sys.stderr)
 
 
-def run_group(group, args, work):
-    s = ShapeSession(args.exe)
+def run_group(group, args, work, replies):
+    s = ShapeSession(args.exe, replies)
     try:
         s.mark(group[0])
         standalone = group[0]["method"] in ("initialize", "@oracle")
@@ -514,6 +612,7 @@ def main():
             print(json.dumps(case, ensure_ascii=False))
         return 0
     started = time.monotonic()
+    replies = Replies(model)
     groups = []
     shared = {}
     for case in cases:
@@ -527,13 +626,19 @@ def main():
     args.artifacts.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fixtures-", dir=args.artifacts.resolve()) as temp:
         for group in groups:
-            if not run_group(group, args, Path(temp)):
+            if not run_group(group, args, Path(temp), replies):
                 return 1
+    missing = replies.missing()
+    if missing and not args.case:
+        print("FAIL reply shapes: no validated " + ", ".join(missing), file=sys.stderr)
+        return 1
     layers = Counter((c["schema_valid"], c["session_valid"], c["lifecycle_valid"]) for c in cases)
     print("protocol shapes: %d passed; seed=%d; budget=%d; model corpus=%d; sessions=%d; %.2fs" % (
         len(cases), args.seed, args.cases, corpus_size, len(groups), time.monotonic() - started))
     print("validity (schema/session/lifecycle): " + "; ".join(
         "%s=%d" % (key, value) for key, value in sorted(layers.items())))
+    print("reply shapes (method kind=count): " + "; ".join(
+        "%s %s=%d" % (method, kind, count) for (method, kind), count in sorted(replies.seen.items())))
     return 0
 
 
