@@ -57,6 +57,7 @@ FAKE = textwrap.dedent("""\
     import json, os, sys, time
     MODE = %r
     CAPABILITIES = %r
+    OBSERVER_DECLARATION = %r
     if "--version" in sys.argv:
         print("stand-in " + MODE)
         sys.exit(0)
@@ -88,6 +89,23 @@ FAKE = textwrap.dedent("""\
             write({"jsonrpc": "2.0", "id": ident, "result": {"capabilities": CAPABILITIES}})
         elif method == "shutdown":
             write({"jsonrpc": "2.0", "id": ident, "result": None})
+        elif MODE.startswith("restoration-") and str(ident).startswith("restored-"):
+            if method == "textDocument/hover":
+                result = {"contents": {"kind": "plaintext", "value": "stable(x: int) -> int"}}
+            elif method == "textDocument/definition":
+                result = {"uri": msg["params"]["textDocument"]["uri"], "range": OBSERVER_DECLARATION}
+            elif method in ("textDocument/prepareCallHierarchy", "textDocument/prepareTypeHierarchy"):
+                calls = method == "textDocument/prepareCallHierarchy"
+                oversized = MODE == ("restoration-large-call" if calls else "restoration-large-type")
+                result = [{"name": "stable" if calls else "MutationLeaf", "kind": 6 if calls else 5,
+                           "uri": msg["params"]["textDocument"]["uri"], "range": OBSERVER_DECLARATION,
+                           "selectionRange": OBSERVER_DECLARATION,
+                           "data": {"run": MODE, "values": [0] * (9000 if oversized else 7000)}}]
+            elif method == "callHierarchy/incomingCalls":
+                result = [{"from": {"name": "check"}}]
+            elif method == "typeHierarchy/supertypes":
+                result = [{"name": "Wrong" if MODE == "restoration-failure" else "MutationBase"}]
+            write({"jsonrpc": "2.0", "id": ident, "result": result})
         elif MODE == "hang":
             time.sleep(60)
         elif MODE == "eof":
@@ -119,7 +137,7 @@ FAKE = textwrap.dedent("""\
 
 def fake_server(directory, mode):
     path = Path(directory) / ("fake-" + mode)
-    path.write_text("#!%s\n%s" % (sys.executable, FAKE % (mode, CAPABILITIES)))
+    path.write_text("#!%s\n%s" % (sys.executable, FAKE % (mode, CAPABILITIES, sm.OBSERVER_DECLARATION)))
     path.chmod(0o755)
     return path
 
@@ -305,7 +323,10 @@ class Records(unittest.TestCase):
         stress["limits"]["source_bytes"] = 4 * 1024 * 1024
         unknown = json.loads(json.dumps(record))
         unknown["steps"][0]["texts"]["Other.v3"] = ""
-        for name, bad in (("large", large), ("many", many), ("stress cap", stress), ("unknown file", unknown)):
+        extra = json.loads(json.dumps(record))
+        extra["restore_followups"] = [{"id": "extra", "method": "callHierarchy/outgoingCalls", "params": {}}]
+        for name, bad in (("large", large), ("many", many), ("stress cap", stress), ("unknown file", unknown),
+                          ("extra restoration request", extra)):
             with self.subTest(name), self.assertRaises(ValueError):
                 sm.check_record(bad)
         # A stress record may use the stress bound.
@@ -481,18 +502,76 @@ class StandIn(unittest.TestCase):
 
     def test_writes_honor_request_deadlines(self):
         limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 5, "run_timeout": 10})
+        write = os.write
+
+        def bounded_write(fd, data):
+            self.assertLessEqual(len(data), 512)
+            return write(fd, data)
+
+        for request in (False, True):
+            with self.subTest(request=request), tempfile.TemporaryDirectory() as directory:
+                now = time.monotonic()
+                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 10, now + 5, limits),
+                                       VALIDATOR)
+                try:
+                    with mock.patch.object(sm.select, "PIPE_BUF", 512), mock.patch.object(sm.os, "write", bounded_write):
+                        s.request("textDocument/hover", {}, 2)
+                        started = time.monotonic()
+                        with self.assertRaises(sm.CaseFailure) as caught:
+                            params = {"text": "x" * (1024 * 1024)}
+                            if request:
+                                s.request("textDocument/hover", params, 3)
+                            else:
+                                s.send("textDocument/didChange", params, request=False)
+                        self.assertIn("request deadline", str(caught.exception))
+                        self.assertLess(time.monotonic() - started, 1)
+                finally:
+                    s.close()
+
+    def test_restoration_followups_are_saved_and_replayed(self):
+        limits = sm.resolve_limits({"requests": 15})
+        requests = [dict(single_case("")["steps"][0]["requests"][0], id=n) for n in range(2, 9)]
+        record = single_case("component Mutant {}\n", requests, limits=limits)
+        self.assertEqual(sm.fixed_requests(record), limits["requests"])
+        reserve = sm.failure_reserve(record)
+        budget = reserve + sm.RUN_BYTES
+        record["limits"]["artifact_bytes"] = budget
         with tempfile.TemporaryDirectory() as directory:
-            now = time.monotonic()
-            s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 10, now + 5, limits), VALIDATOR)
-            try:
-                s.request("textDocument/hover", {}, 2)
-                started = time.monotonic()
-                with self.assertRaises(sm.CaseFailure) as caught:
-                    s.send("textDocument/didChange", {"text": "x" * (1024 * 1024)}, request=False)
-                self.assertIn("request deadline", str(caught.exception))
-                self.assertLess(time.monotonic() - started, 1)
-            finally:
-                s.close()
+            work = Path(directory)
+            artifacts = sm.Artifacts(work / "out", budget, reserve)
+            self.assertTrue(artifacts.whole("cases/test/case.json", sm.dump(record), "failure"))
+            result, live, stamps, log = sm.run_case(record, fake_server(directory, "restoration-failure"),
+                                                   time.monotonic() + 30, work, VALIDATOR)
+            self.assertEqual(result["outcome"], "recovery-failure", result)
+            saved = sm.save_case(artifacts, record, result, live, stamps, log)
+            sm.write_run(artifacts, {"result": result})
+            persisted = json.loads(saved.read_text())
+            followups = persisted["restore_followups"]
+            self.assertEqual([r["method"] for r in followups],
+                             ["callHierarchy/incomingCalls", "typeHierarchy/supertypes"])
+            self.assertTrue(json.loads(saved.with_name("result.json").read_text())["record_saved"])
+            self.assertLessEqual(tree_size(work / "out"), budget)
+            sm.check_record(persisted)
+            exe = fake_server(directory, "restoration-changed")
+            replay_result, replay_transcript, _, _ = sm.run_case(persisted, exe, time.monotonic() + 30, work,
+                                                                VALIDATOR, replay=True)
+            self.assertEqual(replay_result["outcome"], "pass", replay_result)
+            self.assertEqual(quietly([str(exe), "--replay", str(saved), "--artifacts", directory]), 0)
+            for messages in (sent(live), sent(replay_transcript)):
+                root = messages[0]["params"]["rootUri"]
+                actual = [sm.templated(m, root) for m in messages if m.get("id") in
+                          ("restored-incoming", "restored-supertypes")]
+                self.assertEqual([sm.dump(m["params"]) for m in actual], [sm.dump(r["params"]) for r in followups])
+            self.assertLessEqual(tree_size(work / "replay-test"), budget)
+
+    def test_restoration_items_are_bounded(self):
+        for mode, count in (("restoration-large-call", 0), ("restoration-large-type", 1)):
+            with self.subTest(mode=mode):
+                record = single_case("component Mutant {}\n")
+                result, _, _ = self.run_fake(mode, record=record)
+                self.assertEqual(result["outcome"], "recovery-failure", result)
+                self.assertIn("restoration item larger than", result["error"])
+                self.assertEqual(len(record["restore_followups"]), count)
 
     def test_undocumented_error(self):
         result, _, _ = self.run_fake("undocumented-error")
@@ -579,6 +658,10 @@ class RealServer(unittest.TestCase):
             root = messages[0]["params"]["rootUri"]
             return [sm.templated(m, root) for m in messages]
         self.assertEqual(normalized(sent(live)), normalized(replayed))
+        for messages in (normalized(sent(live)), normalized(replayed)):
+            actual = [m for m in messages if m.get("id") in ("restored-incoming", "restored-supertypes")]
+            self.assertEqual([sm.dump(m["params"]) for m in actual],
+                             [sm.dump(r["params"]) for r in record["restore_followups"]])
         # A record must be the format this runner writes.
         saved.write_text(json.dumps(dict(record, format=sm.FORMAT + 1)))
         self.assertEqual(quietly([str(EXE), "--replay", str(saved), "--artifacts", str(self.directory)]), 2)

@@ -439,11 +439,16 @@ A run replaces `build/source-mutations/seed-<seed>/`
   classification; `transcript.jsonl`, the decoded messages with their times;
   and `stderr.txt`.
 
-A replay record holds the exact text of every file opened and every change,
-the project configuration, the `initialize` params, and each request's params
-as sent, including the items of follow-ups, with the project's URI as
-`${ROOT}`. `--replay CASE.json` runs that case in a new temporary project and
-sends the same messages; it needs neither the seed nor the seed files, and
+A format-2 replay record holds the exact text of every file opened and every
+change, the project configuration, the `initialize` params, and each request's params
+as sent, with the project's URI as `${ROOT}`. Mutation follow-ups are saved
+in each step's `followups`; restoration's incoming-call and supertype requests
+are saved in `restore_followups`, in send order, with their IDs, methods, and
+complete item params. Replay sends those saved params even if the new prepare
+replies return different items; it never substitutes new items. A record that
+ended before saving a restoration follow-up cannot replay beyond that point.
+Older record formats are rejected. `--replay CASE.json` runs that case in a
+new temporary project and sends the same messages; it needs neither the seed nor the seed files, and
 writes to `build/source-mutations/replay-<id>/`. Before starting a server,
 replay rejects, with exit status 2, a record that this runner could not have
 written: limits past the hard caps, which are the `--stress` ones only for a
@@ -456,7 +461,8 @@ results, transcripts, logs, and `run.json`. Records, results, and `run.json`
 are compact one-line JSON, counted as the bytes written. A run is rejected with exit status
 2 unless the budget holds the manifests, the complete replay record and
 result of the plan's largest failing case, with room for the 16 KiB items of
-as many follow-ups as its cap allows, and 64 KiB for `run.json`; those last two
+as many mutation follow-ups as its cap allows and both restoration follow-ups,
+and 64 KiB for `run.json`; those last two
 stay reserved. Passing cases may fill the rest, and their records and results
 are written whole or not at all; `run.json` lists the ones left out, which
 `--plan-only` recreates without follow-ups. A failing case's record and result

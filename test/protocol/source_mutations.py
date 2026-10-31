@@ -37,7 +37,7 @@ from worker import Session
 
 ROOT = Path(__file__).resolve().parents[2]
 SEEDS = ROOT / "test/fixtures/repair/cases"
-FORMAT = 1
+FORMAT = 2
 KIB, MIB = 1024, 1024 * 1024
 DEFAULT_SEED = 20261028
 ROOT_TOKEN = "${ROOT}"
@@ -662,7 +662,8 @@ def case_record(ident, files, steps, limits, stress=False, next_id=None):
         "format": FORMAT, "id": ident, "stress": stress, "limits": dict(limits), "config": CONFIG,
         "files": {OBSERVER_NAME: OBSERVER, **{n: files[n] for n in names}},
         "initialize": {"processId": None, "rootUri": ROOT_TOKEN, "capabilities": CLIENT_CAPABILITIES},
-        "steps": steps, "restore": {n: restored(i) for i, n in enumerate(names)}, "next_id": next_id,
+        "steps": steps, "restore": {n: restored(i) for i, n in enumerate(names)},
+        "restore_followups": [], "next_id": next_id,
     }
 
 
@@ -803,7 +804,7 @@ class MutationSession(Session):
                 self.buffer += chunk
             if writable:
                 try:
-                    view = view[os.write(fd, view[:4096]):]
+                    view = view[os.write(fd, view[:select.PIPE_BUF]):]
                 except OSError as exc:
                     raise CaseFailure("server-failure", "cannot write to the server (%s); %s" % (
                         exc, self.state())) from None
@@ -1150,6 +1151,19 @@ def drive(s, record, root_uri, result, replay):
                                           "contentChanges": [{"text": text}]}, request=False)
     def at(position):
         return {"textDocument": {"uri": root_uri + "/" + OBSERVER_NAME}, "position": position}
+
+    def followup(method, item, ident):
+        if not replay:
+            item = templated(item, root_uri)
+            if len(dump(item)) > ITEM_BYTES:
+                raise CaseFailure("recovery-failure", "restoration item larger than %d bytes for %s" % (
+                    ITEM_BYTES, method))
+            record["restore_followups"].append({"id": ident, "method": method, "params": {"item": item}})
+        saved = next((r for r in record["restore_followups"] if r["id"] == ident), None)
+        if saved is None:
+            raise CaseFailure("recovery-failure", "no saved params for %s" % ident)
+        return s.call(saved["method"], templated(saved["params"], root_uri, reverse=True), saved["id"])
+
     hover, definition, calls, types = s.collect(dict([
         s.request("textDocument/hover", at(OBSERVER_USE), "restored-hover"),
         s.request("textDocument/definition", at(OBSERVER_USE), "restored-definition"),
@@ -1170,13 +1184,13 @@ def drive(s, record, root_uri, result, replay):
     items = calls.get("result") or [{}]
     if items[0].get("name") != "stable":
         raise CaseFailure("recovery-failure", "no call hierarchy item after restoration: %s" % json.dumps(calls)[:400])
-    incoming = s.call("callHierarchy/incomingCalls", {"item": items[0]}, "restored-incoming")
+    incoming = followup("callHierarchy/incomingCalls", items[0], "restored-incoming")
     if [c["from"]["name"] for c in incoming.get("result") or []] != ["check"]:
         raise CaseFailure("recovery-failure", "wrong incoming calls after restoration: %s" % json.dumps(incoming)[:400])
     items = types.get("result") or [{}]
     if items[0].get("name") != "MutationLeaf":
         raise CaseFailure("recovery-failure", "no type hierarchy item after restoration: %s" % json.dumps(types)[:400])
-    supertypes = s.call("typeHierarchy/supertypes", {"item": items[0]}, "restored-supertypes")
+    supertypes = followup("typeHierarchy/supertypes", items[0], "restored-supertypes")
     if [t["name"] for t in supertypes.get("result") or []] != ["MutationBase"]:
         raise CaseFailure("recovery-failure", "wrong supertypes after restoration: %s" % json.dumps(supertypes)[:400])
     dirty = {uri: d for uri, d in s.diagnostics.items() if d}
@@ -1227,7 +1241,8 @@ def bounded(value):
 def failure_reserve(record):
     """Room for {record} as a failing case's complete replay record, with the
     follow-ups that its request cap leaves room for, and for its result."""
-    followups = record["limits"]["requests"] - fixed_requests(record)
+    followups = (record["limits"]["requests"] - request_count(record)
+                 + 2 - len(record["restore_followups"]))
     return len(dump(record)) + followups * (ITEM_BYTES + KIB) + RESULT_BYTES
 
 
@@ -1356,6 +1371,11 @@ def check_record(record):
         raise ValueError("the record must open the observer and restore each other file")
     if not 1 <= len(record["steps"]) <= MAX_STEPS:
         raise ValueError("a record has one to %d steps" % MAX_STEPS)
+    restoration = [("restored-incoming", "callHierarchy/incomingCalls"),
+                   ("restored-supertypes", "typeHierarchy/supertypes")]
+    saved = [(r["id"], r["method"]) for r in record["restore_followups"]]
+    if saved != restoration[:len(saved)]:
+        raise ValueError("restoration follow-ups must be the recorded incoming-call and supertype requests in order")
     for k, state in enumerate(source_states(record)):
         if set(state) != names or not all(isinstance(t, str) for t in state.values()):
             raise ValueError("source state %d changes a file that the case does not open" % k)
