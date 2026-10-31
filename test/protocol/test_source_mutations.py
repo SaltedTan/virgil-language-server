@@ -40,7 +40,7 @@ VALIDATOR = ReplyValidator()
 # The capabilities the built server advertises to CLIENT_CAPABILITIES.
 CAPABILITIES = {
     "callHierarchyProvider": True, "codeActionProvider": {"codeActionKinds": ["quickfix"]},
-    "completionProvider": {"triggerCharacters": ["."]}, "definitionProvider": True,
+    "completionProvider": {"resolveProvider": True, "triggerCharacters": ["."]}, "definitionProvider": True,
     "documentHighlightProvider": True, "documentSymbolProvider": True, "foldingRangeProvider": True,
     "hoverProvider": True, "implementationProvider": True, "inlayHintProvider": True,
     "referencesProvider": True, "renameProvider": {"prepareProvider": True}, "selectionRangeProvider": True,
@@ -366,7 +366,7 @@ class Coverage(unittest.TestCase):
     def test_drift(self):
         cases = {
             "monikerProvider": True,
-            "completionProvider": {"resolveProvider": True},
+            "completionProvider": {"triggerCharacters": ["."]},
             "renameProvider": True,
             "semanticTokensProvider": {"full": {"delta": True}},
             "workspace": {"fileOperations": {}},

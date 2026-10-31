@@ -130,6 +130,7 @@ class LspServer {
 		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
+		workspaceEvents.projectsChanged = completion.resolver.forget;
 		workspaceEvents.warn = projectWarning;
 		workspaceEvents.info = projectInfo;
 		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
@@ -195,6 +196,7 @@ class LspServer {
 	private def configChanged(c: WorkspaceConfig) {
 		rename.configChanged();
 		invalidateQueries();
+		completion.resolver.forget();
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 		configurationChanged = true;
@@ -246,6 +248,7 @@ class LspServer {
 		inlayHints.documentClosed(doc.uri);
 		semanticTokens.documentClosed(doc.uri);
 		invalidateQueries();
+		completion.resolver.closed(doc.uri);
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
@@ -384,7 +387,7 @@ class LspServer {
 		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
 		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
 		var textDocument = member(member(params, "capabilities"), "textDocument");
-		hover.markdown = acceptsMarkdown(member(textDocument, "hover"));
+		hover.markdown = acceptsMarkdown(member(textDocument, "hover"), "contentFormat");
 		var parameterInformation = member(member(member(textDocument, "signatureHelp"), "signatureInformation"), "parameterInformation");
 		signatureHelp.labelOffsets = parameterInformation != null
 			&& parameterInformation["labelOffsetSupport"] == JsonValue.Bool(true);
@@ -403,6 +406,7 @@ class LspServer {
 		completion.clientKinds = LspSymbolKind.completions(member(completionCapability, "completionItemKind"));
 		completion.insertReplace = completionItem != null
 			&& completionItem["insertReplaceSupport"] == JsonValue.Bool(true);
+		completion.resolver.markdown = acceptsMarkdown(completionItem, "documentationFormat");
 		var workspaceEdit = member(member(member(params, "capabilities"), "workspace"), "workspaceEdit");
 		rename.documentChanges = workspaceEdit != null && workspaceEdit["documentChanges"] == JsonValue.Bool(true);
 		codeActions.documentChanges = rename.documentChanges;
@@ -424,9 +428,11 @@ class LspServer {
 		sync["save"] = JsonValue.JObject(save);
 		var capabilities = Strings.newMap<JsonValue>();
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
-		// "." asks for the receiver's members (docs/architecture.md#member-completion).
+		// "." asks for the receiver's members (docs/architecture.md#member-completion),
+		// and an item's documentation comes from completionItem/resolve.
 		var completionOptions = Strings.newMap<JsonValue>();
 		completionOptions["triggerCharacters"] = JsonValue.JArray([JsonValue.String(".")]);
+		completionOptions["resolveProvider"] = JsonValue.Bool(true);
 		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["foldingRangeProvider"] = JsonValue.Bool(true);
@@ -479,11 +485,12 @@ class LspServer {
 		if (obj == null || !JsonValue.JObject.?(obj[key])) return null;
 		return JsonValue.JObject.!(obj[key]).v;
 	}
-	// False only if the hover client capabilities {hover} list content
-	// formats, but not markdown.
-	private def acceptsMarkdown(hover: HashMap<string, JsonValue>) -> bool {
-		if (hover == null || !JsonValue.JArray.?(hover["contentFormat"])) return true;
-		for (format in JsonValue.JArray.!(hover["contentFormat"]).v) {
+	// False only if the client capabilities {obj} list content formats as
+	// {key}, as hover's contentFormat and a completion item's
+	// documentationFormat do, but not markdown.
+	private def acceptsMarkdown(obj: HashMap<string, JsonValue>, key: string) -> bool {
+		if (obj == null || !JsonValue.JArray.?(obj[key])) return true;
+		for (format in JsonValue.JArray.!(obj[key]).v) {
 			if (JsonValue.String.?(format) && Strings.equal(JsonValue.String.!(format).v, "markdown")) return true;
 		}
 		return false;

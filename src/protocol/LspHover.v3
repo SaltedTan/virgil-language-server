@@ -41,7 +41,7 @@ class LspHover {
 		if (first == null) return JsonValue.Null;
 		var texts = if(second != null, [first, second], [first]);
 		var value = render(texts), doc = if(d != null, documentation(at, j, text, d));
-		if (doc != null) value = Strings.format2("%s\n\n%s", value, if(markdown, prose(doc), doc));
+		if (doc != null) value = Strings.format2("%s\n\n%s", value, if(markdown, LspDocumentation.prose(doc), doc));
 		var contents = Strings.newMap<JsonValue>(), result = Strings.newMap<JsonValue>();
 		contents["kind"] = JsonValue.String(if(markdown, "markdown", "plaintext"));
 		contents["value"] = JsonValue.String(value);
@@ -82,6 +82,11 @@ class LspHover {
 		}
 		return buf.toString();
 	}
+}
+
+// A declaration's leading comment as documentation, which hover and
+// completionItem/resolve show (docs/architecture.md#hover).
+component LspDocumentation {
 	// {doc}, a comment's lines, as Markdown that shows them as prose. Each
 	// line loses its indentation, which could make it a code block, and ends
 	// with a hard line break if the next line has text, so that lines such as
@@ -91,7 +96,7 @@ class LspHover {
 	// strikethrough, and the first character of a line, or an ordered list's
 	// delimiter, that could make the line a heading, a quote, a list item, or
 	// a thematic break (CommonMark 0.31, 2.4). No text can reach the code
-	// blocks before it.
+	// blocks that hover puts before it.
 	def prose(doc: string) -> string {
 		var buf = StringBuilder.new(), i = 0, first = true, previous = false;
 		while (i < doc.length) {

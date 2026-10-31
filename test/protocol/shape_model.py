@@ -13,7 +13,7 @@ MODEL_SHA256 = "c207890d9e0f54d8f9e462a924670f563423ec9af90a0a369645ff55384c8d6d
 URI = "untitled:protocol-shapes"
 TEXT = "component C { def x = 1; }\n"
 REQUESTS = (
-    "initialize", "shutdown", "textDocument/completion",
+    "initialize", "shutdown", "textDocument/completion", "completionItem/resolve",
     "textDocument/definition", "textDocument/typeDefinition", "textDocument/documentHighlight", "textDocument/documentSymbol",
     "textDocument/foldingRange",
     "textDocument/selectionRange",
@@ -276,6 +276,8 @@ def session_validity(method, params):
         return False, "analysis requires nonempty local-file URIs; generated URIs are untitled"
     if method == "textDocument/rename":
         return False, "versioned workspace edits were not negotiated"
+    if method == "completionItem/resolve" and "data" in params:
+        return False, "an item's data must be the server's own, from textDocument/completion"
     if method in ("typeHierarchy/supertypes", "typeHierarchy/subtypes"):
         return False, "an item's data must be the server's own, from prepareTypeHierarchy"
     if method in ("callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"):

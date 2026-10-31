@@ -1,0 +1,637 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// completionItem/resolve: an item's documentation from the declarations that
+// the last completion list with names keeps, on the real worker. Each session
+// writes its project file and sources into the build's
+// project-fixtures/completion-resolve directory; Main.v3 is open in the
+// editor, and Lib.v3 is closed unless a test opens it. "$" marks the cursor in the texts below, and
+// is removed before they are sent. LspCompletionScopeTest covers the lists.
+def T = UnitTests.register;
+def X = [
+	T("LspCompletionResolve:items", test_items),
+	T("LspCompletionResolve:fingerprints", test_fingerprints),
+	T("LspCompletionResolve:names", test_names),
+	T("LspCompletionResolve:members", test_members),
+	T("LspCompletionResolve:builtins", test_builtins),
+	T("LspCompletionResolve:insert_replace", test_insert_replace),
+	T("LspCompletionResolve:formats", test_formats),
+	T("LspCompletionResolve:repeated", test_repeated),
+	T("LspCompletionResolve:reply_size", test_reply_size),
+	T("LspCompletionResolve:replaced", test_replaced),
+	T("LspCompletionResolve:byte_cap", test_byte_cap),
+	T("LspCompletionResolve:malformed", test_malformed),
+	T("LspCompletionResolve:unknown", test_unknown),
+	T("LspCompletionResolve:typed", test_typed),
+	T("LspCompletionResolve:declaring_edited", test_declaring_edited),
+	T("LspCompletionResolve:closed_file_changed", test_closed_file_changed),
+	T("LspCompletionResolve:closed_file_opened", test_closed_file_opened),
+	T("LspCompletionResolve:close", test_close),
+	T("LspCompletionResolve:project_change", test_project_change),
+	T("LspCompletionResolve:cancel", test_cancel),
+	T("LspCompletionResolve:repaired", test_repaired),
+	T("LspCompletionResolve:restart", test_restart),
+	()
+];
+
+def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"r\",\"sources\":[\"Main.v3\",\"Lib.v3\"]}]}";
+def LIB = "// A shape with sides.\nclass Shape(sides: int) {\n\t// The area, in square units.\n\tvar area: int;\n\t// Scales the area by {factor}.\n\tdef scale(factor: int) -> int { return area * factor; }\n}\n// Counts *things*.\ncomponent Counter {\n\t// The current count.\n\tdef count = 3;\n}\n";
+def MAIN_HEAD = "// The entry point.\ncomponent Main {\n\t// Adds one.\n\tdef inc(x: int) -> int { return x + 1; }\n\tdef run(s: Shape) -> int {\n\t\tvar local = 1;\n";
+// Main.v3 on disk and in the editor.
+def MAIN = main("\t\treturn local;\n");
+// Two cursors in Main.v3 as it is, which parses as typed.
+def AS_TYPED = main("\t\treturn lo$cal;\n");
+def AT_END = main("\t\treturn local$;\n");
+// Names after the "lo" of "return lo", and the text once the "c" after it
+// is typed.
+def PREFIX = main("\t\treturn lo$;\n");
+def TYPED = main("\t\treturn loc;\n");
+// A cursor where Main.v3 doesn't parse, so it is repaired.
+def REPAIRED = main("\t\tlo$\n\t\treturn local;\n");
+// After the "." of a Shape, and of a string, as typed.
+def MEMBER = main("\t\treturn s.$area;\n");
+def BUILTIN_MEMBER = main("\t\treturn \"ab\".$length;\n");
+// Lib.v3 with two classes whose fields have the same name, and Main.v3 after
+// the "." of each.
+def VALUES = Strings.format2("%s%s", LIB,
+	"// An alpha.\nclass Alpha {\n\t// The alpha value.\n\tvar value: int;\n}\n// A bravo.\nclass Bravo {\n\t// The bravo value.\n\tvar value: int;\n}\n");
+def ALPHA = main("\t\tvar a: Alpha;\n\t\treturn a.$value;\n");
+def BRAVO = main("\t\tvar b: Bravo;\n\t\treturn b.$value;\n");
+
+def main(body: string) -> string {
+	return Strings.format3("%s%s%s", MAIN_HEAD, body, "\t}\n}\n");
+}
+def session(t: Tester, completionItem: string) -> RenameTestSession {
+	var s = RenameTestSession.new("completion-resolve", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Lib.v3", LIB)], true, null, t);
+	if (completionItem != null) s.withCompletionItem(t, completionItem);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	return s;
+}
+// The text and the cursor's offset of {marked}.
+def unmark(marked: string) -> (string, int) {
+	var cursor = 0;
+	while (marked[cursor] != '$') cursor++;
+	return (Arrays.concat(Arrays.range(marked, 0, cursor), Arrays.range(marked, cursor + 1, marked.length)), cursor);
+}
+// Requests a completion at the "$" in {marked}, which becomes Main.v3's next
+// version unless it is the current text, and returns its id.
+def request(t: Tester, s: RenameTestSession, marked: string) -> int {
+	var u = unmark(marked), f = s.file("Main.v3");
+	if (!Strings.equal(f.text, u.0)) s.change("Main.v3", f.version + 1, u.0);
+	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	return s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character));
+}
+// The CompletionList at the "$" in {marked}, once answered.
+def complete(t: Tester, s: RenameTestSession, marked: string) -> JsonValue {
+	var id = request(t, s, marked);
+	s.settle();
+	t.asserti(1, s.count(id));
+	return s.result(t, id);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def items(list: JsonValue) -> Array<JsonValue> {
+	var v = member(list, "items");
+	return if(JsonValue.JArray.?(v), JsonValue.JArray.!(v).v, []);
+}
+def label(item: JsonValue) -> string {
+	var v = member(item, "label");
+	return if(JsonValue.String.?(v), JsonValue.String.!(v).v, "<none>");
+}
+// The item of {list} labelled {name}.
+def named(t: Tester, list: JsonValue, name: string) -> JsonValue {
+	for (item in items(list)) if (Strings.equal(label(item), name)) return item;
+	t.fail1("no item %s", name);
+	return JsonValue.Null;
+}
+def hasData(item: JsonValue) -> bool {
+	return JsonValue.JObject.?(item) && JsonValue.JObject.!(item).v.has("data");
+}
+// The integers of {item}'s data.
+def data(item: JsonValue) -> Array<int> {
+	var v = JsonValue.JArray.!(member(item, "data")).v, result = Array<int>.new(v.length);
+	for (i < v.length) result[i] = JsonValue.Int.!(v[i]).v;
+	return result;
+}
+// {item} with the data {id}, {index}, and {fingerprint}.
+def withData(item: JsonValue, id: int, index: int, fingerprint: int) -> JsonValue {
+	var forged = copy(item);
+	forged["data"] = JsonValue.JArray([JsonValue.Int(id), JsonValue.Int(index), JsonValue.Int(fingerprint)]);
+	return JsonValue.JObject(forged);
+}
+def render(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).toString();
+}
+// A copy of {v}'s object, which a reply can't change.
+def copy(v: JsonValue) -> HashMap<string, JsonValue> {
+	return JsonValue.JObject.!(JsonRpcJsonParser.new(render(v)).parseDocument()).v;
+}
+// The reply to a resolve request whose params are the JSON {params}.
+def raw(s: RenameTestSession, params: string) -> HashMap<string, JsonValue> {
+	var message = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"completionItem/resolve\",\"params\":%s}", s.nextId++, params);
+	return JsonValue.JObject.!(JsonRpcJsonParser.new(s.server.handle(message)).parseDocument()).v;
+}
+// The result of resolving {item}.
+def resolve(t: Tester, s: RenameTestSession, item: JsonValue) -> JsonValue {
+	if (!JsonValue.JObject.?(item)) return JsonValue.Null;
+	var reply = raw(s, render(item));
+	if (reply.has("error")) t.fail1("the resolve failed: %s", render(reply["error"]));
+	return reply["result"];
+}
+// The documentation of {result}, as "kind: value", or null.
+def documentation(result: JsonValue) -> string {
+	var doc = member(result, "documentation");
+	if (!JsonValue.JObject.?(doc)) return null;
+	return Strings.format2("%s: %s", JsonValue.String.!(member(doc, "kind")).v, JsonValue.String.!(member(doc, "value")).v);
+}
+// Resolves {list}'s item {name}, which must come back with documentation
+// {expected}, or with none if it is null, and otherwise as it was sent.
+def expect(t: Tester, s: RenameTestSession, list: JsonValue, name: string, expected: string) {
+	var item = named(t, list, name), result = resolve(t, s, item), doc = documentation(result);
+	if (expected == null) {
+		if (doc != null) t.fail2("%s documented: %s", name, doc);
+		t.assert_string(render(item), render(result));
+		return;
+	}
+	if (doc == null) return t.fail1("%s undocumented", name);
+	t.assert_string(expected, doc);
+	var sent = copy(item);
+	sent["documentation"] = member(result, "documentation");
+	t.assert_string(render(JsonValue.JObject(sent)), render(result));
+}
+// {item} must resolve to itself.
+def unchanged(t: Tester, s: RenameTestSession, item: JsonValue) {
+	t.assert_string(render(item), render(resolve(t, s, item)));
+}
+// Sends the notification {method} with the JSON params {params}.
+def notify(s: RenameTestSession, method: string, params: string) {
+	s.server.handle(Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"%s\",\"params\":%s}", method, params));
+}
+// Main.v3's next version is {text}.
+def edit(s: RenameTestSession, text: string) {
+	s.change("Main.v3", s.file("Main.v3").version + 1, text);
+}
+// {list} with each item's data as [0, its index, 0], whatever its list's
+// id and its fingerprint.
+def anonymous(list: JsonValue) -> string {
+	var parsed = JsonValue.JObject(copy(list));
+	for (item in items(parsed)) {
+		var o = JsonValue.JObject.!(item).v;
+		if (o.has("data")) o["data"] = JsonValue.JArray([JsonValue.Int(0), JsonValue.Int(data(item)[1]), JsonValue.Int(0)]);
+	}
+	return render(parsed);
+}
+def errorCode(reply: HashMap<string, JsonValue>) -> int {
+	var code = member(reply["error"], "code");
+	return if(JsonValue.Int.?(code), JsonValue.Int.!(code).v, 0);
+}
+
+// Which items get data, and what the list is charged, without a worker.
+def test_items(t: Tester) {
+	var main = "/w/Main.v3", lib = "/w/Lib.v3", sub = "/w/Sub.v3";
+	var mainUri = "file:///w/Main.v3", libUri = "file:///w/Lib.v3";
+	var snapshot = AnalysisSnapshot.new(1, [main, lib, sub], true, true, [], null, false, []);
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), mainText = "component Main { }\n";
+	store.open(mainUri, "virgil", 1, mainText);
+	var versions = [AnalysisDocumentVersion.new(mainUri, 1, store.overlay(mainUri).identity),
+		AnalysisDocumentVersion.new(libUri, 0, null), AnalysisDocumentVersion.new("file:///w/Sub.v3", 0, null)];
+	versions[1].hash = 0x0123456789ABCDEFul;
+	versions[2].substitution = AnalysisSubstitution.new("component Sub { }\n", null);
+	// An item's data: the list's id, the item's index, and its fingerprint,
+	// from its file's hash, its offset, and its label.
+	var expected = fun (id: int, item: int, hash: u64, d: AnalysisDeclaration) => Strings.format3("[%d,%d,%d]", id, item,
+		LspItemFingerprint.of(hash, d.range.beginOffset, d.name));
+	var decl = fun (kind: AnalysisDeclKind, name: string, path: string, begin: int) => AnalysisDeclaration.new(kind, name,
+		AnalysisRange.new(path, 1, begin + 1, 1, begin + 1 + name.length, begin, begin + name.length));
+	var A = decl(AnalysisDeclKind.CLASS, "A", lib, 6), bee = decl(AnalysisDeclKind.METHOD, "bee", Arrays.dup(lib), 20);
+	var C = decl(AnalysisDeclKind.FIELD, "C", lib, 40), dd = decl(AnalysisDeclKind.FIELD, "dd", lib, 50);
+	var base = LspResolveLimits.LIST_BYTES + mainUri.length;
+	var two = base + LspResolveLimits.FILE_BYTES + libUri.length + 2 * LspResolveLimits.ITEM_BYTES + "A".length + "bee".length;
+	var cap = two + LspResolveLimits.ITEM_BYTES + 1;
+	var list = LspCompletionDeclarations.new(7, mainUri, null, null, cap);
+	var docs = LspCompletionItems.new(store, list, snapshot, versions, 0);
+	t.asserti(base, list.bytes);
+	// Nothing for "this" and builtins, which have no declaration, for a local
+	// or a parameter, for a declaration without source offsets, for the
+	// repaired request document, for a substituted file, or for a file the
+	// analysis didn't have.
+	var none = [
+		docs.add(null, "this"),
+		docs.add(decl(AnalysisDeclKind.LOCAL, "x", lib, 0), "x"),
+		docs.add(decl(AnalysisDeclKind.PARAMETER, "p", lib, 0), "p"),
+		docs.add(decl(AnalysisDeclKind.TYPE_PARAM, "T", lib, 0), "T"),
+		docs.add(AnalysisDeclaration.new(AnalysisDeclKind.CLASS, "N", AnalysisRange.new(lib, 1, 1, 1, 2, -1, -1)), "N"),
+		docs.add(decl(AnalysisDeclKind.METHOD, "m", main, 30), "m"),
+		docs.add(decl(AnalysisDeclKind.COMPONENT, "Sub", sub, 10), "Sub"),
+		docs.add(decl(AnalysisDeclKind.CLASS, "O", "/w/Other.v3", 6), "O")
+	];
+	for (v in none) t.assert_string("null", render(v));
+	t.asserti(base, list.bytes);
+	// The first item from a file adds it to the list; a second item from it,
+	// whose path is an equal string, is charged only for itself.
+	t.assert_string(expected(7, 0, versions[1].hash, A), render(docs.add(A, "A")));
+	t.assert_string(expected(7, 1, versions[1].hash, bee), render(docs.add(bee, "bee")));
+	t.asserti(two, list.bytes);
+	t.asserti(1, list.files.length);
+	t.assert_string(libUri, list.files[0].uri);
+	t.assert(list.hashes[0] == versions[1].hash, "a closed file's hash is its stamp's");
+	t.asserti(0, list.sources[1]);
+	t.assert(list.kinds[1] == AnalysisDeclKind.METHOD, "the item's kind");
+	t.asserti(20, list.begins[1]);
+	t.asserti(23, list.ends[1]);
+	// An item that would pass the cap gets no data, and neither does any later
+	// item, even one that fits.
+	t.assert_string("null", render(docs.add(dd, "dd")));
+	t.assert_string("null", render(docs.add(C, "C")));
+	t.asserti(two, list.bytes);
+	t.asserti(2, list.labels.length);
+	// One that fits exactly is added.
+	list = LspCompletionDeclarations.new(8, mainUri, null, null, cap);
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	t.assert_string(expected(8, 0, versions[1].hash, A), render(docs.add(A, "A")));
+	t.assert_string(expected(8, 1, versions[1].hash, bee), render(docs.add(bee, "bee")));
+	t.assert_string(expected(8, 2, versions[1].hash, C), render(docs.add(C, "C")));
+	t.asserti(cap, list.bytes);
+	// Without the request document excluded, its items have data too.
+	list = LspCompletionDeclarations.new(9, mainUri, null, null, LspResolveLimits.MAX_BYTES);
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	var m = decl(AnalysisDeclKind.METHOD, "m", main, 30);
+	// An open file's hash is that of its analyzed text, the open overlay.
+	t.assert_string(expected(9, 0, LspAnalysisCapture.hash(mainText), m), render(docs.add(m, "m")));
+	// Once that overlay changed, its items have no data.
+	store.change(mainUri, 2, "component Main { def m() { } }\n");
+	list = LspCompletionDeclarations.new(10, mainUri, null, null, LspResolveLimits.MAX_BYTES);
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	t.assert_string("null", render(docs.add(m, "m")));
+}
+// A fingerprint is a non-negative 31-bit integer that each of the file's
+// hash, the offset, and the label change.
+def test_fingerprints(t: Tester) {
+	var hashes = [0ul, 1ul, 0x0123456789ABCDEFul, 0xFFFFFFFFFFFFFFFFul], offsets = [0, 1, 255, 256, 65536, 2147483647];
+	var labels = ["", "a", "b", "value", "Value"], seen = Vector<int>.new();
+	for (h in hashes) {
+		for (o in offsets) {
+			for (l in labels) {
+				var f = LspItemFingerprint.of(h, o, l);
+				if (f < 0) t.fail1("negative fingerprint %d", f);
+				t.asserti(f, LspItemFingerprint.of(h, o, Arrays.dup(l)));
+				for (i < seen.length) {
+					if (seen[i] == f) t.fail3("fingerprint %d repeated for offset %d and label %s", f, o, l);
+				}
+				seen.put(f);
+			}
+		}
+	}
+}
+// The declarations in scope that can have a comment have data, in the
+// closed Lib.v3 and in Main.v3, which was analyzed as typed; resolving one
+// adds its comment as Markdown, and nothing else.
+def test_names(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	expect(t, s, list, "Counter", "markdown: Counts \\*things\\*.");
+	expect(t, s, list, "inc", "markdown: Adds one.");
+	expect(t, s, list, "Main", "markdown: The entry point.");
+	// A method without a comment has data, and gets no documentation.
+	t.assert(hasData(named(t, list, "run")), "run has data");
+	expect(t, s, list, "run", null);
+	// A local, a parameter, "this", a builtin type, and a keyword can't have
+	// a comment, so they have no data, and come back as sent.
+	for (name in ["local", "s", "this", "int", "true"]) {
+		var item = named(t, list, name);
+		if (hasData(item)) t.fail1("%s has data", name);
+		unchanged(t, s, item);
+	}
+	s.server.close();
+}
+// A member's declaration documents it; a class's header parameter has none.
+def test_members(t: Tester) {
+	var s = session(t, null), list = complete(t, s, MEMBER);
+	expect(t, s, list, "area", "markdown: The area, in square units.");
+	expect(t, s, list, "scale", "markdown: Scales the area by {factor}.");
+	t.assert(hasData(named(t, list, "sides")), "sides has data");
+	expect(t, s, list, "sides", null);
+	s.server.close();
+}
+// A builtin member has no declaration, so it has no data.
+def test_builtins(t: Tester) {
+	var s = session(t, null), list = complete(t, s, BUILTIN_MEMBER), length = named(t, list, "length");
+	t.assert(!hasData(length), "length has no data");
+	unchanged(t, s, length);
+	s.server.close();
+}
+// The item comes back with both of its edit ranges as they were sent.
+def test_insert_replace(t: Tester) {
+	var s = session(t, "{\"insertReplaceSupport\":true}"), list = complete(t, s, AS_TYPED);
+	var edit = member(named(t, list, "Shape"), "textEdit");
+	t.assert(JsonValue.JObject.?(member(edit, "insert")) && JsonValue.JObject.?(member(edit, "replace")), "two ranges");
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// A client whose documentationFormat lists formats without markdown gets
+// plain text; one that lists markdown, or none, gets Markdown.
+def test_formats(t: Tester) {
+	var s = session(t, "{\"documentationFormat\":[\"plaintext\"]}"), list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Counter", "plaintext: Counts *things*.");
+	s.server.close();
+	s = session(t, "{\"documentationFormat\":[\"plaintext\",\"markdown\"]}");
+	expect(t, s, complete(t, s, AS_TYPED), "Counter", "markdown: Counts \\*things\\*.");
+	s.server.close();
+	s = session(t, "{\"documentationFormat\":[]}");
+	expect(t, s, complete(t, s, AS_TYPED), "Counter", "plaintext: Counts *things*.");
+	s.server.close();
+}
+// Resolving again gives the same item, without an analysis, and so does a
+// version-only change, which keeps the text and the list.
+def test_repeated(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED), shape = named(t, list, "Shape");
+	var analyses = s.server.completion.analyses, first = render(resolve(t, s, shape));
+	t.assert_string(first, render(resolve(t, s, shape)));
+	s.versionOnly("Main.v3", 2);
+	t.assert_string(first, render(resolve(t, s, shape)));
+	// A request at the same cursor gets the same reply again, whose items
+	// still resolve.
+	t.assert_string(render(list), render(complete(t, s, AS_TYPED)));
+	t.assert_string(first, render(resolve(t, s, shape)));
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+// The reply doesn't depend on the comments, but for its list id and the
+// fingerprints of the changed file's items.
+def test_reply_size(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED);
+	var longer = StringBuilder.new();
+	for (i < 40) longer.puts("// A shape with sides, which this line describes at length.\n");
+	var lib = Strings.format2("%s%s", longer.toString(), Arrays.range(LIB, "// A shape with sides.\n".length, LIB.length));
+	s.write(t, "Lib.v3", lib);
+	s.reportChanged("Lib.v3");
+	var again = complete(t, s, AS_TYPED);
+	t.assert_string(anonymous(list), anonymous(again));
+	t.assert(data(named(t, list, "Shape"))[2] != data(named(t, again, "Shape"))[2], "another fingerprint");
+	var doc = documentation(resolve(t, s, named(t, again, "Shape")));
+	t.assert(doc != null && doc.length > 40 * 50, "the longer comment");
+	s.write(t, "Lib.v3", LIB);
+	s.server.close();
+}
+// A list with names at another cursor replaces the first, whose items then
+// come back as they were sent.
+def test_replaced(t: Tester) {
+	var s = session(t, null), first = complete(t, s, AS_TYPED), second = complete(t, s, AT_END);
+	unchanged(t, s, named(t, first, "Shape"));
+	expect(t, s, second, "Shape", "markdown: A shape with sides.");
+	// A list without names, here in a comment of the same text, doesn't
+	// replace it.
+	var none = complete(t, s, Strings.format1("// The en$%s", Arrays.range(MAIN, "// The en".length, MAIN.length)));
+	t.asserti(0, items(none).length);
+	expect(t, s, second, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// The items with data are a prefix of those that could have it, in the
+// list's order, as many as the byte cap holds exactly; the rest of the list
+// is as without the cap.
+def test_byte_cap(t: Tester) {
+	var s = session(t, null), full = complete(t, s, AS_TYPED), resolver = s.server.completion.resolver;
+	// What the list is charged with its first k items with data.
+	var kept = resolver.latest, n = kept.labels.length, charged = Array<int>.new(n + 1);
+	t.assert(n >= 3, "items with data");
+	var seen = Array<bool>.new(kept.files.length);
+	charged[0] = LspResolveLimits.LIST_BYTES + kept.uri.length;
+	for (k < n) {
+		var slot = kept.sources[k];
+		charged[k + 1] = charged[k] + LspResolveLimits.ITEM_BYTES + kept.labels[k].length
+			+ if(!seen[slot], LspResolveLimits.FILE_BYTES + kept.files[slot].uri.length);
+		seen[slot] = true;
+	}
+	t.asserti(charged[n], kept.bytes);
+	var labels = Vector<string>.new();
+	for (item in items(full)) labels.put(label(item));
+	// A cap that holds the first n - 1 exactly, and one a byte smaller.
+	for (c in [(charged[n - 1], n - 1), (charged[n - 1] - 1, n - 2)]) {
+		// Another list first, so that the next request isn't the cached reply.
+		complete(t, s, AT_END);
+		resolver.maxBytes = c.0;
+		var capped = complete(t, s, AS_TYPED), all = items(capped), k = 0;
+		t.asserti(labels.length, all.length);
+		for (i < all.length) {
+			t.assert_string(labels[i], label(all[i]));
+			if (!hasData(all[i])) continue;
+			if (k < n) t.assert_string(kept.labels[k], label(all[i]));
+			k++;
+		}
+		t.asserti(c.1, k);
+		t.asserti(charged[c.1], resolver.latest.bytes);
+		resolve(t, s, named(t, capped, kept.labels[c.1 - 1]));
+		unchanged(t, s, named(t, capped, kept.labels[c.1]));
+		resolver.maxBytes = LspResolveLimits.MAX_BYTES;
+	}
+	s.server.close();
+}
+// Params that aren't a completion item with a string label, or whose data
+// isn't what a completion reply gave, get InvalidParams.
+def test_malformed(t: Tester) {
+	var s = session(t, null);
+	complete(t, s, AS_TYPED);
+	// Data has three integers, none negative: a number that isn't a 32-bit
+	// integer, such as a fingerprint of 2^31 or 2^53 - 1, is refused before
+	// the handler runs.
+	var bad = ["[1]", "{}", "{\"label\":1}", "{\"label\":\"Shape\",\"data\":\"x\"}",
+		"{\"label\":\"Shape\",\"data\":{\"list\":1,\"item\":0}}", "{\"label\":\"Shape\",\"data\":[1]}",
+		"{\"label\":\"Shape\",\"data\":[1,0]}", "{\"label\":\"Shape\",\"data\":[1,0,0,0]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,\"0\"]}", "{\"label\":\"Shape\",\"data\":[1,0,null]}",
+		"{\"label\":\"Shape\",\"data\":[1.5,0,0]}", "{\"label\":\"Shape\",\"data\":[true,0,0]}",
+		"{\"label\":\"Shape\",\"data\":[-1,0,0]}", "{\"label\":\"Shape\",\"data\":[1,-1,0]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,-1]}", "{\"label\":\"Shape\",\"data\":[1,0,2147483648]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,9007199254740991]}"];
+	for (params in bad) {
+		var reply = raw(s, params);
+		if (errorCode(reply) != JsonRpcErrorCode.INVALID_PARAMS) t.fail1("not refused: %s", params);
+	}
+	t.assert_string("completion item resolve params require a string label, and data only as a completion reply gave it",
+		JsonValue.String.!(member(raw(s, "{}")["error"], "message")).v);
+	// An item without data, or with null data, comes back as it was sent.
+	for (params in ["{\"label\":\"Shape\"}", "{\"data\":null,\"kind\":7,\"label\":\"Shape\"}"]) {
+		t.assert_string(params, render(raw(s, params)["result"]));
+	}
+	s.server.close();
+}
+// Data that names no item of the latest list, or an item with another
+// label or fingerprint, leaves the item as it was sent. Other members never
+// select a file.
+def test_unknown(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED), shape = named(t, list, "Shape");
+	var d = data(shape), id = d[0], k = d[1], f = d[2];
+	var forged = [(id + 1, k, f), (id - 1, k, f), (id, 1000, f), (2147483647, 2147483647, 2147483647),
+		(id, k, f ^ 1), (id, k, 0), (id, k, data(named(t, list, "Counter"))[2])];
+	for (x in forged) unchanged(t, s, withData(shape, x.0, x.1, x.2));
+	var counter = copy(shape);
+	counter["label"] = JsonValue.String("Counter");
+	unchanged(t, s, JsonValue.JObject(counter));
+	// A URI, a path, an offset, or another edit in the item select nothing,
+	// and come back as they were sent.
+	var item = copy(shape);
+	item["uri"] = JsonValue.String("file:///etc/passwd");
+	item["path"] = JsonValue.String("/etc/passwd");
+	item["offset"] = JsonValue.Int(0);
+	item["textEdit"] = JsonValue.Null;
+	var result = resolve(t, s, JsonValue.JObject(item));
+	t.assert_string("markdown: A shape with sides.", documentation(result));
+	t.assert_string("file:///etc/passwd", JsonValue.String.!(member(result, "uri")).v);
+	t.assert(member(result, "textEdit") == JsonValue.Null, "the edit as sent");
+	s.server.close();
+}
+// The character typed after a list leaves it: the items declared in the
+// unchanged Lib.v3 still resolve, and those declared in Main.v3, whose text
+// is no longer the one analyzed, come back as they were sent, even once it
+// has the analyzed text again.
+def test_typed(t: Tester) {
+	var s = session(t, null), list = complete(t, s, PREFIX);
+	edit(s, TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	expect(t, s, list, "Counter", "markdown: Counts \\*things\\*.");
+	for (name in ["inc", "Main"]) {
+		t.assert(hasData(named(t, list, name)), name);
+		expect(t, s, list, name, null);
+	}
+	edit(s, unmark(PREFIX).0);
+	expect(t, s, list, "inc", null);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// An open declaring file documents nothing once it is edited, though a
+// version-only change keeps its text; the other files' items still resolve.
+def test_declaring_edited(t: Tester) {
+	var s = session(t, null);
+	s.open("Lib.v3", 1, LIB);
+	var list = complete(t, s, AS_TYPED);
+	s.versionOnly("Lib.v3", 2);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.change("Lib.v3", 3, Strings.format2("%s%s", LIB, "\n"));
+	expect(t, s, list, "Shape", null);
+	expect(t, s, list, "Counter", null);
+	expect(t, s, list, "inc", "markdown: Adds one.");
+	s.server.close();
+}
+// A closed file whose bytes changed on disk, with or without a file event,
+// documents nothing until it has the analyzed bytes again, whatever the
+// request document's edits.
+def test_closed_file_changed(t: Tester) {
+	var s = session(t, null), list = complete(t, s, PREFIX), shape = named(t, list, "Shape");
+	edit(s, TYPED);
+	var same = Arrays.dup(LIB);
+	same[3] = 'a';
+	s.write(t, "Lib.v3", same);
+	unchanged(t, s, shape);
+	s.write(t, "Lib.v3", Strings.format2("%s%s", LIB, "\n"));
+	unchanged(t, s, shape);
+	s.reportChanged("Lib.v3");
+	unchanged(t, s, shape);
+	s.write(t, "Lib.v3", LIB);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.reportChanged("Lib.v3");
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// A file closed when the list was made, and opened since, documents its
+// items while the editor's text is the analyzed one.
+def test_closed_file_opened(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED);
+	s.open("Lib.v3", 1, LIB);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.change("Lib.v3", 2, Strings.format2("%s%s", LIB, "\n"));
+	expect(t, s, list, "Shape", null);
+	s.change("Lib.v3", 3, LIB);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.closeDocument("Lib.v3");
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// Closing another document keeps the list, though a file whose editor text
+// was analyzed documents nothing once closed. Closing the request document
+// forgets it, even if it is opened again with the same text.
+def test_close(t: Tester) {
+	var s = session(t, null);
+	s.open("Lib.v3", 1, LIB);
+	var list = complete(t, s, AS_TYPED);
+	s.closeDocument("Lib.v3");
+	expect(t, s, list, "Shape", null);
+	expect(t, s, list, "inc", "markdown: Adds one.");
+	s.closeDocument("Main.v3");
+	t.assert(s.server.completion.resolver.latest == null, "forgotten");
+	s.open("Main.v3", 5, MAIN);
+	expect(t, s, list, "inc", null);
+	s.server.close();
+}
+// A new revision of the project file, a source created, and a workspace
+// folder change each forget the list, though they leave Lib.v3 as it was;
+// were it kept anyway after the first, its project would not be current.
+def test_project_change(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED), kept = s.server.completion.resolver.latest;
+	s.write(t, ".virgil-lsp.json", "{\"version\":1,\"projects\":[{\"name\":\"r2\",\"sources\":[\"Main.v3\",\"Lib.v3\"]}]}");
+	s.reportChanged(".virgil-lsp.json");
+	t.assert(s.server.completion.resolver.latest == null, "a new project file forgets the list");
+	unchanged(t, s, named(t, list, "Shape"));
+	s.server.completion.resolver.keep(kept);
+	unchanged(t, s, named(t, list, "Shape"));
+	list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	notify(s, "workspace/didChangeWatchedFiles", Strings.format1("{\"changes\":[{\"uri\":\"%s\",\"type\":1}]}", s.uri("Extra.v3")));
+	t.assert(s.server.completion.resolver.latest == null, "a created source forgets the list");
+	unchanged(t, s, named(t, list, "Shape"));
+	list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	notify(s, "workspace/didChangeWorkspaceFolders", "{\"event\":{\"added\":[],\"removed\":[]}}");
+	t.assert(s.server.completion.resolver.latest == null, "a folder change forgets the list");
+	unchanged(t, s, named(t, list, "Shape"));
+	s.write(t, ".virgil-lsp.json", CONFIG);
+	s.server.close();
+}
+// A cancelled completion's analysis leaves the list before it.
+def test_cancel(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED);
+	var running = request(t, s, AT_END);
+	t.asserti(0, s.server.rename.scheduler.jobCount());
+	s.cancel(running);
+	s.settle();
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, errorCode(s.reply(running)));
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// A repaired document's declarations have no data, since the repair moved
+// its text after the cursor; other files' declarations do.
+def test_repaired(t: Tester) {
+	var s = session(t, null), list = complete(t, s, REPAIRED);
+	for (name in ["inc", "run", "Main"]) {
+		if (hasData(named(t, list, name))) t.fail1("%s has data", name);
+	}
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	expect(t, s, list, "Counter", "markdown: Counts \\*things\\*.");
+	s.server.close();
+}
+// A new server's list ids start again, so an item kept from an older server
+// comes back as sent: with no list in the new server, and with a list whose
+// item at the same id and index has the same label but another declaration,
+// here Bravo's value where Alpha's was, which the fingerprint tells apart.
+def test_restart(t: Tester) {
+	var s = session(t, null), list = complete(t, s, AS_TYPED);
+	s.server.close();
+	var restarted = session(t, null);
+	unchanged(t, restarted, named(t, list, "Shape"));
+	restarted.server.close();
+	s = session(t, null);
+	s.write(t, "Lib.v3", VALUES);
+	var alphas = complete(t, s, ALPHA), alpha = named(t, alphas, "value");
+	expect(t, s, alphas, "value", "markdown: The alpha value.");
+	s.server.close();
+	restarted = session(t, null);
+	restarted.write(t, "Lib.v3", VALUES);
+	var bravos = complete(t, restarted, BRAVO), bravo = data(named(t, bravos, "value"));
+	t.asserti(data(alpha)[0], bravo[0]);
+	t.asserti(data(alpha)[1], bravo[1]);
+	t.assert(data(alpha)[2] != bravo[2], "another fingerprint");
+	unchanged(t, restarted, alpha);
+	expect(t, restarted, bravos, "value", "markdown: The bravo value.");
+	restarted.write(t, "Lib.v3", LIB);
+	restarted.server.close();
+}
