@@ -18,8 +18,10 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -70,6 +72,98 @@ STATE = ("worker_analyses", "worker_uid_next", "worker_live_bytes", "worker_live
 
 class Finding(Exception):
     """A protocol barrier that could not complete: the run stops here."""
+    bound = "barrier"
+
+
+class Deadline(Finding):
+    """A request, a write, or the whole run passed its deadline."""
+    bound = "deadline"
+
+
+class WriteDeadline(Deadline):
+    """A write to the server didn't finish by its deadline."""
+
+
+class DeadlineSession(bench.Session):
+    """A Session whose writes end at the request deadline too, so a server
+    that stops reading can't block the run. The server leads its own process
+    group, which its workers join, so that stop_group can end them all."""
+
+    def __init__(self, exe, remaining, *options):
+        super().__init__(exe, *options, start_new_session=True)
+        self.remaining = remaining
+        os.set_blocking(self.proc.stdin.fileno(), False)
+
+    def raw(self, data):
+        fd, view = self.proc.stdin.fileno(), memoryview(data)
+        end = time.monotonic() + self.remaining()
+        while view:
+            left = end - time.monotonic()
+            if left <= 0:
+                raise WriteDeadline(("the server read no more of a write before its deadline",
+                                     len(data) - len(view), len(data)))
+            _, ready, _ = select.select([], [fd], [], left)
+            if ready:
+                try:
+                    view = view[os.write(fd, view):]
+                except BlockingIOError:
+                    pass
+
+
+def group_members(pgid):
+    """The processes of process group {pgid} that haven't exited, from /proc."""
+    members = []
+    for entry in os.scandir("/proc"):
+        stat = bench.optional_file(f"/proc/{entry.name}/stat") if entry.name.isdigit() else None
+        fields = stat.rsplit(")", 1)[1].split() if stat else None
+        if fields and int(fields[2]) == pgid and fields[0] not in ("Z", "X"):
+            members.append(int(entry.name))
+    return members
+
+
+def stop_group(proc, grace_s=5, deadline_s=5):
+    """End a server that leads its own process group, and every process in it.
+
+    Closes its input and gives it {grace_s} to exit. Then, while the leader
+    is still unreaped, so that its group ID can't name another group, sends
+    SIGKILL to the group, waits on each member's pidfd until {deadline_s},
+    and lists the members still running before reaping the leader. A worker
+    started in the grace period is in the group, so it can't escape. If the
+    leader was already reaped, a process that now has its PID belongs to
+    another group, and ours, which would have kept the ID, is empty."""
+    pgid = proc.pid
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    try:
+        proc.wait(grace_s)
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.returncode is not None and os.path.exists(f"/proc/{pgid}"):
+        return {"pgid": pgid, "members": [], "survivors": [], "reused": True}
+    pidfds = []
+    for pid in group_members(pgid):
+        try:
+            pidfds.append((pid, os.pidfd_open(pid)))
+        except OSError:
+            pass  # Exited since the listing.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    pending, end = dict(pidfds), time.monotonic() + deadline_s
+    try:
+        while pending and time.monotonic() < end:
+            ready, _, _ = select.select(list(pending.values()), [], [], end - time.monotonic())
+            pending = {pid: fd for pid, fd in pending.items() if fd not in ready}
+        survivors = group_members(pgid)
+    finally:
+        for _, fd in pidfds:
+            os.close(fd)
+        if proc.returncode is None:
+            proc.wait()
+    return {"pgid": pgid, "members": [pid for pid, _ in pidfds], "survivors": survivors, "reused": False}
 
 
 def schedule(n):
@@ -156,7 +250,7 @@ class Workers:
                                       "previous": self.current()["pid"], "pid": value})
                 self.current()["ended"] = {"reason": "unknown"}
             self.workers.append({"pid": value, "heap_bytes": self.heap, "analyses": 0, "last_state": None,
-                                 "ended": None})
+                                 "drift": 0, "ended": None})
             self.heap = None
         elif metric in STATE:
             self.state[metric] = value
@@ -169,6 +263,7 @@ class Workers:
                                           "state": state})
                     return
                 worker["analyses"] += 1
+                self.check_counter(worker, state)
                 worker["last_state"] = state
                 if worker["heap_bytes"] is not None and state["worker_live_limit_bytes"] != worker["heap_bytes"] // 8:
                     self.findings.append({"bound": "retirement", "detail": "live limit is not an eighth of the heap",
@@ -176,6 +271,22 @@ class Workers:
                 reason = due(state)
                 if reason:
                     self.pending = (worker, reason)
+
+    def check_counter(self, worker, state):
+        """The worker's reported analysis count, which decides count retirement,
+        must be the completions observed for it: a finding whenever the
+        difference changes, by a reset, a missing increment, or a skip."""
+        reported = state["worker_analyses"]
+        last = (worker["last_state"] or {}).get("worker_analyses", 0)
+        drift = reported - worker["analyses"]
+        if drift == worker["drift"]:
+            return
+        worker["drift"] = drift
+        detail = ("the worker's analysis count went back" if reported < last else
+                  "the worker's analysis count didn't advance" if reported == last else
+                  "the worker counted analyses that the trace doesn't show")
+        self.findings.append({"bound": "retirement", "detail": detail, "pid": worker["pid"],
+                              "reported": reported, "previous": last, "observed": worker["analyses"]})
 
     def retired(self, match):
         pid = int(match[1])
@@ -393,7 +504,7 @@ class Soak:
         self.cycle_findings = 0
         self.observer_s = 0.0
         self.owned = {}
-        self.s = bench.Session(exe)  # The default worker limits: no options.
+        self.s = DeadlineSession(exe, self.remaining)  # The default worker limits: no options.
         self.trace_offset = 0
         self.where = {"cycle": None, "action": "start"}
         self.sampler = bench.ResourceSampler(self.s.proc.pid, "initial", read=self.read).start()
@@ -403,7 +514,7 @@ class Soak:
     def remaining(self):
         left = self.deadline - time.monotonic()
         if left <= 0:
-            raise Finding("the whole-run deadline passed")
+            raise Deadline("the whole-run deadline passed")
         return min(REQUEST_S, left)
 
     def request(self, method, params=None):
@@ -716,8 +827,10 @@ class Soak:
             self.cleanup()
 
     def cleanup(self):
+        """End the server's whole process group, then any owned worker that left it."""
         if self.sampler.thread:
             self.sampler.stop()
+        group = stop_group(self.s.proc)
         try:
             self.s.close()
         finally:
@@ -732,7 +845,10 @@ class Soak:
                 if started is not None and start_time(pid) == started and exe == worker:
                     os.kill(pid, signal.SIGKILL)
                     reaped.append(pid)
-            self.result["cleanup"] = {"owned_workers": len(self.owned), "killed": reaped}
+            self.result["cleanup"] = {"owned_workers": len(self.owned), "killed": reaped, "group": group}
+            if group["survivors"] or reaped:
+                self.findings.append({"bound": "cleanup", "detail": "processes outlived the server's group",
+                                      "survivors": group["survivors"], "killed": reaped})
 
 
 def settled(transitions):
@@ -897,6 +1013,8 @@ def main():
               file=sys.stderr)
     except BaseException as error:
         result["error"] = repr(error)
+        if isinstance(error, Finding):
+            result["findings"].append({"bound": error.bound, "detail": error.args, "at": soak.where if soak else None})
         if soak:
             result["failure"] = {"transcript": soak.s.transcript}
             if not soak.s.err.closed:

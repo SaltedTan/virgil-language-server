@@ -6,8 +6,11 @@
 Opt-in like the soak itself: run by hand, not by `make test`.
 """
 import importlib.util
+import os
 from pathlib import Path
 import sys
+import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -26,6 +29,11 @@ def started(pid, heap=HEAP):
 def analysis(analyses, uid=20000, live=177088, limit=HEAP // 8):
     return (f"BENCH server 1 worker_analyses {analyses}\nBENCH server 1 worker_uid_next {uid}\n"
             f"BENCH server 1 worker_live_bytes {live}\nBENCH server 1 worker_live_limit_bytes {limit}\n")
+
+
+def analyses(first, last, **state):
+    """A worker's completions numbered {first} to {last}, its reported counter in step."""
+    return "".join(analysis(n, **state) for n in range(first, last + 1))
 
 
 def admission(retained, incoming, latest, pinned=0, protected=None, outcome=1, evicted=(), own=None, after=None):
@@ -85,7 +93,7 @@ class RetirementTest(unittest.TestCase):
         self.assertEqual(workers.workers[0]["analyses"], 100)
 
     def test_uid_and_heap_eighth_retirements(self):
-        text = started(10) + analysis(3, uid=1 << 28)
+        text = started(10) + analyses(1, 2) + analysis(3, uid=1 << 28)
         text += f"virgil-lsp: replacing analysis worker 10 because its UID counter reached {1 << 28} (limit {1 << 28})\n"
         text += started(11) + analysis(1, live=HEAP // 8)
         text += f"virgil-lsp: replacing analysis worker 11 because its live heap reached {HEAP // 8} bytes (limit {HEAP // 8})\n"
@@ -94,21 +102,42 @@ class RetirementTest(unittest.TestCase):
         self.assertEqual([w["ended"]["reason"] for w in workers.workers], ["uid", "live"])
 
     def test_count_takes_precedence_over_live(self):
-        text = started(10) + analysis(100, live=HEAP)
+        text = started(10) + analyses(1, 99) + analysis(100, live=HEAP)
         text += f"virgil-lsp: replacing analysis worker 10 because its live heap reached {HEAP} bytes (limit {HEAP // 8})\n"
         workers = self.classify(text)
         self.assertEqual([f["detail"] for f in workers.findings], ["misclassified retirement"])
         self.assertEqual(workers.findings[0]["predicted"], "count")
 
     def test_missed_retirement_and_wrong_live_limit(self):
-        workers = self.classify(started(10) + analysis(100) + analysis(101, limit=HEAP // 4))
+        workers = self.classify(started(10) + analyses(1, 100) + analysis(101, limit=HEAP // 4))
         self.assertEqual([f["detail"] for f in workers.findings],
                          ["a limit was reached without retirement", "live limit is not an eighth of the heap"])
         # The last one may yet retire in the next piece of the trace, until it ends.
         workers.end()
         self.assertEqual(len(workers.findings), 3)
-        workers = self.classify(started(10) + analysis(100) + started(11))
+        workers = self.classify(started(10) + analyses(1, 100) + started(11))
         self.assertIn("a limit was reached without retirement", [f["detail"] for f in workers.findings])
+
+    def test_counter_must_match_observed_completions(self):
+        # 101 completions whose reported counter stays at 1 never reach the count limit.
+        workers = self.classify(started(10) + analysis(1) * 101)
+        self.assertEqual(workers.workers[0]["analyses"], 101)
+        details = [f["detail"] for f in workers.findings]
+        self.assertEqual(details, ["the worker's analysis count didn't advance"] * 100)
+        self.assertEqual(workers.findings[-1]["observed"], 101)
+        workers = self.classify(started(10) + analyses(1, 3) + analyses(1, 2))
+        self.assertEqual([f["detail"] for f in workers.findings], ["the worker's analysis count went back"])
+        # A skip is reported once; the counter then advances in step again.
+        workers = self.classify(started(10) + analyses(1, 2) + analyses(4, 6))
+        self.assertEqual([(f["detail"], f["reported"], f["observed"]) for f in workers.findings],
+                         [("the worker counted analyses that the trace doesn't show", 4, 3)])
+        # A first report other than 1 is a skip from the new worker's zero.
+        workers = self.classify(started(10) + analysis(2))
+        self.assertEqual([f["detail"] for f in workers.findings],
+                         ["the worker counted analyses that the trace doesn't show"])
+        # A replacement worker counts from zero again.
+        crashed = "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
+        self.assertEqual(self.classify(started(10) + analyses(1, 5) + crashed + started(11) + analyses(1, 2)).findings, [])
 
     def test_failure_and_unknown_worker(self):
         text = started(10) + "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
@@ -201,6 +230,101 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(result["n"], 20)
         self.assertAlmostEqual(result["slope_per_cycle"], 2)
         self.assertEqual((result["first10_median"], result["last10_median"]), (111, 131))
+
+
+def stand_in(directory, body):
+    """An executable Python script that stands in for the server."""
+    path = Path(directory) / "stand-in"
+    path.write_text("#!" + sys.executable + "\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def running(pid):
+    """Whether {pid} exists and hasn't exited."""
+    stat = soak.bench.optional_file(f"/proc/{pid}/stat")
+    return bool(stat) and stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "process groups are checked through /proc")
+class ProcessTest(unittest.TestCase):
+    def test_worker_started_while_closing_is_ended(self):
+        # The stand-in ignores its closed input for longer than the grace
+        # period and starts a child in it, as a server could start a worker.
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "child"
+            exe = stand_in(temp, f"""import os, signal, subprocess, sys
+sys.stdin.buffer.read()
+child = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"])
+open({str(marker)!r} + ".tmp", "w").write(str(child.pid))
+os.rename({str(marker)!r} + ".tmp", {str(marker)!r})
+signal.pause()
+""")
+            session = soak.DeadlineSession(exe, lambda: 5)
+            try:
+                group = soak.stop_group(session.proc, grace_s=1)
+            finally:
+                session.close()
+            child = int(marker.read_text())
+            self.assertIn(child, group["members"], "the child started in the grace period")
+            self.assertEqual(group["survivors"], [])
+            self.assertFalse(running(child))
+            self.assertFalse(running(session.proc.pid))
+            self.assertEqual(soak.group_members(session.proc.pid), [])
+
+    def test_soak_cleanup_ends_a_worker_started_while_closing(self):
+        # Soak.cleanup's own path, with the server's five-second grace period.
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "child"
+            exe = stand_in(temp, f"""import os, signal, subprocess, sys
+sys.stdin.buffer.read()
+child = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"])
+open({str(marker)!r}, "w").write(str(child.pid))
+signal.pause()
+""")
+            run = soak.Soak.__new__(soak.Soak)
+            run.exe, run.owned, run.result, run.findings = exe, {}, {}, []
+            run.s = soak.DeadlineSession(exe, lambda: 5)
+            run.sampler = soak.bench.ResourceSampler(run.s.proc.pid, read=lambda: {})
+            run.cleanup()
+            child = int(marker.read_text())
+            self.assertFalse(running(child))
+            self.assertEqual((run.result["cleanup"]["group"]["survivors"], run.findings), ([], []))
+
+    def test_group_of_an_exited_server_is_still_ended(self):
+        # The server exits at once, leaving its child in the group.
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "child"
+            exe = stand_in(temp, f"""import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"])
+open({str(marker)!r}, "w").write(str(child.pid))
+""")
+            session = soak.DeadlineSession(exe, lambda: 5)
+            session.proc.wait(5)
+            try:
+                group = soak.stop_group(session.proc, grace_s=0)
+            finally:
+                session.close()
+            child = int(marker.read_text())
+            self.assertEqual((group["members"], group["survivors"]), ([child], []))
+            self.assertFalse(running(child))
+
+    def test_write_to_a_server_that_never_reads_ends_at_its_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            exe = stand_in(temp, "import signal\nsignal.pause()\n")
+            session = soak.DeadlineSession(exe, lambda: 0.5)
+            try:
+                start = time.monotonic()
+                # Larger than the pipe, like the descriptor step's configuration.
+                with self.assertRaises(soak.WriteDeadline) as raised:
+                    session.send("textDocument/didOpen", {"padding": "x" * (256 * 1024)}, request=False)
+                self.assertLess(time.monotonic() - start, 3)
+                self.assertEqual(raised.exception.bound, "deadline")
+                written, total = raised.exception.args[0][1:]
+                self.assertLess(written, total)
+            finally:
+                self.assertEqual(soak.stop_group(session.proc, grace_s=0)["survivors"], [])
+                session.close()
 
 
 if __name__ == "__main__":
