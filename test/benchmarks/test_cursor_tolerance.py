@@ -228,6 +228,12 @@ class Verdicts(unittest.TestCase):
                          "wrong")
         stale_parameter = {"items": [item("sum", 2, "def sum(left: int, right: int) -> int")]}
         self.assertEqual(cursor.completion_verdict(stale_parameter, facts)[0], "wrong")
+        # The current candidate doesn't mask a stale duplicate of its label,
+        # in either order, or one of another kind.
+        stale = item("sum", 2, "def sum(left: int, right: int) -> int")
+        for items in ([item("sum", 2, SUM), stale], [stale, item("sum", 2, SUM)],
+                      [item("sum", 2, SUM), item("sum", 5, SUM)]):
+            self.assertEqual(cursor.completion_verdict({"items": items}, facts)[0], "wrong", items)
 
     def test_stale_signatures_are_rejected(self):
         facts = probe(THIRD, "removed", "edit-call")["facts"]

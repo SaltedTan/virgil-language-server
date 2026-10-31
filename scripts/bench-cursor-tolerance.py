@@ -573,7 +573,8 @@ def completion_verdict(reply, facts):
         got = labels.get(want["label"], [])
         if not got:
             continue
-        if not any(i.get("kind") == want["kind"] and i.get("detail") == want["detail"] for i in got):
+        # One stale duplicate is wrong, even beside the current candidate.
+        if any(i.get("kind") != want["kind"] or i.get("detail") != want["detail"] for i in got):
             return "wrong", "%s with another kind or type: %s" % (want["label"], [(i.get("kind"), i.get("detail")) for i in got])
         found += 1
     if found == len(facts["required"]):
