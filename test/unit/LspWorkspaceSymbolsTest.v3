@@ -24,6 +24,13 @@ def X = [
 	T("LspWorkspaceSymbols:context_order", test_context_order),
 	T("LspWorkspaceSymbols:line_positions", test_line_positions),
 	T("LspWorkspaceSymbols:params", test_params),
+	T("LspWorkspaceSymbols:containers", test_containers),
+	T("LspWorkspaceSymbols:containers_across_files", test_containers_across_files),
+	T("LspWorkspaceSymbols:container_ambiguity", test_container_ambiguity),
+	T("LspWorkspaceSymbols:containers_of_a_shared_file", test_containers_of_a_shared_file),
+	T("LspWorkspaceSymbols:containers_of_stale_and_substituted_files", test_containers_stale_and_substituted),
+	T("LspWorkspaceSymbols:container_budget", test_container_budget),
+	T("LspWorkspaceSymbols:container_budget_skips_a_large_file", test_container_budget_skips),
 	()
 ];
 def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]},{\"name\":\"two\",\"sources\":[\"two/*.v3\",\"shared/*.v3\"]}]}";
@@ -157,13 +164,7 @@ class WorkspaceSymbolTestSession {
 	// Each symbol that {query} returns, as "name kind path line:character-line:character",
 	// with the path relative to the fixture.
 	def symbols(t: Tester, query: string) -> Array<string> {
-		var params = Strings.newMap<JsonValue>();
-		params["query"] = JsonValue.String(query);
-		var r = request(t, JsonRpcJson.render(StringBuilder.new(), JsonValue.JObject(params)).toString());
-		if (r == null) return [];
-		t.assert(r.has("result") && JsonValue.JArray.?(r["result"]), "a SymbolInformation[]");
-		if (!r.has("result") || !JsonValue.JArray.?(r["result"])) return [];
-		var list = JsonValue.JArray.!(r["result"]).v, result = Array<string>.new(list.length);
+		var list = reply(t, query), result = Array<string>.new(list.length);
 		var prefix = Strings.format1("%s/", ProjectFiles.uri(base));
 		for (i < list.length) {
 			var v = list[i], location = member(v, "location"), range = member(location, "range");
@@ -176,6 +177,36 @@ class WorkspaceSymbolTestSession {
 			result[i] = buf.toString();
 		}
 		return result;
+	}
+	// Each symbol that {query} returns, as "name container", with "-" for a
+	// symbol that has no containerName.
+	def containers(t: Tester, query: string) -> Array<string> {
+		var list = reply(t, query), result = Array<string>.new(list.length);
+		for (i < list.length) {
+			var v = list[i], name = stringAt(v, "name");
+			if (!JsonValue.JObject.?(v) || !JsonValue.JObject.!(v).v.has("containerName")) {
+				result[i] = Strings.format1("%s -", name);
+			} else {
+				var container = stringAt(v, "containerName");
+				t.assert(!Strings.equal(container, "<none>") && container.length > 0, "a nonempty string containerName");
+				result[i] = Strings.format2("%s %s", name, container);
+			}
+		}
+		return result;
+	}
+	// The SymbolInformation[] that {query} returns.
+	def reply(t: Tester, query: string) -> Array<JsonValue> {
+		var params = Strings.newMap<JsonValue>();
+		params["query"] = JsonValue.String(query);
+		var r = request(t, JsonRpcJson.render(StringBuilder.new(), JsonValue.JObject(params)).toString());
+		if (r == null) return [];
+		t.assert(r.has("result") && JsonValue.JArray.?(r["result"]), "a SymbolInformation[]");
+		if (!r.has("result") || !JsonValue.JArray.?(r["result"])) return [];
+		return JsonValue.JArray.!(r["result"]).v;
+	}
+	// The number of outlines that workspace/symbol replies parsed so far.
+	def outlines() -> int {
+		return server.workspaceSymbols.outlines;
 	}
 	def context(name: string) -> ProjectContext {
 		return server.projects.forDocument(uri(name)).active;
@@ -291,6 +322,17 @@ def test_cap(t: Tester) {
 	if (got.length == max) {
 		t.assert_string("f10000 8 one/One.v3 1:5-1:11", got[0]);
 		t.assert_string("f10999 8 one/One.v3 1000:5-1000:11", got[max - 1]);
+	}
+	// Containers come from one outline of the file, and leave the order and
+	// the cap as they are.
+	var before = s.outlines(), contained = s.containers(t, "f1");
+	t.asserti(1, s.outlines() - before);
+	t.asserti(max, contained.length);
+	for (i < contained.length) {
+		if (i < got.length && !Strings.equal(contained[i], Strings.format1("%s Many", names([got[i]])[0]))) {
+			t.fail1("the container of %s", got[i]);
+			break;
+		}
 	}
 	// The same cap applies to the empty query, from the first name on.
 	got = s.symbols(t, "");
@@ -543,4 +585,215 @@ def test_params(t: Tester) {
 		}
 	}
 	s.server.close();
+}
+// Same-named methods in unrelated classes, an override, a variant with a
+// case, a member of that case, and a member of its own, an enum, a layout,
+// fields declared together, a data type, and file-scope declarations.
+def CONTAINED = "class Buffer {\n\tdef get() -> int { return 0; }\n}\nclass Table {\n\tdef get() -> int { return 1; }\n}\nclass Base {\n\tdef size() -> int { return 0; }\n}\nclass Derived extends Base {\n\tdef size() -> int { return 1; }\n}\ntype Shape {\n\tcase Square(side: int) {\n\t\tdef area() -> int { return side * side; }\n\t}\n\tcase Dot;\n\tdef scale() -> int { return 1; }\n}\nenum Tire { SPARE, FLAT }\nlayout Pair {\n\t+0 first: u8;\n\t=1;\n}\ncomponent Outer {\n\tvar left, right: int;\n}\ntype Point(px: int, py: int);\ndef fileField = 1;\ndef fileMethod() { }\n";
+// Each symbol's container is the declarations that contain it in its
+// declaring source, outermost first: the class that declares an override,
+// not the class it overrides, and nothing at file scope. Each reply parses
+// one outline of the one file with symbols.
+def test_containers(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, CONTAINED);
+	s.openAll();
+	var cases = [
+		("get", ["get Buffer", "get Table"]),
+		("size", ["size Base", "size Derived"]),
+		("Derived", ["Derived -"]),
+		("Shape", ["Shape -"]),
+		("Square", ["Square Shape"]),
+		("side", ["side Shape.Square"]),
+		("area", ["area Shape.Square"]),
+		("Dot", ["Dot Shape"]),
+		("scale", ["scale Shape"]),
+		("Tire", ["Tire -"]),
+		("SPARE", ["SPARE Tire"]),
+		("FLAT", ["FLAT Tire"]),
+		("Pair", ["Pair -"]),
+		("first", ["first Pair"]),
+		("left", ["left Outer"]),
+		("right", ["right Outer"]),
+		("Point", ["Point -"]),
+		("px", ["px Point"]),
+		("fileField", ["fileField -"]),
+		("fileMethod", ["fileMethod -"])
+	];
+	for (c in cases) {
+		var before = s.outlines();
+		expectSymbols(t, c.1, s.containers(t, c.0));
+		t.asserti(1, s.outlines() - before);
+	}
+	// The names and locations are the ones the reply has without containers.
+	expectSymbols(t, [
+		"get 6 one/One.v3 1:5-1:8",
+		"get 6 one/One.v3 4:5-4:8"
+	], s.symbols(t, "get"));
+	expectSymbols(t, ["side 8 one/One.v3 13:13-13:17"], s.symbols(t, "side"));
+	s.server.close();
+}
+// Symbols from several files each take their own file's containers, in the
+// reply's order; each file with symbols has one outline parsed, however many
+// symbols it has, and a file without any has none.
+def test_containers_across_files(t: Tester) {
+	var s = session(t), before = s.outlines();
+	expectSymbols(t, [
+		"Par -",
+		"par Par",
+		"par Two",
+		"par Lib",
+		"parse Par",
+		"Parser -",
+		"partial Parser",
+		"compare Par",
+		"SPARE Tire",
+		"PackRow -",
+		"Pair -"
+	], s.containers(t, "par"));
+	// one/, two/, and lib/, but not shared/.
+	t.asserti(3, s.outlines() - before);
+	expectSymbols(t, PAR, s.symbols(t, "par"));
+	before = s.outlines();
+	t.asserti(29, s.containers(t, "").length);
+	t.asserti(4, s.outlines() - before);
+	before = s.outlines();
+	expectSymbols(t, [], s.containers(t, "zz"));
+	t.asserti(0, s.outlines() - before);
+	s.server.close();
+}
+// The outline symbol that declares a symbol has its kind and exactly its
+// name's offsets. A declaration that no outline symbol declares, as one the
+// compiler synthesized, or that more than one could, has no container.
+def test_container_ambiguity(t: Tester) {
+	var field = AnalysisDeclaration.new(AnalysisDeclKind.FIELD, "f", AnalysisRange.new("/a.v3", 2, 5, 2, 6, 20, 21));
+	def sym = AnalysisDocumentSymbol.new;
+	var f = sym("f", AnalysisDeclKind.FIELD, 16, 24, 20, 21, []);
+	var m = sym("f", AnalysisDeclKind.METHOD, 16, 24, 20, 21, []);
+	var c = sym("C", AnalysisDeclKind.CLASS, 0, 40, 6, 7, [f]);
+	var v = sym("V", AnalysisDeclKind.CLASS, 0, 50, 5, 6, [sym("C", AnalysisDeclKind.VARIANT_CASE, 10, 40, 10, 11, [f])]);
+	expectContainer(t, "C", field, [c]);
+	expectContainer(t, "V.C", field, [v]);
+	expectContainer(t, "", field, [f]);
+	// A symbol of another kind at the same name does not declare it.
+	expectContainer(t, "C", field, [sym("C", AnalysisDeclKind.CLASS, 0, 40, 6, 7, [m, f])]);
+	expectContainer(t, null, field, [sym("C", AnalysisDeclKind.CLASS, 0, 40, 6, 7, [m])]);
+	// Two candidates, even in different containers, leave it ambiguous.
+	expectContainer(t, null, field, [c, sym("D", AnalysisDeclKind.CLASS, 0, 40, 8, 9, [f])]);
+	expectContainer(t, null, field, [sym("C", AnalysisDeclKind.CLASS, 0, 40, 6, 7, [f, f])]);
+	// Nothing at the name, or a symbol whose extent misses it.
+	expectContainer(t, null, field, []);
+	expectContainer(t, null, field, [sym("C", AnalysisDeclKind.CLASS, 0, 19, 6, 7, [f])]);
+}
+// Checks the container that {symbols} give {decl}, null meaning none.
+def expectContainer(t: Tester, want: string, decl: AnalysisDeclaration, symbols: Array<AnalysisDocumentSymbol>) {
+	var got = LspWorkspaceSymbolContainer.new(decl).find(symbols);
+	t.assert_string(if(want == null, "<no container>", want), if(got == null, "<no container>", got));
+}
+// A file that two programs share has one outline parsed, from the analysis
+// whose symbols the reply has.
+def test_containers_of_a_shared_file(t: Tester) {
+	var s = session(t), before = s.outlines();
+	expectSymbols(t, ["thing Shared", "thing Lib", "things Two"], s.containers(t, "thing"));
+	t.asserti(3, s.outlines() - before);
+	before = s.outlines();
+	expectSymbols(t, ["Shared -"], s.containers(t, "Shared"));
+	t.asserti(1, s.outlines() - before);
+	s.server.close();
+}
+// A file whose analyses are all stale, or whose analysis substituted a body,
+// still has no symbols, and no outline is parsed for it. A shared file whose
+// first analysis is stale takes its containers from the current one.
+def test_containers_stale_and_substituted(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, ONE);
+	s.open("one/One.v3", 1, ONE);
+	s.open("two/Two.v3", 1, TWO);
+	s.open("shared/Shared.v3", 1, SHARED);
+	s.settle();
+	t.assert(s.store.change(s.uri("shared/Shared.v3"), 2, SHARED_MOVED) == null, "edit");
+	var before = s.outlines();
+	expectSymbols(t, [], s.containers(t, "Shared"));
+	t.asserti(0, s.outlines() - before);
+	// Lib.v3, closed, changes on disk without a file event.
+	s.write(t, "lib/Lib.v3", LIB_MOVED);
+	before = s.outlines();
+	expectSymbols(t, ["things Two"], s.containers(t, "thing"));
+	t.asserti(1, s.outlines() - before);
+	s.write(t, "lib/Lib.v3", LIB);
+	s.change("two/Two.v3", 2, TWO);
+	s.settle();
+	before = s.outlines();
+	expectSymbols(t, ["thing Shared", "thing Lib", "things Two"], s.containers(t, "thing"));
+	t.asserti(3, s.outlines() - before);
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 2:5-2:10",
+		"thing 8 lib/Lib.v3 1:5-1:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	// A body that no longer parses is substituted with its last parseable
+	// text, so one/One.v3 has no symbols, and no outline.
+	var broken = "// Every kind of declaration; none is used.\ncomponent Par {\n\tdef par = 0;\n\tdef pa = 1;\n\tdef parse(parameter: int) -> int {\n\t\tvar parked = ;\n\t\treturn parked;\n\t}\n\tdef compare<Para>(a: Para) -> Para { return a; }\n\tdef rap() { }\n}\nclass Parser(partial: int) { }\nclass Builder {\n\tnew() { }\n}\nenum Tire { SPARE, FLAT }\ntype Shape {\n\tcase Square(side: int);\n\tcase Dot;\n}\nlayout Pair {\n\t+0 first: u8;\n\t=1;\n}\npacking PackRow(a: 4, b: 4): 8 = #concat(b, a);\ndef fileField = 1;\ndef fileMethod() { }\n";
+	s.change("one/One.v3", 2, broken);
+	s.settle();
+	var one = s.context("one/One.v3").snapshot, j = if(one != null, one.documentIndex(s.uri("one/One.v3")), -1);
+	t.assert(j >= 0 && one.documentVersions[j].substitution != null, "One.v3 substituted");
+	before = s.outlines();
+	expectSymbols(t, ["par Two", "par Lib"], s.containers(t, "par"));
+	t.asserti(2, s.outlines() - before);
+	s.server.close();
+}
+// The container budget goes to files in the rank order of their first
+// symbol: for "par", one/One.v3, then two/Two.v3, then lib/Lib.v3. A file
+// whose analyzed text fits in what is left is outlined and takes its size;
+// the others have no containers. The reply is otherwise unchanged.
+def test_container_budget(t: Tester) {
+	var s = session(t);
+	t.asserti(524288, s.server.workspaceSymbols.MAX_OUTLINE_BYTES);
+	// Exactly One.v3 fits.
+	expectBudget(t, s, ONE.length, 1, ONE.length, [
+		"Par -", "par Par", "par -", "par -", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	// One.v3 and Two.v3 fit, and Lib.v3, a byte too large, does not.
+	expectBudget(t, s, ONE.length + TWO.length + LIB.length - 1, 2, ONE.length + TWO.length, [
+		"Par -", "par Par", "par Two", "par -", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	// Nothing fits in an empty budget.
+	expectBudget(t, s, 0, 0, 0, [
+		"Par -", "par -", "par -", "par -", "parse -", "Parser -", "partial -", "compare -",
+		"SPARE -", "PackRow -", "Pair -"
+	]);
+	s.server.close();
+}
+// A file too large for what is left of the budget is skipped, and a later,
+// smaller one still has its containers.
+def test_container_budget_skips(t: Tester) {
+	var s = session(t);
+	t.assert(TWO.length + LIB.length < ONE.length && LIB.length < TWO.length, "One.v3 is the largest, Lib.v3 the smallest");
+	// One.v3 doesn't fit; Two.v3 and Lib.v3 do.
+	expectBudget(t, s, TWO.length + LIB.length, 2, TWO.length + LIB.length, [
+		"Par -", "par -", "par Two", "par Lib", "parse -", "Parser -", "partial -", "compare -",
+		"SPARE -", "PackRow -", "Pair -"
+	]);
+	// One.v3 fits, then Two.v3 doesn't in what is left, and Lib.v3 does.
+	expectBudget(t, s, ONE.length + LIB.length, 2, ONE.length + LIB.length, [
+		"Par -", "par Par", "par -", "par Lib", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	s.server.close();
+}
+// Checks that "par", with a container budget of {budget} bytes, parses
+// {outlines} outlines of {bytes} bytes in all, never more than the budget,
+// gives the symbols the containers {expected}, and returns the same names,
+// kinds, and locations, in the same order, as without containers.
+def expectBudget(t: Tester, s: WorkspaceSymbolTestSession, budget: int, outlines: int, bytes: int, expected: Array<string>) {
+	var w = s.server.workspaceSymbols;
+	w.maxOutlineBytes = budget;
+	var before = w.outlines, beforeBytes = w.outlineBytes;
+	expectSymbols(t, expected, s.containers(t, "par"));
+	t.asserti(outlines, w.outlines - before);
+	t.assertl(bytes, w.outlineBytes - beforeBytes);
+	t.assert(w.outlineBytes - beforeBytes <= budget, "parsed bytes within the budget");
+	expectSymbols(t, PAR, s.symbols(t, "par"));
+	w.maxOutlineBytes = w.MAX_OUTLINE_BYTES;
 }

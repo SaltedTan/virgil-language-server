@@ -70,7 +70,8 @@ class LspServer {
 	var rename: LspRename;
 	// textDocument/documentSymbol; tests may lower its bounds.
 	def documentSymbols = LspDocumentSymbols.new(documents, projects);
-	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
+	// workspace/symbol; tests read its count of outlines.
+	def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	private def typeHierarchy = LspTypeHierarchy.new();
 	private def selectionRanges = LspSelectionRanges.new(documents, projects);
 	private def foldingRanges = LspFoldingRanges.new(documents, projects);
