@@ -178,9 +178,25 @@ class Inventory(unittest.TestCase):
                 cursor.frozen(built)
 
     @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
+    def test_a_changed_aeneas_source_that_no_step_tracks_is_refused(self):
+        changed = "aeneas/src/types/Int.v3"
+        self.assertIn(changed, INVENTORY["aeneas_sources"])
+        self.assertFalse(any(changed in h.get("sources", {}) for h in INVENTORY["histories"]))
+
+        class Changed(cursor.states.Corpus):
+            def remember(self, path):
+                text = super().remember(path)
+                return text + "\n" if str(path).endswith(changed) else text
+        with self.assertRaisesRegex(AssertionError, "cursor histories changed"):
+            cursor.frozen(build(Changed))
+
+    @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_real_histories_pin_the_compiler_and_its_sources(self):
         self.assertEqual(INVENTORY["virgil_revision"],
                          cursor.bench.corpus.git_revision(cursor.VIRGIL, "rev-parse", "HEAD"))
+        files = cursor.states.repair.aeneas_files()
+        self.assertEqual(INVENTORY["aeneas_sources"], {
+            str(Path(f).relative_to(cursor.VIRGIL)): cursor.sha256(Path(f).read_bytes()) for f in files})
         for history in (HISTORIES["aeneas-verifier-member"], HISTORIES["aeneas-arm64-member"]):
             self.assertEqual(history["project_sources"], len(cursor.states.repair.aeneas_files()))
             for path, digest in history["sources"].items():

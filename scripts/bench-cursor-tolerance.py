@@ -530,7 +530,10 @@ def build(corpus):
     check([h["origin"] for h in measured].count("small") == 9, "nine small histories")
     for h in measured:
         check(len(h["steps"]) == {"seed": 4, "small": 5, "aeneas": 5}[h["origin"]], (h["id"], "step count changed"))
+    # Every Aeneas source the real histories' project reads, not only the ones
+    # their steps track, so that a change to any of them is refused too.
     return {"schema": 1, "virgil_revision": bench.corpus.git_revision(VIRGIL, "rev-parse", "HEAD"),
+            "aeneas_sources": {p: sha256(t.encode()) for p, t in sorted(aeneas.items())},
             "modes": list(MODES), "blocks": BLOCKS, "smoke": list(SMOKE),
             "histories": measured, "stale_control": histories[-1],
             "texts": dict(sorted(texts.items()))}
