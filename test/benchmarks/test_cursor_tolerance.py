@@ -66,7 +66,8 @@ def records(inventory=INVENTORY, blocks=1):
                         steps.append({"id": st["id"], "state": st["state"], "status": "not-run"})
                         continue
                     measured = {"status": "measured", "verdict": "exact", "latency_ms": 1.0}
-                    steps.append({"id": st["id"], "state": st["state"], "step_latency_ms": 2.0, "worker_replacements": 0,
+                    steps.append({"id": st["id"], "state": st["state"], "status": "measured",
+                                  "step_latency_ms": 2.0, "worker_replacements": 0,
                                   "probes": [{"id": p["id"], "kind": p["kind"], **measured} for p in st["probes"]],
                                   "observers": [{"id": o["id"], "role": o["role"], **(measured if o.get("current") else {
                                       "status": "inapplicable"})} for o in st["observers"]]})

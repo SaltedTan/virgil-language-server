@@ -694,6 +694,7 @@ def replay(exe, project, history, mode, texts, transcripts=None, block=None):
                 row["status"] = "not-run"
                 row["reason"] = "the cold process starts at the first damaged step"
                 continue
+            row["status"] = "measured"
             log_offset = os.fstat(run.s.err.fileno()).st_size
             start = time.perf_counter_ns()
             actions = []
@@ -883,7 +884,7 @@ def check_records(inventory, records, blocks, histories):
             if record["mode"] == "cold" and index == 0:
                 check(row.get("status") == "not-run", (record["history"], "cold baseline must be not-run"))
                 continue
-            check(row.get("status") != "not-run" and len(row.get("probes", [])) == len(st["probes"]) and
+            check(row.get("status") == "measured" and len(row.get("probes", [])) == len(st["probes"]) and
                   len(row.get("observers", [])) == len(st["observers"]),
                   (record["history"], record["mode"], record["block"], st["id"], "missing step evidence"))
             for entry in row["probes"] + row["observers"]:
