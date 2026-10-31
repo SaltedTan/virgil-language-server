@@ -111,6 +111,22 @@ Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release re
 
 Runs of the opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) with two releases' published assets, downloaded and checked against their `SHA256SUMS` first. Each row gives the SHA-256 of both releases' packages and the result of each phase that its receipt records. The rehearsal covers Linux x86-64 only: not macOS, Remote-SSH, WSL, the Neovim and LazyVim configurations, or updates through the VS Code Marketplace.
 
+The published assets that these runs used, with their SHA-256s as their releases' `SHA256SUMS` list them:
+
+| Release | Archive and SHA-256 | VSIX and SHA-256 | Source and Virgil revisions |
+| --- | --- | --- | --- |
+| 0.1.0-alpha.4 | `virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz`, `a9858416cb09df318a8e49899bf3bd918405666404bb168a5aa86d4aa199a2ea` | `virgil-lsp-vscode-0.1.3-linux-x64.vsix`, `d20a9c64b666cc918f00547949a3adc4feb927a2236f267da25497e4274a3100` | `5e287010`, Virgil `7cf038fc` |
+| 0.1.0-alpha.5 | `virgil-lsp-0.1.0-alpha.5-x86-64-linux.tar.gz`, `7611ba4f5dcb26fe66923e793221dc2dc188168eab11524385db34a28a3fdeb2` | `virgil-lsp-vscode-0.1.4-linux-x64.vsix`, `acc234f2cf39a52fffd8fad5169299af59de1b5adb73e0abef9e28ddd2721854` | `ebb952f8`, Virgil `57318d37` |
+
+The last three runs show that the rehearsal fails when an installation is broken. Two use damaged copies of the 0.1.0-alpha.5 archive, each with a `SHA256SUMS` of its own, and the 0.1.0-alpha.5 VSIX; the third uses the published assets with `--rollback-without-force`.
+
+| Date | Commit | Where | Assets | Editor | Install | Upgrade | Rollback | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-10-31 | `faa41901` | Ubuntu 24.04, x86-64, under `xvfb-run -a` | 0.1.0-alpha.4 → 0.1.0-alpha.5 → 0.1.0-alpha.4 | VS Code 1.142.0 (`6d62b1d5`), extensions 0.1.3, 0.1.4, then 0.1.3 with `--force` | Archive pass; VS Code pass | Archive pass; VS Code pass | Archive pass; VS Code pass | Pass |
+| 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → a copy of the 0.1.0-alpha.5 archive with `virgil-lsp-worker` moved into `libexec/` (`39af8322ad653f09250afd9439b67b5941f472e877fd5844635916aebd321ec8`) | The same | Archive pass; VS Code pass | Archive fail: no diagnostic within 60 seconds, as the server couldn't start the worker beside its real path | Not run | Fail, as expected |
+| 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → a copy of the 0.1.0-alpha.5 archive with `virgil/` moved into `share/` (`0d76e45cb2b6e50d43704c60f2fd3336e2ef158f87cf6fc0e0b3fbe28266c70a`) | The same | Archive pass; VS Code pass | Archive fail: no diagnostic within 60 seconds, as the server found no Virgil root | Not run | Fail, as expected |
+| 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → 0.1.0-alpha.5 → 0.1.0-alpha.4, with `--rollback-without-force` | The same, but the rollback installed 0.1.3 without `--force` | Archive pass; VS Code pass | Archive pass; VS Code pass | Archive pass; VS Code fail: VS Code refused the older VSIX, exited with status 0, and kept 0.1.4 active, which the active-version check caught | Fail, as expected |
+
 ### 0.1.0-alpha.5
 
 This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
