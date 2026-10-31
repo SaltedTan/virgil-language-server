@@ -78,9 +78,43 @@ The final release `SHA256SUMS` is written after the editor tests, so it is not a
 
 Named prerequisites are `curl`, `tar`, checksum tools, VS Code with `code` on PATH, Neovim 0.11+, and an existing LazyVim starter with its prerequisites. The [prerequisite script](../test/e2e/clean-install/prerequisites.sh) installs Neovim 0.11.6, VS Code 1.142.0, system libraries, Xvfb, Git, a C compiler, Python, and Node explicitly. It installs the LazyVim starter and plugin versions pinned by the full editor suite before running the LazyVim README step. Xvfb and the small Extension Host test extension are test infrastructure; they do not configure the Virgil extension. The test disables Chromium's sandbox for the container. It requires a JSON receipt from every editor session before reporting success, and keeps those receipts, command logs, generated shell scripts, editor logs, and checksum expectations in the `clean-install-linux` artifact for 30 days, including on failure.
 
-This is an installation check, not the full editor behavior suite or a manual UI check. It covers Linux x86-64 only. Hosted macOS runners do not provide a fresh Linux-style container, and creating and driving a clean macOS user would require separate login/session machinery; the existing macOS archive and editor tests still run, but do not provide this clean-install guarantee. Remote installs, upgrades, shell startup files, and a root outside the shipped library are not checked here. This job has no result-event IDs yet, so its evidence stays in its workflow logs and artifact rather than the historical manual results or the result-stream contract.
+This is an installation check, not the full editor behavior suite or a manual UI check. It covers Linux x86-64 only. Hosted macOS runners do not provide a fresh Linux-style container, and creating and driving a clean macOS user would require separate login/session machinery; the existing macOS archive and editor tests still run, but do not provide this clean-install guarantee. Remote installs, upgrades, shell startup files, and a root outside the shipped library are not checked here; the opt-in [upgrade and rollback rehearsal](#upgrade-and-rollback-rehearsal) checks an upgrade and a rollback on Linux. This job has no result-event IDs yet, so its evidence stays in its workflow logs and artifact rather than the historical manual results or the result-stream contract.
 
 To reproduce without a container, package an archive and VSIX as above, record their digests when produced, and create the standalone bundle with `run.py bundle <directory>`. Use the bundled `run.py run --help` to see the required arguments, then execute `run.py run` from a directory outside the checkout with an empty HOME and a minimal PATH containing the named prerequisites. Use a new `--out` directory each time. `bundle` is the only operation that reads the checkout; `run` reads only that bundle and the supplied release assets.
+
+## Upgrade and rollback rehearsal
+
+[`test/e2e/upgrade/run.py`](../test/e2e/upgrade/run.py) rehearses the documented upgrade and rollback of [Installing](#installing) on Linux x86-64 with two published releases. In one temporary installation, it installs the older release, upgrades to the newer one, and rolls back to the older one. It is opt-in: `make test`, CI, and the release workflow don't run it.
+
+Each phase has two parts, run in order, and the rehearsal stops at the first failure:
+
+- **Archive.** In a temporary home, the first phase extracts the older archive into `~/.local/opt` and links `~/.local/bin/virgil-lsp` to it with `ln -sf`, as [Installing](#installing) does. The upgrade extracts the newer archive beside it and retargets the same symlink; the rollback retargets it to the older directory again, without extracting anything. Each phase runs `virgil-lsp --version` through the symlink on `PATH` and requires its exact output: the version, the release tag as the source revision, and the manifest's Virgil revision. It starts the server through the symlink over stdio, with no `VIRGIL_LOC` and no client root, and checks a string-to-int diagnostic, a definition in the bundled `lib/util/StringBuilder.v3`, and hover on `StringBuilder`. It requires the server's worker process and its logged Virgil root to be the ones beside the symlink's target, then shuts the server down and requires it to exit with status 0 and leave nothing running in its process group. Last, it checks the selected installation against its `manifest.json`, and that every installation it extracted, the previous one included, is unchanged since it was extracted.
+- **VS Code.** One isolated VS Code profile, a user data directory and an extensions directory, serves all three phases. Each phase installs its linux-x64 VSIX with `code --install-extension`, the rollback with `--force`, then starts a new VS Code, and so a new Extension Host, on the project. A small test extension only observes; it registers no server and changes no setting. It requires exactly one Virgil extension, of the phase's version and from that version's directory; no `virgil.server.path`, `virgil.virgilRoot`, `VIRGIL_LOC`, or `virgil-lsp` on `PATH`; the bundled server's exact `--version`; the same diagnostic, a definition in the bundled library, and hover; and the output channel's bundled server selection, start, running server version, and bundled Virgil root. The driver then requires that no bundled server or worker outlives VS Code. Without `--force`, VS Code 1.142.0 refuses the older VSIX but exits with status 0 and leaves the newer extension active, so only the version checks show that the rollback didn't happen.
+
+Every release since 0.1.0-alpha.4 passes these checks. Features that only the newer release has, such as hover documentation, aren't checked, since the older release must pass the same checks.
+
+It needs Linux x86-64, Python 3, Node.js, `tar`, the `clients/vscode` dependencies from `npm ci`, and VS Code 1.142.0 in `clients/vscode/.vscode-test`, where the [Extension Host test](../clients/vscode/README.md#extension-host-test) downloads it on its first run, or another VS Code given with `--vscode <executable>`. Without a display, run it under `xvfb-run -a`. The driver downloads and builds nothing. Download each release's Linux archive, linux-x64 VSIX, and `SHA256SUMS` into a directory of its own, and verify them:
+
+```sh
+for tag in v0.1.0-alpha.4 v0.1.0-alpha.5; do
+  gh release download "$tag" --repo SaltedTan/virgil-language-server --dir "assets/$tag" \
+    --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' --pattern 'virgil-lsp-vscode-*-linux-x64.vsix' --pattern SHA256SUMS
+  (cd "assets/$tag" && sha256sum --check --ignore-missing SHA256SUMS)
+done
+```
+
+Each package prints `OK`. Then, from the repository root, run:
+
+```sh
+xvfb-run -a python3 test/e2e/upgrade/run.py --from-assets assets/v0.1.0-alpha.4 \
+  --to-assets assets/v0.1.0-alpha.5 --logs upgrade-logs
+```
+
+Before it runs anything, the driver checks both directories. Each must hold exactly those three files, and `SHA256SUMS` must have a line for each package with its SHA-256. The archive's manifest must give the version in its file name, the `x86-64-linux` target, that version's release tag, and a clean build. The VSIX's identity and server target must be those of the extension's linux-x64 package, of the version in its file name, and it must bundle the archive's own manifest and executables. `--to-assets` must have a newer server and a newer extension than `--from-assets`. The driver then creates its temporary installation and profile under `TMPDIR`, and removes them at the end, whether the rehearsal passed or failed. It runs each server and VS Code in a process group of its own, and stops only those.
+
+`--logs` takes a new or empty directory. It gets each phase's server log, `--version` output, VS Code helper output, and VS Code logs, and `receipt.json`, the rehearsal's machine-readable record. The receipt names the driver's commit; the editor's version and commit; for each release, its directory, its packages' names and SHA-256s, its server and extension versions, its tag, and its source and Virgil revisions; and each phase's archive and VS Code results, with their checks or the first error. It is a format of its own, not a result event of the [editor evidence contract](../test/e2e/RESULTS.md#result-events), and it records no manual observation. `--rollback-without-force` installs the rollback VSIX without `--force`, to show that the rehearsal then fails.
+
+The rehearsal covers only Linux x86-64, the archive's symlink layout, and VSIX files installed from disk into one local VS Code profile. It doesn't cover macOS, Remote-SSH, WSL, the Neovim and LazyVim configurations, or updates through the VS Code Marketplace, where the extension isn't published. [Results](manual-testing.md#upgrade-and-rollback-rehearsals) records its runs.
 
 ## Making a release
 
@@ -187,7 +221,7 @@ virgil-lsp --version
 
 Make sure `~/.local/bin` is on the `PATH` that the editor sees. If you copy `virgil-lsp` elsewhere, copy `virgil-lsp-worker` and `virgil/` beside it too; a wrapper that starts the original server can leave them in the original directory.
 
-To upgrade, extract the new archive next to the old one and point the symlink at it. To roll back, point the symlink at the old directory again. To uninstall, remove the symlink and the directory.
+To upgrade, extract the new archive next to the old one and point the symlink at it. To roll back, point the symlink at the old directory again. To uninstall, remove the symlink and the directory. The [upgrade and rollback rehearsal](#upgrade-and-rollback-rehearsal) checks these steps, and the VSIX upgrade and rollback below, on Linux.
 
 ### macOS
 

@@ -30,6 +30,8 @@ They also check call hierarchy in `words/Calls.v3`: the exact item of `square`, 
 
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
+The opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) installs one release's Linux archive and linux-x64 VSIX, upgrades to the next release, and rolls back, and checks each phase's versions, a diagnostic, a definition in the bundled library, and hover, in the archive's installation and in VS Code. CI doesn't run it; its runs are recorded under [Upgrade and rollback rehearsals](#upgrade-and-rollback-rehearsals).
+
 The editor tests don't cover:
 
 - VS Code Remote-WSL. Nothing runs inside WSL 2.
@@ -104,6 +106,10 @@ Report a failed check with the [bug report form](https://github.com/SaltedTan/vi
 ## Results
 
 Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release results, including evidence labels and coverage gaps. Record optional manual observations of matrix features or VS Code checklist steps in the [manual result format](../test/e2e/RESULTS.md#result-events), with their date, the server's source revision, the editor's version, and the person's attestation. The historical results below keep their hand-written labels.
+
+### Upgrade and rollback rehearsals
+
+Runs of the opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) with two releases' published assets, downloaded and checked against their `SHA256SUMS` first. Each row gives the SHA-256 of both releases' packages and the result of each phase that its receipt records. The rehearsal covers Linux x86-64 only: not macOS, Remote-SSH, WSL, the Neovim and LazyVim configurations, or updates through the VS Code Marketplace.
 
 ### 0.1.0-alpha.5
 
