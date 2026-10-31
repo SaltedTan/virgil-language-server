@@ -135,7 +135,7 @@ Completion and signature help repair the code at the cursor in their own way ([C
 
 An analysis starts 200 ms after the last edit, or at once when a file is opened, saved, or closed, and checks the whole program again. After an edit, the file's type errors disappear until that analysis finishes; syntax errors follow the edit at once. A definition, hover, or similar request made meanwhile waits for the analysis and answers from it, but gets nothing if the document changed while it waited: ask again. For the Aeneas sources, diagnostics arrived about 220 ms after a save on the measured machine ([Stale results](known-limitations.md#stale-results), [Supported program size](known-limitations.md#supported-program-size)).
 
-An `ErrorLimit` or `DiagnosticLimit` Information diagnostic warns that errors may be missing. Fix the reported errors first; [Semantic diagnostics](architecture.md#semantic-diagnostics) explains both limits and why a CRLF file can reach the compiler's error limit.
+An analysis stops at 15 errors, and an Information diagnostic (`ErrorLimit`) says "Aeneas stops checking after 15 errors, so errors elsewhere in this program may be missing." A file also gets at most 100 errors, and a `DiagnosticLimit` Information diagnostic after the last says how many more it has. Fix the reported errors first. A file with Windows line endings (CRLF) gets one error per line, because Aeneas rejects carriage returns, as `v3c` does: convert it to LF line endings ([Semantic diagnostics](architecture.md#semantic-diagnostics)).
 
 ### The analysis worker failed or was replaced
 
