@@ -45,7 +45,7 @@ make test
 This is the short path from a clone to a reviewable pull request.
 
 1. Check the [prerequisites](docs/development.md#prerequisites).
-2. Fork the repository on GitHub, since outside contributors can't push to `SaltedTan/virgil-language-server`, and clone your fork with its submodule. In an existing clone, run `git submodule update --init --recursive` instead.
+2. Fork the repository on GitHub, since outside contributors can't push to `SaltedTan/virgil-language-server`, and clone your fork with its submodule. If you cloned without `--recurse-submodules`, run `git submodule update --init --recursive` in the clone.
 
    ```sh
    git clone --recurse-submodules https://github.com/<you>/virgil-language-server.git
@@ -69,7 +69,7 @@ This is the short path from a clone to a reviewable pull request.
 
    `make test` runs neither the VS Code client checks nor the LazyVim test, and the editor tests aren't required for every change. If you skip a check, name it in the pull request with the reason, as [AGENTS.md](AGENTS.md#which-checks-apply) says.
 
-6. Push the branch to your fork, then open a pull request against `main` with GitHub's "Compare & pull request" button, or from a fork with `gh pr create --repo SaltedTan/virgil-language-server --base main`. Link the issue (`Fixes #N`), and say what you validated and what you skipped.
+6. Push the branch to your fork with `git push -u origin fix/short-name`, then open a pull request against `main` with GitHub's "Compare & pull request" button, or with `gh pr create --repo SaltedTan/virgil-language-server --base main`. Link the issue (`Fixes #N`), and say what you validated and what you skipped.
 7. CI runs the required checks and the maintainer reviews. Changes that need the maintainer's own merge wait for it, as the [pull request rules](#pull-requests) say.
 
 ## Pull requests
