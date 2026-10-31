@@ -93,7 +93,7 @@ The extension runs only in [trusted workspaces](https://code.visualstudio.com/do
 
 With `0.1.0-alpha.5` or `main`, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
 
-The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion). An item's details show its declaration's leading comment, as hover does.
+The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion). On `main`, an item's details show its declaration's [leading comment](../../docs/architecture.md#item-documentation), as hover does.
 
 ## Settings
 
