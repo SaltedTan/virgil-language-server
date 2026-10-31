@@ -277,3 +277,254 @@ assertion; the default budget is intended to stay below about one minute.
 Follow the [model update procedure](schema/3.17/README.md).
 
 `code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, statements that swallowed a later line, and invalid params over stdio.
+
+## Seeded source mutations
+
+`source_mutations.py` edits reviewed source and checks that every request
+still gets a lawful reply, that worker failures stay contained, and that the
+project analyzes again once its source is clean. It is opt-in: neither
+`make test` nor CI runs it. It needs Python 3.9 or newer and only its standard
+library. From the repository root:
+
+```sh
+make test-source-mutations
+make test-source-mutations SOURCE_MUTATIONS_SEED=20261029 SOURCE_MUTATIONS_CASES=500
+make test-source-mutations SOURCE_MUTATIONS_CASES=10 SOURCE_MUTATIONS_ARGS=--stress
+python3 test/protocol/source_mutations.py build/virgil-lsp --replay CASE.json
+```
+
+The default is seed 20261028 and 100 cases. `--plan-only` writes the
+manifests and case records without starting a server.
+
+### What a case does
+
+Each case starts a server of its own, with `--worker-timeout-ms=5000`, on a
+temporary project: a clean observer file and the files of one
+[repair seed](../fixtures/repair/cases/), either as reviewed without its
+cursor marker or without the marker's line, which mostly parses. After opening
+them, it applies one to three steps of mutations and sends each changed file's
+full text with `didChange`. The mutator finds token boundaries with a lexer; it
+has no grammar. It deletes, inserts, duplicates, replaces, and truncates
+tokens, writes malformed literals, damages brackets, comments, and strings,
+changes line ends to CRLF or a lone CR, and inserts non-ASCII and non-BMP
+characters. Other edits usually keep the text parseable, so that analysis and
+the worker run on it too: odd literals that still parse, such as `0i`,
+renaming a name everywhere, swapping two names or numbers, and duplicating or
+deleting a line. Half the cases use only those. About one mutation in 16, in
+any case, is a bounded stress edit instead: deep nesting, thousands of
+declarations, or a long member or operator chain.
+
+After each step, the case sends its requests at once and waits for every
+reply. They go round robin through the 19 request methods of the coverage
+manifest (`MAIN_METHODS`), with UTF-16 positions in the current text, mostly
+at names, sometimes at the end or inside a surrogate pair, and params for each
+method. Rename edits are never applied. A prepare request that returns items
+gets supertypes and subtypes, or incoming and outgoing calls, for the first
+item. `run.json` lists every prepare request whose follow-ups weren't sent,
+with the reason: no items, an error, the request cap, or an item larger than
+16 KiB. Mutated source rarely analyzes to items, so the restoration step
+covers that branch on clean source.
+
+After opening the files, and after each step's replies, a barrier hover on
+the observer waits for any analysis that is due or running (the
+[freshness rules](../../docs/architecture.md#definition)). Every analysis
+that ends between two barriers therefore had the source of the step between
+them, and a worker failure is matched against that source alone.
+
+Finally the case restores every seed file to clean text and checks that the
+observer's hover and definition, the incoming calls of its method, and the
+supertypes of its class are exact, which needs a completed analysis, on a
+replacement worker if one died, and that no file has diagnostics. Then it
+shuts the server down. The server leads a process group of its own, which
+its workers share, and a sentinel `cat` that the harness starts joins it; as
+long as the sentinel is unreaped, the group's ID can't be reused, even after
+the server is reaped. Cleanup always kills that group by its ID and then reaps
+the server and the sentinel, so a stopped or hung server, or one whose output
+ended, leaves no worker or child behind. This needs no `os.waitid`, which
+macOS Python lacks before 3.13. Nothing is killed by name.
+
+Both the runner and helper-test entrypoints run cleanup on SIGTERM or SIGHUP
+and exit with 128 plus the first signal's number; repeated SIGTERM or SIGHUP
+cannot interrupt cleanup. SIGINT keeps Python's `KeyboardInterrupt` behavior.
+
+### Oracles
+
+A case fails if:
+
+- a frame or message is malformed, the server's output ends, the server exits
+  with a status other than 0 after `exit`, or it writes after `exit`;
+- a request gets no reply or two, or a reply with a changed ID type; a
+  notification gets a reply; or the server sends a request, which no client
+  capability here asks for;
+- an error is not a JSON-RPC error object (an integer `code`, a string
+  `message`, and optional `data` of any type, and nothing else), or not one
+  that its method documents: `RequestFailed` for bounded replies and rename
+  refusals, and `ContentModified` for semantic tokens. Valid params never get
+  `InvalidParams`;
+- a successful `initialize`, hover, completion, document-symbol, or
+  workspace-symbol result, or diagnostics params, fail the
+  [reply-shape validator](#successful-reply-shapes); a value past the
+  validator's bounds is recorded as unchecked rather than failed;
+- a `window/showMessage` is not the documented warning that an automatic
+  analysis failed, or there are more of them than failures in the server log;
+- a request, the case, or the run passes its deadline; every read, write,
+  and wait for exit checks all three, and a write also stops at the
+  deadline of any request still waiting for its reply, which starts before
+  the request is written. Cleanup waits at most two seconds for the server
+  to exit, shortened to the run time left with a 0.1-second minimum, then
+  kills the process group;
+- restoration does not give the clean answers above;
+- a worker failure matches no documented signature.
+
+If `initialize` advertises a request method that the coverage manifest
+doesn't list, or doesn't advertise one that it lists, the case fails as
+`coverage-manifest`, so that a new capability can't go unexercised: add the
+method to `MAIN_METHODS` or `FOLLOW_UPS`, with its params and documented
+errors. An advertised method that a run never sends, such as
+`callHierarchy/outgoingCalls` when no prepare request returns items, is listed
+under `never_exercised` in `run.json` and printed, and doesn't fail the run.
+Counts include each feature request once its complete message is written,
+including barriers and restoration requests whose replies fail or time out;
+follow-ups that were never sent do not count as exercised.
+
+Worker failures are recorded apart from server and protocol failures, from
+the server's log: the worker's process ID, what happened, its exit status, its
+trap, and its innermost frames. One that matches a narrow signature in
+`KNOWN_WORKER_FAILURES` leaves the case passing as `known-worker-trap`; the
+signature names the trap, its innermost frame, and a condition that the
+source of the failed analysis must meet, from a row of the
+[Aeneas crash paths](../../docs/aeneas-crash-paths.md): row 1's `0i` literal at
+either trap site, rows 2, 7, and 17, and a stack overflow, which prints no
+frames, after nesting at least 1,000 levels (row 13) or a chain of at least
+1,000 links (row 25). The conditions count only executable tokens: a lexer
+pass drops comments, strings, and characters first, so 1,000 `(` in a comment
+are no nesting. A long chain may also exceed the worker's decoded
+[result budget](../../docs/decisions/0004-analysis-worker-process.md#restart-policy).
+Any other worker failure, including a timeout, fails the case as
+`worker-failure`. Each records whether restoration then succeeded on a
+replacement worker. To accept a newly found compiler trap, add its row to the
+crash paths and a signature for it; never accept worker deaths in general.
+
+### Bounds
+
+| Option | Default | Hard cap | With `--stress` |
+| --- | --- | --- | --- |
+| `--cases` | 100 | 1,000 | 10, at most 10 |
+| `--source-bytes` | 32 KiB of source per case | 64 KiB | 1 MiB of document charge, at most 1 MiB |
+| `--requests` per case, everything included | 24, at least 15 | 64 | the same |
+| `--request-timeout` | 10 s | 30 s | the same |
+| `--case-timeout` | 30 s | 120 s | the same |
+| `--run-timeout` | 180 s | 900 s | the same |
+| `--artifact-bytes` | 64 MiB | 256 MiB | the same |
+
+A limit past its cap, or deadlines that don't satisfy request ≤ case ≤ run,
+are rejected with exit status 2 before anything runs. The request cap counts
+every feature request a case sends: its planned requests, the follow-ups, a
+barrier after opening and after each of up to three steps, and the six
+restoration requests. A plan leaves four requests for follow-ups, so at
+least 15 are needed; the remaining room is available for a case's
+planned requests. The source bound counts the observer too. With `--stress`, it counts the
+[document store's](../../docs/architecture.md#document-store) charge instead:
+each open document's text plus 256 bytes of metadata, its language ID, and its
+URI, estimated at 1,024 bytes, so it stays below the server's 1 MiB capacity.
+Each stress case starts with a deep, dense, or chain edit of up to all the
+room left.
+
+### Artifacts and replay
+
+A run replaces `build/source-mutations/seed-<seed>/`
+(`stress-seed-<seed>/` with `--stress`):
+
+- `mutations.json` and `requests.json`: each case's mutations, with the
+  SHA-256 and size of each resulting text, and its planned requests, after a
+  header with the seed, the bounds, and the SHA-256 of the harness and every
+  seed file. They hold no absolute paths or times, so the same seed and
+  inputs give identical bytes; compare two runs with `cmp`.
+- `run.json`: the server and worker SHA-256 and `--version`, the outcome and
+  request counts, worker failures, follow-ups not sent, unchecked shapes,
+  failures with replay commands, the elapsed time, the bytes written, and
+  whether the run is incomplete.
+- `cases/<id>/`: `case.json`, the replay record; `result.json`, the
+  classification; `transcript.jsonl`, the decoded messages with their times;
+  and `stderr.txt`.
+
+A format-2 replay record holds the exact text of every file opened and every
+change, the project configuration, the `initialize` params, and each request's params
+as sent, with the project's URI as `${ROOT}`. Mutation follow-ups are saved
+in each step's `followups`; restoration's incoming-call and supertype requests
+are saved in `restore_followups`, in send order, with their IDs, methods, and
+complete item params. Replay sends those saved params even if the new prepare
+replies return different items; it never substitutes new items. A record that
+ended before saving a restoration follow-up cannot replay beyond that point.
+Older record formats are rejected. `--replay CASE.json` runs that case in a
+new temporary project and sends the same messages; it needs neither the seed nor the seed files, and
+writes to `build/source-mutations/replay-<id>/`. Before starting a server,
+replay rejects, with exit status 2, a record that this runner could not have
+written: limits past the hard caps, which are the `--stress` ones only for a
+stress record; any source state, after opening, after each step, or after
+restoration, past the source bound; more feature requests in all than the
+request cap; or a change to a file that the case does not open.
+
+Everything written counts against `--artifact-bytes`: manifests, records,
+results, transcripts, logs, and `run.json`. Records, results, and `run.json`
+are compact one-line JSON, counted as the bytes written. A run is rejected with exit status
+2 unless the budget holds the manifests, the complete replay record and
+result of the plan's largest failing case, with room for the 16 KiB items of
+as many mutation follow-ups as its cap allows and both restoration follow-ups,
+and 64 KiB for `run.json`; those last two
+stay reserved. Passing cases may fill the rest, and their records and results
+are written whole or not at all; `run.json` lists the files left out.
+`--plan-only` can regenerate planned case records without follow-ups, with a
+larger `--artifact-bytes` budget if necessary. A failing case's record and result
+are always written whole, from the reserve. Saving a failure never removes the
+complete record saved before the case ran: if the record with its follow-ups
+didn't fit, that one stays and `result.json` has `"record_saved": false`. A cut transcript ends with a
+`{"truncated": true, ...}` line, a cut log with a `[truncated: ...]` line, and
+the case's `result.json` has `"evidence_complete": false`: that evidence is
+partial, and replay's evidence is subject to the saved artifact budget too.
+Lists in `run.json` and `result.json` keep their first 32 entries and count
+the rest.
+Diagnostic strings in those summaries, including replay's nested result,
+are limited to 2,048 UTF-8 bytes on a character boundary, including an
+explicit ` ... [truncated, N bytes total]` marker when cut. Full replies
+remain in the transcript when its artifact budget permits.
+A transcript is omitted when even its truncation marker cannot fit in its
+tier's available space; `run.json` lists it under `artifacts_omitted`.
+Passing artifacts, including truncation markers, never spend the reserves
+for the next failure's complete replay record and result or for `run.json`.
+
+### Reading a failure
+
+A failing run stops at its first failing case, exits 1, and prints the case,
+its class, the error, any worker failures, the evidence directory, and the
+replay command. The classes are `server-failure`, `protocol-failure`,
+`deadline`, `recovery-failure`, `coverage-manifest`, `worker-failure`,
+`run-deadline`, and `harness-error`, a bug in the harness. When the run
+deadline passes, the current case's evidence is saved too, and `run.json` is
+marked incomplete. Replay the record to reproduce the failure alone, and read
+`transcript.jsonl` from the end: the last requests sent without replies are
+the ones that a deadline names.
+
+### Runtime and limits
+
+On the Linux development machine, excluding compilation, the default run
+takes about 2 seconds, 1,000 cases about 21 seconds, and 10 stress cases 4 to
+6 seconds; a request makes the analysis that it waits for urgent, so the
+debounce adds nothing. These are local measurements, not a CI budget, and
+macOS has not been timed.
+
+The harness checks liveness, recovery, and lawful replies, not that answers
+are correct for mutated source; there is no coverage guidance, and no
+comparison of fresh and warm servers. It uses one client capability set, full
+synchronization only, one project, and no cancellation, saves, closes,
+configuration changes, or refresh requests. The pinned parser rejects `\r`,
+so a file with CR line ends never parses. In the default run, about a quarter
+of the mutated steps parse, and few semantic requests get populated answers.
+
+`test_source_mutations.py` checks the harness itself, runs in `make test`, and
+needs the server only for its replay, known-trap, and worker cleanup and
+replacement tests:
+
+```sh
+python3 test/protocol/test_source_mutations.py
+```
