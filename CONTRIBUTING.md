@@ -60,7 +60,7 @@ This is the short path from a clone to a reviewable pull request.
    git switch -c fix/short-name
    ```
 
-4. Make one focused change, with tests that exercise it, and the documentation and `CHANGELOG.md` updates that the [pull request rules](#pull-requests) ask for.
+4. Make one focused change, with tests that exercise it, and the documentation and `CHANGELOG.md` updates that the [pull request rules](#pull-requests) ask for. Commit the change on your branch with a message that explains why (`git add <files>`, then `git commit`).
 5. Run the checks that apply:
    - `make test` builds the server and runs the unit tests and the server suites, [including the headless Neovim smoke test](docs/development.md#tests), which skips locally without Neovim 0.11 or later.
    - When anything under `clients/vscode/` changes, run `npm ci`, `npm run check`, and `npm test` in `clients/vscode`, after the [client setup](clients/vscode/README.md#setup); see the [client development commands](clients/vscode/README.md#development).
