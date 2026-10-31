@@ -280,11 +280,14 @@ class ReaderTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
-    def run_reader(self, lines, **changes):
+    def run_reader(self, lines, deadline=30, **changes):
+        # A scenario that ends on its own returns as soon as the fake Neovim
+        # exits, so its deadline only bounds a hang; a loaded macOS runner can
+        # take over a second to start it. Tests of the deadline pass a short one.
         scenario = {"lines": lines, "detached": True, "sleep": 60, "pidfile": str(self.pidfile), **changes}
         with mock.patch.dict(os.environ, FAKE_NVIM=json.dumps(scenario)):
             return self.writer.main(["run", "--stream", str(self.stream), "--work", str(self.work),
-                                     "--deadline", "1", "--", str(self.nvim)])
+                                     "--deadline", str(deadline), "--", str(self.nvim)])
 
     def assert_cleaned(self):
         state = json.loads((self.work / "launcher.json").read_text())
@@ -400,7 +403,7 @@ class ReaderTest(unittest.TestCase):
             {"process": [], "name": "virgil-lsp"}, {"process": True, "name": "virgil-lsp"},
             {"process": os.getpid(), "name": "virgil-lsp"}, {"process": 1, "name": []},
         )]
-        self.assertEqual(self.run_reader([*lines, passing(ORDER[0])]), 1)
+        self.assertEqual(self.run_reader([*lines, passing(ORDER[0])], deadline=1), 1)
         state = self.assert_cleaned()
         self.assertEqual(sum("malformed observation" in issue for issue in state["issues"]), len(lines))
         checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
