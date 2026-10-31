@@ -31,6 +31,36 @@ local function completion_edit(new_text, range)
   return { newText = new_text, range = range }
 end
 
+-- run.sh --results sets VIRGIL_NVIM_OBSERVATIONS, and each check then appends
+-- its outcome there as a JSON line, which run.sh writes into its result stream
+-- (test/e2e/RESULTS.md). The IDs are coverage.json's. Every line of check()
+-- after the first begin() belongs to the check that began last.
+local observations = vim.env.VIRGIL_NVIM_OBSERVATIONS
+  and assert(io.open(vim.env.VIRGIL_NVIM_OBSERVATIONS, "a"))
+local current, started
+
+local function now()
+  local seconds, microseconds = vim.uv.gettimeofday()
+  return seconds * 1000 + math.floor(microseconds / 1000)
+end
+
+local function record(entry)
+  if observations then
+    observations:write(vim.json.encode(entry), "\n")
+    observations:flush()
+  end
+end
+
+local function begin(id)
+  assert(current == nil, tostring(current) .. " did not end before " .. id)
+  current, started = id, now()
+end
+
+local function passed(observation)
+  record({ id = current, status = "pass", startedAt = started, endedAt = now(), observation = observation })
+  current = nil
+end
+
 local function wait_for(description, predicate, timeout)
   assert(vim.wait(timeout or 10000, predicate, 10), "timed out waiting for " .. description)
 end
@@ -59,6 +89,7 @@ local function symbols()
 end
 
 local function check()
+  begin("nvim.startup.attach")
   bufnr = vim.api.nvim_get_current_buf()
   uri = vim.uri_from_bufnr(bufnr)
   local publications = published[uri]
@@ -69,7 +100,9 @@ local function check()
   assert(client.config.root_dir == vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)),
     "root_dir was not discovered from the fixture's .virgil-lsp.json")
   assert(client.server_info and client.server_info.name == "virgil-lsp", "unexpected serverInfo")
+  passed("virgil_lsp initialized on bad.v3, with the root of the fixture's .virgil-lsp.json and serverInfo virgil-lsp")
 
+  begin("nvim.diagnostics.parser")
   wait_for("published parser diagnostic", function()
     return #publications > 0 and #vim.diagnostic.get(bufnr) > 0
   end)
@@ -81,9 +114,13 @@ local function check()
   assert(diagnostic.severity == vim.lsp.protocol.DiagnosticSeverity.Error, "expected error severity")
   assert(diagnostic.range.start.line == 2 and diagnostic.range.start.character == 26,
     "unexpected parser diagnostic position: " .. vim.inspect(diagnostic.range))
+  passed("bad.v3 published one aeneas error, invalid start of expression, at line 3, column 27")
+  begin("nvim.symbols.broken-empty")
   assert(#symbols() == 0, "broken source should have no document symbols")
+  passed("bad.v3 had no document symbols")
 
   -- nvim.diagnostics.semicolon-fix: exact versioned edit from the published error.
+  begin("nvim.diagnostics.semicolon-fix")
   assert(vim.deep_equal(client.server_capabilities.codeActionProvider, { codeActionKinds = { "quickfix" } }))
   vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(client.config.root_dir, "semicolon.v3")))
   local semicolon_buf = vim.api.nvim_get_current_buf()
@@ -114,9 +151,11 @@ local function check()
   assert(vim.api.nvim_buf_get_lines(semicolon_buf, 2, 3, true)[1] == "\t\treturn 1; // insert before this comment")
   print("PASS: nvim.diagnostics.semicolon-fix")
   vim.api.nvim_set_current_buf(bufnr)
+  passed('the quick fix inserted ";" at the published version, and the diagnostic cleared')
 
   -- An unsaved buffer edit must drive didChange, clear diagnostics, and update
   -- the outline. No direct RPC didOpen/didChange calls bypass the editor client.
+  begin("nvim.diagnostics.unsaved-clear")
   local before_edit = #publications
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "component C { def value = 1; }", "type V { case A(x: int); }" })
   wait_for("published empty diagnostics after the edit", function()
@@ -124,6 +163,8 @@ local function check()
     return #publications > before_edit and #last.diagnostics == 0
       and last.version > initial.version and #vim.diagnostic.get(bufnr) == 0
   end)
+  passed("the unsaved fix published no diagnostics for a newer version, and vim.diagnostic had none")
+  begin("nvim.symbols.hierarchy")
   local outline = symbols()
   assert(#outline == 2 and outline[1].name == "C"
     and outline[1].kind == vim.lsp.protocol.SymbolKind.Namespace
@@ -136,7 +177,9 @@ local function check()
     and case.selectionRange.start.line == 1 and case.selectionRange.start.character == 14
     and case.selectionRange["end"].line == 1 and case.selectionRange["end"].character == 15,
     "expected case A (kind 22) of V: " .. vim.inspect(outline[2]))
+  passed("document symbols were the component C and the variant V, with its case A selecting A's name")
 
+  begin("nvim.folding-ranges.response")
   vim.cmd.edit(vim.fs.joinpath(client.config.root_dir, "folding.v3"))
   local folding_buf = vim.api.nvim_get_current_buf()
   wait_for("client attachment to folding.v3", function()
@@ -158,6 +201,8 @@ local function check()
     return vim.lsp.foldexpr(7) == "<3"
   end)
   print("PASS: nvim.folding-ranges.response")
+  passed("foldingRange returned the 7 expected ranges in folding.v3, and vim.lsp.foldexpr() gave <3 in the if block")
+  begin("nvim.selection-ranges.response")
   local selections = client:request_sync("textDocument/selectionRange", {
     textDocument = { uri = vim.uri_from_bufnr(folding_buf) },
     positions = { { line = 6, character = 8 } },
@@ -173,10 +218,12 @@ local function check()
   assert(vim.deep_equal(chain, expected_selections), "unexpected selections: " .. vim.inspect(chain))
   print("PASS: nvim.selection-ranges.response")
   vim.api.nvim_set_current_buf(bufnr)
+  passed("selectionRange returned the expected chain of 10 ranges from return to the whole of folding.v3")
 
   -- The fixture's project uses lib/util through virgilDependencies. run.sh sets
   -- VIRGIL_LOC to the pinned checkout, which the configuration passes on as
   -- initializationOptions.virgilRoot, so the project is valid and analyzed.
+  begin("nvim.configuration.valid-root")
   local root = client.config.root_dir
   local config_uri = vim.uri_from_fname(vim.fs.joinpath(root, ".virgil-lsp.json"))
   assert(client.config.init_options.virgilRoot == vim.env.VIRGIL_LOC,
@@ -184,6 +231,8 @@ local function check()
   wait_for("published configuration diagnostics", function() return latest(config_uri) ~= nil end)
   assert(#latest(config_uri).diagnostics == 0,
     "unexpected configuration diagnostics: " .. codes(latest(config_uri)))
+  passed("initializationOptions.virgilRoot was VIRGIL_LOC, and .virgil-lsp.json had no diagnostics")
+  begin("nvim.diagnostics.semantic")
   vim.cmd.edit(vim.fs.joinpath(root, "words", "Words.v3"))
   local words_uri = vim.uri_from_bufnr(0)
   -- Only a program that resolves StringBuilder from lib/util has this single error.
@@ -195,9 +244,11 @@ local function check()
   assert(#semantic == 1 and semantic[1].code == "TypeError"
     and semantic[1].message == "expected int in var initialization, got Array<byte>",
     "unexpected semantic diagnostics: " .. vim.inspect(semantic))
+  passed("words/Words.v3 published one TypeError: expected int in var initialization, got Array<byte>")
 
   -- Go to definition from that analysis: StringBuilder resolves to its class in
   -- the closed lib/util file, which the server reads again to convert the range.
+  begin("nvim.definition.response")
   local words_buf = vim.api.nvim_get_current_buf()
   local use_line = 6
   -- The line is ASCII, so a byte index is a UTF-16 character offset.
@@ -216,7 +267,9 @@ local function check()
     and location.range.start.line == class_line and location.range.start.character == 6
     and location.range["end"].line == class_line and location.range["end"].character == 19,
     "unexpected definition: " .. vim.inspect(location))
+  passed("the definition of StringBuilder was the name of its class in lib/util/StringBuilder.v3")
 
+  begin("nvim.inlay-hints.response")
   vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, "words", "Inlay.v3")))
   local inlay_buf = vim.api.nvim_get_current_buf()
   vim.lsp.inlay_hint.enable(true, { bufnr = inlay_buf })
@@ -235,10 +288,12 @@ local function check()
     and hints[1].inlay_hint.label[1].value == ": int" and hints[1].inlay_hint.kind == 1, vim.inspect(hints))
   assert(vim.deep_equal(position(hints[2]), { line = 4, character = 41 })
     and hints[2].inlay_hint.label == "count:" and hints[2].inlay_hint.kind == 2, vim.inspect(hints))
+  passed('the inlay hints of words/Inlay.v3 were ": int" at UTF-16 position 4:33 and "count:" at 4:41')
 
   -- Neovim requests semantic tokens by itself. Each token found at some byte
   -- of the buffer, in order, with its UTF-16 column and length, type, and
   -- modifiers. int, a built-in type, has none.
+  begin("nvim.semantic-tokens.response")
   local function semantic_tokens()
     local found, seen = {}, {}
     for row, text in ipairs(vim.api.nvim_buf_get_lines(inlay_buf, 0, -1, true)) do
@@ -271,8 +326,10 @@ local function check()
   assert(vim.deep_equal(semantic_tokens(), expected_tokens), vim.inspect(semantic_tokens()))
   print("PASS: nvim.semantic-tokens.response")
   vim.api.nvim_set_current_buf(words_buf)
+  passed("the semantic tokens of words/Inlay.v3 were the 7 expected tokens, and int had none")
 
   -- The puts call returns StringBuilder; the local line has built-in int.
+  begin("nvim.type-definition.response")
   local type_column = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find(".puts(", 1, true)
   response, err = client:request_sync("textDocument/typeDefinition", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = type_column },
@@ -284,6 +341,8 @@ local function check()
   }, 10000, words_buf)
   assert(response and not response.err and (response.result == nil or response.result == vim.NIL),
     "built-in int must have no type definition: " .. vim.inspect(err or response))
+  passed("the type definition of the puts call was class StringBuilder's name, and the int local had none")
+  begin("nvim.type-definition.jump")
   vim.api.nvim_win_set_cursor(0, { use_line + 1, type_column })
   vim.lsp.buf.type_definition()
   wait_for("type_definition to jump to StringBuilder", function()
@@ -291,9 +350,11 @@ local function check()
     return vim.api.nvim_buf_get_name(0) == library and cursor[1] == class_line + 1 and cursor[2] == 6
   end)
   vim.api.nvim_set_current_buf(words_buf)
+  passed("vim.lsp.buf.type_definition() jumped from the puts call to class StringBuilder's name")
 
   -- Hover over the same use shows the class's signature in a Virgil code block,
   -- then the comment above the class in the closed library file.
+  begin("nvim.hover.response")
   response, err = client:request_sync("textDocument/hover", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
   }, 10000, words_buf)
@@ -304,10 +365,12 @@ local function check()
     and hover.range.start.line == use_line and hover.range.start.character == start - 1
     and hover.range["end"].line == use_line and hover.range["end"].character == start - 1 + #"StringBuilder",
     "unexpected hover: " .. vim.inspect(hover))
+  passed("the hover showed class StringBuilder in a virgil code block and its comment, with the use's range")
 
   -- Signature help just after the ( of .puts(a) on the same line shows the
   -- method's label with its one parameter as label offsets, which Neovim
   -- supports. The fixture's type error leaves the program parsed and analyzed.
+  begin("nvim.signature.complete")
   local puts = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find(".puts(", 1, true)
   response, err = client:request_sync("textDocument/signatureHelp", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = puts - 1 + #".puts(" },
@@ -319,9 +382,11 @@ local function check()
     and signature.label == "def puts(s: Array<byte>) -> this"
     and #signature.parameters == 1 and vim.deep_equal(signature.parameters[1].label, { 9, 23 }),
     "unexpected signature help: " .. vim.inspect(help))
+  passed("the signature help was def puts(s: Array<byte>) -> this, with its parameter, at offsets 9 to 23, active")
 
   -- Workspace symbols come from the same analysis: join, which nothing uses,
   -- is a method in the project's own words/Words.v3.
+  begin("nvim.workspace-symbols.join")
   response, err = client:request_sync("workspace/symbol", { query = "join" }, 10000, words_buf)
   assert(response and not response.err, "workspace/symbol failed: " .. vim.inspect(err or response.err))
   local symbol = response.result and response.result[1]
@@ -330,10 +395,12 @@ local function check()
     and symbol.location.range.start.line == 5 and symbol.location.range.start.character == 5
     and symbol.location.range["end"].line == 5 and symbol.location.range["end"].character == 9,
     "unexpected workspace symbol: " .. vim.inspect(symbol))
+  passed("the first workspace symbol for join was the method join in words/Words.v3, with its range")
 
   -- The references of the same class, with its declaration: the use, the
   -- class's name, and uses in other closed lib/util files, which the server
   -- reads again. Each spells the name, in order of path and then position.
+  begin("nvim.references.library")
   response, err = client:request_sync("textDocument/references", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
     context = { includeDeclaration = true },
@@ -370,8 +437,11 @@ local function check()
   end
   assert(found_use and found_class and vim.tbl_count(library_files) > 1,
     "unexpected references: " .. vim.inspect(references))
+  passed(string.format("the %d references of StringBuilder were sorted, each spelled the name, and were the use, "
+    .. "the class's name, and uses in %d lib/util files", #references, vim.tbl_count(library_files)))
 
   -- nvim.document-highlight.response: only this document's StringBuilder use.
+  begin("nvim.document-highlight.response")
   response, err = client:request_sync("textDocument/documentHighlight", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
   }, 10000, words_buf)
@@ -396,10 +466,12 @@ local function check()
   end
   assert(vim.deep_equal(response.result, want), "unexpected highlight kinds: " .. vim.inspect(response.result))
   print("PASS: nvim.document-highlight.response")
+  passed("the highlights were the one Read use of StringBuilder, and the 5 expected kinds of count in Highlights.v3")
 
   -- nvim.implementation.response: Shape's subclasses, directly and
   -- transitively, and the methods that override its area, by offset; the
   -- unextended Circle has none.
+  begin("nvim.implementation.response")
   local shapes = vim.fs.joinpath(root, "words", "Shapes.v3")
   local shapes_uri = vim.uri_from_fname(shapes)
   local function implementations(line, character)
@@ -427,9 +499,12 @@ local function check()
   local none = implementations(11, 6)
   assert(vim.deep_equal(none, {}), "the unextended Circle has implementations: " .. vim.inspect(none))
   print("PASS: nvim.implementation.response")
+  passed("Shape's implementations were Polygon, Square, and Circle, its area's were the two overrides, "
+    .. "and Circle had none")
 
   -- nvim.implementation.jump: Polygon's one subclass is Square, so the
   -- client jumps to it in the same file.
+  begin("nvim.implementation.jump")
   vim.cmd.edit(shapes)
   local shapes_buf = vim.api.nvim_get_current_buf()
   wait_for("Shapes.v3 attachment", function() return vim.lsp.buf_is_attached(shapes_buf, client.id) end)
@@ -441,11 +516,13 @@ local function check()
   end)
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.implementation.jump")
+  passed("vim.lsp.buf.implementation() jumped from Polygon to Square in words/Shapes.v3")
 
   -- nvim.type-hierarchy.response: Polygon's item, with its declaration's
   -- range and the data that later requests resolve, and one level up and
   -- down from it, through the items the server gave; Shape's subtypes are
   -- Polygon and Circle.
+  begin("nvim.type-hierarchy.response")
   local function hierarchy(method, params)
     response, err = client:request_sync(method, params, 10000, words_buf)
     assert(response and not response.err, method .. " failed: " .. vim.inspect(err or response.err))
@@ -477,9 +554,11 @@ local function check()
   assert(vim.deep_equal(subtypes, { polygon, item("Circle", "class Circle extends Shape", 11, 13, 1) }),
     "unexpected subtypes of Shape: " .. vim.inspect(subtypes))
   print("PASS: nvim.type-hierarchy.response")
+  passed("Polygon's item, its supertype Shape, its subtype Square, and Shape's subtypes Polygon and Circle were exact")
 
   -- nvim.type-hierarchy.quickfix: the client's own command lists Polygon's
   -- one subtype, Square, at its declaration.
+  begin("nvim.type-hierarchy.quickfix")
   vim.api.nvim_set_current_buf(shapes_buf)
   vim.api.nvim_win_set_cursor(0, { 8, 6 })
   vim.fn.setqflist({}, " ", { title = "before the type hierarchy" })
@@ -494,10 +573,12 @@ local function check()
   vim.cmd.cclose()
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.type-hierarchy.quickfix")
+  passed("the type hierarchy quickfix list had one entry, Square with its detail, at line 11, column 1")
 
   -- nvim.call-hierarchy.response: square's item, prepared from a call, its
   -- two callers, one of which calls it twice, and the calls out of that
   -- caller, through the items the server gave.
+  begin("nvim.call-hierarchy.response")
   local calls = vim.fs.joinpath(root, "words", "Calls.v3")
   local calls_uri = vim.uri_from_fname(calls)
   local function call_item(name, detail, line, last)
@@ -536,9 +617,11 @@ local function check()
   outgoing = hierarchy("callHierarchy/outgoingCalls", { item = prepared_calls[1] })
   assert(vim.deep_equal(outgoing, {}), "unexpected outgoing calls of square: " .. vim.inspect(outgoing))
   print("PASS: nvim.call-hierarchy.response")
+  passed("square's item, its callers sumSquares and cube, and the calls out of sumSquares and square were exact")
 
   -- nvim.call-hierarchy.quickfix: the client's own command lists the three
   -- calls of square, each at its callee's name, under its caller's name.
+  begin("nvim.call-hierarchy.quickfix")
   vim.cmd.edit(vim.fn.fnameescape(calls))
   local calls_buf = vim.api.nvim_get_current_buf()
   wait_for("Calls.v3 attachment", function() return vim.lsp.buf_is_attached(calls_buf, client.id) end)
@@ -559,11 +642,13 @@ local function check()
   vim.cmd.cclose()
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.call-hierarchy.quickfix")
+  passed("the call hierarchy quickfix list had the three calls of square, two under sumSquares and one under cube")
 
   -- Rename needs a program that verifies, so an unsaved edit fixes the type
   -- error first. The client's own rename, with its prepareRename and the
   -- server's versioned edit, renames both uses of the local line, and one
   -- undo restores them; a second restores the type error.
+  begin("nvim.rename.apply-undo")
   local original = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
   vim.api.nvim_buf_set_lines(words_buf, 6, 8, true, {
     "\t\tvar line = StringBuilder.new().puts(a).putc(' ').puts(b).toString();",
@@ -593,11 +678,13 @@ local function check()
   vim.cmd("silent undo")
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "undo did not restore the type error")
+  passed("vim.lsp.buf.rename() renamed both uses of line to text, one undo restored them, and another the type error")
 
   -- Completion takes its keywords from the unsaved text alone, which no
   -- longer parses: "whi" starts a statement, so the keywords of a statement
   -- are offered, and "while" replaces just the prefix. Neovim applies the
   -- item's edit, and one undo restores the line.
+  begin("nvim.completion.keyword")
   vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\twhi" })
   local typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
   vim.o.undolevels = vim.o.undolevels
@@ -626,12 +713,14 @@ local function check()
   vim.api.nvim_buf_set_lines(words_buf, 7, 8, true, {})
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "the buffer was not restored")
+  passed("completion after whi offered the keyword while, whose edit replaced the prefix; undo restored the line")
 
   -- It also offers the declarations in scope, from an analysis of the
   -- project with the unsaved text, repaired at the cursor: the local "line"
   -- is nearest, so it is ranked first, then the parameters, "this", and the
   -- component's method. Its detail is its signature. Neovim applies the
   -- item's edit, and one undo restores the line.
+  begin("nvim.completion.local")
   vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\tli" })
   typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
   vim.o.undolevels = vim.o.undolevels
@@ -660,11 +749,14 @@ local function check()
   vim.api.nvim_buf_set_lines(words_buf, 7, 8, true, {})
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "the buffer was not restored")
+  passed("completion after li ranked line, a, b, this, and join first, line with var line: int; "
+    .. "applying it and undo restored the line")
 
   -- After ".", the members of the receiver's type alone, from an analysis of
   -- the project with the unsaved text, repaired after the ".": the parameter
   -- "a" is a string, whose one member is its length. Neovim applies the
   -- item's edit, which inserts after the ".", and one undo restores the line.
+  begin("nvim.completion.member")
   vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\ta." })
   typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
   vim.o.undolevels = vim.o.undolevels
@@ -692,10 +784,12 @@ local function check()
   vim.api.nvim_buf_set_lines(words_buf, 7, 8, true, {})
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "the buffer was not restored")
+  passed("completion after a. returned only the field length, def length: int; applying it and undo restored the line")
 
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
+  begin("nvim.configuration.json-routing")
   vim.cmd.edit(vim.fs.joinpath(root, "package.json"))
   local other_json = vim.api.nvim_get_current_buf()
   vim.cmd.edit(vim.fs.joinpath(root, ".virgil-lsp.json"))
@@ -704,6 +798,8 @@ local function check()
     return vim.lsp.buf_is_attached(config_buf, client.id)
   end)
   assert(#vim.lsp.get_clients({ bufnr = other_json }) == 0, "client attached to package.json")
+  passed("the client attached to .virgil-lsp.json, and no client attached to package.json")
+  begin("nvim.configuration.unsaved")
   vim.api.nvim_buf_set_lines(config_buf, 1, 1, false, { '  "bogus": 1,' })
   wait_for("UnknownField after an unsaved project file edit", function()
     return codes(latest(config_uri)) == "UnknownField"
@@ -712,19 +808,33 @@ local function check()
   wait_for("cleared configuration diagnostics after undoing the edit", function()
     return #latest(config_uri).diagnostics == 0
   end)
+  passed('an unsaved "bogus": 1 in .virgil-lsp.json gave UnknownField, which cleared when the line was removed')
 
   -- Graceful stop sends shutdown and exit; do not force-kill the success path.
+  begin("nvim.shutdown.clean")
   client:stop()
   wait_for("server exit", function() return exited ~= nil end)
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
   print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type and call hierarchy, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  passed("the server exited with code 0 and signal 0, and the client was removed")
 end
 
 vim.schedule(function()
-  local ok, err = xpcall(check, debug.traceback)
+  local message
+  local ok, err = xpcall(check, function(e)
+    message = tostring(e)
+    return debug.traceback(e)
+  end)
   if not ok then
+    -- The check that began last failed. A failure outside a check has no ID,
+    -- and run.sh reports it as an issue of the run.
+    record({
+      id = current or vim.NIL, status = "fail", startedAt = started or now(), endedAt = now(),
+      observation = message, reason = message,
+      failureCode = message:find("timed out waiting for", 1, true) and "wait-timeout" or "error",
+    })
     io.stderr:write("FAIL: Neovim smoke test: " .. err .. "\n")
     if client then
       client:stop(true)

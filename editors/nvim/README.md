@@ -152,6 +152,35 @@ The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the
 [tested editor versions](../../docs/compatibility.md#editors).
 
+### Result stream
+
+To record the run as a stream of result events, give `run.sh` a file, then
+validate it:
+
+```sh
+test/e2e/nvim/run.sh build/virgil-lsp --results build/nvim.jsonl
+python3 scripts/editor-results.py validate build/nvim.jsonl
+```
+
+The test's output is the same, with a last line that sums up the run, and
+`run.sh` exits with 0 only if the run passed. Without Neovim, the run fails
+instead of skipping. `--release VERSION` and `--purpose PURPOSE` set the
+stream's `release` and `purpose`, which are otherwise none and `development`.
+[The headless Neovim writer](../../test/e2e/RESULTS.md#the-headless-neovim-writer)
+describes what the stream records.
+
+To inspect a failure, list the events that didn't pass, with their reasons, and
+the run-end, with its issues and cleanup:
+
+```sh
+grep -v '"status":"pass"' build/nvim.jsonl
+```
+
+The first failing check's `reason` is the message of the assertion in
+`check.lua` that failed, with its line; the checks after it are skipped. As
+without `--results`, a failing run prints the last 100 lines of the protocol
+log. A stream without a run-end is from a run that was interrupted or killed.
+
 ## Troubleshooting
 
 - `:checkhealth vim.lsp` shows whether the client attached.
