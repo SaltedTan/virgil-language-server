@@ -674,11 +674,30 @@ def main(argv=None):
     return 0 if passed else 1
 
 
-if __name__ == "__main__":
+class Terminated(KeyboardInterrupt):
+    """SIGTERM or SIGHUP, which stop the rehearsal as Ctrl-C does: the phase
+    in progress cleans up and the receipt records the interruption."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def terminated(signum, frame):
+    raise Terminated(signum)
+
+
+def entry():
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, terminated)
     try:
         sys.exit(main())
     except (Failure, OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit(f"FAIL upgrade rehearsal: {error}")
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as interrupt:
         print("INTERRUPTED upgrade rehearsal", file=sys.stderr)
-        sys.exit(130)
+        sys.exit(128 + getattr(interrupt, "signum", signal.SIGINT))
+
+
+if __name__ == "__main__":
+    entry()

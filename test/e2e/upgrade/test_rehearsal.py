@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import signal
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -213,6 +215,33 @@ class PropagationTests(TemporaryTest):
         results = [(p["name"], p["archive"]["result"], p["vscode"]["result"]) for p in written["phases"]]
         self.assertEqual(results, [("install", "pass", "pass"), ("upgrade", "interrupted", "not run"),
                                    ("rollback", "not run", "not run")])
+
+    def test_sigterm_is_handled_as_an_interrupt(self):
+        # A main() that cleans up in a finally, as the real one does, under
+        # the real entry point; SIGTERM must run that cleanup and exit 143.
+        cleaned = self.root / "cleaned"
+        script = textwrap.dedent(f"""
+            import sys, time
+            sys.path.insert(0, {str(Path(run.__file__).parent)!r})
+            import run
+            def main():
+                try:
+                    print("ready", flush=True)
+                    time.sleep(30)
+                finally:
+                    open({str(cleaned)!r}, "w").close()
+            run.main = main
+            run.entry()
+        """)
+        child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline(), "ready\n")
+        child.send_signal(signal.SIGTERM)
+        out, err = child.communicate(timeout=10)
+        self.assertEqual(child.returncode, 128 + signal.SIGTERM, err)
+        self.assertIn("INTERRUPTED upgrade rehearsal", err)
+        self.assertTrue(cleaned.exists())
 
     def test_all_pass(self):
         logs = self.root / "logs"
