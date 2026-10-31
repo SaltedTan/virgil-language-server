@@ -51,6 +51,56 @@ local function record(entry)
   end
 end
 
+if observations then
+  local root, seen, scanning = vim.fn.getpid(), {}, false
+  local pending
+  local timer = assert(vim.uv.new_timer())
+  local command = { "ps", "-ax", "-o", "pid=,ppid=,comm=" }
+  local function found(listing)
+    local children = {}
+    for line in listing:gmatch("[^\n]+") do
+      local pid, ppid, name = line:match("^%s*(%d+)%s+(%d+)%s+(.-)%s*$")
+      if pid then
+        children[tonumber(ppid)] = children[tonumber(ppid)] or {}
+        table.insert(children[tonumber(ppid)], { pid = tonumber(pid), name = name:gsub("^.*/", "") })
+      end
+    end
+    local todo = { root }
+    while #todo > 0 do
+      for _, child in ipairs(children[table.remove(todo)] or {}) do
+        if not seen[child.pid] and child.name:find("virgil-lsp", 1, true) then
+          seen[child.pid] = true
+          record({ process = child.pid, name = child.name })
+        end
+        table.insert(todo, child.pid)
+      end
+    end
+  end
+  local function scan()
+    if scanning or timer:is_closing() then return end
+    scanning = true
+    local ok, handle = pcall(vim.system, command, { text = true }, function(result)
+      vim.schedule(function()
+        scanning = false
+        if result.code == 0 then pcall(found, result.stdout) end
+      end)
+    end)
+    if ok then pending = handle else scanning = false end
+  end
+  timer:start(0, 500, vim.schedule_wrap(scan))
+  vim.api.nvim_create_autocmd("LspAttach", { callback = scan })
+  vim.api.nvim_create_autocmd("VimLeavePre", { callback = function()
+    timer:stop()
+    timer:close()
+    if pending then
+      local result = pending:wait(2000)
+      if result.code == 0 then found(result.stdout) end
+    end
+    local result = vim.system(command, { text = true }):wait(2000)
+    if result.code == 0 then found(result.stdout) end
+  end })
+end
+
 local function begin(id)
   assert(current == nil, tostring(current) .. " did not end before " .. id)
   current, started = id, now()

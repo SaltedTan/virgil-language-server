@@ -131,6 +131,8 @@ if scenario.get("linger") or scenario.get("detached"):
         file.write(f"{{child.pid}}\\n")
 if path:
     with open(path, "a") as out:
+        if scenario.get("report_child"):
+            out.write(json.dumps({{"process": child.pid, "name": "virgil-lsp-worker"}}) + "\\n")
         for line in scenario.get("lines", []):
             moment = int(time.time() * 1000)
             line = line.replace('"<NOW>"', str(moment)).replace('"<LATER>"', str(moment + 100))
@@ -143,6 +145,19 @@ if scenario.get("lock"):
 time.sleep(scenario.get("sleep", 0.2 if scenario.get("linger") or scenario.get("detached") else 0))
 sys.exit(scenario.get("exit", 0))
 """
+
+
+def wait_for_finalizer(pid):
+    limit = time.monotonic() + 20
+    while time.monotonic() < limit:
+        listing = subprocess.run(["ps", "-A", "-o", "ppid=,args="], check=True,
+                                 stdout=subprocess.PIPE, text=True).stdout
+        for row in listing.splitlines():
+            parent, command = row.split(None, 1)
+            if int(parent) == pid and f"{RESULTS} end " in command:
+                return
+        time.sleep(0.02)
+    raise AssertionError("run.sh did not start its finalizer")
 
 
 class Case(unittest.TestCase):
@@ -288,6 +303,35 @@ class ReaderTest(unittest.TestCase):
         state = self.assert_cleaned()
         self.assertTrue(any("still running" in issue for issue in state["issues"]), state)
 
+    @unittest.skipUnless(sys.platform == "linux", "adoption of unsampled children requires Linux")
+    def test_immediate_failure_stops_detached_child(self):
+        self.assertEqual(self.run_reader([failing(ORDER[0], "immediate failure")], sleep=0, exit=1), 1)
+        self.assert_cleaned()
+        checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
+        self.assertEqual((checks[0]["id"], checks[0]["status"]), (ORDER[0], "fail"))
+        self.assertTrue(all(check["status"] == "skip" for check in checks[1:-1]))
+
+    def test_process_reports_are_cleanup_inputs(self):
+        self.assertEqual(self.run_reader([passing(ORDER[0])], report_child=True, sleep=0), 0)
+        state = self.assert_cleaned()
+        self.assertTrue(any("still running" in issue for issue in state["issues"]), state)
+        checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
+        self.assertEqual([check["id"] for check in checks], [ORDER[0], "nvim.infrastructure.completed"])
+
+    def test_signal_during_unavailable_finalization(self):
+        env = dict(os.environ, PATH=f"{self.work}{os.pathsep}{os.environ['PATH']}",
+                   VIRGIL_NVIM_END_DELAY="2")
+        with subprocess.Popen(["bash", str(RUN), str(self.work / "virgil-lsp"), "--results", str(self.stream)],
+                              env=env, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True) as process:
+            wait_for_finalizer(process.pid)
+            os.kill(process.pid, signal.SIGTERM)
+            output, error = process.communicate(timeout=20)
+        self.assertEqual(process.returncode, 1, output + error)
+        run = validator.validate_stream(self.stream.read_bytes(), VALIDATOR_MANIFEST, VALIDATOR_SCHEMA)
+        self.assertEqual(run.end["exitCode"], process.returncode)
+        self.assertEqual(run.end["status"], "unavailable")
+
     def test_malformed_records_continue_to_deadline_and_cleanup(self):
         lines = []
         for changes in ({"startedAt": True}, {"id": []}, {"startedAt": float("nan")},
@@ -296,6 +340,10 @@ class ReaderTest(unittest.TestCase):
                 record = json.loads(passing(ORDER[0]) if status == "pass" else failing(ORDER[0], "failed"))
                 record.update(changes)
                 lines.append(json.dumps(record))
+        lines += [json.dumps(record) for record in (
+            {"process": [], "name": "virgil-lsp"}, {"process": True, "name": "virgil-lsp"},
+            {"process": os.getpid(), "name": "virgil-lsp"}, {"process": 1, "name": []},
+        )]
         self.assertEqual(self.run_reader([*lines, passing(ORDER[0])]), 1)
         state = self.assert_cleaned()
         self.assertEqual(sum("malformed observation" in issue for issue in state["issues"]), len(lines))
@@ -531,6 +579,31 @@ class StreamTest(Case):
         self.assertStopped()
         self.assertEqual(run.end["cleanup"], "verified")
         self.assertNoWork()
+
+    @unittest.skipUnless(sys.platform == "linux", "adoption of unsampled children requires Linux")
+    def test_immediate_failure_stops_detached_child(self):
+        self.scenario(lines=[failing(ORDER[0], "immediate failure")], detached=True, sleep=0, exit=1)
+        run = self.assertFailed(self.run_sh())
+        self.assertStopped()
+        self.assertEqual(run.end["cleanup"], "verified")
+        self.assertNoWork()
+
+    def test_signal_during_finalization(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                self.scenario(lines=[failing(ORDER[0], "failed")] if failed else list(map(passing, ORDER)),
+                              exit=1 if failed else 0)
+                self.env["VIRGIL_NVIM_END_DELAY"] = "2"
+                with self.start_run_sh() as process:
+                    wait_for_finalizer(process.pid)
+                    os.kill(process.pid, signal.SIGTERM)
+                    process.wait(timeout=20)
+                run = self.validate()
+                self.assertEqual(process.returncode, 1 if failed else 0)
+                self.assertEqual(run.end["exitCode"], process.returncode)
+                self.assertEqual(run.end["status"], "fail" if failed else "pass")
+                self.assertStopped()
+                self.assertNoWork()
 
     def test_detached_process_after_launcher_signal(self):
         self.scenario(lines=[passing(ORDER[0])], sleep=60, detached=True)

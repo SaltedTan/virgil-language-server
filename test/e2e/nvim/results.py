@@ -19,6 +19,7 @@ counts the events written so far. A launcher that is interrupted or killed
 leaves the events it wrote, without a run-end, so the stream is incomplete.
 Requires Python 3.9 or later and only the standard library."""
 import argparse
+import ctypes
 import datetime
 import hashlib
 import json
@@ -398,6 +399,13 @@ def run(args):
     def take(line):
         try:
             entry = json.loads(line)
+            if isinstance(entry, dict) and "process" in entry:
+                pid, name = entry["process"], entry["name"]
+                if not (type(pid) is int and pid > 0 and pid not in protected_pids
+                        and isinstance(name, str) and "virgil-lsp" in name):
+                    raise ValueError("invalid process fields")
+                pids.add(pid)
+                return
             check_id, status = entry["id"], entry["status"]
             started, ended = entry["startedAt"], entry["endedAt"]
             upper = (now() + 1) * 1000
@@ -429,7 +437,8 @@ def run(args):
     env = dict(os.environ, VIRGIL_NVIM_OBSERVATIONS=str(observations))
     launched = now()
     process = None
-    groups = set()
+    pids, groups = set(), set()
+    protected_pids = {os.getpid()}
     protected = {os.getpgrp()}
     interrupted = None
     timed_out = False
@@ -443,20 +452,38 @@ def run(args):
                  (map(int, row.split()) for row in listing.stdout.splitlines())}
         parent = os.getpid()
         while parent and parent in table:
+            protected_pids.add(parent)
             parent, group = table[parent]
             protected.add(group)
         if process is not None:
-            descendants = {process.pid}
+            descendants = {process.pid, os.getpid()}
             while True:
                 children = {pid for pid, (parent, _) in table.items() if parent in descendants}
                 if children <= descendants:
                     break
                 descendants.update(children)
-            groups.update(table[pid][1] for pid in descendants if pid in table)
+            pids.update(pid for pid in descendants if pid in table and table[pid][1] not in protected)
+        pids.difference_update(protected_pids)
+        pids.difference_update({pid for pid in pids if pid in table and table[pid][1] in protected})
+        groups.update(table[pid][1] for pid in pids if pid in table)
         groups.difference_update(protected)
 
     def alive():
         remaining = set()
+        if process is not None and process.returncode is not None:
+            while True:
+                try:
+                    child, _ = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if child == 0:
+                    break
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+                remaining.add(pid)
+            except ProcessLookupError:
+                pass
         for group in groups:
             try:
                 os.killpg(group, 0)
@@ -471,9 +498,15 @@ def run(args):
 
     previous = {signum: signal.signal(signum, stop) for signum in STOP_SIGNALS}
     try:
+        if sys.platform == "linux":
+            try:
+                ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)
+            except (OSError, AttributeError):
+                pass
         collect()
         if interrupted is None:
             process = subprocess.Popen(args.nvim, start_new_session=True, env=env)
+            pids.add(process.pid)
             groups.add(process.pid)
             with open(observations, "rb") as source:
                 def read():
@@ -497,8 +530,7 @@ def run(args):
                         timed_out = True
                         break
                     time.sleep(0.05)
-                if interrupted is None:
-                    read()
+                read()
             if buffered.strip():
                 state["issues"].append("check.lua's last observation is incomplete")
     except Exception as error:
@@ -525,11 +557,22 @@ def run(args):
             state["processes"] = "failed"
             state["issues"].append("could not inspect Neovim's remaining processes: " + paths(str(error)))
         try:
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError as error:
+                    state["processes"] = "failed"
+                    state["issues"].append("could not stop a recorded Neovim process: " + paths(str(error)))
             for group in groups:
                 try:
                     os.killpg(group, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except OSError as error:
+                    state["processes"] = "failed"
+                    state["issues"].append("could not stop a recorded Neovim process group: " + paths(str(error)))
             if process is not None:
                 process.wait()
             left = time.monotonic() + GRACE
@@ -584,6 +627,8 @@ def run(args):
 def end(args):
     """Tears down, then writes the run-end, unless the launcher was
     interrupted. Returns run.sh's exit status."""
+    # VIRGIL_NVIM_END_DELAY lets the finalization signal test hold this step open.
+    time.sleep(float(os.environ.get("VIRGIL_NVIM_END_DELAY", "0")))
     code = args.exit_code
     stream = Stream(args.stream)
     state = None

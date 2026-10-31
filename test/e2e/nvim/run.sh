@@ -57,7 +57,8 @@ if [[ -n $results ]]; then
   # results.py removes the temporary directory, verifies that, and writes the
   # run-end, unless the run was interrupted; its status is the run's.
   finish() {
-    local code=$? args=()
+    trap '' HUP INT TERM
+    local code=$1 args=()
     set +e
     # Stop the wrapper that a signal interrupted, so that it stops Neovim, and
     # reap it before the cleanup.
@@ -73,7 +74,7 @@ if [[ -n $results ]]; then
     [[ -z ${work:-} ]] || rm -rf "$work"
     exit "$code"
   }
-  trap finish EXIT
+  trap 'finish "$?"' EXIT
   # Bash runs these at once while it waits for the Neovim wrapper, which runs in
   # the background for that reason, and otherwise after the command in
   # progress ends.

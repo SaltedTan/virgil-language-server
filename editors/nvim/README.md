@@ -179,7 +179,20 @@ grep -v '"status":"pass"' build/nvim.jsonl
 The first failing check's `reason` is the message of the assertion in
 `check.lua` that failed, with its line; the checks after it are skipped. As
 without `--results`, a failing run prints the last 100 lines of the protocol
-log. A stream without a run-end is from a run that was interrupted or killed.
+log. With `--results`, cleanup kills and verifies every recorded descendant
+PID and process group. Neovim reports `virgil-lsp` descendants on LspAttach,
+every 500 ms, and in a final synchronous exit scan; the launcher also samples
+the process tree at reports, about once a second, and before stopping Neovim.
+On Linux the launcher attempts to become a child subreaper and reaps orphaned
+descendants. On macOS, or if Linux subreaper setup fails, a process whose parent
+exits before any scan has seen it is not covered.
+
+A stream without a run-end is from a run that was interrupted or killed.
+SIGINT, SIGTERM, and SIGHUP received before finalization stop Neovim and leave
+no run-end. During finalization those signals are ignored by the launcher and
+its finalizer, so the run-end and shell exit status agree. An interruption
+already received still leaves no run-end and exits with 128 plus the signal
+number.
 
 ## Troubleshooting
 
