@@ -56,7 +56,7 @@ class LspSignatureHelp extends LspQueryRequests {
 		var path = DocumentUri.filePath(overlay.uri);
 		// A number literal at the cursor is repaired as it is, without the
 		// sentinel, which a number cannot continue.
-		var number = ctx.place == LspCursorPlace.NUMBER && ctx.numberEnd >= 0;
+		var number = ctx.numberEnd >= 0;
 		// Null where no call is open, in a comment or a literal, and without
 		// a file path or a worker.
 		if ((ctx.place != LspCursorPlace.CODE && !number) || calls.length == 0 || path == null || scheduler == null) return finish(r, r.fallback());

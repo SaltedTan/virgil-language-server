@@ -100,7 +100,8 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
 	// The offset just past the number literal that holds the cursor, or just
-	// precedes it, when {place} is NUMBER; -1 otherwise, for "_", which an
+	// precedes it, when {place} is NUMBER or the cursor follows a lone "1.",
+	// which NumberParser takes as a float; -1 otherwise, for "_", which an
 	// identifier continues, and for a tuple index such as the "0" in "t.0".
 	// Signature help repairs a call there without the sentinel, since a name
 	// cannot continue a number (LspCompletionRepair.repairNumber).
@@ -325,12 +326,17 @@ class LspCursorScanner(text: Array<byte>) {
 				if (afterMemberDot) {
 					while (j < n && isDecimal(text[j])) j++;
 				} else j = numberEnd(i);
+				// NumberParser takes a lone "1." as a float, which the
+				// scanner leaves as a number and a "." (fractionEnd).
+				var literalEnd = if(j == emptyFractionDot, j + 1, j);
 				if (end <= j) {
 					// The cursor is in the number literal or just past it, so
 					// the repair closes what is open after it.
-					if (!afterMemberDot) ctx.numberEnd = j;
+					if (!afterMemberDot) ctx.numberEnd = literalEnd;
 					return LspCursorPlace.NUMBER;
 				}
+				// Just past a lone "1.", where completion gets nothing.
+				if (!afterMemberDot && end == literalEnd) ctx.numberEnd = literalEnd;
 				token(LspCursorToken.LITERAL, i);
 				i = j;
 			} else if (c <= ' ' || c > '~') {

@@ -222,6 +222,12 @@ def test_number_calls(t: Tester) {
 		("\t\tUtil.add(1, 2.$5;", expected(ADD, ADD_PARAMS, 1)),
 		("\t\tUtil.add(1, 2.5f$;", expected(ADD, ADD_PARAMS, 1)),
 		("\t\tUtil.add(1, 1.5e+$3;", expected(ADD, ADD_PARAMS, 1)),
+		// A lone "1.", which NumberParser takes as a float, with the cursor
+		// before its "." and after it.
+		("\t\tUtil.add(1$.;", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1.$;", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1, 1$.;", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(1, 1.$;", expected(ADD, ADD_PARAMS, 1)),
 		// The editor closed the call at once, so the repair ends the statement
 		// after the ")" that follows the literal.
 		("\t\tUtil.add(1, 32$)", expected(ADD, ADD_PARAMS, 1))
