@@ -2721,7 +2721,7 @@ mkdir -p build/bench-results/cursor-work
 flock ~/.t3/scratch-virgil/bench.lock python3 scripts/bench-cursor-tolerance.py \
   --exe build/bench/virgil-lsp --cpu 12 --work-dir build/bench-results/cursor-work \
   --output build/bench-results/cursor.json
-python3 scripts/bench-cursor-tolerance.py --smoke --exe build/virgil-lsp --output build/cursor-smoke.json
+python3 scripts/bench-cursor-tolerance.py --smoke --exe build/bench/virgil-lsp --output build/cursor-smoke.json
 python3 test/benchmarks/test_cursor_tolerance.py
 ```
 
@@ -2782,9 +2782,9 @@ after a reviewed change.
   the intended program of every step. These are member completions only, not
   signature help. Only the edited file is open.
 
-Signature help is asked at a real call argument, after `(` or `,`; completion at
-a `.` or a typed prefix. `third-damaged-body` asks for both: completion in
-`third` and signature help at `edit`'s call.
+Signature help is asked inside a real call's argument list, including within a
+number; completion at a `.` or a typed prefix. `third-damaged-body` asks for
+both: completion in `third` and signature help at `edit`'s call.
 
 Every step also asks for definitions: in the edited body or declaration, in an
 intact sibling, in another file, at the probed call's callee, and, where its use
