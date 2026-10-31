@@ -12,6 +12,8 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisTables:reserved_indexes", test_reserved_indexes),
+	T("AnalysisTables:reserved_strings", test_reserved_strings),
+	T("AnalysisTables:reserved_strings_huge", test_reserved_strings_huge),
 	T("AnalysisTables:siphash_vectors", test_siphash_vectors),
 	T("AnalysisTables:colliding_strings", test_colliding_strings),
 	T("AnalysisTables:colliding_signatures", test_colliding_signatures),
@@ -464,6 +466,43 @@ def test_reserved_indexes(t: Tester) {
 	table.reserve(10);
 	for (i < 200) t.asserti(i, table.find(i));
 	t.asserti(-1, table.find(201));
+}
+
+// Reserving room in a partially filled string table keeps each string at its
+// index, a count it already holds changes nothing, and the table still grows
+// past an estimate that was too small.
+def test_reserved_strings(t: Tester) {
+	var table = AnalysisStringTable.new(), names = Array<string>.new(300), buf = StringBuilder.new();
+	for (i < names.length) names[i] = Strings.format1("name%d", i);
+	for (i < 20) t.asserti(i, table.add(names[i]));
+	table.reserve(0);
+	table.reserve(-1);
+	table.reserve(20);
+	t.asserti(20, table.length());
+	table.reserve(100);
+	t.asserti(20, table.length());
+	for (i < 20) {
+		t.asserti(i, table.find(names[i]));
+		t.assert(table[i] == names[i], "a reserved table keeps each string");
+	}
+	for (i < names.length) t.asserti(i, table.add(names[i]));
+	for (i < names.length) t.asserti(i, table.add(table.intern(buf.puts(names[i]))));
+	for (i < names.length) t.asserti(i, table.find(names[i]));
+	t.asserti(names.length, table.length());
+	t.asserti(-1, table.find("name300"));
+}
+
+// An estimate far above what the table gets only makes it bigger.
+def test_reserved_strings_huge(t: Tester) {
+	var table = AnalysisStringTable.new();
+	table.reserve(1 << 20);
+	t.asserti(0, table.length());
+	t.asserti(-1, table.find("a"));
+	t.asserti(0, table.add("a"));
+	t.asserti(1, table.add("b"));
+	t.asserti(0, table.add("a"));
+	t.asserti(1, table.find("b"));
+	t.asserti(2, table.length());
 }
 
 // Sorting a buffer's first n elements gives sort's stable order in a new

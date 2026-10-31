@@ -416,6 +416,11 @@ component AnalysisWire {
 		}
 		var workerDeclarations = analysis.typeDeclarationCount();
 		decls.reserve(workerDeclarations);
+		// The table's strings are mostly declarations' names and signatures,
+		// many of them shared, and a few use types and hints: in the Aeneas
+		// sources, 0.82 for each declaration. Room for one for each costs less
+		// than growing by doubling, and a table that needs more still grows.
+		strings.reserve(workerDeclarations);
 		var typeEncoding = AnalysisTypeTargetEncoding.new(workerDeclarations, decls, files.length);
 		typeEncoding.defaults.grow(workerDeclarations);
 		for (i < files.length) {
@@ -525,7 +530,15 @@ component AnalysisWire {
 			encodeCalls(encoded, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank, hints);
 			callData[i] = encoded.take();
 		}
-		var text = AnalysisStringTable.new();
+		// Counting the strings the table lacks, repeats included, sizes the
+		// text table, so that it does not grow by doubling.
+		var text = AnalysisStringTable.new(), missing = 0;
+		for (i in order) {
+			var sig = analysis.callSignature(i);
+			if (strings.find(sig.label) < 0) missing++;
+			for (p in sig.params) if (strings.find(p) < 0) missing++;
+		}
+		text.reserve(missing);
 		for (i in order) {
 			var sig = analysis.callSignature(i);
 			if (strings.find(sig.label) < 0) text.add(sig.label);
