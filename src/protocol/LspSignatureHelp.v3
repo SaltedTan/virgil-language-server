@@ -57,8 +57,8 @@ class LspSignatureHelp extends LspQueryRequests {
 		// A number literal at the cursor is repaired as it is, without the
 		// sentinel, which a number cannot continue.
 		var number = ctx.numberEnd >= 0;
-		// Null where no call is open, in a comment or a literal, and without
-		// a file path or a worker.
+		// Null where no call is open, in a comment or a non-number literal,
+		// and without a file path or a worker.
 		if ((ctx.place != LspCursorPlace.CODE && !number) || calls.length == 0 || path == null || scheduler == null) return finish(r, r.fallback());
 		var reuse = cached(overlay, ctx.cursor);
 		if (reuse != JsonValue.Null) return finish(r, JsonRpcReply.Result(reuse));
