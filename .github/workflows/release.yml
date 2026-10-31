@@ -217,6 +217,13 @@ jobs:
           mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
           sha256sum --check --strict SHA256SUMS
+      # The publish job checks the same set again before attesting it; this
+      # copy lets a pull-request dry run catch a target added or removed
+      # without updating the script.
+      - name: Check the asset set
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: scripts/release-assets.sh "$VERSION" release/assets
       - name: Write release notes
         env:
           CHANGELOG_SECTION: ${{ needs.check.outputs.changelog }}
@@ -248,6 +255,10 @@ jobs:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.check.outputs.version }}
     steps:
+      # Only for scripts/release-assets.sh; nothing is built here.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           name: release
