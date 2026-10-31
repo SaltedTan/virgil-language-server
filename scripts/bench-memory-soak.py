@@ -66,7 +66,8 @@ PROBE = re.compile(r"^BENCH (server|worker) (\d+) (\w+) (-?\d+)$")
 RETIRED = re.compile(r"^virgil-lsp: replacing analysis worker (\d+) (?:after (\d+) analyses \(limit (\d+)\)"
                      r"|because its UID counter reached (\d+) \(limit (\d+)\)"
                      r"|because its live heap reached (\d+) bytes \(limit (\d+)\))$")
-FAILED = re.compile(r"^virgil-lsp: analysis worker (\d+) (.*); it ended with (.*)$")
+FAILED = re.compile(r"^virgil-lsp: (?:warning: )?analysis worker (\d+) (.*); it ended with ([^;]+)"
+                    r"(?:; snapshot \d+ is kept)?$")
 STATE = ("worker_analyses", "worker_uid_next", "worker_live_bytes", "worker_live_limit_bytes")
 
 
@@ -124,13 +125,13 @@ def group_members(pgid):
 def stop_group(proc, grace_s=5, deadline_s=5):
     """End a server that leads its own process group, and every process in it.
 
-    Closes its input and gives it {grace_s} to exit. Then, while the leader
-    is still unreaped, so that its group ID can't name another group, sends
-    SIGKILL to the group, waits on each member's pidfd until {deadline_s},
-    and lists the members still running before reaping the leader. A worker
-    started in the grace period is in the group, so it can't escape. If the
-    leader was already reaped, a process that now has its PID belongs to
-    another group, and ours, which would have kept the ID, is empty."""
+    Closes its input and gives it {grace_s} to exit. Then sends SIGKILL to
+    the group, waits on each member's pidfd until {deadline_s}, and lists
+    the members still running before reaping the leader if needed. An
+    unreaped leader or remaining group members keep the group ID reserved.
+    A worker started in the grace period is in the group, so it can't escape.
+    If the leader was already reaped, a process that now has its PID belongs
+    to another group, and ours, which would have kept the ID, is empty."""
     pgid = proc.pid
     try:
         proc.stdin.close()

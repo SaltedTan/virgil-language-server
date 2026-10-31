@@ -3000,10 +3000,12 @@ python3 test/benchmarks/test_memory_soak.py
 The fixture is three complete copies of the pinned Aeneas sources and the
 tolerance observer, `first`, `second`, and `third`, as three projects of one
 configuration. Each copy fits the project input bound on its own (207 files and
-3,104,166 bytes as analysis capture counts them, under 1,024 files and 4 MiB),
-and each offers the parseable-text cache 3,208,287 bytes, so that any two exceed
-its 4 MiB. One server lifetime with no worker options runs two warmup cycles,
-kept apart, and then 80 measured cycles. Each cycle changes a numbered comment
+about 3.1 MB as analysis capture counts them in the measured run below, under
+1,024 files and 4 MiB), and each offers the parseable-text cache about 3.21 MB,
+so that any two exceed its 4 MiB. Both charges include paths, so their exact
+values depend on the work directory and context name. One server lifetime with
+no worker options runs two warmup cycles, kept apart, and then 80 measured
+cycles. Each cycle changes a numbered comment
 at the end of each context's open observer in turn and waits until that
 context's analysis completes: a definition of `stable` in the observer and of
 `StringBuilder` in `aeneas/src/util/Paths.v3` must equal the context's first
@@ -3017,12 +3019,11 @@ twentieth opens `aeneas/src/arm64/Arm64AddrPatcher.v3` with `def pos = mw.pos;`
 broken, restores it, and closes it, and every fortieth adds a source with
 descriptor clauses and `-lang:descriptors` to one context through an unsaved
 configuration, then restores both and deletes the file. Each of these takes the
-next context in turn. Every step ends at a request barrier with a 15-second
-deadline, never a sleep, and the run has a 30-minute deadline. Writes to the
-server have the same deadline: the driver writes without blocking, so a server
-that stops reading ends the run with a deadline finding instead of hanging it. `--smoke` runs
-only cycles 39 and 40, without warmups or a build manifest; cycle 40 has every
-periodic action.
+next context in turn. Every step waits for request barriers, never a sleep.
+Each reply wait and non-blocking write has a 15-second deadline, capped by the
+run's 30-minute deadline, so a server that stops reading ends the run with a
+deadline finding instead of hanging it. `--smoke` runs only cycles 39 and 40,
+without warmups or a build manifest; cycle 40 has every periodic action.
 
 At every step the driver records the server's and worker's current RSS and
 high-water mark, the worker's PID, each admission's charges and outcome, each
@@ -3031,7 +3032,7 @@ live bytes after its collection, and the server's semispace use after decoding.
 The sampler adds each PID's largest RSS every 50 ms, per cycle, and the largest
 sum of one pass. These are different quantities, in separate fields: RSS and
 high-water marks are what the OS reports for each process; the worker's
-reserved heap is its semispace from HELLO; live bytes are the worker's
+reserved heap is the total for both semispaces from HELLO; live bytes are the worker's
 retirement measure; allocation is cumulative; and charges are the server's own
 accounting of what a snapshot or cached text retains, never its RSS. BENCH
 builds add these server probes for the soak:
@@ -3050,10 +3051,12 @@ texts together exceed it; that every retained snapshot charge stays within
 some admission had to evict an inactive context's snapshot; that admission
 never frees what it protects; that each retirement's logged reason is the one
 the limits give for the worker's last analysis, and that none was due and
-missed; that each worker's reported analysis count, which decides retirement by
-count, matches the completions observed for it, with no reset, missing
-increment, or skip; that the live limit is an eighth of the worker's heap; that no answer
-binds anywhere but the context's own copy; and that no nonempty publication for
+missed; that a worker crash, timeout, or other failure produces a retirement
+violation while retaining its `failed` classification, including after its
+query was cancelled; that each worker's reported analysis count, which decides
+retirement by count, matches the completions observed for it, with no reset,
+missing increment, or skip; that the live limit is an eighth of the worker's
+heap; that no answer binds anywhere but the context's own copy; and that no nonempty publication for
 an open document carries a version older than one already confirmed or
 published. A refused admission is recorded with its cause, `pinned` when a
 rename's original alone prevents it and `protected` otherwise. Any failure is a

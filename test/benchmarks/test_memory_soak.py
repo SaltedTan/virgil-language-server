@@ -157,7 +157,7 @@ class RetirementTest(unittest.TestCase):
                                ("sent a result exceeding the allocation budget and was replaced", "exit 0"),
                                ("sent no handshake before the startup deadline", "signal 9")):
             with self.subTest(detail=detail):
-                line = f"virgil-lsp: analysis worker 10 {detail}; it ended with {status}"
+                line = f"virgil-lsp: warning: analysis worker 10 {detail}; it ended with {status}"
                 workers = self.classify(started(10) + line + "\n")
                 workers.end()
                 self.assertEqual(workers.workers[0]["ended"],
@@ -186,7 +186,7 @@ class RetirementTest(unittest.TestCase):
         self.assertEqual(extra, {"cancel_preceded_completion": True})
         run.s.send.assert_any_call("$/cancelRequest", {"id": 7}, request=False)
         run.trace = Mock(return_value=(
-            "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
+            "virgil-lsp: warning: analysis worker 10 crashed during an analysis; it ended with signal 9; snapshot 6 is kept\n"
             + started(11) + analysis(1)))
         run.resources = Mock(return_value={})
         record = run.transition(1, False, "temporary", "third", time.perf_counter_ns(), **extra)
@@ -199,6 +199,18 @@ class RetirementTest(unittest.TestCase):
         self.assertEqual(run.result["workers"]["reasons"], {"failed": 1, "live at end": 1})
         self.assertEqual(soak.bounds(run.result, True)["retirement_classified"],
                          {"retirements": 0, "violations": 1})
+
+    def test_server_warning_failure_with_and_without_kept_snapshot(self):
+        for suffix in ("", "; snapshot 6 is kept"):
+            with self.subTest(suffix=suffix):
+                line = ("virgil-lsp: warning: analysis worker 10 crashed during an analysis; "
+                        "it ended with signal 9" + suffix)
+                workers = self.classify(started(10) + analysis(1) + line + "\n")
+                workers.end()
+                self.assertEqual(workers.workers[0]["ended"],
+                                 {"reason": "failed", "detail": "crashed during an analysis", "status": "signal 9"})
+                self.assertEqual(workers.findings,
+                                 [{"bound": "retirement", "detail": "worker failed", "pid": 10, "line": line}])
 
 
 class AdmissionTest(unittest.TestCase):
