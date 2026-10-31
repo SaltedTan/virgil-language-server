@@ -802,7 +802,7 @@ def test_workspace_source_uris(t: Tester) {
 def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);
 	for (i < 7) w.put_sleb32(-1);
-	w.put_sleb32(0).put_sleb32(1).put_sleb32(1).putb('x');
+	w.put_sleb32(0).put_sleb32(0).put_sleb32(1).put_sleb32(1).putb('x');
 	w.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x01\x01\x02\x00\x01").put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	// No signature text or signatures, then the file table.
 	w.put_sleb32(0).put_sleb32(0);

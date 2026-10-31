@@ -39,6 +39,8 @@ def X = [
 	T("AnalysisWire:result_allocation_budget", test_result_allocation_budget),
 	T("AnalysisWire:occurrence_token_spans", test_occurrence_token_spans),
 	T("AnalysisWire:result_index_string_budget", test_result_index_string_budget),
+	T("AnalysisWire:capped_diagnostics", test_capped_diagnostics),
+	T("AnalysisWire:invalid_capped_diagnostics", test_invalid_capped_diagnostics),
 	T("AnalysisWire:wrong_kind", test_wrong_kind),
 	T("AnalysisWire:scope_request_round_trip", test_scope_request_round_trip),
 	T("AnalysisWire:invalid_scope_requests", test_invalid_scope_requests),
@@ -549,6 +551,9 @@ def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
 	w.putb(if(occurrences != null, 4 | 1, 1));
 	for (i < 7) w.put_sleb32(-1);
 	w.put_sleb32(diagnostics);
+	// None capped; with diagnostics, the caller appends their records and
+	// this count.
+	if (diagnostics == 0) w.put_sleb32(0);
 	if (occurrences != null) w.putr(occurrences.alias());
 	return w.extract();
 }
@@ -913,7 +918,7 @@ def test_result_allocation_budget(t: Tester) {
 		var d = DataWriter.new();
 		for (i < 3) d.puta("\x7F\x01\x01\x01\x01\x01\x01\x7F\x7F");
 		d.put_sleb32(-1).puta("\x01\x01\x01\x01\x01\x01").put_sleb32(-1);
-		d.put_sleb32(n).putr(text[0 ... n]);
+		d.put_sleb32(n).putr(text[0 ... n]).put_sleb32(0);
 		var payload = Arrays.concat(result(4, null), d.extract());
 		if (n == boundary) t.assert(decodedResult(payload, 1, REQUEST) != null, "exact allocation budget accepted");
 		else assertTooLarge(t, payload, "one message byte beyond allocation budget rejected");
@@ -921,6 +926,83 @@ def test_result_allocation_budget(t: Tester) {
 	var diagnostics = DataWriter.new();
 	for (i < 10000) diagnostics.puta("\x7F\x01\x01\x01\x01\x7F\x7F\x7F\x7F");
 	assertTooLarge(t, Arrays.concat(result(10000, null), diagnostics.extract()), "diagnostic records exceed allocation budget");
+}
+
+// The text of #393: a field initialized with {operators} unresolved
+// operators, each of which is an error after the unresolved "c".
+def chainSource(operators: int) -> string {
+	var text = StringBuilder.new().puts("component C { var b = 0; def chain = c");
+	for (i < operators) text.puts("+1");
+	return text.puts("; }\n").extract();
+}
+// A capped analysis sends only its kept diagnostics, and the count after
+// the last of them, which the decoder sets without charging for it.
+def test_capped_diagnostics(t: Tester) {
+	var max = AeneasAdapter.MAX_FILE_DIAGNOSTICS, paths = ["chain.v3"];
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("chain.v3", chainSource(8000))], [], false);
+	t.asserti(max, analysis.diagnostics.length);
+	for (occurrences in [false, true]) {
+		var files: Array<(string, Array<AnalysisOccurrence>)>;
+		if (occurrences) files = [("chain.v3", analysis.occurrences("chain.v3"))];
+		assertCounted(t, "capped", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, analysis, -1, -1, files, null, null, null));
+		var w = AnalysisWire.encodeResult(1, 1, 1, analysis, -1, -1, files);
+		var decoded = decodedResult(payloadOf(AnalysisWire.finishResult(w, 0L)), 1, paths);
+		if (decoded == null) return t.fail("a capped result was rejected");
+		var got = decoded.snapshot.diagnostics;
+		t.asserti(max, got.length);
+		for (i < got.length) {
+			var d = got[i], e = analysis.diagnostics[i];
+			t.asserti(e.omitted, d.omitted);
+			t.asserti(e.beginOffset, d.beginOffset);
+			t.assert(Strings.equal(e.message, d.message), "the message is kept");
+		}
+		// One error for "c" and 8,000 for the operators, of which 99 are sent.
+		t.asserti(8001 - max, got[max - 1].omitted);
+		if (occurrences) continue;
+		// Each diagnostic is charged its record and its three strings, at 32
+		// bytes per byte; the omitted count adds nothing.
+		var charge = 64L;
+		for (d in got) charge += 2056 + 3 * 64 + 32 * (d.path.length + d.kind.length + d.message.length);
+		t.assertl(charge, decoded.snapshot.resultAllocation);
+	}
+	// The cap bounds the count, not each diagnostic's charge: long messages
+	// still exceed the budget.
+	var message = Array<byte>.new(8 * 1024);
+	for (i < message.length) message[i] = 'x';
+	var diagnostics = Array<AnalysisDiagnostic>.new(max);
+	for (i < max) diagnostics[i] = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 2, "Error", message);
+	diagnostics[max - 1].omitted = 5;
+	var large = ProgramAnalysis.new(diagnostics, AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var payload = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, large, -1, -1, null), 0L));
+	assertTooLarge(t, payload, "capped diagnostics with long messages exceed the budget");
+}
+// The count after the diagnostics is at most theirs, and each entry names a
+// diagnostic after the previous entry's, with a positive count.
+def test_invalid_capped_diagnostics(t: Tester) {
+	var two = Arrays.concat(result(2, null), "\x7F\x01\x01\x01\x01\x01\x01\x7F\x7F\x7F\x01\x01\x01\x01\x01\x01\x7F\x7F");
+	var valid = DataWriter.new().put_sleb32(2).put_sleb32(0).put_sleb32(1).put_sleb32(1).put_sleb32(9);
+	var decoded = decodedResult(Arrays.concat(two, valid.extract()), 1, REQUEST);
+	if (decoded == null) return t.fail("valid omitted counts were rejected");
+	t.asserti(1, decoded.snapshot.diagnostics[0].omitted);
+	t.asserti(9, decoded.snapshot.diagnostics[1].omitted);
+	var invalid: Array<Array<int>> = [
+		[3, 0, 1, 1, 1, 1, 1],	// more entries than diagnostics
+		[-1],			// a negative count
+		[1, 2, 1],		// past the diagnostics
+		[1, -1, 1],		// before them
+		[2, 1, 1, 1, 1],	// a repeated index
+		[2, 1, 1, 0, 1],	// a decreasing index
+		[1, 0, 0],		// none omitted
+		[1, 0, -3],		// a negative count omitted
+		[1, 0],			// truncated
+		[1]			// truncated
+	];
+	for (values in invalid) {
+		var w = DataWriter.new();
+		for (v in values) w.put_sleb32(v);
+		var outcome = AnalysisWire.decodeResult(Arrays.concat(two, w.extract()), 1, REQUEST);
+		t.assert(AnalysisResultDecode.Malformed.?(outcome), "invalid omitted counts are malformed");
+	}
 }
 
 def assertTooLarge(t: Tester, payload: Array<byte>, message: string) {
@@ -1207,7 +1289,7 @@ def test_display_shared_signature(t: Tester) {
 }
 // A query decodes each signature once, however many of its calls name it:
 // here 5,000 calls name one signature with 100,000 parameters, in a
-// 115,069-byte result, which one array per call would make 500 million
+// 115,074-byte result, which one array per call would make 500 million
 // parameter slots.
 def test_shared_signatures(t: Tester) {
 	// The label is "x", and every parameter "int".
@@ -1216,7 +1298,7 @@ def test_shared_signatures(t: Tester) {
 	var calls = DataWriter.new();
 	for (i < 5000) calls.putb(3).putb(0).putb(1);
 	var payload = result(0, withCalls(w.extract(), 5000, calls.extract()));
-	t.asserti(115073, payload.length);
+	t.asserti(115074, payload.length);
 	var r = decodedResult(payload, 1, REQUEST);
 	if (r == null) return t.fail("the calls were rejected");
 	var got = r.snapshot.calls("p.v3");

@@ -15,6 +15,9 @@ class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
 		endLine: int, endColumn: int, kind: string, message: string) {
 	var beginOffset: int = -1;
 	var endOffset: int = -1;
+	// How many more of its path's diagnostics follow this one and were not
+	// reported, or 0; see AeneasAdapter.MAX_FILE_DIAGNOSTICS.
+	var omitted: int;
 
 	def toString() -> string {
 		var buf = StringBuilder.new();
@@ -482,6 +485,15 @@ component AeneasAdapter {
 	// stops at the next declaration.
 	// AeneasAdapter:program_error_limit checks it against the pinned compiler.
 	def PROGRAM_MAX_ERRORS = 15;
+	// The most whole-program diagnostics reported for one path. Program.ERROR
+	// stops checking only between declarations, so one long expression, such
+	// as a chain of 8,000 unresolved operators, reports an error for each
+	// operator. Each reported diagnostic is charged about 6.5 KB against the
+	// result's allocation budget (see AnalysisWire.decodeResult), so 100 take
+	// about 4% of it and fit beside the largest program measured (the Aeneas
+	// sources, 78%); the single-file parser stops at the same count
+	// (MAX_ERRORS). See docs/architecture.md#semantic-diagnostics.
+	def MAX_FILE_DIAGNOSTICS = 100;
 	// Parse/verify do not mutate compiler configuration. Each analysis still
 	// owns a fresh Program and Compilation; only this default configuration
 	// is reused. Language options live in CLOptions instead; see
@@ -760,6 +772,7 @@ component AeneasAdapter {
 			}
 			diagnostics[i] = coordinates.diagnostic(d);
 		}
+		diagnostics = capDiagnostics(diagnostics);
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
 		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax);
@@ -803,6 +816,28 @@ component AeneasAdapter {
 			for (t = b; t != null; t = t.link) count++;
 		}
 		return count;
+	}
+	// Keeps the first MAX_FILE_DIAGNOSTICS of each path's diagnostics, in
+	// order, and sets the last one kept's {omitted} to the number dropped.
+	// A null path is a path of its own.
+	def capDiagnostics(diagnostics: Array<AnalysisDiagnostic>) -> Array<AnalysisDiagnostic> {
+		if (diagnostics.length <= MAX_FILE_DIAGNOSTICS) return diagnostics;
+		var counts = OrderedStringMap<int>.new(), over = false;
+		for (d in diagnostics) {
+			var n = counts[d.path] + 1;
+			counts[d.path] = n;
+			if (n > MAX_FILE_DIAGNOSTICS) over = true;
+		}
+		if (!over) return diagnostics;
+		var kept = Vector<AnalysisDiagnostic>.new(), seen = OrderedStringMap<int>.new();
+		for (d in diagnostics) {
+			var n = seen[d.path] + 1;
+			if (n > MAX_FILE_DIAGNOSTICS) continue;
+			seen[d.path] = n;
+			if (n == MAX_FILE_DIAGNOSTICS) d.omitted = counts[d.path] - n;
+			kept.put(d);
+		}
+		return kept.extract();
 	}
 	private def convertErrors(path: string, errors: ErrorGen) -> Array<AnalysisDiagnostic> {
 		var result = Vector<AnalysisDiagnostic>.new();

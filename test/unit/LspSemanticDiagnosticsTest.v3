@@ -8,6 +8,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspSemanticDiagnostics:failure_keeps_diagnostics", test_failure_keeps_diagnostics),
 	T("LspSemanticDiagnostics:error_limit_notice", test_error_limit_notice),
+	T("LspSemanticDiagnostics:file_diagnostic_cap", test_file_diagnostic_cap),
 	T("LspSemanticDiagnostics:development_request_rejected_when_busy", test_development_request_rejected_when_busy),
 	T("LspSemanticDiagnostics:closed_shared_owner", test_closed_shared_owner),
 	T("LspSemanticDiagnostics:configuration_reassigns_closed_file", test_configuration_reassigns_closed_file),
@@ -194,6 +195,39 @@ def test_error_limit_notice(t: Tester) {
 	var b = JsonRpcJson.render(StringBuilder.new(), field(last, "range")).toString();
 	t.assert_string(b, a);
 	s.server.close();
+}
+// A field with thousands of unresolved operators (#393) keeps its project
+// analyzed: the file gets its first errors and a notice of the rest, and
+// the other file keeps its occurrences.
+def test_file_diagnostic_cap(t: Tester) {
+	var max = AeneasAdapter.MAX_FILE_DIAGNOSTICS;
+	for (operators in [3000, 8000]) {
+		var s = SemanticTestSession.new(), text = StringBuilder.new().puts(s.main);
+		text.puts("\ncomponent Chain { def chain = c");
+		for (i < operators) text.puts("+1");
+		s.open("main.v3", 1, text.puts("; }\n").extract());
+		s.settle();
+		var messages = s.take();
+		t.asserti(0, count(messages, "window/showMessage"));
+		var snapshot = s.supervisor.snapshot;
+		t.assert(snapshot != null && snapshot.occurrences(ProjectFiles.join(s.base, "shapes.v3")).length > 0,
+			"the other file is analyzed");
+		var list = published(messages, s.uri("main.v3"));
+		// The errors sent, the cap's notice after the last of them, and the
+		// error limit's.
+		t.asserti(max + 2, if(list != null, list.length));
+		if (list == null || list.length != max + 2) return s.server.close();
+		for (i < max) t.assert_string("aeneas", JsonValue.String.!(field(list[i], "source")).v);
+		var notice = list[max];
+		t.assert_string("DiagnosticLimit", JsonValue.String.!(field(notice, "code")).v);
+		t.assert_string("virgil-lsp", JsonValue.String.!(field(notice, "source")).v);
+		t.asserti(3, JsonValue.Int.!(field(notice, "severity")).v);
+		t.assert_string(Strings.format2("%d more errors in this file are not shown; at most %d are reported for each file.",
+			operators + 1 - max, max), JsonValue.String.!(field(notice, "message")).v);
+		t.assert_string(rendered(field(list[max - 1], "range")), rendered(field(notice, "range")));
+		t.assert_string("ErrorLimit", JsonValue.String.!(field(list[max + 1], "code")).v);
+		s.server.close();
+	}
 }
 def test_development_request_rejected_when_busy(t: Tester) {
 	var s = SemanticTestSession.new();
