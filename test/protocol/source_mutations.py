@@ -1099,7 +1099,8 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     them to the record; a replay sends the recorded ones.
     """
     limits = record["limits"]
-    root = Path(tempfile.mkdtemp(prefix="case-", dir=work))
+    # Project discovery rejects symlink ancestors, including macOS's /var alias.
+    root = Path(tempfile.mkdtemp(prefix="case-", dir=work)).resolve()
     root_uri = root.as_uri()
     assert len(root_uri) + 64 <= MAX_URI, ("project path too long for the charge estimate", root)
     for name, text in record["files"].items():

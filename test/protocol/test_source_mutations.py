@@ -968,6 +968,21 @@ class RealServer(unittest.TestCase):
     def run_record(self, record, exe=EXE, **options):
         return sm.run_case(record, exe, time.monotonic() + 60, self.directory, VALIDATOR, **options)
 
+    def test_case_under_a_symlinked_parent(self):
+        # macOS temporary directories can be reached through /var -> /private/var.
+        # Project discovery refuses symlink ancestors, so the harness must send
+        # the physical case path for clean-source semantic checks to succeed.
+        physical = self.directory / "physical"
+        physical.mkdir()
+        linked = self.directory / "linked"
+        linked.symlink_to(physical, target_is_directory=True)
+        for work in (physical, linked):
+            with self.subTest(work=work):
+                result, _, _, log = sm.run_case(single_case("component Mutant {}\n"), EXE,
+                                                time.monotonic() + 60, work, VALIDATOR)
+                self.assertEqual(result["outcome"], "pass", (result, log))
+                self.assertTrue(result["restored"])
+
     def test_replay_from_a_saved_case(self):
         plan = sm.plan_run(SEED, sm.resolve_limits({"cases": 100}), False, SEEDS)
         # A case whose prepare requests returned items replays recorded follow-ups.
