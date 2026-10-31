@@ -23,6 +23,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,8 @@ KIB, MIB = 1024, 1024 * 1024
 DEFAULT_SEED = 20261028
 ROOT_TOKEN = "${ROOT}"
 WORKER_TIMEOUT_MS = 5000
+# The largest hierarchy item a follow-up keeps in its replay record.
+ITEM_BYTES = 16 * KIB
 
 # Each limit's default and hard cap, then the same with --stress. Deadlines are
 # seconds and are the same in both modes. With --stress, source_bytes bounds the
@@ -122,6 +125,11 @@ FOLLOW_UPS = {
 }
 MANIFEST = MAIN_METHODS + tuple(m for ms in FOLLOW_UPS.values() for m in ms)
 FOLLOW_UP_RESERVE = 4
+# Every case also sends, within its request cap, a barrier hover after opening
+# and after each step, and the six restoration requests.
+RESTORATION_REQUESTS = 6
+MAX_STEPS = 3
+MIN_REQUESTS = FOLLOW_UP_RESERVE + RESTORATION_REQUESTS + MAX_STEPS + 1 + 1
 
 
 def _resolve(value, method):
@@ -218,6 +226,12 @@ TRAP = re.compile(r"^(?P<trap>![A-Za-z]+)\n(?P<frames>(?:\tin [^\n]*\n)*)", re.M
 FRAME = re.compile(r"^\tin (?P<function>\S+) \[(?P<file>.+?) @ (?P<line>\d+):(?P<column>\d+)\]$", re.M)
 
 
+def executable(text):
+    """{text}'s tokens without comments, strings, characters, or spaces, one
+    space apart, so that triggers count only what the parser reads as code."""
+    return " ".join(t for t in TOKEN.findall(text) if kind(t) not in ("comment", "string", "space", "newline"))
+
+
 def _duplicate_types(text):
     names = re.findall(r"\btype\s+([A-Za-z_]\w*)", text)
     return len(names) != len(set(names))
@@ -242,15 +256,15 @@ CRASHED = "crashed during an analysis"
 
 # Contained worker failures that the documentation records, each by a narrow
 # signature: the supervisor's log text, the trap and its innermost frame, and a
-# condition that some text the case sent must meet. A worker's stack overflow
-# prints no frames. Any other worker failure fails the case as a worker failure.
+# condition on the executable tokens of a source that the failed analysis had.
+# A worker's stack overflow prints no frames. Any other worker failure fails the case as a worker failure.
 KNOWN_WORKER_FAILURES = (
     {"known": "crash-path row 1", "what": CRASHED, "trap": "!NullCheckException",
      "function": "TypeChecker.TryRepresentationChangeOfLiteral()", "file": "aeneas/src/vst/Verifier.v3",
-     "source": lambda t: re.search(r"\b[0-9]+i\b", t)},
+     "source": lambda t: re.search(r"(?:^| )[0-9]+i(?= |$)", t)},
     {"known": "crash-path row 1", "what": CRASHED, "trap": "!NullCheckException",
      "function": "MethodEnv.lookupInfix()", "file": "aeneas/src/vst/MethodEnv.v3",
-     "source": lambda t: re.search(r"\b[0-9]+i\b", t)},
+     "source": lambda t: re.search(r"(?:^| )[0-9]+i(?= |$)", t)},
     {"known": "crash-path row 2", "what": CRASHED, "trap": "!NullCheckException",
      "function": "Verifier.typeCheckEnumCase()", "file": "aeneas/src/vst/Verifier.v3",
      "source": lambda t: re.search(r"\benum\b[^{}]*\{[^{}]*\(", t)},
@@ -259,7 +273,7 @@ KNOWN_WORKER_FAILURES = (
      "source": _duplicate_types},
     {"known": "crash-path row 17", "what": CRASHED, "trap": "!NullCheckException",
      "function": "SourceCodeError.TypeExprError()", "file": "aeneas/src/main/Error.v3",
-     "source": lambda t: re.search(r"\.set\b", t)},
+     "source": lambda t: re.search(r"\. set\b", t)},
     {"known": "crash-path row 13", "what": CRASHED, "trap": "!StackOverflow", "function": None,
      "source": lambda t: _nesting(t) >= DEEP},
     {"known": "crash-path row 25", "what": CRASHED, "trap": "!StackOverflow", "function": None,
@@ -292,6 +306,9 @@ def resolve_limits(requested, stress=False):
         limits[name] = value
     if not limits["request_timeout"] <= limits["case_timeout"] <= limits["run_timeout"]:
         raise ValueError("deadlines must satisfy --request-timeout <= --case-timeout <= --run-timeout")
+    if limits["requests"] < MIN_REQUESTS:
+        raise ValueError("--requests must be at least %d: the barriers, restoration checks, and follow-ups "
+                         "of three steps need %d" % (MIN_REQUESTS, MIN_REQUESTS - 1))
     smallest = 16 * KIB if stress else 4 * KIB
     if limits["source_bytes"] < smallest:
         raise ValueError("--source-bytes must be at least %d%s" % (smallest, " with --stress" if stress else ""))
@@ -589,11 +606,10 @@ def plan_case(seed, index, seeds, limits, stress, cursor):
     files = dict(initial)
     names = sorted(files)
     budget = limits["source_bytes"]
-    reserve = min(FOLLOW_UP_RESERVE, limits["requests"] - 1)
-    main = limits["requests"] - reserve
-    total = rng.randint(max(1, main // 2), main)
     steps = []
     count = rng.choice((1, 1, 2, 3))
+    main = limits["requests"] - FOLLOW_UP_RESERVE - RESTORATION_REQUESTS - (count + 1)
+    total = rng.randint(max(1, main // 2), main)
     shares = [total // count + (1 if k < total % count else 0) for k in range(count)]
     next_id = 2
     for k in range(count):
@@ -648,6 +664,28 @@ def case_record(ident, files, steps, limits, stress=False, next_id=None):
         "initialize": {"processId": None, "rootUri": ROOT_TOKEN, "capabilities": CLIENT_CAPABILITIES},
         "steps": steps, "restore": {n: restored(i) for i, n in enumerate(names)}, "next_id": next_id,
     }
+
+
+def source_states(record):
+    """Every file's text after opening, after each step, and after restoration."""
+    state = dict(record["files"])
+    states = [dict(state)]
+    for step in record["steps"]:
+        state.update(step["texts"])
+        states.append(dict(state))
+    state.update(record["restore"])
+    states.append(state)
+    return states
+
+
+def fixed_requests(record):
+    """The requests a case sends besides follow-ups: its planned requests, a
+    barrier after opening and after each step, and the restoration checks."""
+    return sum(len(s["requests"]) for s in record["steps"]) + len(record["steps"]) + 1 + RESTORATION_REQUESTS
+
+
+def request_count(record):
+    return fixed_requests(record) + sum(len(s.get("followups", [])) for s in record["steps"])
 
 
 def plan_run(seed, limits, stress, seeds):
@@ -721,18 +759,22 @@ class MutationSession(Session):
     NOTIFICATIONS = ("textDocument/publishDiagnostics", "window/showMessage")
 
     def __init__(self, exe, deadlines, validator, *options):
-        super().__init__(exe, *options)
+        # A session of its own makes the server lead a process group, which
+        # the workers it starts join, so cleanup can end them all by its ID.
+        super().__init__(exe, *options, start_new_session=True)
         self.deadlines = deadlines
         self.validator = validator
         self.expected = {}
+        self.sent_at = {}
         self.replies = {}
+        self.boundaries = []
         self.diagnostics = {}
         self.messages = []
         self.unchecked = []
         self.stamps = []
         self.started = time.monotonic()
         self.eof = False
-        self.final_log = None
+        self.final_log = b""
 
     def stamp(self):
         self.stamps.extend([round(time.monotonic() - self.started, 4)] * (len(self.transcript) - len(self.stamps)))
@@ -741,7 +783,7 @@ class MutationSession(Session):
         out, fd = self.proc.stdout.fileno(), self.proc.stdin.fileno()
         view = memoryview(data)
         while view:
-            limit, which = self.deadlines.bound(float("inf"))
+            limit, which = self.deadlines.bound(self.earliest())
             remaining = limit - time.monotonic()
             if remaining <= 0:
                 raise self.deadlines.expired(which, "while writing to the server")
@@ -755,8 +797,8 @@ class MutationSession(Session):
                 try:
                     view = view[os.write(fd, view[:4096]):]
                 except OSError as exc:
-                    raise CaseFailure("server-failure", "cannot write to the server (%s); exit status %s" % (
-                        exc, self.proc.poll())) from None
+                    raise CaseFailure("server-failure", "cannot write to the server (%s); %s" % (
+                        exc, self.state())) from None
 
     def send(self, method, params=None, request=True, id=None):
         ident = super().send(method, params, request=request, id=id)
@@ -776,9 +818,8 @@ class MutationSession(Session):
         except Exception as exc:
             if time.monotonic() >= limit - 0.01:
                 raise self.deadlines.expired(which, "waiting for %s" % self.waiting_for()) from None
-            if self.proc.poll() is not None or "EOF" in str(exc):
-                raise CaseFailure("server-failure", "the server closed its output; exit status %s" % (
-                    self.proc.poll(),)) from None
+            if self.exited() or "EOF" in str(exc):
+                raise CaseFailure("server-failure", "the server closed its output; %s" % self.state()) from None
             raise CaseFailure("protocol-failure", "invalid message from the server: %r" % (exc,)) from None
         finally:
             self.stamp()
@@ -801,8 +842,11 @@ class MutationSession(Session):
             if ("result" in msg) == ("error" in msg):
                 raise CaseFailure("protocol-failure", "invalid reply envelope: %s" % json.dumps(msg)[:400])
             if "error" in msg:
-                code = msg["error"].get("code") if isinstance(msg["error"], dict) else None
-                if type(code) is not int or code not in DOCUMENTED_ERRORS.get(method, set()):
+                problem = error_problem(msg["error"])
+                if problem:
+                    raise CaseFailure("protocol-failure", "malformed error for %s: %s: %s" % (
+                        method, problem, json.dumps(msg)[:400]))
+                if msg["error"]["code"] not in DOCUMENTED_ERRORS.get(method, set()):
                     raise CaseFailure("protocol-failure", "undocumented error for %s: %s" % (method, json.dumps(msg)[:400]))
             elif method in reply_shapes.RESULTS:
                 self.shape(lambda: self.validator.result(method, msg["result"]))
@@ -824,6 +868,10 @@ class MutationSession(Session):
             # A validator bound, such as a very large outline; recorded, not a pass.
             self.unchecked.append(str(exc)[:400])
 
+    def earliest(self):
+        """The deadline of the earliest request still without a reply."""
+        return min((d for k, d in self.sent_at.items() if k not in self.replies), default=float("inf"))
+
     def waiting_for(self):
         missing = [(m, k[1]) for k, m in self.expected.items() if k not in self.replies]
         return ", ".join("%s id %s" % (m, json.dumps(i)) for m, i in missing[:4]) or "a message"
@@ -839,8 +887,15 @@ class MutationSession(Session):
         return [self.replies[k] for k in keys]
 
     def request(self, method, params, ident):
+        # The deadline starts before the request is written, and bounds that write too.
+        key = (type(ident), ident)
+        self.sent_at[key] = time.monotonic() + self.deadlines.limits["request_timeout"]
         self.send(method, params, id=ident)
-        return (type(ident), ident), time.monotonic() + self.deadlines.limits["request_timeout"]
+        return key, self.sent_at[key]
+
+    def boundary(self):
+        """Mark the end of the log for the source state sent last."""
+        self.boundaries.append(os.fstat(self.err.fileno()).st_size)
 
     def call(self, method, params, ident):
         key, deadline = self.request(method, params, ident)
@@ -853,12 +908,13 @@ class MutationSession(Session):
         self.send("exit", request=False)
         self.close_input()
         limit, which = self.deadlines.bound(time.monotonic() + 5)
-        while self.proc.poll() is None:
+        while not self.exited():
             if time.monotonic() >= limit:
                 if which == "request":
                     raise CaseFailure("server-failure", "the server did not exit within 5 s of exit")
                 raise self.deadlines.expired(which, "waiting for the server to exit")
             time.sleep(0.01)
+        self.end_group()
         if self.proc.returncode != 0:
             raise CaseFailure("server-failure", "the server exited with status %d after exit" % self.proc.returncode)
         rest = self.buffer
@@ -875,40 +931,99 @@ class MutationSession(Session):
         if missing:
             raise CaseFailure("protocol-failure", "requests without replies: %s" % sorted(missing, key=str))
 
+    def exited(self):
+        """Whether the server has exited, without reaping it: until it is
+        reaped, its process ID, and so its group's, cannot be reused."""
+        if self.proc.returncode is not None:
+            return True
+        try:
+            return os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        except ChildProcessError:
+            return True
+
+    def state(self):
+        return "the server has exited" if self.exited() else "the server is still running"
+
+    def end_group(self):
+        """Kill what is left of the server's process group, by its ID and
+        before the server is reaped, then reap the server."""
+        if self.proc.returncode is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self.proc.wait()
+
     def close(self):
         # A server exits at the end of its input. Never wait past the run
-        # deadline; only this session's own child is killed.
+        # deadline; then end the server's group: a stopped or hung server and
+        # the workers it started, never processes selected by name.
         self.close_input()
-        if self.proc.poll() is None:
-            try:
-                self.proc.wait(timeout=max(0.1, min(2, self.deadlines.run - time.monotonic())))
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+        stop = time.monotonic() + max(0.1, min(2, self.deadlines.run - time.monotonic()))
+        while not self.exited() and time.monotonic() < stop:
+            time.sleep(0.01)
+        self.end_group()
         # The server and any worker it started have written their last words.
-        self.final_log = self.logs()
+        self.err.seek(0)
+        self.final_log = self.err.read()
         super().close()
 
 
-def worker_deaths(log, texts):
-    """Each worker death the server logged, its trap, and the known row it matches."""
+def error_problem(error):
+    """Why {error} is not a JSON-RPC error object, or None."""
+    if not isinstance(error, dict):
+        return "the error is not an object"
+    if type(error.get("code")) is not int:
+        return "its code is not an integer"
+    if not isinstance(error.get("message"), str):
+        return "its message is not a string"
+    extra = sorted(set(error) - {"code", "message", "data"})
+    if extra:
+        return "it has members that JSON-RPC does not define: %s" % ", ".join(extra)
+    return None
+
+
+def worker_deaths(log, windows):
+    """Each worker death in {log}, the server's stderr bytes, with its trap and
+    the documented failure it matches. {windows} pairs the end of each stretch
+    of the log, or None for the rest, with the texts of the source state that
+    every analysis in that stretch had."""
+    deaths, start = [], 0
+    for end, texts in windows:
+        segment = log[start:end].decode(errors="replace")
+        start = end
+        code = None
+        for death in segment_deaths(segment):
+            for known in KNOWN_WORKER_FAILURES:
+                if matches(death, known):
+                    code = code if code is not None else [executable(t) for t in texts]
+                    if any(known["source"](c) for c in code):
+                        death["known"] = known["known"]
+                        break
+            deaths.append(death)
+        if end is None:
+            break
+    return deaths
+
+
+def matches(death, known):
+    top = death["frames"][0] if death["frames"] else None
+    if death["what"] != known["what"] or death["trap"] != known["trap"]:
+        return False
+    if known["function"] is None:
+        return top is None
+    return top is not None and top["function"] == known["function"] and top["file"].endswith(known["file"])
+
+
+def segment_deaths(log):
     deaths, previous = [], 0
     for m in DEATH.finditer(log):
         traps = list(TRAP.finditer(log, previous, m.start()))
         previous = m.end()
         trap = traps[-1] if traps else None
         frames = [f.groupdict() for f in FRAME.finditer(trap["frames"])] if trap else []
-        death = {"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
-                 "trap": trap["trap"] if trap else None, "frames": frames[:6], "known": None}
-        for known in KNOWN_WORKER_FAILURES:
-            top = frames[0] if frames else None
-            if (m["what"] == known["what"] and death["trap"] == known["trap"]
-                    and (top is None if known["function"] is None else
-                         top is not None and top["function"] == known["function"] and top["file"].endswith(known["file"]))
-                    and any(known["source"](t) for t in texts)):
-                death["known"] = known["known"]
-                break
-        deaths.append(death)
+        deaths.append({"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
+                       "trap": trap["trap"] if trap else None, "frames": frames[:6], "known": None})
     return deaths
 
 
@@ -941,13 +1056,15 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
         if s is not None:
             s.close()
         shutil.rmtree(root, ignore_errors=True)
-    log = s.final_log if s else ""
+    log = s.final_log if s else b""
     result["elapsed_s"] = round(time.monotonic() - started, 3)
-    texts = list(record["files"].values()) + [t for step in record["steps"] for t in step["texts"].values()]
-    result["worker_deaths"] = worker_deaths(log, texts)
+    states = [list(state.values()) for state in source_states(record)]
+    ends = s.boundaries if s else []
+    windows = list(zip(ends, states)) + [(None, states[min(len(ends), len(states) - 1)])]
+    result["worker_deaths"] = worker_deaths(log, windows)
     result["messages"] = s.messages if s else []
     result["unchecked_shapes"] = s.unchecked if s else []
-    failed = log.count(FAILED_ANALYSIS)
+    failed = log.count(FAILED_ANALYSIS.encode())
     if result["outcome"] == "pass":
         if len(result["messages"]) > failed:
             result["outcome"] = "protocol-failure"
@@ -961,7 +1078,7 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     for death in result["worker_deaths"]:
         death["replacement"] = "verified" if result.get("restored") else "not verified"
     result["requests"] = dict(sorted(result["requests"].items()))
-    return result, (s.transcript if s else []), (s.stamps if s else []), log
+    return result, (s.transcript if s else []), (s.stamps if s else []), log.decode(errors="replace")
 
 
 def drive(s, record, root_uri, result, replay):
@@ -973,14 +1090,16 @@ def drive(s, record, root_uri, result, replay):
     if drift:
         raise CaseFailure("coverage-manifest", "; ".join(drift))
     s.send("initialized", {}, request=False)
+    room = limits["requests"] - fixed_requests(record)
+    followups = 0
     versions = {}
     for name, text in record["files"].items():
         versions[name] = 1
         s.send("textDocument/didOpen", {"textDocument": {
             "uri": root_uri + "/" + name, "languageId": LANGUAGE_ID, "version": 1, "text": text}}, request=False)
     next_id = record["next_id"]
-    used = 0
-    for step in record["steps"]:
+    barrier(s, root_uri, result, 0)
+    for k, step in enumerate(record["steps"], 1):
         for name, text in step["texts"].items():
             versions[name] += 1
             s.send("textDocument/didChange", {"textDocument": {"uri": root_uri + "/" + name, "version": versions[name]},
@@ -991,7 +1110,6 @@ def drive(s, record, root_uri, result, replay):
             keys[key] = deadline
             result["requests"][r["method"]] += 1
         replies = s.collect(keys)
-        used += len(step["requests"])
         if not replay:
             step["followups"] = []
             for r, reply in zip(step["requests"], replies):
@@ -1003,8 +1121,10 @@ def drive(s, record, root_uri, result, replay):
                     reason = "error %d" % reply["error"]["code"]
                 elif not items:
                     reason = "no items"
-                elif used + 2 > limits["requests"]:
+                elif followups + 2 > room:
                     reason = "request cap"
+                elif len(json.dumps(items[0], ensure_ascii=False).encode()) > ITEM_BYTES:
+                    reason = "item larger than %d bytes" % ITEM_BYTES
                 if reason:
                     result["unexercised"].append({"request": r["id"], "method": r["method"], "reason": reason})
                     continue
@@ -1012,13 +1132,14 @@ def drive(s, record, root_uri, result, replay):
                     step["followups"].append({"id": next_id if next_id % 2 else "f%d" % next_id, "method": method,
                                               "from": r["id"], "params": {"item": templated(items[0], root_uri)}})
                     next_id += 1
-                    used += 1
+                    followups += 1
         keys = {}
         for f in step.get("followups", []):
             key, deadline = s.request(f["method"], templated(f["params"], root_uri, reverse=True), f["id"])
             keys[key] = deadline
             result["requests"][f["method"]] += 1
         s.collect(keys)
+        barrier(s, root_uri, result, k)
     # Restore clean sources: the project must analyze again, on a replacement
     # worker if one died, and answer from the observer.
     for name, text in record["restore"].items():
@@ -1032,6 +1153,9 @@ def drive(s, record, root_uri, result, replay):
         s.request("textDocument/definition", at(OBSERVER_USE), "restored-definition"),
         s.request("textDocument/prepareCallHierarchy", at(OBSERVER_DECLARATION["start"]), "restored-calls"),
         s.request("textDocument/prepareTypeHierarchy", at(OBSERVER_LEAF), "restored-types")]))
+    for method in ("textDocument/hover", "textDocument/definition", "textDocument/prepareCallHierarchy",
+                   "textDocument/prepareTypeHierarchy", "callHierarchy/incomingCalls", "typeHierarchy/supertypes"):
+        result["requests"][method] += 1
     value = ((hover.get("result") or {}).get("contents") or {}).get("value", "")
     if "stable(x: int) -> int" not in value:
         raise CaseFailure("recovery-failure", "no clean-source hover after restoration: %s" % json.dumps(hover)[:400])
@@ -1057,47 +1181,119 @@ def drive(s, record, root_uri, result, replay):
     if dirty:
         raise CaseFailure("recovery-failure", "restored sources still have diagnostics: %s" % json.dumps(dirty)[:400])
     result["restored"] = True
+    total = sum(result["requests"].values())
+    assert total == request_count(record) <= limits["requests"], ("request accounting", total, request_count(record))
     s.finish()
+
+
+def barrier(s, root_uri, result, k):
+    """Wait for every analysis of the source sent so far, then mark the log.
+
+    An observer hover waits for the analysis that is due or running (see
+    the freshness rules in docs/architecture.md#definition), so a worker failure logged
+    after this barrier and before the next one had the source of the step
+    between them, and its signature is matched against that source alone.
+    """
+    observer = {"textDocument": {"uri": root_uri + "/" + OBSERVER_NAME}, "position": OBSERVER_USE}
+    key, deadline = s.request("textDocument/hover", observer, "barrier-%d" % k)
+    s.collect({key: deadline})
+    result["requests"]["textDocument/hover"] += 1
+    s.boundary()
 
 
 # ---------------------------------------------------------------------------
 # Artifacts: a bounded budget, with markers wherever anything is cut.
 
+# A failing case's result, and run.json, are bounded; see bounded().
+RESULT_BYTES = 64 * KIB
+RUN_BYTES = 64 * KIB
+LIST_ITEMS = 32
+
+
+def bounded(value):
+    """{value} with each list of more than LIST_ITEMS entries cut to its first
+    ones, and the count of the rest under "<key>_omitted"."""
+    out = {}
+    for key, item in value.items():
+        if isinstance(item, list) and len(item) > LIST_ITEMS:
+            out[key], out[key + "_omitted"] = item[:LIST_ITEMS], len(item) - LIST_ITEMS
+        else:
+            out[key] = item
+    return out
+
+
+def failure_reserve(record):
+    """Room for {record} as a failing case's complete replay record, with the
+    follow-ups that its request cap leaves room for, and for its result."""
+    followups = record["limits"]["requests"] - fixed_requests(record)
+    return len(dump(record)) + followups * (ITEM_BYTES + KIB) + RESULT_BYTES
+
+
 class Artifacts:
-    """Write evidence within a byte budget. Replay records and results are
-    always written in full; passing cases' transcripts and logs may use only
-    three quarters of the budget, leaving the rest for failure evidence."""
+    """Keep every file under the directory within the byte budget.
 
-    def __init__(self, directory, budget):
-        self.directory, self.budget, self.used = directory, budget, 0
-        self.truncated = []
+    Passing cases may fill the budget less two reserves: one for a failing
+    case's complete replay record and result, and one for run.json. A failing
+    case may use the first, and run.json the second. Replay records, results,
+    manifests, and run.json are written whole or not at all; transcripts and
+    logs are cut, with a marker, to the room left.
+    """
 
-    def write(self, rel, data, essential=False, failure=False):
+    def __init__(self, directory, budget, reserve):
+        self.directory, self.budget, self.reserve = directory, budget, reserve
+        self.sizes = {}
+        self.truncated, self.omitted = [], []
+
+    @property
+    def used(self):
+        return sum(self.sizes.values())
+
+    def room(self, rel, tier):
+        held = {"passing": self.reserve + RUN_BYTES, "failure": RUN_BYTES, "final": 0}[tier]
+        return self.budget - held - (self.used - self.sizes.get(rel, 0))
+
+    def put(self, rel, data):
         path = self.directory / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        limit = self.budget if failure else self.budget * 3 // 4
-        if not essential and self.used + len(data) > limit:
-            keep = max(0, limit - self.used - 200)
-            omitted = len(data) - keep
-            data = data[:keep] + ("\n[truncated: %d bytes omitted by the artifact budget]\n" % omitted).encode()
-            self.truncated.append(rel)
-        self.used += len(data)
         path.write_bytes(data)
+        self.sizes[rel] = len(data)
+
+    def whole(self, rel, data, tier):
+        """Write {data} whole if it fits, or remove {rel}; True if written."""
+        if len(data) > self.room(rel, tier):
+            (self.directory / rel).unlink(missing_ok=True)
+            self.sizes.pop(rel, None)
+            self.omitted.append(rel)
+            return False
+        self.put(rel, data)
+        return True
+
+    def cut(self, rel, data, tier, keep=0):
+        """Write {data}, cut with a marker to the room left less {keep}; True if whole."""
+        room = self.room(rel, tier) - keep
+        if len(data) > room:
+            marker = b"\n[truncated: %d bytes omitted by the artifact budget]\n"
+            head = max(0, room - len(marker % len(data)))
+            data = data[:head] + marker % (len(data) - head)
+            data = data[:max(0, room)]
+            self.truncated.append(rel)
+        self.put(rel, data)
         return rel not in self.truncated
 
-    def transcript(self, rel, transcript, stamps, failure=False):
-        lines = [json.dumps({"t": t, "dir": d, "msg": m}, ensure_ascii=False) for (d, m), t in zip(transcript, stamps)]
-        limit = (self.budget if failure else self.budget * 3 // 4) - self.used
+    def transcript(self, rel, transcript, stamps, tier, keep=0):
+        room = self.room(rel, tier) - keep - 200
         out, size = [], 0
+        lines = [json.dumps({"t": t, "dir": d, "msg": m}, ensure_ascii=False) for (d, m), t in zip(transcript, stamps)]
         for n, line in enumerate(lines):
-            if size + len(line.encode()) + 1 > limit - 200:
+            if size + len(line.encode()) + 1 > room:
                 out.append(json.dumps({"truncated": True, "omitted_messages": len(lines) - n,
                                        "reason": "artifact budget"}))
                 self.truncated.append(rel)
                 break
             out.append(line)
             size += len(line.encode()) + 1
-        return self.write(rel, ("\n".join(out) + "\n").encode(), essential=True)
+        self.put(rel, ("\n".join(out) + "\n").encode() if out else b"")
+        return rel not in self.truncated
 
 
 def dump(value):
@@ -1105,14 +1301,28 @@ def dump(value):
 
 
 def save_case(artifacts, record, result, transcript, stamps, log):
-    failure = result["outcome"] not in PASSING or bool(result["worker_deaths"])
+    """Save a case's evidence; a failing case's record and result always fit."""
+    tier = "passing" if result["outcome"] in PASSING else "failure"
     base = "cases/%s/" % record["id"]
-    complete = artifacts.transcript(base + "transcript.jsonl", transcript, stamps, failure)
-    complete = artifacts.write(base + "stderr.txt", log.encode(), failure=failure) and complete
-    result["evidence_complete"] = complete
-    artifacts.write(base + "case.json", dump(record), essential=True)
-    artifacts.write(base + "result.json", dump(result), essential=True)
+    result = bounded(result)
+    saved = artifacts.whole(base + "case.json", dump(record), tier)
+    assert saved or tier == "passing", "the failure reserve did not hold the replay record"
+    complete = artifacts.transcript(base + "transcript.jsonl", transcript, stamps, tier, RESULT_BYTES)
+    complete = artifacts.cut(base + "stderr.txt", log.encode(), tier, RESULT_BYTES) and complete
+    result.update(evidence_complete=complete, record_saved=saved)
+    artifacts.whole(base + "result.json", dump(result), tier)
     return artifacts.directory / base / "case.json"
+
+
+def write_run(artifacts, run):
+    run = bounded(dict(run, artifact_bytes_used=artifacts.used, artifacts_truncated=artifacts.truncated,
+                       artifacts_omitted=artifacts.omitted))
+    data = dump(run)
+    if len(data) > RUN_BYTES:
+        run = {k: v for k, v in run.items() if not isinstance(v, list)}
+        run["lists_omitted"] = "run.json would exceed %d bytes" % RUN_BYTES
+        data = dump(run)
+    artifacts.whole("run.json", data, "final")
 
 
 def build_info(exe):
@@ -1125,14 +1335,32 @@ def build_info(exe):
 
 
 def check_record(record):
+    """Reject a record that this runner could not have written: every source
+    state within the source bound and every request within the request cap,
+    with the --stress caps only for a stress record."""
     if record.get("format") != FORMAT:
         raise ValueError("unsupported case record format %r" % record.get("format"))
-    resolve_limits({k: v for k, v in record["limits"].items()}, record["stress"])
-    texts = list(record["files"].values()) + [t for s in record["steps"] for t in s["texts"].values()]
-    if measure(list(record["files"].values()), record["stress"]) > record["limits"]["source_bytes"]:
-        raise ValueError("case files exceed the record's source limit")
-    for t in texts:
-        t.encode()
+    stress = record.get("stress")
+    if stress is not True and stress is not False:
+        raise ValueError("stress must be true or false")
+    if set(record["limits"]) != set(LIMITS):
+        raise ValueError("the record's limits must be exactly %s" % ", ".join(sorted(LIMITS)))
+    limits = resolve_limits(record["limits"], stress)
+    names = set(record["files"])
+    if OBSERVER_NAME not in names or set(record["restore"]) != names - {OBSERVER_NAME}:
+        raise ValueError("the record must open the observer and restore each other file")
+    if not 1 <= len(record["steps"]) <= MAX_STEPS:
+        raise ValueError("a record has one to %d steps" % MAX_STEPS)
+    for k, state in enumerate(source_states(record)):
+        if set(state) != names or not all(isinstance(t, str) for t in state.values()):
+            raise ValueError("source state %d changes a file that the case does not open" % k)
+        size = measure(list(state.values()), stress)
+        if size > limits["source_bytes"]:
+            raise ValueError("source state %d has %d bytes, more than the record's bound of %d" % (
+                k, size, limits["source_bytes"]))
+    count = request_count(record)
+    if count > limits["requests"]:
+        raise ValueError("the record sends %d feature requests, more than its cap of %d" % (count, limits["requests"]))
 
 
 def replay_command(exe, case_path):
@@ -1153,9 +1381,14 @@ def replay(args, exe, validator):
     except (ValueError, KeyError) as exc:
         print("invalid case record %s: %s" % (args.replay, exc), file=sys.stderr)
         return 2
+    reserve = failure_reserve(record)
+    if record["limits"]["artifact_bytes"] < reserve + RUN_BYTES:
+        print("invalid case record %s: its --artifact-bytes cannot hold its own evidence (%d bytes)" % (
+            args.replay, reserve + RUN_BYTES), file=sys.stderr)
+        return 2
     out = args.artifacts.resolve() / ("replay-" + record["id"])
     shutil.rmtree(out, ignore_errors=True)
-    artifacts = Artifacts(out, record["limits"]["artifact_bytes"])
+    artifacts = Artifacts(out, record["limits"]["artifact_bytes"], reserve)
     work = Path(tempfile.mkdtemp(prefix="work-", dir=args.artifacts.resolve()))
     try:
         run_deadline = time.monotonic() + record["limits"]["run_timeout"]
@@ -1163,7 +1396,7 @@ def replay(args, exe, validator):
     finally:
         shutil.rmtree(work, ignore_errors=True)
     case_path = save_case(artifacts, record, result, transcript, stamps, log)
-    artifacts.write("run.json", dump({"replay": str(args.replay), **build_info(exe), "result": result}), essential=True)
+    write_run(artifacts, {"replay": str(args.replay), **build_info(exe), "result": bounded(result)})
     if result["outcome"] not in PASSING:
         report_failure(exe, record, result, case_path)
         return 1
@@ -1203,15 +1436,21 @@ def main(argv=None):
     seeds, inputs = load_seeds()
     plan = plan_run(args.seed, limits, args.stress, seeds)
     out = args.artifacts.resolve() / ("%sseed-%d" % ("stress-" if args.stress else "", args.seed))
+    mutations, requests = (dump(m) for m in manifests(args.seed, limits, args.stress, inputs, plan))
+    reserve = max(failure_reserve(record) for record in plan)
+    floor = len(mutations) + len(requests) + reserve + RUN_BYTES
+    if limits["artifact_bytes"] < floor:
+        parser.error("--artifact-bytes must be at least %d for this plan: its manifests, one failing case's "
+                     "complete replay record and result, and run.json" % floor)
     shutil.rmtree(out, ignore_errors=True)
-    artifacts = Artifacts(out, limits["artifact_bytes"])
-    mutations, requests = manifests(args.seed, limits, args.stress, inputs, plan)
-    artifacts.write("mutations.json", dump(mutations), essential=True)
-    artifacts.write("requests.json", dump(requests), essential=True)
+    artifacts = Artifacts(out, limits["artifact_bytes"], reserve)
+    artifacts.whole("mutations.json", mutations, "final")
+    artifacts.whole("requests.json", requests, "final")
     if args.plan_only:
         for record in plan:
-            artifacts.write("cases/%s/case.json" % record["id"], dump(record), essential=True)
-        print("source mutations: planned %d cases; manifests in %s" % (len(plan), out))
+            artifacts.whole("cases/%s/case.json" % record["id"], dump(record), "passing")
+        print("source mutations: planned %d cases; manifests in %s; %d bytes; %d case records omitted by the "
+              "artifact budget" % (len(plan), out, artifacts.used, len(artifacts.omitted)))
         return 0
     run = {"seed": args.seed, "stress": args.stress, "limits": limits, "inputs": inputs, **build_info(exe),
            "cases_planned": len(plan), "outcomes": Counter(), "requests": Counter(), "worker_deaths": [],
@@ -1223,7 +1462,9 @@ def main(argv=None):
             if time.monotonic() >= run_deadline:
                 run["incomplete"] = True
                 break
-            artifacts.write("cases/%s/case.json" % record["id"], dump(record), essential=True)
+            # Saved before the case runs, within the failure reserve; replaced
+            # after it, or removed if the case passes and its record doesn't fit.
+            artifacts.whole("cases/%s/case.json" % record["id"], dump(record), "failure")
             result, transcript, stamps, log = run_case(record, exe, run_deadline, work, validator)
             case_path = save_case(artifacts, record, result, transcript, stamps, log)
             run["outcomes"][result["outcome"]] += 1
@@ -1247,8 +1488,7 @@ def main(argv=None):
     exercised = set(run["requests"])
     run["never_exercised"] = [m for m in MANIFEST if m not in exercised]
     run["elapsed_s"] = round(time.monotonic() - started, 2)
-    run["artifact_bytes_used"], run["artifacts_truncated"] = artifacts.used, artifacts.truncated
-    artifacts.write("run.json", dump(run), essential=True)
+    write_run(artifacts, run)
     known = Counter(d["known"] for d in run["worker_deaths"] if d["known"])
     print("source mutations: %s; seed=%d; cases=%d/%d; requests=%d; %.2fs" % (
         "passed" if status == 0 else "FAILED", args.seed, sum(run["outcomes"].values()), len(plan),
@@ -1260,8 +1500,9 @@ def main(argv=None):
     print("requests (method=count): " + "; ".join("%s=%d" % kv for kv in sorted(run["requests"].items())))
     if run["never_exercised"]:
         print("never exercised in this run: " + ", ".join(run["never_exercised"]))
-    print("valid-item follow-ups not sent: %d (see run.json); artifacts: %s (%d bytes%s)" % (
-        len(run["unexercised"]), out, artifacts.used, ", truncated" if artifacts.truncated else ""))
+    print("valid-item follow-ups not sent: %d (see run.json); artifacts: %s (%d bytes%s%s)" % (
+        len(run["unexercised"]), out, artifacts.used, ", truncated" if artifacts.truncated else "",
+        ", %d omitted" % len(artifacts.omitted) if artifacts.omitted else ""))
     return status
 
 

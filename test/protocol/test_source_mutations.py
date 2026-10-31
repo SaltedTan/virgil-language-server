@@ -14,12 +14,14 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -74,6 +76,8 @@ FAKE = textwrap.dedent("""\
     while True:
         msg = read()
         method, ident = msg.get("method"), msg.get("id")
+        if MODE == "deaf":
+            time.sleep(60)
         if method == "exit":
             sys.exit(0)
         if method == "textDocument/didOpen" and MODE == "notification-reply":
@@ -92,6 +96,8 @@ FAKE = textwrap.dedent("""\
             write({"jsonrpc": "2.0", "id": str(ident), "result": None})
         elif MODE == "undocumented-error":
             write({"jsonrpc": "2.0", "id": ident, "error": {"code": -32603, "message": "internal"}})
+        elif MODE == "bare-error" and method == "textDocument/rename":
+            write({"jsonrpc": "2.0", "id": ident, "error": {"code": -32803}})
         else:
             write({"jsonrpc": "2.0", "id": ident, "result": None})
 """)
@@ -113,6 +119,18 @@ def single_case(text, requests=None, limits=LIMITS, ident="test"):
     return sm.case_record(ident, {"Mutant.v3": "component Mutant {}\n"}, steps, limits)
 
 
+def floor(cases, seed=sm.DEFAULT_SEED):
+    """The smallest --artifact-bytes that a default plan of {cases} accepts.
+    Each record holds that value, so its digits change the floor a little."""
+    budget, previous = sm.LIMITS["artifact_bytes"][0], None
+    while budget != previous:
+        limits = sm.resolve_limits({"cases": cases, "artifact_bytes": budget})
+        plan = sm.plan_run(seed, limits, False, SEEDS)
+        manifests = sum(len(sm.dump(m)) for m in sm.manifests(seed, limits, False, INPUTS, plan))
+        previous, budget = budget, manifests + max(sm.failure_reserve(r) for r in plan) + sm.RUN_BYTES
+    return budget
+
+
 def quietly(argv):
     """sm.main's status, keeping its report out of this suite's output."""
     out = io.StringIO()
@@ -122,6 +140,26 @@ def quietly(argv):
 
 def sent(transcript):
     return [msg for direction, msg in transcript if direction == "send"]
+
+
+def feature_requests(transcript):
+    return [m for m in sent(transcript) if "id" in m and m["method"] not in ("initialize", "shutdown")]
+
+
+def tree_size(directory):
+    return sum(p.stat().st_size for p in Path(directory).rglob("*") if p.is_file())
+
+
+def alive(pid):
+    try:
+        return Path("/proc/%d/stat" % pid).read_text().split(")")[-1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def children(pid):
+    return [int(c) for task in Path("/proc/%d/task" % pid).iterdir()
+            for c in (task / "children").read_text().split()]
 
 
 class Limits(unittest.TestCase):
@@ -135,7 +173,8 @@ class Limits(unittest.TestCase):
     def test_hard_caps(self):
         for name, value in (("cases", 1001), ("cases", 0), ("source_bytes", 64 * 1024 + 1), ("requests", 65),
                             ("request_timeout", 31), ("request_timeout", 0), ("case_timeout", 121),
-                            ("run_timeout", 901), ("artifact_bytes", 256 * 1024 * 1024 + 1), ("source_bytes", 1024)):
+                            ("run_timeout", 901), ("artifact_bytes", 256 * 1024 * 1024 + 1), ("source_bytes", 1024),
+                            ("requests", sm.MIN_REQUESTS - 1)):
             with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                 sm.resolve_limits({name: value})
         for name, value in (("cases", 11), ("source_bytes", 1024 * 1024 + 1)):
@@ -182,7 +221,9 @@ class Planning(unittest.TestCase):
         counts = {}
         for case in plan:
             requests = [r for s in case["steps"] for r in s["requests"]]
-            self.assertLessEqual(len(requests), LIMITS["requests"] - sm.FOLLOW_UP_RESERVE)
+            # Planned requests, barriers, and restoration leave room for follow-ups.
+            self.assertEqual(sm.fixed_requests(case), len(requests) + len(case["steps"]) + 1 + 6)
+            self.assertLessEqual(sm.fixed_requests(case) + sm.FOLLOW_UP_RESERVE, LIMITS["requests"])
             self.assertEqual(len({(type(r["id"]), r["id"]) for r in requests}), len(requests))
             self.assertLessEqual({type(r["id"]) for r in requests}, {int, str})
             for r in requests:
@@ -208,6 +249,33 @@ class Planning(unittest.TestCase):
         self.assertEqual(sm.position("\U0001F600x", 1), {"line": 0, "character": 2})
         self.assertEqual(sm.templated({"uri": "file:///w/A.v3", "x": ["file:///w"]}, "file:///w"),
                          {"uri": "${ROOT}/A.v3", "x": ["${ROOT}"]})
+
+
+class Records(unittest.TestCase):
+    def test_replay_bounds(self):
+        record = single_case("component Mutant {}\n")
+        sm.check_record(record)
+        large = json.loads(json.dumps(record))
+        large["steps"][0]["texts"]["Mutant.v3"] = "x" * (2 * 1024 * 1024)
+        many = json.loads(json.dumps(record))
+        many["steps"][0]["requests"] = [dict(record["steps"][0]["requests"][0], id=n) for n in range(2, 402)]
+        stress = json.loads(json.dumps(large), object_hook=None)
+        stress["limits"]["source_bytes"] = 4 * 1024 * 1024
+        unknown = json.loads(json.dumps(record))
+        unknown["steps"][0]["texts"]["Other.v3"] = ""
+        for name, bad in (("large", large), ("many", many), ("stress cap", stress), ("unknown file", unknown)):
+            with self.subTest(name), self.assertRaises(ValueError):
+                sm.check_record(bad)
+        # A stress record may use the stress bound.
+        stress["stress"], stress["limits"]["source_bytes"] = True, 1024 * 1024
+        stress["limits"]["cases"] = 10
+        stress["steps"][0]["texts"]["Mutant.v3"] = "x" * (512 * 1024)
+        sm.check_record(stress)
+        with tempfile.TemporaryDirectory() as directory:
+            saved = Path(directory) / "case.json"
+            for bad in (large, many):
+                saved.write_text(json.dumps(bad))
+                self.assertEqual(quietly([str(EXE), "--replay", str(saved), "--artifacts", directory]), 2)
 
 
 class Coverage(unittest.TestCase):
@@ -236,18 +304,48 @@ class WorkerDeaths(unittest.TestCase):
              "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 255; "
              "snapshot 3 is kept\n")
 
+    OVERFLOW = ("!StackOverflow\n\nvirgil-lsp: warning: analysis worker 8 crashed during an analysis; "
+                "it ended with exit status 255\n")
+
+    def known(self, log, *texts):
+        return [d["known"] for d in sm.worker_deaths(log.encode(), [(None, list(texts))])]
+
     def test_known_signature_needs_its_source(self):
-        known = sm.worker_deaths(self.TRACE, ["def f() -> int { return 0i + 1; }"])
-        self.assertEqual([(d["pid"], d["trap"], d["known"]) for d in known], [(7, "!NullCheckException", "crash-path row 1")])
-        self.assertIsNone(sm.worker_deaths(self.TRACE, ["def f() -> int { return 0i32 + 1; }"])[0]["known"])
-        overflow = ("!StackOverflow\n\nvirgil-lsp: warning: analysis worker 8 crashed during an analysis; "
-                    "it ended with exit status 255\n")
-        self.assertIsNone(sm.worker_deaths(overflow, ["def f() { g(); }"])[0]["known"])
-        self.assertEqual(sm.worker_deaths(overflow, ["def f() { a" + ".b" * 1000 + "; }"])[0]["known"],
-                         "crash-path row 25")
+        deaths = sm.worker_deaths(self.TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])])
+        self.assertEqual([(d["pid"], d["trap"], d["known"]) for d in deaths], [(7, "!NullCheckException", "crash-path row 1")])
+        self.assertEqual(self.known(self.TRACE, "def f() -> int { return 0i32 + 1; }"), [None])
+        self.assertEqual(self.known(self.OVERFLOW, "def f() { g(); }"), [None])
+        self.assertEqual(self.known(self.OVERFLOW, "def f() { a" + ".b" * 1000 + "; }"), ["crash-path row 25"])
         timeout = ("virgil-lsp: warning: analysis worker 9 exceeded the analysis time limit of 5000 ms and was "
                    "killed; it ended with signal 9\n")
-        self.assertIsNone(sm.worker_deaths(timeout, ["0i"])[0]["known"])
+        self.assertEqual(self.known(timeout, "0i"), [None])
+
+    def test_triggers_count_only_code(self):
+        deep = "(" * 1000 + "1" + ")" * 1000
+        self.assertEqual(self.known(self.OVERFLOW, "def f() { var x = %s; }" % deep), ["crash-path row 13"])
+        self.assertEqual(self.known(self.OVERFLOW, "/* %s */ def f() {}" % ("(" * 1000)), [None])
+        self.assertEqual(self.known(self.OVERFLOW, "// %s\ndef f() {}" % ("(" * 1000)), [None])
+        self.assertEqual(self.known(self.OVERFLOW, 'def s = "%s";' % ("(" * 1000)), [None])
+        self.assertEqual(self.known(self.TRACE, 'def s = "0i"; // 0i'), [None])
+
+    def test_each_death_matches_its_own_source_state(self):
+        # A death logged after the first boundary had the second state's text only.
+        log = ("virgil-lsp: info\n" + self.TRACE).encode()
+        windows = [(len(b"virgil-lsp: info\n"), ["def f() -> int { return 0i + 1; }"]),
+                   (None, ["def f() -> int { return 1 + 1; }"])]
+        self.assertEqual([d["known"] for d in sm.worker_deaths(log, windows)], [None])
+        self.assertEqual([d["known"] for d in sm.worker_deaths(log, windows[::-1][:1] + [(None, [])])], [None])
+        self.assertEqual([d["known"] for d in sm.worker_deaths(log, [(0, ["1 + 1"]), (None, ["0i + b"])])],
+                         ["crash-path row 1"])
+
+    def test_error_objects(self):
+        self.assertIsNone(sm.error_problem({"code": -32803, "message": "no"}))
+        self.assertIsNone(sm.error_problem({"code": -32803, "message": "no", "data": [None]}))
+        for error in ({"code": -32803}, {"code": -32803, "message": 1}, {"code": "x", "message": "no"},
+                      {"code": True, "message": "no"}, {"code": 1.5, "message": "no"}, [],
+                      {"code": -32803, "message": "no", "extra": 1}):
+            with self.subTest(error=error):
+                self.assertTrue(sm.error_problem(error))
 
     def test_documented_message(self):
         message = ("Semantic diagnostics for project mutations could not be updated: the analysis worker crashed "
@@ -295,6 +393,29 @@ class StandIn(unittest.TestCase):
         self.assertEqual(result["outcome"], "protocol-failure", result)
         self.assertIn('"id": "2"', result["error"])
 
+    def test_error_without_a_message(self):
+        rename = [{"id": 2, "method": "textDocument/rename", "params": {
+            "textDocument": {"uri": sm.ROOT_TOKEN + "/Mutant.v3"}, "position": {"line": 0, "character": 0},
+            "newName": "x"}}]
+        result, _, _ = self.run_fake("bare-error", record=single_case("component Mutant {}\n", rename))
+        self.assertEqual(result["outcome"], "protocol-failure", result)
+        self.assertIn("malformed error for textDocument/rename: its message is not a string", result["error"])
+
+    def test_writes_honor_request_deadlines(self):
+        limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 5, "run_timeout": 10})
+        with tempfile.TemporaryDirectory() as directory:
+            now = time.monotonic()
+            s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 10, now + 5, limits), VALIDATOR)
+            try:
+                s.request("textDocument/hover", {}, 2)
+                started = time.monotonic()
+                with self.assertRaises(sm.CaseFailure) as caught:
+                    s.send("textDocument/didChange", {"text": "x" * (1024 * 1024)}, request=False)
+                self.assertIn("request deadline", str(caught.exception))
+                self.assertLess(time.monotonic() - started, 1)
+            finally:
+                s.close()
+
     def test_undocumented_error(self):
         result, _, _ = self.run_fake("undocumented-error")
         self.assertEqual(result["outcome"], "protocol-failure", result)
@@ -303,26 +424,46 @@ class StandIn(unittest.TestCase):
     def test_run_deadline_saves_incomplete_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             exe = fake_server(directory, "hang")
+            budget = floor(3) + 1024
             status = quietly([str(exe), "--cases", "3", "--request-timeout", "1", "--case-timeout", "1",
-                              "--run-timeout", "1", "--artifacts", directory])
+                              "--run-timeout", "1", "--artifacts", directory, "--artifact-bytes", str(budget)])
             self.assertEqual(status, 1)
             out = Path(directory) / ("seed-%d" % sm.DEFAULT_SEED)
+            self.assertLessEqual(tree_size(out), budget)
             run = json.loads((out / "run.json").read_text())
             self.assertTrue(run["incomplete"])
             self.assertEqual(run["failures"][0]["outcome"], "run-deadline")
             case = out / "cases" / run["failures"][0]["case"]
-            self.assertTrue((case / "case.json").exists() and (case / "transcript.jsonl").exists())
+            self.assertTrue(sm.check_record(json.loads((case / "case.json").read_text())) is None)
+            self.assertTrue((case / "transcript.jsonl").exists())
             self.assertEqual(json.loads((out / "requests.json").read_text())["seed"], sm.DEFAULT_SEED)
 
     def test_artifact_budget_marks_truncation(self):
         with tempfile.TemporaryDirectory() as directory:
-            artifacts = sm.Artifacts(Path(directory), 4000)
-            self.assertTrue(artifacts.write("small.txt", b"x" * 100))
-            self.assertFalse(artifacts.write("large.txt", b"y" * 10000))
+            budget = sm.RUN_BYTES + 20000 + 10000
+            artifacts = sm.Artifacts(Path(directory), budget, 20000)
+            self.assertTrue(artifacts.cut("small.txt", b"x" * 100, "passing"))
+            self.assertFalse(artifacts.cut("large.txt", b"y" * 20000, "passing"))
             self.assertIn(b"[truncated: ", (Path(directory) / "large.txt").read_bytes())
-            artifacts.write("record.json", b"z" * 10000, essential=True)
-            self.assertEqual(len((Path(directory) / "record.json").read_bytes()), 10000)
-            self.assertEqual(artifacts.truncated, ["large.txt"])
+            # A passing record that doesn't fit is left out; a failing one uses the reserve.
+            self.assertFalse(artifacts.whole("passing.json", b"z" * 5000, "passing"))
+            self.assertFalse((Path(directory) / "passing.json").exists())
+            self.assertTrue(artifacts.whole("failing.json", b"z" * 15000, "failure"))
+            self.assertEqual((artifacts.truncated, artifacts.omitted), (["large.txt"], ["passing.json"]))
+            self.assertLessEqual(tree_size(directory), budget)
+
+    def test_budget_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for flags in (["--artifact-bytes", "4096"], ["--artifact-bytes", str(floor(100, seed=5) - 1)]):
+                result = subprocess.run([sys.executable, str(Path(sm.__file__)), str(EXE), "--seed", "5", "--cases", "100",
+                                         "--plan-only", "--artifacts", directory, *flags],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("--artifact-bytes must be at least", result.stderr)
+            budget = floor(100, seed=5)
+            self.assertEqual(quietly([str(EXE), "--seed", "5", "--cases", "100", "--plan-only", "--artifacts", directory,
+                                      "--artifact-bytes", str(budget)]), 0)
+            self.assertLessEqual(tree_size(Path(directory) / "seed-5"), budget)
 
 
 @unittest.skipUnless(EXE.exists() and EXE.with_name("virgil-lsp-worker").exists(), "build/virgil-lsp is not built")
@@ -337,11 +478,14 @@ class RealServer(unittest.TestCase):
         return sm.run_case(record, exe, time.monotonic() + 60, self.directory, VALIDATOR, **options)
 
     def test_replay_from_a_saved_case(self):
-        plan = sm.plan_run(SEED, sm.resolve_limits({"cases": 40}), False, SEEDS)
+        plan = sm.plan_run(SEED, sm.resolve_limits({"cases": 100}), False, SEEDS)
         # A case whose prepare requests returned items replays recorded follow-ups.
         for record in plan:
             result, live, _, _ = self.run_record(record)
             self.assertIn(result["outcome"], sm.PASSING, result)
+            # Every feature request sent, restoration and barriers included, is counted and capped.
+            self.assertEqual(len(feature_requests(live)), sum(result["requests"].values()))
+            self.assertLessEqual(len(feature_requests(live)), record["limits"]["requests"])
             if any(s["followups"] for s in record["steps"]):
                 break
         else:
@@ -368,6 +512,35 @@ class RealServer(unittest.TestCase):
         self.assertEqual([d["known"] for d in result["worker_deaths"]], ["crash-path row 1"])
         self.assertEqual(result["worker_deaths"][0]["replacement"], "verified")
         self.assertEqual(len(result["messages"]), 1)
+
+    @unittest.skipUnless(STALL.exists() and sys.platform.startswith("linux"), "needs the stall worker and /proc")
+    def test_cleanup_ends_a_stopped_servers_worker(self):
+        stalled = self.directory / "stalled"
+        stalled.mkdir()
+        shutil.copy2(EXE, stalled / "virgil-lsp")
+        shutil.copy2(STALL, stalled / "virgil-lsp-worker")
+        limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20})
+        workers, original = [], sm.MutationSession.collect
+
+        def collect(session, keys):
+            # Once the stalling analysis has a worker, stop the server.
+            if (int, 2) in keys and not workers:
+                deadline = time.monotonic() + 5
+                while not workers and time.monotonic() < deadline:
+                    workers.extend(children(session.proc.pid))
+                    time.sleep(0.02)
+                time.sleep(0.2)
+                os.kill(session.proc.pid, signal.SIGSTOP)
+            return original(session, keys)
+        with mock.patch.object(sm.MutationSession, "collect", collect):
+            result, _, _, _ = self.run_record(single_case("// workerStallsHere\ncomponent Mutant {}\n", limits=limits),
+                                              stalled / "virgil-lsp", worker_timeout_ms=30000)
+        self.assertEqual(result["outcome"], "deadline", result)
+        self.assertTrue(workers)
+        deadline = time.monotonic() + 2
+        while any(map(alive, workers)) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual([pid for pid in workers if alive(pid)], [])
 
     @unittest.skipUnless(STALL.exists(), "build/stall/virgil-lsp-worker is not built")
     def test_contained_worker_failure(self):

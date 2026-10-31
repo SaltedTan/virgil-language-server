@@ -24,11 +24,11 @@ class Session:
     # The notifications a session accepts from the server.
     NOTIFICATIONS = ("textDocument/publishDiagnostics",)
 
-    def __init__(self, exe, *options):
+    def __init__(self, exe, *options, **popen):
         self.err = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(
             [str(exe), "--stdio", *options],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, **popen,
         )
         self.buffer = b""
         self.transcript = []
