@@ -774,6 +774,7 @@ class MutationSession(Session):
         self.deadlines = deadlines
         self.validator = validator
         self.expected = {}
+        self.requests = Counter()
         self.sent_at = {}
         self.replies = {}
         self.boundaries = []
@@ -900,6 +901,9 @@ class MutationSession(Session):
         key = (type(ident), ident)
         self.sent_at[key] = time.monotonic() + self.deadlines.limits["request_timeout"]
         self.send(method, params, id=ident)
+        if method not in ("initialize", "shutdown"):
+            self.requests[method] += 1
+            assert sum(self.requests.values()) <= self.deadlines.limits["requests"], ("request cap", self.requests)
         return key, self.sent_at[key]
 
     def boundary(self):
@@ -1045,7 +1049,7 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     (root / ".virgil-lsp.json").write_bytes(record["config"].encode())
     started = time.monotonic()
     deadlines = Deadlines(run_deadline, min(run_deadline, started + limits["case_timeout"]), limits)
-    result = {"id": record["id"], "outcome": None, "error": None, "requests": Counter(), "unexercised": []}
+    result = {"id": record["id"], "outcome": None, "error": None, "unexercised": []}
     s = None
     try:
         s = MutationSession(exe, deadlines, validator, "--worker-timeout-ms=%d" % worker_timeout_ms)
@@ -1080,7 +1084,7 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     # Clean analysis after restoration ran on a replacement worker only if the case got that far.
     for death in result["worker_deaths"]:
         death["replacement"] = "verified" if result.get("restored") else "not verified"
-    result["requests"] = dict(sorted(result["requests"].items()))
+    result["requests"] = dict(sorted(s.requests.items())) if s else {}
     return result, (s.transcript if s else []), (s.stamps if s else []), log.decode(errors="replace")
 
 
@@ -1101,7 +1105,7 @@ def drive(s, record, root_uri, result, replay):
         s.send("textDocument/didOpen", {"textDocument": {
             "uri": root_uri + "/" + name, "languageId": LANGUAGE_ID, "version": 1, "text": text}}, request=False)
     next_id = record["next_id"]
-    barrier(s, root_uri, result, 0)
+    barrier(s, root_uri, 0)
     for k, step in enumerate(record["steps"], 1):
         for name, text in step["texts"].items():
             versions[name] += 1
@@ -1111,7 +1115,6 @@ def drive(s, record, root_uri, result, replay):
         for r in step["requests"]:
             key, deadline = s.request(r["method"], templated(r["params"], root_uri, reverse=True), r["id"])
             keys[key] = deadline
-            result["requests"][r["method"]] += 1
         replies = s.collect(keys)
         if not replay:
             step["followups"] = []
@@ -1140,9 +1143,8 @@ def drive(s, record, root_uri, result, replay):
         for f in step.get("followups", []):
             key, deadline = s.request(f["method"], templated(f["params"], root_uri, reverse=True), f["id"])
             keys[key] = deadline
-            result["requests"][f["method"]] += 1
         s.collect(keys)
-        barrier(s, root_uri, result, k)
+        barrier(s, root_uri, k)
     # Restore clean sources: the project must analyze again, on a replacement
     # worker if one died, and answer from the observer.
     for name, text in record["restore"].items():
@@ -1169,9 +1171,6 @@ def drive(s, record, root_uri, result, replay):
         s.request("textDocument/definition", at(OBSERVER_USE), "restored-definition"),
         s.request("textDocument/prepareCallHierarchy", at(OBSERVER_DECLARATION["start"]), "restored-calls"),
         s.request("textDocument/prepareTypeHierarchy", at(OBSERVER_LEAF), "restored-types")]))
-    for method in ("textDocument/hover", "textDocument/definition", "textDocument/prepareCallHierarchy",
-                   "textDocument/prepareTypeHierarchy", "callHierarchy/incomingCalls", "typeHierarchy/supertypes"):
-        result["requests"][method] += 1
     value = ((hover.get("result") or {}).get("contents") or {}).get("value", "")
     if "stable(x: int) -> int" not in value:
         raise CaseFailure("recovery-failure", "no clean-source hover after restoration: %s" % json.dumps(hover)[:400])
@@ -1197,12 +1196,12 @@ def drive(s, record, root_uri, result, replay):
     if dirty:
         raise CaseFailure("recovery-failure", "restored sources still have diagnostics: %s" % json.dumps(dirty)[:400])
     result["restored"] = True
-    total = sum(result["requests"].values())
+    total = sum(s.requests.values())
     assert total == request_count(record) <= limits["requests"], ("request accounting", total, request_count(record))
     s.finish()
 
 
-def barrier(s, root_uri, result, k):
+def barrier(s, root_uri, k):
     """Wait for every analysis of the source sent so far, then mark the log.
 
     An observer hover waits for the analysis that is due or running (see
@@ -1213,7 +1212,6 @@ def barrier(s, root_uri, result, k):
     observer = {"textDocument": {"uri": root_uri + "/" + OBSERVER_NAME}, "position": OBSERVER_USE}
     key, deadline = s.request("textDocument/hover", observer, "barrier-%d" % k)
     s.collect({key: deadline})
-    result["requests"]["textDocument/hover"] += 1
     s.boundary()
 
 
@@ -1275,11 +1273,11 @@ class Artifacts:
         path.write_bytes(data)
         self.sizes[rel] = len(data)
 
-    def whole(self, rel, data, tier):
+    def whole(self, rel, data, tier, keep=0):
         """Write {data} whole if it fits; True if written. If it doesn't, a
         passing case's {rel} is removed, but a failing case keeps what it
         saved before, which is complete evidence of the case as planned."""
-        if len(data) > self.room(rel, tier):
+        if len(data) > self.room(rel, tier) - keep:
             if tier == "passing":
                 (self.directory / rel).unlink(missing_ok=True)
                 self.sizes.pop(rel, None)
@@ -1297,23 +1295,24 @@ class Artifacts:
             data = data[:head] + marker % (len(data) - head)
             data = data[:max(0, room)]
             self.truncated.append(rel)
-        self.put(rel, data)
-        return rel not in self.truncated
+        return self.whole(rel, data, tier, keep) and rel not in self.truncated
 
     def transcript(self, rel, transcript, stamps, tier, keep=0):
-        room = self.room(rel, tier) - keep - 200
-        out, size = [], 0
-        lines = [json.dumps({"t": t, "dir": d, "msg": m}, ensure_ascii=False) for (d, m), t in zip(transcript, stamps)]
-        for n, line in enumerate(lines):
-            if size + len(line.encode()) + 1 > room:
-                out.append(json.dumps({"truncated": True, "omitted_messages": len(lines) - n,
-                                       "reason": "artifact budget"}))
-                self.truncated.append(rel)
-                break
-            out.append(line)
-            size += len(line.encode()) + 1
-        self.put(rel, ("\n".join(out) + "\n").encode() if out else b"")
-        return rel not in self.truncated
+        room = self.room(rel, tier) - keep
+        lines = [dump({"t": t, "dir": d, "msg": m}) for (d, m), t in zip(transcript, stamps)]
+        out = lines
+        if sum(map(len, lines)) > room:
+            out, size = [], 0
+            for n, line in enumerate(lines):
+                marker = dump({"truncated": True, "omitted_messages": len(lines) - n,
+                               "reason": "artifact budget"})
+                if size + len(line) + len(marker) > room:
+                    out.append(marker)
+                    break
+                out.append(line)
+                size += len(line)
+            self.truncated.append(rel)
+        return self.whole(rel, b"".join(out), tier, keep) and rel not in self.truncated
 
 
 def dump(value):

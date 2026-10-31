@@ -377,6 +377,9 @@ method to `MAIN_METHODS` or `FOLLOW_UPS`, with its params and documented
 errors. An advertised method that a run never sends, such as
 `callHierarchy/outgoingCalls` when no prepare request returns items, is listed
 under `never_exercised` in `run.json` and printed, and doesn't fail the run.
+Counts include each feature request once its complete message is written,
+including barriers and restoration requests whose replies fail or time out;
+follow-ups that were never sent do not count as exercised.
 
 Worker failures are recorded apart from server and protocol failures, from
 the server's log: the worker's process ID, what happened, its exit status, its
@@ -473,6 +476,10 @@ didn't fit, that one stays and `result.json` has `"record_saved": false`. A cut 
 the case's `result.json` has `"evidence_complete": false`: that evidence is
 partial, and replaying the record recreates it whole. Lists in `run.json` and
 `result.json` keep their first 32 entries and count the rest.
+A transcript is omitted when even its truncation marker cannot fit in its
+tier's available space; `run.json` lists it under `artifacts_omitted`.
+Passing artifacts, including truncation markers, never spend the reserves
+for the next failure's complete replay record and result or for `run.json`.
 
 ### Reading a failure
 

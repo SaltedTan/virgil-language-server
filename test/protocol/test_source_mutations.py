@@ -8,6 +8,7 @@ ID-type failures without a build. Replay, a contained worker failure, and a
 known compiler trap use the built server and the test-only stall worker, and
 are skipped if they are not built.
 """
+from collections import Counter
 import contextlib
 import io
 import json
@@ -430,10 +431,11 @@ class StandIn(unittest.TestCase):
             return result, transcript, time.monotonic() - started
 
     def test_request_deadline(self):
-        result, _, elapsed = self.run_fake("hang")
+        result, transcript, elapsed = self.run_fake("hang")
         self.assertEqual(result["outcome"], "deadline", result)
         self.assertIn("request deadline", result["error"])
         self.assertLess(elapsed, 4)
+        self.assertEqual(result["requests"], dict(Counter(m["method"] for m in feature_requests(transcript))))
 
     def test_run_deadline_during_a_read(self):
         limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 1, "run_timeout": 1})
@@ -578,6 +580,28 @@ class StandIn(unittest.TestCase):
         self.assertEqual(result["outcome"], "protocol-failure", result)
         self.assertIn("undocumented error for textDocument/hover", result["error"])
 
+    def test_unsent_restoration_followups_are_never_exercised(self):
+        with tempfile.TemporaryDirectory() as directory:
+            exe = fake_server(directory, "null")
+            self.assertEqual(quietly([str(exe), "--cases", "1", "--artifacts", directory]), 1)
+            out = Path(directory) / ("seed-%d" % sm.DEFAULT_SEED)
+            run = json.loads((out / "run.json").read_text())
+            case = out / "cases" / run["failures"][0]["case"]
+            result = json.loads((case / "result.json").read_text())
+            self.assertEqual(result["outcome"], "recovery-failure")
+            self.assertIn("no clean-source hover after restoration", result["error"])
+            transcript = [(e["dir"], e["msg"]) for e in map(json.loads,
+                          (case / "transcript.jsonl").read_text().splitlines())]
+            actual = dict(Counter(m["method"] for m in feature_requests(transcript)))
+            self.assertEqual(result["requests"], actual)
+            self.assertEqual(run["requests"], actual)
+            self.assertLessEqual(sum(actual.values()), LIMITS["requests"])
+            for method in ("callHierarchy/incomingCalls", "typeHierarchy/supertypes"):
+                self.assertNotIn(method, actual)
+                self.assertIn(method, run["never_exercised"])
+            ids = {m["id"] for m in feature_requests(transcript)}
+            self.assertTrue({"restored-hover", "restored-definition", "restored-calls", "restored-types"} <= ids)
+
     def test_run_deadline_saves_incomplete_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             exe = fake_server(directory, "hang")
@@ -608,6 +632,59 @@ class StandIn(unittest.TestCase):
             self.assertTrue(artifacts.whole("failing.json", b"z" * 15000, "failure"))
             self.assertEqual((artifacts.truncated, artifacts.omitted), (["large.txt"], ["passing.json"]))
             self.assertLessEqual(tree_size(directory), budget)
+
+    def test_transcript_marker_respects_available_bytes(self):
+        transcript = [("send", {"message": "\u00e9" * 20}), ("recv", {"result": None})]
+        stamps = [0, 1]
+        marker = sm.dump({"truncated": True, "omitted_messages": 2, "reason": "artifact budget"})
+        complete = b"".join(sm.dump({"t": t, "dir": d, "msg": m}) for (d, m), t in zip(transcript, stamps))
+        for room in (0, len(marker) - 1, len(marker), len(complete)):
+            with self.subTest(room=room), tempfile.TemporaryDirectory() as directory:
+                artifacts = sm.Artifacts(Path(directory), sm.RUN_BYTES + 1000 + room, 1000)
+                written = artifacts.transcript("transcript.jsonl", transcript, stamps, "passing")
+                path = Path(directory) / "transcript.jsonl"
+                if room < len(marker):
+                    self.assertFalse(written)
+                    self.assertFalse(path.exists())
+                    self.assertIn("transcript.jsonl", artifacts.omitted)
+                elif room == len(marker):
+                    self.assertFalse(written)
+                    self.assertEqual(path.read_bytes(), marker)
+                else:
+                    self.assertTrue(written)
+                    self.assertEqual(path.read_bytes(), complete)
+                self.assertLessEqual(tree_size(directory), room)
+
+    def test_passing_cases_preserve_the_next_failure_reserve(self):
+        limits = sm.resolve_limits({"requests": 15})
+        requests = [dict(single_case("")["steps"][0]["requests"][0], id=n) for n in range(2, 9)]
+        record = single_case("component Mutant {}\n", requests, limits=limits, ident="failure")
+        reserve = sm.failure_reserve(record)
+        budget = sm.RUN_BYTES + reserve + 1024
+        transcript, stamps = [("send", {"payload": "x" * 1024})], [0]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            out = work / "out"
+            artifacts = sm.Artifacts(out, budget, reserve)
+            self.assertTrue(artifacts.whole("occupied.bin", b"x" * 1024, "passing"))
+            for n in range(999):
+                passing = dict(record, id="passing-%d" % n)
+                artifacts.whole("cases/%s/case.json" % passing["id"], sm.dump(passing), "failure")
+                sm.save_case(artifacts, passing, {"outcome": "pass"}, transcript, stamps, "")
+            passing_bytes = artifacts.used
+            self.assertTrue(artifacts.whole("cases/failure/case.json", sm.dump(record), "failure"))
+            result, transcript, stamps, log = sm.run_case(record, fake_server(directory, "restoration-failure"),
+                                                          time.monotonic() + 30, work, VALIDATOR)
+            self.assertEqual(result["outcome"], "recovery-failure", result)
+            self.assertEqual(len(record["restore_followups"]), 2)
+            path = sm.save_case(artifacts, record, result, transcript, stamps, log)
+            self.assertEqual(json.loads(path.read_text()), record)
+            self.assertTrue(json.loads(path.with_name("result.json").read_text())["record_saved"])
+            sm.write_run(artifacts, {"outcomes": {"pass": 999, "recovery-failure": 1}})
+            run = json.loads((out / "run.json").read_text())
+            self.assertIn("cases/passing-0/transcript.jsonl", run["artifacts_omitted"])
+            self.assertLessEqual(passing_bytes, budget - reserve - sm.RUN_BYTES)
+            self.assertLessEqual(tree_size(out), budget)
 
     def test_budget_floor(self):
         with tempfile.TemporaryDirectory() as directory:
