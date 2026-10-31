@@ -30,7 +30,7 @@ They also check call hierarchy in `words/Calls.v3`: the exact item of `square`, 
 
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
-The opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) installs one release's Linux archive and linux-x64 VSIX, upgrades to the next release, and rolls back, and checks each phase's versions, a diagnostic, a definition in the bundled library, and hover, in the archive's installation and in VS Code. CI doesn't run it; its runs are recorded under [Upgrade and rollback rehearsals](#upgrade-and-rollback-rehearsals).
+The opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) has separate [recorded runs](#upgrade-and-rollback-rehearsals).
 
 The editor tests don't cover:
 
@@ -109,7 +109,7 @@ Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release re
 
 ### Upgrade and rollback rehearsals
 
-Runs of the opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) with two releases' published assets, downloaded and checked against their `SHA256SUMS` first. Each row gives the SHA-256 of both releases' packages and the result of each phase that its receipt records. The rehearsal covers Linux x86-64 only: not macOS, Remote-SSH, WSL, the Neovim and LazyVim configurations, or updates through the VS Code Marketplace.
+Published assets and phase results for the opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal). These runs use the driver's own receipt format and coverage limits described there. The tables identify packages by SHA-256 and record each phase's result.
 
 The published assets that these runs used, with their SHA-256s as their releases' `SHA256SUMS` list them:
 
