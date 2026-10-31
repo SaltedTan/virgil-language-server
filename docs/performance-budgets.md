@@ -1,6 +1,6 @@
-# Performance budgets
+# Proposal — not an adopted release gate
 
-**Proposal — not an adopted release gate.** This document records measured
+This performance-budget proposal records measured
 baselines and candidate targets for the roadmap's requirement that published
 performance budgets pass in CI or scheduled runs. The maintainer must
 separately adopt the numbers, the reference environments, and the enforcement
@@ -184,8 +184,9 @@ target is the measured p95 multiplied by 1.5, each rounded up to the value
 shown. The 25% p50 margin is larger than the ordinary analysis spread the
 [scheduled comparison](benchmarks.md#scheduled-comparison) records (6–18% of
 the median for fresh/reused analysis), and the 50% p95 margin is larger than
-the 25% change threshold at which that workflow flags a comparison, so a
-target failure is a change beyond what the advisory comparison flags. Thirty measured operations give a rough p95, not
+the 25% median-change threshold used by that workflow. Its warning also
+requires disjoint p10–p90 intervals; an absolute p50 or p95 target failure
+does not imply that it would flag a comparison. Thirty measured operations give a rough p95, not
 an SLA; the p10, p90, and MAD columns in [Measured baselines](#measured-baselines)
 stay the record of the spread each target covers.
 
