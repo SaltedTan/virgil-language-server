@@ -1396,7 +1396,7 @@ The scanner also takes an operator-named member's `(` for a call's: a cast's `B.
 
 A callee that isn't generic shows its declared signature either way: a function, a method through its class, a constructor, a closure, or a builtin.
 
-A number literal takes no sentinel: it is an argument already, so the call keeps the argument count it has, and no name can continue a number anyway. `repairNumber` puts the closers and `;` after the literal's last byte, or after the closers that already follow it, so `pair(1, 2|` becomes `pair(1, 2);` without joining a name to the number. Completion itself never repairs at a number, which an identifier cannot continue ([Names](#names)); this repair is signature help's alone.
+A number literal takes no sentinel: it is an argument already, so the call keeps the argument count it has, and no name can continue a number anyway. `repairNumber` puts the closers and `;` after the literal's last byte, or after the closers that already follow it, so `pair(1, 2|` becomes `pair(1, 2);` without joining a name to the number. A lone `1.` is a float to `NumberParser`; the scanner records its literal end after the dot, so signature help answers with the cursor before or after that dot, as in `f(1, 1|.` or `f(1, 1.|`. Completion itself never repairs at a number, which an identifier cannot continue ([Names](#names)); this repair is signature help's alone. Completion after a lone `1.` still returns an empty list.
 
 A cast's source type is inferred from its argument, as a generic call's type argument is, so while that argument is the sentinel the type is unknown and shows as `?`: `B.!(|` gets `? -> B`, and `V.One.!(|` gets `? -> V.One`.
 
@@ -1427,7 +1427,6 @@ Dropping the collector's record of the last call that it walked, so that each ca
 - A syntax error elsewhere in the file or in another file of the project, or a block whose `}` is missing, as in a lambda body still being typed, leaves `null`, as it leaves completion the keywords alone.
 - The innermost open call is the scanner's, which reads tokens, not a parse. After `>`, as in `a > (b`, it takes a group for a call's arguments, and it takes a constructor's `super(` clause for a call, though the syntax tree has no application there. Both get `null`, not the call around them.
 - A call in an if expression's first argument, as in `if(f(|`, gets `null`. The repair leaves the if expression with one argument, and verification then checks none of them (`TypeChecker.visitIfExpr`).
-- A cursor just after a `.` that begins no fraction of a number, as in `f(1, 2.|`, gets `null`: the scanner leaves that dot outside the number, so there is no literal end to repair after. The same call is answered with the cursor in or just past the digits, as in `f(1, 2.5|`.
 
 **Measurements.** A repaired request needs an analysis of its own, as a completion does. On the Aeneas sources (205 files), the measurements used 25 call sites in each of `vst/Verifier.v3` and `ssa/SsaOptimizer.v3`, at statements whose call closes on its line, with the rest of the line deleted just after the call's `(`. Each request followed the analysis of its edit. A completion at the same cursor was measured beside it, against its own analysis:
 
