@@ -50,7 +50,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('SHA256SUMS', result.stderr)
 
-    def test_rejects_a_changed_archive(self):
+    def test_rejects_a_renamed_archive(self):
         (self.assets / f'virgil-lsp-{VERSION}-x86-64-linux.tar.gz').unlink()
         (self.assets / f'virgil-lsp-{VERSION}-x86-64-linux.tar.gz.old').write_bytes(b'x')
         result = self.run_script()
@@ -62,6 +62,36 @@ class ReleaseAssetsTests(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('extra.txt', result.stderr)
+
+    def test_rejects_a_hidden_file(self):
+        (self.assets / '.extra').write_bytes(b'x')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('.extra', result.stderr)
+
+    def test_rejects_a_subdirectory(self):
+        (self.assets / 'nested').mkdir()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('nested', result.stderr)
+
+    def test_rejects_a_symlink(self):
+        sums = self.assets / 'SHA256SUMS'
+        sums.rename(self.assets.parent / 'SHA256SUMS')
+        sums.symlink_to(self.assets.parent / 'SHA256SUMS')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('SHA256SUMS', result.stderr)
+
+    def test_rejects_a_name_joining_two_assets_with_a_newline(self):
+        archive = f'virgil-lsp-{VERSION}-x86-64-linux.tar.gz'
+        manifest = f'virgil-lsp-{VERSION}-x86-64-linux.manifest.json'
+        (self.assets / archive).unlink()
+        (self.assets / manifest).unlink()
+        (self.assets / f'{archive}\n{manifest}').write_bytes(b'x')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
 
     def test_rejects_a_missing_vsix(self):
         (self.assets / f'virgil-lsp-vscode-{EXT}.vsix').unlink()

@@ -245,10 +245,10 @@ jobs:
     permissions:
       contents: write
       # The attestation mints an OIDC token for its Sigstore certificate and
-      # stores the attestation and the artifact's storage record.
+      # stores the attestation. It needs no artifact-metadata permission: the
+      # action creates storage records only with push-to-registry.
       id-token: write
       attestations: write
-      artifact-metadata: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}

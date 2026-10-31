@@ -83,13 +83,25 @@ for f in "${vsix[@]}"; do
 done
 expected+=("SHA256SUMS")
 
-# The directory must hold exactly those files, no more and no fewer.
+# The directory must hold exactly those files, no more and no fewer. Every
+# entry counts, hidden ones included, and each must be a regular file with a
+# plain name, so the newline-separated comparison below is exact.
 actual=()
-shopt -s nullglob
+shopt -s nullglob dotglob
 for f in "$dir"/*; do
-  [ -f "$f" ] && actual+=("${f##*/}")
+  name=${f##*/}
+  case $name in
+    *[!A-Za-z0-9._+-]*)
+      echo "error: unexpected name in the assets directory: $(printf '%q' "$name")" >&2
+      exit 1 ;;
+  esac
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    echo "error: not a regular file in the assets directory: $name" >&2
+    exit 1
+  fi
+  actual+=("$name")
 done
-shopt -u nullglob
+shopt -u nullglob dotglob
 
 want=$(printf '%s\n' "${expected[@]}" | sort)
 have=$(printf '%s\n' "${actual[@]}" | sort)
