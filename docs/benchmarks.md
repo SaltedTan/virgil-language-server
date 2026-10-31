@@ -2944,3 +2944,25 @@ rejected.
 
 These counts describe this fixed inventory. They are not rates of how often
 users meet these states, and this report sets no quality threshold.
+
+Rerun on 2026-11-01 for [#398](https://github.com/SaltedTan/virgil-language-server/issues/398),
+which repairs an unclosed call at a number literal without the sentinel, on the
+same host, pinned Virgil `57318d37`, and hardware thread 12, under the shared
+benchmark lock with six blocks:
+
+```sh
+flock ~/.t3/scratch-virgil/bench.lock python3 scripts/bench-cursor-tolerance.py \
+  --exe build/bench/virgil-lsp --cpu 12 --work-dir build/bench-results/cursor-work \
+  --output build/bench-results/cursor.json
+```
+
+The run took 69.34 seconds for 306 history/mode/block records, with no wrong
+answers and no worker replacements. Per block and mode, signature help at
+damaged steps went from 5 exact and 7 missing of 12 to 6 exact and 6 missing:
+`inferred-initializer`'s extra step, where the cursor is in or right after the
+`3` of `Util.add(1, 3|2)`, is now exact, and no other history changed. Completion
+at damaged steps is unchanged at 11 exact, 6 missing, and 1 keywords-only of 18.
+Every restored and repeated step, and every baseline, stayed exact. The same
+session's full [tolerance capture](#release-scorecard) passed the current floors
+in both modes: primary 180/185, held-out 44/94, zero wrong answers, and zero
+expectation mismatches.

@@ -12,6 +12,7 @@ def X = [
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:repair", test_repair),
 	T("LspCompletion:repair_headers", test_repair_headers),
+	T("LspCompletion:repair_number", test_repair_number),
 	T("LspCompletion:numbers", test_numbers),
 	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
 	T("LspCompletion:decimal_members", test_decimal_members),
@@ -325,8 +326,57 @@ def test_repair_headers(t: Tester) {
 	}
 }
 
-def test_numbers(t: Tester) {
-	checkPlace(t, "var x = 12$", LspCursorPlace.NUMBER);
+// Signature help's repair where the cursor is in or just past a number
+// literal: the literal stays as it is, the sentinel is not inserted, and the
+// closers and ";" go after the literal and after any closer that already
+// follows the cursor. Completion gets nothing there (LspCompletionRepair
+// .kinds), so this repair is signature help's alone.
+def test_repair_number(t: Tester) {
+	// The literal's end, at the cursor where it ends there, and past the
+	// digits after the cursor where the cursor is inside it.
+	t.asserti(7, at("f(1, 32$)").numberEnd);
+	t.asserti(7, at("f(1, 3$2)").numberEnd);
+	t.asserti(6, at("f(0x1$F, n)").numberEnd);
+	t.asserti(8, at("f(1.5e$+3)").numberEnd);
+	// A tuple index and "_" are not number literals: a name continues them.
+	t.asserti(-1, at("t.0$").numberEnd);
+	t.asserti(-1, at("f(_$").numberEnd);
+	t.asserti(0, LspCompletionRepair.kinds(at("f(1, 32$)")));
+	for (c in [
+		// The closers and ";" after the literal.
+		("var n = f(1$", "var n = f(1);"),
+		("var n = f(1, 2$3", "var n = f(1, 23);"),
+		// Nothing where the call's ")" already follows the literal, and ";"
+		// after it where no ";" ends the statement.
+		("f(1, 2$3);", "f(1, 23);"),
+		("f(1, 2$3)", "f(1, 23);"),
+		// Each kind of literal, with the cursor inside it and at its end.
+		("var x = f(0x1$F", "var x = f(0x1F);"),
+		("var x = f(0b1$0", "var x = f(0b10);"),
+		("var x = f(1.5$", "var x = f(1.5);"),
+		("var x = f(1.$5", "var x = f(1.5);"),
+		("var x = f(1.5$f", "var x = f(1.5f);"),
+		("var x = f(1.5e+$3", "var x = f(1.5e+3);"),
+		("var x = f(32u$", "var x = f(32u);"),
+		// Nested, with both closers missing.
+		("g(f(1, 0b1$0", "g(f(1, 0b10));")
+	]) {
+		t.assert_string(repairProgram(c.1), repairNumber(repairProgram(c.0)));
+		checkNumberRepairParses(t, repairProgram(c.0));
+	}
+}
+// The text of {marked}, with its "$" cursor, repaired at the number there.
+def repairNumber(marked: string) -> string {
+	return LspCompletionRepair.repairNumber(at(marked));
+}
+// Checks that the number repair of {marked} parses.
+def checkNumberRepairParses(t: Tester, marked: string) {
+	var text = LspCompletionRepair.repairNumber(at(marked));
+	var n = AeneasAdapter.parseFile("repair.v3", text, []).diagnostics.length;
+	if (n != 0) t.fail2("does not parse: %s: %s", marked, text);
+}
+
+def test_numbers(t: Tester) {	checkPlace(t, "var x = 12$", LspCursorPlace.NUMBER);
 	checkPlace(t, "var x = 1$2", LspCursorPlace.NUMBER);
 	checkPlace(t, "var x = 0x1f$", LspCursorPlace.NUMBER);
 	checkPlace(t, "var x = 1.5e3$", LspCursorPlace.NUMBER);

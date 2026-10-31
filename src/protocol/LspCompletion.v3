@@ -146,6 +146,21 @@ component LspCompletionRepair {
 		buf.putk(text, 0, ctx.cursor).puts(SENTINEL).putk(text, ctx.cursor, c.1).puts(c.0);
 		return buf.putk(text, c.1, text.length).extract();
 	}
+	// {ctx}'s text, repaired where the cursor is in or just past a number
+	// literal ({ctx}.numberEnd): the literal as it is, since a name cannot
+	// continue a number and the literal already keeps the call's argument
+	// count, and {completionAt}'s text at the offset it gives, after the
+	// literal's end and any closers that already follow it, so that the
+	// digits after the cursor stay in the literal. Nothing is inserted before
+	// the cursor, so its offsets, and those of every opener before it, are the
+	// same in both texts. Signature help uses this repair, where completion
+	// gets nothing ([docs/architecture.md#incomplete-calls]); completion never
+	// repairs in a literal.
+	def repairNumber(ctx: LspCursorContext) -> Array<byte> {
+		var text = ctx.text, c = completionAt(ctx, ctx.numberEnd), buf = StringBuilder.new();
+		buf.putk(text, 0, c.1).puts(c.0);
+		return buf.putk(text, c.1, text.length).extract();
+	}
 	// What completes the identifier at {ctx}'s cursor, and the offset in
 	// {ctx}'s text that it goes at: after the identifier's rest as typed, or,
 	// when the closers of the delimiters open at the cursor already follow,
@@ -155,6 +170,12 @@ component LspCompletionRepair {
 	// innermost block's closers in one forward scan, allowing whitespace and
 	// comments between them, so look-ahead stays linear.
 	def completion(ctx: LspCursorContext) -> (string, int) {
+		var text = ctx.text, end = ctx.cursor;
+		while (end < text.length && isIdentMiddle(text[end])) end++;
+		return completionAt(ctx, end);
+	}
+	// {completion} where the token that holds the cursor ends at {end}.
+	private def completionAt(ctx: LspCursorContext, end: int) -> (string, int) {
 		var text = ctx.text, closers = StringBuilder.new(), last = ctx.roles.length;
 		// The role of the innermost open block, which holds the cursor when
 		// every closer of the delimiters open at it matches.
@@ -169,8 +190,6 @@ component LspCompletionRepair {
 		}
 		var close = closers.toString();
 		var inner = if(last > 0, ctx.roles[last - 1], LspOpenRole.TOP);
-		var end = ctx.cursor;
-		while (end < text.length && isIdentMiddle(text[end])) end++;
 		var at = end, s = space(text, end), scan = s.0, line = false;
 		if ((ctx.syntax & LspCursorSyntax.PATTERN) != 0 && inner == LspOpenRole.MATCH) {
 			var n = if(scan < text.length, text[scan], '\x00'), n2 = if(scan + 1 < text.length, text[scan + 1], '\x00');

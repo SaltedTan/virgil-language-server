@@ -54,14 +54,17 @@ class LspSignatureHelp extends LspQueryRequests {
 		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
 		var r = LspSignatureRequest.new(this, request.id), calls = ctx.calls();
 		var path = DocumentUri.filePath(overlay.uri);
+		// A number literal at the cursor is repaired as it is, without the
+		// sentinel, which a number cannot continue.
+		var number = ctx.place == LspCursorPlace.NUMBER && ctx.numberEnd >= 0;
 		// Null where no call is open, in a comment or a literal, and without
 		// a file path or a worker.
-		if (ctx.place != LspCursorPlace.CODE || calls.length == 0 || path == null || scheduler == null) return finish(r, r.fallback());
+		if ((ctx.place != LspCursorPlace.CODE && !number) || calls.length == 0 || path == null || scheduler == null) return finish(r, r.fallback());
 		var reuse = cached(overlay, ctx.cursor);
 		if (reuse != JsonValue.Null) return finish(r, JsonRpcReply.Result(reuse));
 		// The repair inserts nothing before the cursor, so every "(" before it
 		// is at the same offset in both texts.
-		var text = LspCompletionRepair.repair(ctx);
+		var text = if(number, LspCompletionRepair.repairNumber(ctx), LspCompletionRepair.repair(ctx));
 		if (!parses(path, text, project.definition.compilerArgs)) return finish(r, r.fallback());
 		r.offset = calls[calls.length - 1];
 		r.kinds = AnalysisScopeKinds.CALL;

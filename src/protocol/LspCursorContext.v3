@@ -99,6 +99,12 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	def var previousName = -1;
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
+	// The offset just past the number literal that holds the cursor, or just
+	// precedes it, when {place} is NUMBER; -1 otherwise, for "_", which an
+	// identifier continues, and for a tuple index such as the "0" in "t.0".
+	// Signature help repairs a call there without the sentinel, since a name
+	// cannot continue a number (LspCompletionRepair.repairNumber).
+	def var numberEnd = -1;
 	// The delimiters open at the cursor, outermost first: their offsets and
 	// what each encloses.
 	def var opens: Array<int>;
@@ -319,7 +325,12 @@ class LspCursorScanner(text: Array<byte>) {
 				if (afterMemberDot) {
 					while (j < n && isDecimal(text[j])) j++;
 				} else j = numberEnd(i);
-				if (end <= j) return LspCursorPlace.NUMBER;
+				if (end <= j) {
+					// The cursor is in the number literal or just past it, so
+					// the repair closes what is open after it.
+					if (!afterMemberDot) ctx.numberEnd = j;
+					return LspCursorPlace.NUMBER;
+				}
 				token(LspCursorToken.LITERAL, i);
 				i = j;
 			} else if (c <= ' ' || c > '~') {
