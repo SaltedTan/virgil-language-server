@@ -420,7 +420,7 @@ Establish performance budgets only after measuring. Reasonable initial objective
 
 The repository is a monorepo. `src/` holds the server and the analysis worker, with `src/analysis/` as the only code that touches Aeneas; `clients/vscode/` holds the thin TypeScript client; `editors/nvim/` holds the tested Neovim and LazyVim configurations; `test/` holds protocol, analysis, feature, fixture, and end-to-end tests; `docs/` holds the architecture, configuration, development, compatibility, release, and decision documents; `scripts/` holds build and release helpers; and `vendor/virgil/` is the exact, pinned upstream submodule. The root holds the license, changelog, roadmap, and community documents. [Source layout](docs/architecture.md#source-layout) owns each `src/` directory's responsibility and status.
 
-Keep this as a monorepo through v0.1 so the server, both editor integrations, fixtures, and release automation change together. Split a client into another repository only if its independent release cadence or contributor base makes that operationally worthwhile.
+Keep this as a monorepo through v0.1 so the server, editor integrations, fixtures, and release automation change together. Split a client into another repository only if its independent release cadence or contributor base makes that operationally worthwhile.
 
 ## GitHub project setup
 
