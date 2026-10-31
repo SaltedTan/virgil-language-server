@@ -303,21 +303,30 @@ class ReaderTest(unittest.TestCase):
         self.assertTrue(all(check["status"] == "pass" for check in checks))
 
     def test_uri_paths_in_failure_are_redacted(self):
-        self.work = self.work / "release build" / "nvim-smoke"
+        repository = self.work / "release build"
+        self.work = repository / "nvim-smoke"
         self.work.mkdir(parents=True)
-        message = " | ".join(f"{form}/project/bad.v3" for form in ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>"))
-        malformed = json.dumps({"observation": "<WORK_URI>/project/bad.v3"})
-        self.assertEqual(self.run_reader([malformed, failing(ORDER[0], message)],
-                                         detached=False, sleep=0, exit=1), 1)
+        location = repository / "test/e2e/nvim/check.lua"
+        locations = (str(location), quote(str(location), safe="/"), location.as_uri())
+        message = " | ".join(f"{source}:115: assertion failed in {form}/project/bad.v3"
+                             for source, form in zip(locations, ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>")))
+        malformed = [json.dumps({"observation": f"{source}:115: assertion failed"}) for source in locations]
+        with mock.patch.object(self.writer, "REPO", repository):
+            self.assertEqual(self.run_reader([*malformed, failing(ORDER[0], message)],
+                                             detached=False, sleep=0, exit=1), 1)
         state = self.assert_cleaned()
         checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
-        expected = " | ".join(["<work>/project/bad.v3"] * 3)
+        expected = " | ".join(["test/e2e/nvim/check.lua:115: assertion failed in <work>/project/bad.v3"] * 3)
         self.assertEqual(checks[0]["observation"], expected)
         self.assertEqual(checks[0]["reason"], expected)
-        self.assertIn("<work>/project/bad.v3", state["issues"][0])
+        self.assertEqual(len(state["issues"]), len(locations))
+        for issue in state["issues"]:
+            self.assertIn("test/e2e/nvim/check.lua:115: assertion failed", issue)
+            self.assertNotIn("<repo>", issue)
         text = self.stream.read_text() + json.dumps(state)
-        for path in (str(self.work), quote(str(self.work), safe="/"), self.work.as_uri()):
-            self.assertNotIn(path, text)
+        for root in (repository, self.work):
+            for path in (str(root), quote(str(root), safe="/"), root.as_uri()):
+                self.assertNotIn(path, text)
 
     def test_normal_exit_stops_detached_child(self):
         self.assertEqual(self.run_reader([passing(ORDER[0])], sleep=0.2), 0)
@@ -448,21 +457,34 @@ class StreamTest(Case):
                          ["nvim.infrastructure.preflight", *ORDER, "nvim.infrastructure.completed"])
 
     def test_uri_paths_in_failure_are_redacted(self):
+        repository = self.dir / "repo build"
+        for relative in ("test/e2e/nvim/run.sh", "test/e2e/nvim/results.py", "test/e2e/nvim/check.lua",
+                         "test/e2e/coverage.json", "editors/nvim/virgil_lsp.lua"):
+            copied = repository / relative
+            copied.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / relative, copied)
+        shutil.copytree(HERE / "nvim/fixture", repository / "test/e2e/nvim/fixture")
         server_dir = self.dir / "release build"
         self.server_dir.rename(server_dir)
         self.server_dir = server_dir
-        message = " | ".join(f"{form}/project/bad.v3" for form in ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>"))
-        self.scenario(lines=[json.dumps({"observation": "<WORK_URI>/project/bad.v3"}),
-                             failing(ORDER[0], message)], exit=1)
-        self.assertFailed(self.run_sh())
+        location = repository / "test/e2e/nvim/check.lua"
+        locations = (str(location), quote(str(location), safe="/"), location.as_uri())
+        message = " | ".join(f"{source}:115: assertion failed in {form}/project/bad.v3"
+                             for source, form in zip(locations, ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>")))
+        malformed = [json.dumps({"observation": f"{source}:115: assertion failed"}) for source in locations]
+        self.scenario(lines=[*malformed, failing(ORDER[0], message)], exit=1)
+        with mock.patch(__name__ + ".RUN", repository / "test/e2e/nvim/run.sh"):
+            self.assertFailed(self.run_sh())
         failed = self.checks()[ORDER[0]]
-        expected = " | ".join(["<work>/project/bad.v3"] * 3)
+        expected = " | ".join(["test/e2e/nvim/check.lua:115: assertion failed in <work>/project/bad.v3"] * 3)
         self.assertEqual(failed["observation"], expected)
         self.assertEqual(failed["reason"], expected)
+        for issue in self.events()[-1]["issues"]:
+            self.assertIn("test/e2e/nvim/check.lua:115: assertion failed", issue)
         text = self.stream.read_text()
-        self.assertIn("<work>/project/bad.v3", self.events()[-1]["issues"][0])
-        for path in (str(server_dir), quote(str(server_dir), safe="/"), server_dir.as_uri()):
-            self.assertNotIn(path, text)
+        for root in (repository, server_dir):
+            for path in (str(root), quote(str(root), safe="/"), root.as_uri()):
+                self.assertNotIn(path, text)
 
     def test_release_options(self):
         self.scenario(lines=[passing(check_id) for check_id in ORDER])
@@ -481,7 +503,7 @@ class StreamTest(Case):
         self.assertEqual(missing.returncode, 2)
 
     def test_check_failure(self):
-        message = ("...t3/repo/test/e2e/nvim/check.lua:65: timed out waiting for semantic diagnostics in "
+        message = (f"{REPO}/test/e2e/nvim/check.lua:65: timed out waiting for semantic diagnostics in "
                    "<WORK>/project/words/Words.v3")
         self.scenario(lines=[*map(passing, ORDER[:3]), failing(ORDER[3], message)], exit=1)
         result = self.run_sh()

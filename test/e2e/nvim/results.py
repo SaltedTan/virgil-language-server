@@ -115,10 +115,10 @@ class Paths:
         self.pairs = sorted(forms, key=lambda pair: -len(pair[0]))
 
     def __call__(self, text):
-        # Lua's error positions shorten long paths to "...<end of the path>".
-        text = re.sub(r"\S*check\.lua:(\d+):", r"test/e2e/nvim/check.lua:\1:", text)
         for path, name in self.pairs:
             text = text.replace(path, name)
+        text = re.sub(r"(?:<(?:repo|work)>/|~/)?test/e2e/nvim/check\.lua:(\d+):",
+                      r"test/e2e/nvim/check.lua:\1:", text)
         if len(text) > LIMIT:
             text = text[:LIMIT] + f" [{len(text) - LIMIT} more characters]"
         return text
