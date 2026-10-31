@@ -1,6 +1,6 @@
 # Privacy
 
-This statement covers the language server (`virgil-lsp` and its analysis worker, `virgil-lsp-worker`), the VS Code extension, the Neovim and LazyVim configurations in [`editors/nvim/`](editors/nvim/), and the [Helix configuration](editors/helix/README.md). It describes what they read, write, and start on the machine where they run. With Remote-SSH, Remote-WSL, or an editor over SSH, that is the remote machine or the WSL distribution.
+This statement covers the language server (`virgil-lsp` and its analysis worker, `virgil-lsp-worker`), the VS Code extension, the Neovim and LazyVim configurations in [`editors/nvim/`](editors/nvim/), the Emacs configuration in [`editors/emacs/`](editors/emacs/), and the [Helix configuration](editors/helix/README.md). It describes what they read, write, and start on the machine where they run. With Remote-SSH, Remote-WSL, or an editor over SSH, that is the remote machine or the WSL distribution.
 
 **Neither the server nor the extension collects telemetry or makes network connections.** Your code and the server's logs stay on your machine, except where you copy them yourself, for example into a bug report.
 
@@ -22,7 +22,7 @@ The server opens files only to read them:
 - **The Virgil root.** It reads the files under the Virgil root that `virgilDependencies` select. When the editor sends no root, it uses the library in the `virgil/` directory beside its own executable, which release archives and platform VSIX files include: it reads that directory's `REVISION` file and checks that its `lib/` can be listed ([The Virgil root](docs/configuration.md#the-virgil-root)).
 - **Its own location.** It looks up the path of its own executable, to find the worker and the `virgil/` library beside it.
 
-It never follows symbolic links when it looks for project files or reads sources ([Symbolic links](docs/configuration.md#symbolic-links)). It reads no environment variables, including `VIRGIL_LOC`: the VS Code, Neovim, and LazyVim integrations read that and send the root to the server.
+It never follows symbolic links when it looks for project files or reads sources ([Symbolic links](docs/configuration.md#symbolic-links)). It reads no environment variables, including `VIRGIL_LOC`.
 
 The server only parses and type-checks your code. It never compiles or runs it, and nothing in a project file can make it run a program ([Security](docs/configuration.md#security)). Its [development commands](docs/development.md), such as `virgil-lsp parse`, read the files that you name on the command line, and an unadvertised development request can name files to analyze; editors don't send it.
 
@@ -39,6 +39,7 @@ The server writes no files, and it keeps no cache on disk: everything it learns 
 - The **VS Code extension** starts the server it selects, `virgil-lsp --stdio`: the server in the platform VSIX, the one that `virgil.server.path` names, or `virgil-lsp` on `PATH` ([Settings](clients/vscode/README.md#settings)). It stops the server when the window closes, and starts it again on a restart or a crash.
 - The **Neovim and LazyVim configurations** start `virgil-lsp --stdio` from `PATH`, or the command that you give in `cmd`.
 - The **Helix configuration** starts `virgil-lsp --stdio` from `PATH`, or the command that you give in `command`.
+- The **Emacs configuration** starts nothing when it is loaded. Eglot starts `virgil-lsp --stdio` from `PATH` when you run `M-x eglot`, or through `eglot-ensure` if you add it to `virgil-mode-hook`.
 - The **server** starts its analysis worker, `virgil-lsp-worker`, from the directory of its own executable, when it first needs to analyze a project. It gives the worker an empty environment, and `/dev/null` as its standard input. It runs one worker at a time and replaces it after a crash, after a timeout, and routinely after 100 analyses ([restart policy](docs/decisions/0004-analysis-worker-process.md#restart-policy)). The server sends the worker the text of the files to analyze through a pipe, and the worker opens no files itself.
 
 The worker starts no processes. Neither the server nor the worker runs the Virgil compiler, `v3c`, or your program.
@@ -60,12 +61,15 @@ The Neovim and LazyVim configurations read `VIRGIL_LOC` and send it to the serve
 
 The Helix snippet writes no files. Its [setup guide](editors/helix/README.md#the-virgil-root) describes its initialization options, and [What the server sees](editors/helix/README.md#what-the-server-sees) describes its buffer selection.
 
+The Emacs configuration reads no environment variables and sends no Virgil root unless you add one. To choose a Virgil file's project root outside version control, it checks whether `.virgil-lsp.json` exists in the file's directory and above it, without reading it. It writes no files.
+
 ## Logs
 
 The server's log goes wherever the editor puts the server's standard error:
 
 - **VS Code:** the "Virgil Language Server" output channel, together with the extension's own messages. VS Code also saves the channel in its log directory, as `Virgil Language Server.log`.
 - **Neovim:** Neovim's LSP log file, whose path `:lua =vim.lsp.log.get_filename()` prints.
+- **Emacs:** Eglot's events buffer, `M-x eglot-events-buffer`, which also records each message with its contents, including the full text of open files. Emacs keeps it in memory, and `eglot-shutdown` removes it unless you give it a prefix argument.
 
 The log names files and directories, such as the server's path, the Virgil root, project files, and sources, and the names of projects. It can include compiler messages, which quote names and types from your code. A message trace adds the messages between the editor and the server. In VS Code, with the channel's log level set to Trace, the default `virgil.trace.server` value, `messages`, records only each message's name and, for a response, how long it took; `compact` and `verbose` also record each message's contents, including the full text of open files, so they appear only if you change the setting from its default. In Neovim, `:lua vim.lsp.log.set_level("debug")` records each message with its contents, including the full text of open files ([Logs and restarting](docs/troubleshooting.md#logs-and-restarting)). Remove anything private from a log before you share it.
 

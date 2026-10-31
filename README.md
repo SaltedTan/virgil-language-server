@@ -65,7 +65,7 @@ See [docs/development.md](docs/development.md) for details.
 
 For VS Code, [install the VSIX for your workspace platform](clients/vscode/README.md#installing-from-a-vsix): `linux-x64`, `darwin-arm64` (requires Rosetta 2), or `darwin-x64`. It includes the server, worker, and pinned library. No separate server installation or path setting is needed. The universal VSIX is available for external-server installations.
 
-For Neovim, LazyVim, or an external VS Code server, install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
+For Neovim, LazyVim, Emacs, or an external VS Code server, install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
 
 <!-- clean-install: server -->
 ```sh
@@ -86,7 +86,7 @@ virgil-lsp --version
 
 Keep the worker and `virgil/` beside the server. Add the `export PATH` line to your shell's startup file for future terminals, and start your editor from this terminal for the first install. For macOS downloads, checksum verification, and Rosetta 2, see [Installing](docs/releasing.md#installing).
 
-For VS Code, [install the prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix). Neovim and LazyVim setup and integration status live in [`editors/nvim/`](editors/nvim/). For Helix, a best-effort, grammar-free configuration and setup guide live in [`editors/helix/`](editors/helix/); it is outside the [supported editor matrix](docs/compatibility.md#editors). Once the server is installed, [try your first project](docs/first-project.md): a small checked-in example with a deliberate type error, its one-word fix, and a hover and go-to-definition to check.
+For VS Code, [install the prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix). Neovim and LazyVim setup and integration status live in [`editors/nvim/`](editors/nvim/). For Helix, a best-effort, grammar-free configuration and setup guide live in [`editors/helix/`](editors/helix/); it is outside the [supported editor matrix](docs/compatibility.md#editors). A best-effort Emacs configuration for Eglot, outside the [tested editor matrix](docs/compatibility.md#editors), is in [`editors/emacs/`](editors/emacs/). Once the server is installed, [try your first project](docs/first-project.md): a small checked-in example with a deliberate type error, its one-word fix, and a hover and go-to-definition to check.
 
 If the server doesn't start, or a file gets no diagnostics or navigation, see [Troubleshooting](docs/troubleshooting.md). [PRIVACY.md](PRIVACY.md) states what the server and the editor integrations read, write, and start; they collect no telemetry and make no network connections.
 
