@@ -351,16 +351,31 @@ def workerRequest(t: Tester, n: int, scoped: bool) {
 		Decoded(r) => snapshot = r.snapshot;
 		_ => return t.fail("the result did not decode");
 	}
+	if (scoped) {
+		// A query's result has no diagnostics (AnalysisWire.encodeResultWithQuery).
+		t.asserti(0, snapshot.diagnostics.length);
+		var scope = snapshot.scope;
+		if (scope == null) return t.fail("no scope answer");
+		// The component of the file with the error, the last, and of one in
+		// the middle are candidates, each in its own file, at its name there.
+		for (i in [n - 1, n / 2]) {
+			var name = Strings.format1("C%d", i), found: AnalysisDeclaration;
+			for (k in scope.declarations) {
+				var d = snapshot.declarations[k];
+				if (Strings.equal(name, d.name)) found = d;
+			}
+			if (found == null) return t.fail1("component %s is not a candidate", name);
+			t.assert_string(paths[i], found.range.path);
+			t.asserti(indexOf(sources[i + 1].input, name), found.range.beginOffset);
+		}
+		return;
+	}
 	// The error is in the last file, with its byte offsets there.
 	t.asserti(1, snapshot.diagnostics.length);
 	if (snapshot.diagnostics.length == 1) {
 		var e = snapshot.diagnostics[0];
 		t.assert_string(paths[n - 1], e.path);
 		t.asserti(indexOf(sources[n].input, "Absent"), e.beginOffset);
-	}
-	if (scoped) {
-		t.assert(snapshot.scope != null, "a scope answer");
-		return;
 	}
 	// Each class is declared in its own file.
 	var found = 0;

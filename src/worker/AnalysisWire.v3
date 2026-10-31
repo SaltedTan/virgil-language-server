@@ -29,7 +29,7 @@ component AnalysisWire {
 	// The kinds are scope kinds, or MEMBERS alone for a member query, or CALL
 	// alone, with no prefix, for a call query. Without WANT_OCCURRENCES, the
 	// result of a query has an occurrence section with no files, whose
-	// declarations are the answer's.
+	// declarations are the answer's, and no diagnostics.
 	def ANALYZE: byte = 2;
 	// Worker to server: see encodeResult.
 	def RESULT: byte = 3;
@@ -213,7 +213,9 @@ component AnalysisWire {
 	// only if a file's calls would send it (see AnalysisCallCheck). The
 	// answer's declarations join the result's after the occurrences', its
 	// names and details its string table, and its call's signature the call
-	// signatures.
+	// signatures. A result whose occurrence section has no files, a query's
+	// answer without occurrences, has no diagnostics: nothing reads them, and
+	// they are the only part of it that can grow with the program.
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
@@ -241,6 +243,7 @@ component AnalysisWire {
 		// call is not sent.
 		var callSignature = if(files != null && call != null, checkCall(call, analysis.callSignatureCount()), -1);
 		if (callSignature < 0) call = null;
+		var diagnostics: Array<AnalysisDiagnostic> = if(files != null && files.length == 0, [], analysis.diagnostics);
 		var flags = if(analysis.parsed, PARSED) | if(analysis.verified, VERIFIED) | if(files != null, OCCURRENCES)
 			| if(files != null && scope != null, SCOPE) | if(files != null && members != null, MEMBERS)
 			| if(call != null, CALL);
@@ -275,8 +278,8 @@ component AnalysisWire {
 			w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
 			w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
 			w.put_sleb32(skipped);
-			w.put_sleb32(analysis.diagnostics.length);
-			for (d in analysis.diagnostics) {
+			w.put_sleb32(diagnostics.length);
+			for (d in diagnostics) {
 				putString(w, d.path);
 				w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
 				w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
@@ -284,10 +287,10 @@ component AnalysisWire {
 				putString(w, d.message);
 			}
 			var capped = 0;
-			for (d in analysis.diagnostics) if (d.omitted > 0) capped++;
+			for (d in diagnostics) if (d.omitted > 0) capped++;
 			w.put_sleb32(capped);
-			for (i < analysis.diagnostics.length) {
-				var omitted = analysis.diagnostics[i].omitted;
+			for (i < diagnostics.length) {
+				var omitted = diagnostics[i].omitted;
 				if (omitted > 0) w.put_sleb32(i).put_sleb32(omitted);
 			}
 		};
