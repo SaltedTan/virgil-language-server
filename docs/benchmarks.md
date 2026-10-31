@@ -2978,8 +2978,14 @@ reuses `Session`, the per-PID `ResourceSampler`, and the tolerance driver's
 physical-copy fixture. It is opt-in: neither it nor its helper tests are part of
 `make test` or any workflow. It needs a `BENCH=1` build, because the snapshot
 and text-cache charges come from probes, and it has been run only on Linux,
-where `/proc` supplies high-water marks and the start times it uses to reap only
-its own workers. Build, then run it under the shared benchmark lock:
+where `/proc` supplies high-water marks, start times, and process groups. The
+server runs in its own process group, which its workers join. At the end, or
+after a failure, the driver gives the server five seconds to exit, then kills
+the whole group, by group, never by name, and waits until no member is left, so
+that a worker started meanwhile can't outlive the run; it also kills any worker
+it sampled that left the group, after checking its start time and executable.
+A process still running afterward is a finding. Build, then run it under the
+shared benchmark lock:
 
 ```sh
 make bench-build
@@ -3012,7 +3018,9 @@ broken, restores it, and closes it, and every fortieth adds a source with
 descriptor clauses and `-lang:descriptors` to one context through an unsaved
 configuration, then restores both and deletes the file. Each of these takes the
 next context in turn. Every step ends at a request barrier with a 15-second
-deadline, never a sleep, and the run has a 30-minute deadline. `--smoke` runs
+deadline, never a sleep, and the run has a 30-minute deadline. Writes to the
+server have the same deadline: the driver writes without blocking, so a server
+that stops reading ends the run with a deadline finding instead of hanging it. `--smoke` runs
 only cycles 39 and 40, without warmups or a build manifest; cycle 40 has every
 periodic action.
 
@@ -3042,7 +3050,9 @@ texts together exceed it; that every retained snapshot charge stays within
 some admission had to evict an inactive context's snapshot; that admission
 never frees what it protects; that each retirement's logged reason is the one
 the limits give for the worker's last analysis, and that none was due and
-missed; that the live limit is an eighth of the worker's heap; that no answer
+missed; that each worker's reported analysis count, which decides retirement by
+count, matches the completions observed for it, with no reset, missing
+increment, or skip; that the live limit is an eighth of the worker's heap; that no answer
 binds anywhere but the context's own copy; and that no nonempty publication for
 an open document carries a version older than one already confirmed or
 published. A refused admission is recorded with its cause, `pinned` when a
@@ -3068,13 +3078,14 @@ Measured on 2026-11-01 at `500b9f53` (server
 `5856521120f6d5cb40da223b9f63e039426625a1d5ba88c7bfd2b46f502b591e`, worker
 `c611b6e99aaa7fab54693122ce58efc2acaccfc6fc8785547682c5f1d69c893e`, build
 manifest `9a9b59aa69b17e214aff78e6b879214309b1f6e445ecfb4651dcc82f0b93d553`),
-with the driver of `fd7ee3bb`
-(`b1a272c1cb8ae24e6478ca0ee37e811b5dc422e7dc6c53d536c94119bfee1824`), on the
+with the driver of `b767dece`
+(`0fae6ec880d3d963b7b7cc48a911f92c6ed6222db1d8e520c998e5ec22f6f547`), on the
 i7-14700KF host of the [reference baseline](#reference-baseline), pinned to CPU
 12 (governor `powersave`), with the default 384 MiB worker heap and the command
 above. The fixture's tree hash was
 `30913a056ae8ab025a596973654a7eadf6825f8e7a975dd410cbef4e044b79f9`. The smoke
-run took 8.5 seconds and the full run 106.4 seconds, with no findings.
+run took 8.5 seconds and the full run 106.3 seconds, with no findings. At the
+end, the server's process group had no members left to kill.
 
 The worker completed 381 analyses: 240 measured and 6 warmup main analyses, 3
 at startup, and 132 others: 82 cancelled completions, 16 for the overlay closes
@@ -3109,8 +3120,8 @@ Four workers ran, each with a 402,653,184-byte heap and a live limit of
 correctly classified by count; at retirement their UID counters were at
 1,980,223 to 1,980,229, under 1% of 2^28, and their live bytes at 177,088, so
 neither of the other limits was near. The fourth was live at the end, after 81
-analyses. The sampler made 2,194 passes and observed all four workers; every
-PID had a high-water mark. A pass took 164 µs on average, 0.36 seconds of the
+analyses. The sampler made 2,192 passes and observed all four workers; every
+PID had a high-water mark. A pass took 162 µs on average, 0.36 seconds of the
 run, including time the driver waited for the shared CPU.
 
 Values settled after each measured cycle's third analysis, over 80 cycles:
@@ -3118,18 +3129,18 @@ Values settled after each measured cycle's third analysis, over 80 cycles:
 | Value | Cycle 1 | Cycle 80 | First 10, median | Last 10, median | Slope per cycle |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Server RSS | 210,608,128 | 210,608,128 | 210,608,128 | 210,608,128 | 0 |
-| Worker RSS | 193,064,960 | 193,064,960 | 193,071,104 | 193,064,960 | 576 |
+| Worker RSS | 193,056,768 | 193,069,056 | 193,062,912 | 193,069,056 | 662 |
 | Worker live bytes after collection | 177,088 | 177,088 | 177,088 | 177,088 | 0 |
-| Server semispace use after decoding | 82,806,288 | 56,331,408 | 75,557,868 | 75,562,936 | 5,947 |
+| Server semispace use after decoding | 82,805,952 | 56,331,296 | 75,558,020 | 75,562,736 | 5,947 |
 
 The server's RSS and high-water mark reached 210,608,128 bytes in the first
 cycle and never moved, and each worker's high-water mark was 193,064,960 to
-193,073,152 bytes. The largest sum in one pass was 403,681,280 bytes. The
-server's semispace use after decoding ranged from 31,033,728 to 101,563,648
-bytes as its collector ran, with equal first and last medians. The 576-byte
-worker slope is the difference between workers, from 191,524,864 to 193,073,152
-bytes, not growth within one. These are this schedule's values, not a proof
-that nothing leaks.
+193,077,248 bytes. The largest sum in one pass was 403,685,376 bytes. The
+server's semispace use after decoding ranged from 31,034,304 to 101,563,728
+bytes as its collector ran, and its first and last medians were within 5 KB.
+The 662-byte worker slope is the difference between workers, whose settled RSS
+ranged from 191,733,760 to 193,069,056 bytes, not growth within one. These are
+this schedule's values, not a proof that nothing leaks.
 
 The first full run, with the same executables, passed 79 measured cycles with
 no findings, then stopped at a barrier in cycle 80's descriptor step. To read
@@ -3138,7 +3149,10 @@ analysis, and admission refused it: an explicit analysis keeps the context's
 own snapshot, and two Aeneas snapshots with the reservation exceed the budget
 whenever another context was analyzed last. That is the documented admission
 rule, so the step now makes the context's analysis the latest with one more
-edit. A completion or signature help is admitted the same way: with two
+edit. A full run with that driver, `fd7ee3bb`, before the review fixes of
+`b767dece`, had the same counts, charges, and findings and the same server RSS
+in every cycle; its settled worker RSS differed by at most 208,896 bytes in a
+cycle. A completion or signature help is admitted the same way: with two
 Aeneas-size projects, a completion in the one not analyzed last is refused and
 gets keywords only, with nothing logged, until that project is analyzed again.
 
