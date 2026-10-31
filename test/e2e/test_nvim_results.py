@@ -333,6 +333,32 @@ class ReaderTest(unittest.TestCase):
         state = self.assert_cleaned()
         self.assertTrue(any("still running" in issue for issue in state["issues"]), state)
 
+    def test_exiting_process_group_permission_race(self):
+        killpg = os.killpg
+        for operation in (signal.SIGKILL, 0):
+            with self.subTest(operation=operation):
+                denied = set()
+
+                def exiting_group(group, signum):
+                    # macOS can return EPERM while a group has only zombies.
+                    if signum == operation and group not in denied:
+                        denied.add(group)
+                        raise PermissionError(1, "Operation not permitted")
+                    return killpg(group, signum)
+
+                with mock.patch.object(self.writer.os, "killpg", side_effect=exiting_group):
+                    self.assertEqual(self.run_reader(list(map(passing, ORDER)), detached=False, sleep=0), 0)
+                self.assertTrue(denied)
+                self.assertEqual(self.assert_cleaned()["issues"], [])
+
+    def test_persistent_process_group_permission_failure(self):
+        with mock.patch.object(self.writer.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")), \
+                mock.patch.object(self.writer, "GRACE", 0.1):
+            self.assertEqual(self.run_reader(list(map(passing, ORDER)), detached=False, sleep=0), 0)
+        state = json.loads((self.work / "launcher.json").read_text())
+        self.assertEqual(state["processes"], "failed", state)
+        self.assertTrue(state["issues"], state)
+
     @unittest.skipUnless(sys.platform == "linux", "adoption of unsampled children requires Linux")
     def test_immediate_failure_stops_detached_child(self):
         self.assertEqual(self.run_reader([failing(ORDER[0], "immediate failure")], sleep=0, exit=1), 1)

@@ -496,6 +496,10 @@ def run(args):
                 remaining.add(group)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS returns EPERM for a group containing only zombies.
+                # Keep waiting for it to disappear; a live denied group fails too.
+                remaining.add(group)
         return remaining
 
     def stop(signum, frame):
@@ -574,7 +578,9 @@ def run(args):
             for group in groups:
                 try:
                     os.killpg(group, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
+                    # An exiting macOS group may return EPERM here as well.
+                    # The bounded alive() check below still requires it to vanish.
                     pass
                 except OSError as error:
                     state["processes"] = "failed"
