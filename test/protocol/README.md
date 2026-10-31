@@ -150,7 +150,7 @@ because the LSP model does not define them.
 Each case has three validity labels, available with `--list`:
 
 - `schema_valid`: structural validity in the pinned model (or the extension's local schema).
-- `session_valid`: schema validity plus validity under the negotiated full synchronization, available overlay, version, and capabilities, including the documented JSON number limit. Supertypes and subtypes cases are never session-valid: the model allows any `data` in a type hierarchy item, but the server accepts only the [data](../../docs/architecture.md#type-hierarchy) that its own prepareTypeHierarchy gave, and refuses other data with `InvalidParams`. Incoming and outgoing calls cases are never session-valid for the same reason: the server accepts only the [data](../../docs/architecture.md#call-hierarchy) that its own prepareCallHierarchy gave.
+- `session_valid`: schema validity plus validity under the negotiated full synchronization, available overlay, version, and capabilities, including the documented JSON number limit. Supertypes and subtypes cases are never session-valid: the model allows any `data` in a type hierarchy item, but the server accepts only the [data](../../docs/architecture.md#type-hierarchy) that its own prepareTypeHierarchy gave, and refuses other data with `InvalidParams`. Incoming and outgoing calls cases are never session-valid for the same reason: the server accepts only the [data](../../docs/architecture.md#call-hierarchy) that its own prepareCallHierarchy gave. The generator conservatively marks completion item resolve cases with any `data` as not session-valid; the handler's actual acceptance and unchanged-item rules are described under [Item documentation](../../docs/architecture.md#item-documentation).
 - `lifecycle_valid`: whether initialize/shutdown ordering is legal. Illegal sequences have exact expected lifecycle errors.
 
 URI normalization, rename eligibility, and other semantic checks are server
@@ -320,9 +320,10 @@ manifest (`MAIN_METHODS`), with UTF-16 positions in the current text, mostly
 at names, sometimes at the end or inside a surrogate pair, and params for each
 method. Rename edits are never applied. A prepare request that returns items
 gets supertypes and subtypes, or incoming and outgoing calls, for the first
-item. `run.json` lists every prepare request whose follow-ups weren't sent,
-with the reason: no items, an error, the request cap, or an item larger than
-16 KiB. Mutated source rarely analyzes to items, so the restoration step
+item, and a completion that returns items gets `completionItem/resolve` for
+its first item with `data`, or else its first item. `run.json` lists every
+prepare or completion request whose follow-ups weren't sent, with the reason:
+no items, an error, the request cap, or an item larger than 16 KiB. Mutated source rarely analyzes to items, so the restoration step
 covers that branch on clean source.
 
 After opening the files, and after each step's replies, a barrier hover on

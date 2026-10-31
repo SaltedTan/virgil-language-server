@@ -18,6 +18,10 @@ class LspWorkspaceEvents(store: DocumentStore, projects: WorkspaceProjects) {
 	// Schedules analysis of the contexts the events affect, after a debounce
 	// interval. Null without analysis.
 	var schedule: Array<ProjectContext> -> void;
+	// Called once the projects may have changed with their project files
+	// unchanged: their sources were expanded again, for a file created or
+	// deleted, or the workspace folders changed.
+	var projectsChanged: void -> void;
 	var warn: string -> void;
 	var info: string -> void;
 	// The client can register watchers dynamically; set by initialize.
@@ -101,6 +105,7 @@ class LspWorkspaceEvents(store: DocumentStore, projects: WorkspaceProjects) {
 		affected(contexts, paths);
 		if (membership) projects.reexpand();
 		else projects.refresh();
+		if (membership && projectsChanged != null) projectsChanged();
 		affected(contexts, paths);
 		if (schedule != null) schedule(contexts.extract());
 	}
@@ -119,6 +124,7 @@ class LspWorkspaceEvents(store: DocumentStore, projects: WorkspaceProjects) {
 		var added = folderUris(event, "added"), removed = folderUris(event, "removed");
 		if (added == null || removed == null) return ignored(n, "invalid workspace folders change");
 		projects.changeFolders(added, removed);
+		if (projectsChanged != null) projectsChanged();
 		if (schedule != null) schedule([]);
 	}
 	// The URIs of the folders in {event}'s {key} array, or null if it is invalid.

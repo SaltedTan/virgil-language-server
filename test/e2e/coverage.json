@@ -1430,6 +1430,16 @@
       "description": "After a., with the trigger character ., the only item is length, a Field with def length: int that inserts after the .; applying it and two undos restore the file."
     },
     {
+      "id": "vscode.completion.resolve",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Asking again after li gets the same list, and resolving its items gives StringBuilder, from the closed library file, the comment above its class as Markdown documentation, as hover shows it, and join, in the repaired Words.v3, none."
+    },
+    {
       "id": "vscode.signature.unclosed-first",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -2313,7 +2323,7 @@
         "setup": "vscode-linux",
         "feature": "completion",
         "level": "api",
-        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.resolve", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
         "notCovered": ["vscode.suggestion-list"]
       },
       {
@@ -2461,7 +2471,7 @@
         "setup": "vscode-macos",
         "feature": "completion",
         "level": "api",
-        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.resolve", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
         "notCovered": ["vscode.suggestion-list"]
       },
       {
@@ -2605,7 +2615,7 @@
         "setup": "ssh-linux-client",
         "feature": "completion",
         "level": "api",
-        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.resolve", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
         "notCovered": ["vscode.suggestion-list"]
       },
       {
@@ -3245,7 +3255,7 @@
       {
         "step": 9,
         "summary": "Completion of a keyword, a local, and a member, and none in a comment.",
-        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.resolve", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
         "notCovered": ["vscode.suggestion-list"]
       },
       {

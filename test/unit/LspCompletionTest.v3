@@ -1385,8 +1385,8 @@ def test_capability(t: Tester) {
 	var reply = s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}");
 	var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v["result"]).v["capabilities"]).v;
 	t.assert(caps.has("completionProvider"), "completionProvider advertised");
-	// "." triggers member completion, and there is no resolve.
-	t.assert_string("{\"triggerCharacters\":[\".\"]}", JsonRpcJson.render(StringBuilder.new(), caps["completionProvider"]).toString());
+	// "." triggers member completion, and items resolve their documentation.
+	t.assert_string("{\"resolveProvider\":true,\"triggerCharacters\":[\".\"]}", JsonRpcJson.render(StringBuilder.new(), caps["completionProvider"]).toString());
 }
 
 def test_parse_failure(t: Tester) {

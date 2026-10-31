@@ -169,16 +169,21 @@ class RenameTestSession {
 		base = fixtureDirectory(fixture);
 		for (source in sources) write(t, source.0, source.1);
 		this.documentChangesCapability = documentChanges;
-		initialize(t, false);
+		initialize(t, null);
 	}
 	// Replaces the server with one initialized for a client that also
 	// declares textDocument.completion.completionItem.insertReplaceSupport.
 	// Call it before opening a document.
 	def withInsertReplace(t: Tester) -> RenameTestSession {
-		initialize(t, true);
+		return withCompletionItem(t, "{\"insertReplaceSupport\":true}");
+	}
+	// As withInsertReplace, for a client whose
+	// textDocument.completion.completionItem is the JSON object {item}.
+	def withCompletionItem(t: Tester, item: string) -> RenameTestSession {
+		initialize(t, item);
 		return this;
 	}
-	private def initialize(t: Tester, insertReplace: bool) {
+	private def initialize(t: Tester, completionItem: string) {
 		server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
@@ -190,11 +195,7 @@ class RenameTestSession {
 		rename["prepareSupport"] = JsonValue.Bool(true);
 		textDocument["rename"] = JsonValue.JObject(rename);
 		var completion = JsonValue.JObject.!(JsonRpcJsonParser.new("{\"completionItemKind\":{\"valueSet\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]}}").parseDocument()).v;
-		if (insertReplace) {
-			var item = Strings.newMap<JsonValue>();
-			item["insertReplaceSupport"] = JsonValue.Bool(true);
-			completion["completionItem"] = JsonValue.JObject(item);
-		}
+		if (completionItem != null) completion["completionItem"] = JsonRpcJsonParser.new(completionItem).parseDocument();
 		textDocument["completion"] = JsonValue.JObject(completion);
 		capabilities["workspace"] = JsonValue.JObject(workspace);
 		capabilities["textDocument"] = JsonValue.JObject(textDocument);

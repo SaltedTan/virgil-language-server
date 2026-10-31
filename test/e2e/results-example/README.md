@@ -16,7 +16,7 @@ The prose of a release's section stays hand-written, outside the markers. Only t
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
-| 2026-10-24 | `2222222` | VS Code, macOS; `vscode-vsix-macos`; macOS 15.5, arm64, Apple M1, the server under rosetta-2; demo run | `npm run test:e2e -- --vsix '<vsix>' '<archive>/virgil-lsp'` | VS Code 1.142.0, extension 0.1.2 installed from a VSIX | Passed (58 of 58 observations): 58 pass |
+| 2026-10-24 | `2222222` | VS Code, macOS; `vscode-vsix-macos`; macOS 15.5, arm64, Apple M1, the server under rosetta-2; demo run | `npm run test:e2e -- --vsix '<vsix>' '<archive>/virgil-lsp'` | VS Code 1.142.0, extension 0.1.2 installed from a VSIX | Passed (59 of 59 observations): 59 pass |
 | 2026-10-24 | `2222222` | Neovim, Linux; `test`; Linux 6.8.0, x86_64; demo run | `make test` | Neovim 0.11.6 | Passed (35 of 35 observations): 35 pass |
 | 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (68 of 68 observations): 67 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
 | 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (68 of 68 observations): 67 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |

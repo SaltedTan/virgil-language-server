@@ -43,7 +43,7 @@ KIB, MIB = 1024, 1024 * 1024
 DEFAULT_SEED = 20261028
 ROOT_TOKEN = "${ROOT}"
 WORKER_TIMEOUT_MS = 5000
-# The largest hierarchy item a follow-up keeps in its replay record.
+# The largest item a follow-up keeps in its replay record.
 ITEM_BYTES = 16 * KIB
 
 # Each limit's default and hard cap, then the same with --stress. Deadlines are
@@ -107,8 +107,8 @@ def restored(index):
 
 
 # The coverage manifest: every request method the server may advertise, in
-# round-robin order, then the hierarchy follow-ups, which take items that the
-# prepare requests returned. A method advertised but not listed here, or listed
+# round-robin order, then the follow-ups, which take items that the prepare
+# and completion requests returned. A method advertised but not listed here, or listed
 # but not advertised, fails the run, so that a new capability requires an
 # explicit coverage decision.
 MAIN_METHODS = (
@@ -123,7 +123,9 @@ MAIN_METHODS = (
 FOLLOW_UPS = {
     "textDocument/prepareTypeHierarchy": ("typeHierarchy/supertypes", "typeHierarchy/subtypes"),
     "textDocument/prepareCallHierarchy": ("callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"),
+    "textDocument/completion": ("completionItem/resolve",),
 }
+PREPARES = ("textDocument/prepareTypeHierarchy", "textDocument/prepareCallHierarchy")
 MANIFEST = MAIN_METHODS + tuple(m for ms in FOLLOW_UPS.values() for m in ms)
 FOLLOW_UP_RESERVE = 4
 # Every case also sends, within its request cap, a barrier hover after opening
@@ -581,7 +583,7 @@ def request_params(rng, method, uri, text):
         if method == "textDocument/codeAction":
             params["context"] = {"diagnostics": []}
         return params
-    params = {"textDocument": doc, "position": choose_position(rng, text, spans, method in FOLLOW_UPS)}
+    params = {"textDocument": doc, "position": choose_position(rng, text, spans, method in PREPARES)}
     if method == "textDocument/references":
         params["context"] = {"includeDeclaration": rng.random() < 0.5}
     elif method == "textDocument/rename":
@@ -589,6 +591,23 @@ def request_params(rng, method, uri, text):
     elif method == "textDocument/completion":
         params["context"] = rng.choice(({"triggerKind": 1}, {"triggerKind": 2, "triggerCharacter": "."}))
     return params
+
+
+def followup_item(method, result):
+    """The item that {method}'s follow-ups take from its {result}: a prepare
+    request's first item, or a completion's first item with data, which a
+    resolve documents, or else its first item; None if there are none."""
+    if method != "textDocument/completion":
+        return result[0] if result else None
+    items = result.get("items") if isinstance(result, dict) else result
+    if not items:
+        return None
+    return next((i for i in items if "data" in i), items[0])
+
+
+def followup_params(method, item):
+    """A follow-up's params: a resolve's are its item, and a hierarchy request's hold it."""
+    return item if method == "completionItem/resolve" else {"item": item}
 
 
 def plan_case(seed, index, seeds, limits, stress, cursor):
@@ -1178,22 +1197,23 @@ def drive(s, record, root_uri, result, replay):
             for r, reply in zip(step["requests"], replies):
                 if r["method"] not in FOLLOW_UPS:
                     continue
-                items = reply.get("result")
+                item = None if "error" in reply else followup_item(r["method"], reply.get("result"))
                 reason = None
                 if "error" in reply:
                     reason = "error %d" % reply["error"]["code"]
-                elif not items:
+                elif item is None:
                     reason = "no items"
-                elif followups + 2 > room:
+                elif followups + len(FOLLOW_UPS[r["method"]]) > room:
                     reason = "request cap"
-                elif len(dump(templated(items[0], root_uri))) > ITEM_BYTES:
+                elif len(dump(templated(item, root_uri))) > ITEM_BYTES:
                     reason = "item larger than %d bytes" % ITEM_BYTES
                 if reason:
                     result["unexercised"].append({"request": r["id"], "method": r["method"], "reason": reason})
                     continue
                 for method in FOLLOW_UPS[r["method"]]:
                     step["followups"].append({"id": next_id if next_id % 2 else "f%d" % next_id, "method": method,
-                                              "from": r["id"], "params": {"item": templated(items[0], root_uri)}})
+                                              "from": r["id"],
+                                              "params": followup_params(method, templated(item, root_uri))})
                     next_id += 1
                     followups += 1
         keys = {}

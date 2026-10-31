@@ -221,8 +221,10 @@ rename_shared.mkdir(exist_ok=True)
     '{"name":"two","sources":["SharedUse.v3","SharedDecl.v3"]}]}',
     encoding="utf-8",
 )
-# LspCompletionScopeTest writes each test's project file and sources itself.
+# LspCompletionScopeTest and LspCompletionResolveTest write each test's
+# project file and sources themselves.
 (root / "completion").mkdir(exist_ok=True)
+(root / "completion-resolve").mkdir(exist_ok=True)
 # LspSignatureRepairTest writes each test's project file and sources itself.
 (root / "signature-repair").mkdir(exist_ok=True)
 # LspRenameTest writes each test's project file and sources itself. The
