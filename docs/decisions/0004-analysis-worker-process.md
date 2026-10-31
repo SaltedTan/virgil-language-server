@@ -233,6 +233,14 @@ Protocol version 15's flag takes a bit of the kind byte that every declaration a
 - The `RESULT` payload is 4,379,198 bytes before and after. The worker allocates 197,739,184 bytes, with no collection, and the server 21,913,000 bytes to decode the result, before and after.
 - The `--bindings --display` outputs are byte-identical, at 57,017,532 bytes.
 
+Protocol version 16's list of capped diagnostics adds a zero count to every result that caps none. Measured on 2026-10-31 as above, comparing `3a3ab37d` with the change, built with `BENCH=1` in equal-length build directories with the same `BuildInfo` text, alternating 3 runs of each with `analyze --stats --bindings` on the benchmark corpus's Aeneas files, pinned with `taskset -c 12`:
+
+- The Aeneas sources' charged result allocation is 13,019,022 bytes before and after.
+- The `RESULT` payload grows by that one byte, from 4,379,198 to 4,379,199 bytes. The worker allocates 187,433,776 bytes, with no collection, and the server 21,912,960 bytes to decode the result, before and after.
+- The `--bindings` outputs are byte-identical, at 25,498,844 bytes.
+
+The benchmark's `--error-result` comparison of the same builds (six alternating blocks, `--cpu 12`) found every scenario's latency within the other build's p10–p90 interval and no worker collection in either. Each Aeneas scenario's result is one byte longer, and the worker allocates at most 24 bytes more, in `error_analysis`, whose room under the collection boundary is 10,015,080 bytes instead of 10,015,104.
+
 Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. For a program that fits, `analyze --stats --bindings` reports its binding counts and the result allocation charged against the budget.
 
 With similar binding, call, and diagnostic density, about **1.25 times the Aeneas sources** would exhaust the result budget, before the development request's source limit rejects about **1.4 times** that source set. These are sizing guides, not guaranteed capacities for arbitrary programs. If the decoded result exceeds its budget, reduce the files analyzed together to a smaller valid program/project; retrying the unchanged program or increasing `WORKER_HEAP` does not increase the server's result budget.
