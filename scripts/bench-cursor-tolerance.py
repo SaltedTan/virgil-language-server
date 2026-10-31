@@ -5,7 +5,7 @@
 
 An opt-in companion to bench-tolerance.py: 17 fixed histories, each replayed in
 warm, cold, and saved modes, and checked against reviewed facts about the
-intended program. See docs/benchmarks.md#cursor-tolerance-histories.
+intended program. See docs/benchmarks.md#cursor-tolerance-histories-2026-10-31.
 """
 import argparse
 import collections
