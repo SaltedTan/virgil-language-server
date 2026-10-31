@@ -321,14 +321,24 @@ at names, sometimes at the end or inside a surrogate pair, and params for each
 method. Rename edits are never applied. A prepare request that returns items
 gets supertypes and subtypes, or incoming and outgoing calls, for the first
 item. `run.json` lists every prepare request whose follow-ups weren't sent,
-with the reason: no items, an error, or the request cap. Mutated source rarely
-analyzes to items, so the restoration step covers that branch on clean source.
+with the reason: no items, an error, the request cap, or an item larger than
+16 KiB. Mutated source rarely analyzes to items, so the restoration step
+covers that branch on clean source.
+
+After opening the files, and after each step's replies, a barrier hover on
+the observer waits for any analysis that is due or running (the
+[freshness rules](../../docs/architecture.md#definition)). Every analysis
+that ends between two barriers therefore had the source of the step between
+them, and a worker failure is matched against that source alone.
 
 Finally the case restores every seed file to clean text and checks that the
 observer's hover and definition, the incoming calls of its method, and the
 supertypes of its class are exact, which needs a completed analysis, on a
 replacement worker if one died, and that no file has diagnostics. Then it
-shuts the server down.
+shuts the server down. The server runs in a session of its own, so its
+workers share its process group; cleanup kills what is left of that group by
+its ID, before the server is reaped, so a stopped or hung server leaves no
+worker behind. Nothing is killed by name.
 
 ### Oracles
 
@@ -339,9 +349,11 @@ A case fails if:
 - a request gets no reply or two, or a reply with a changed ID type; a
   notification gets a reply; or the server sends a request, which no client
   capability here asks for;
-- an error is not one that its method documents: `RequestFailed` for bounded
-  replies and rename refusals, and `ContentModified` for semantic tokens.
-  Valid params never get `InvalidParams`;
+- an error is not a JSON-RPC error object (an integer `code`, a string
+  `message`, and optional `data` of any type, and nothing else), or not one
+  that its method documents: `RequestFailed` for bounded replies and rename
+  refusals, and `ContentModified` for semantic tokens. Valid params never get
+  `InvalidParams`;
 - a successful `initialize`, hover, completion, document-symbol, or
   workspace-symbol result, or diagnostics params, fail the
   [reply-shape validator](#successful-reply-shapes); a value past the
@@ -349,7 +361,9 @@ A case fails if:
 - a `window/showMessage` is not the documented warning that an automatic
   analysis failed, or there are more of them than failures in the server log;
 - a request, the case, or the run passes its deadline; every read, write,
-  wait for exit, and cleanup checks all three;
+  wait for exit, and cleanup checks all three, and a write also stops at the
+  deadline of any request still waiting for its reply, which starts before
+  the request is written;
 - restoration does not give the clean answers above;
 - a worker failure matches no documented signature.
 
@@ -363,12 +377,14 @@ Worker failures are recorded apart from server and protocol failures, from
 the server's log: the worker's process ID, what happened, its exit status, its
 trap, and its innermost frames. One that matches a narrow signature in
 `KNOWN_WORKER_FAILURES` leaves the case passing as `known-worker-trap`; the
-signature names the trap, its innermost frame, and a condition that some text
-the case sent must meet, from a row of the
+signature names the trap, its innermost frame, and a condition that the
+source of the failed analysis must meet, from a row of the
 [Aeneas crash paths](../../docs/aeneas-crash-paths.md): row 1's `0i` literal at
 either trap site, rows 2, 7, and 17, and a stack overflow, which prints no
 frames, after nesting deeper than 1,000 (row 13) or a chain longer than 1,000
-(row 25). A long chain may also exceed the worker's decoded
+(row 25). The conditions count only executable tokens: a lexer pass drops
+comments, strings, and characters first, so 1,000 `(` in a comment are no
+nesting. A long chain may also exceed the worker's decoded
 [result budget](../../docs/decisions/0004-analysis-worker-process.md#restart-policy).
 Any other worker failure, including a timeout, fails the case as
 `worker-failure`. Each records whether restoration then succeeded on a
@@ -381,15 +397,19 @@ crash paths and a signature for it; never accept worker deaths in general.
 | --- | --- | --- | --- |
 | `--cases` | 100 | 1,000 | 10, at most 10 |
 | `--source-bytes` | 32 KiB of source per case | 64 KiB | 1 MiB of document charge, at most 1 MiB |
-| `--requests` per case, follow-ups included | 24 | 64 | the same |
+| `--requests` per case, everything included | 24, at least 15 | 64 | the same |
 | `--request-timeout` | 10 s | 30 s | the same |
 | `--case-timeout` | 30 s | 120 s | the same |
 | `--run-timeout` | 180 s | 900 s | the same |
 | `--artifact-bytes` | 64 MiB | 256 MiB | the same |
 
 A limit past its cap, or deadlines that don't satisfy request ≤ case ≤ run,
-are rejected with exit status 2 before anything runs. The source bound counts
-the observer too. With `--stress`, it counts the
+are rejected with exit status 2 before anything runs. The request cap counts
+every feature request a case sends: its planned requests, the follow-ups, a
+barrier after opening and after each of up to three steps, and the six
+restoration requests. A plan leaves four requests for follow-ups, so at
+least 15 are needed, and the 24 by default leave 9 to 12 for a case's
+planned requests. The source bound counts the observer too. With `--stress`, it counts the
 [document store's](../../docs/architecture.md#document-store) charge instead:
 each open document's text plus 256 bytes of metadata, its language ID, and its
 URI, estimated at 1,024 bytes, so it stays below the server's 1 MiB capacity.
@@ -419,14 +439,26 @@ the project configuration, the `initialize` params, and each request's params
 as sent, including the items of follow-ups, with the project's URI as
 `${ROOT}`. `--replay CASE.json` runs that case in a new temporary project and
 sends the same messages; it needs neither the seed nor the seed files, and
-writes to `build/source-mutations/replay-<id>/`.
+writes to `build/source-mutations/replay-<id>/`. Before starting a server,
+replay rejects, with exit status 2, a record that this runner could not have
+written: limits past the hard caps, which are the `--stress` ones only for a
+stress record; any source state, after opening, after each step, or after
+restoration, past the source bound; more feature requests in all than the
+request cap; or a change to a file that the case does not open.
 
-Records and results are always written whole. The transcripts and logs of
-passing cases may fill three quarters of `--artifact-bytes`, and those of
-failing cases and cases with worker failures the rest. A cut transcript ends
-with a `{"truncated": true, ...}` line, a cut log with a `[truncated: ...]`
-line, and the case's `result.json` has `"evidence_complete": false`: that
-evidence is partial, and replaying the record recreates it whole.
+Everything written counts against `--artifact-bytes`: manifests, records,
+results, transcripts, logs, and `run.json`. A run is rejected with exit status
+2 unless the budget holds the manifests, the complete replay record and
+result of the plan's largest failing case, with room for the 16 KiB items of
+as many follow-ups as its cap allows, and 64 KiB for `run.json`; those last two
+stay reserved. Passing cases may fill the rest, and their records and results
+are written whole or not at all; `run.json` lists the ones left out, which
+`--plan-only` recreates without follow-ups. A failing case's record and result
+are always written whole, from the reserve. A cut transcript ends with a
+`{"truncated": true, ...}` line, a cut log with a `[truncated: ...]` line, and
+the case's `result.json` has `"evidence_complete": false`: that evidence is
+partial, and replaying the record recreates it whole. Lists in `run.json` and
+`result.json` keep their first 32 entries and count the rest.
 
 ### Reading a failure
 
