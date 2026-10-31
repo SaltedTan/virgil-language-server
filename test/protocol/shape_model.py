@@ -43,6 +43,8 @@ class Model:
         self.aliases = {s["name"]: s["type"] for s in model["typeAliases"]}
         self.enums = {s["name"]: s for s in model["enumerations"]}
         entries = {s["method"]: s for s in model["requests"] + model["notifications"]}
+        # Every request and notification entry, for result and server-notification types.
+        self.entries = entries
         self.params = {m: entries[m].get("params") for m in REQUESTS + NOTIFICATIONS}
         # These development requests are not LSP. Their narrow local schemas
         # keep them in method coverage without pretending the model defines them.

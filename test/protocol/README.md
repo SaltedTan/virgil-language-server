@@ -180,6 +180,70 @@ version 2 (#200), with full-text and rejected ranged-change controls. The runner
 waits for that rename reply before sending shutdown. Typed IDs, decimal options,
 out-of-range numbers, and invalid lifecycle ordering also have fixed oracles.
 
+### Successful reply shapes
+
+`reply_shapes.py` checks successful replies against the same pinned model.
+Every session checks each successful `initialize`, `textDocument/hover`,
+`textDocument/completion`, `textDocument/documentSymbol`, and `workspace/symbol`
+result as it arrives, and the params of each `textDocument/publishDiagnostics`
+notification. Each type comes from the method's request or notification entry
+in the model, not from a copy in the tests. Error replies keep their envelope
+and error-code checks and are never checked as results.
+
+The validator resolves references to structures, enumerations, and type
+aliases, `extends` and `mixins`, unions, arrays, tuples, maps, literal
+structures, string, integer, and boolean literal types, and `null`
+alternatives. `integer` and `uinteger` must be JSON integers in their 32-bit
+ranges and `decimal` any finite number; a JSON boolean is never a number. An
+enumeration without custom values accepts only its listed values. `LSPAny`,
+`LSPObject`, and `LSPArray` accept any value of their JSON kind, so `data` and
+`experimental` stay open.
+
+Structures are open: a property the model does not name is allowed and not
+checked, while every property it names must be present when required and have
+its type when present. The model marks no structure as closed, and its `since`
+annotations show protocol versions adding optional properties to existing
+structures, so rejecting unknown properties would fail lawful replies. The cost
+is that an unknown property cannot rule out a union alternative: a
+`WorkspaceSymbol.location` with a malformed `range` still matches the
+`{ uri }` alternative.
+
+The validator stops at 64 levels of JSON nesting, at 500,000 type checks for one
+value (failed union alternatives included), and at a reference cycle that
+consumes no JSON. Those bounds, a model kind it does not handle (intersections,
+which these methods don't reach), and an unknown type name each fail with an
+`unsupported model path` error naming the method, the type, and the JSON path;
+nothing is skipped. A shape failure names the method, the JSON path, the
+innermost type, and the properties that led to it:
+
+```text
+textDocument/completion result $.items[0].textEdit.insert.end: Position: missing required property "character" (in CompletionList.items > CompletionItem.textEdit > InsertReplaceEdit.insert > Range.end)
+```
+
+Generated requests use an untitled document, which gets no semantic analysis,
+so their hovers are null and their workspace symbols empty. The
+`full-change-version-control` case's project therefore also requests a hover,
+a completion under negotiated `insertReplaceSupport` (whose items must use
+`InsertReplaceEdit`), and workspace symbols, each with a null or empty
+alternative, and opens a document with a syntax error for populated
+diagnostics. A whole run fails unless every method had a populated reply and a
+null or empty one (the model gives `initialize` neither); the runner prints the
+count of each kind.
+
+The model checks structure only. It cannot prove that a range's start precedes
+its end, that a reply is current for the document version, that a result uses
+the alternative the client negotiated, or that candidates are correct. The
+semantic oracles keep those checks: a shape-valid `DocumentSymbol[]` still fails
+where flat symbols were negotiated, and an empty but complete completion list
+can still be a regression that the model accepts.
+
+`test_reply_shapes.py` checks the validator on hand-written JSON, independent
+of the generator, and runs in `make test`:
+
+```sh
+python3 test/protocol/test_reply_shapes.py
+```
+
 ### Reading and rerunning a failure
 
 ```sh
