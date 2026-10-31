@@ -90,6 +90,11 @@ FAKE = textwrap.dedent("""\
             write({"jsonrpc": "2.0", "id": ident, "result": {"capabilities": CAPABILITIES}})
         elif method == "shutdown":
             write({"jsonrpc": "2.0", "id": ident, "result": None})
+        elif MODE == "large-duplicate":
+            result = {"contents": {"kind": "plaintext", "value": "\u00e9" * 100000}}
+            reply = {"jsonrpc": "2.0", "id": ident, "result": result}
+            write(reply)
+            write(reply)
         elif MODE.startswith("restoration-") and str(ident).startswith("restored-"):
             if method == "textDocument/hover":
                 result = {"contents": {"kind": "plaintext", "value": "stable(x: int) -> int"}}
@@ -632,6 +637,61 @@ class StandIn(unittest.TestCase):
             self.assertTrue(artifacts.whole("failing.json", b"z" * 15000, "failure"))
             self.assertEqual((artifacts.truncated, artifacts.omitted), (["large.txt"], ["passing.json"]))
             self.assertLessEqual(tree_size(directory), budget)
+
+    def test_summary_diagnostics_respect_utf8_boundaries(self):
+        for text in ("short", "\U0001F600" * 512, "\U0001F600" * 513, "\"\n\u00e9" * 10000):
+            with self.subTest(size=len(text.encode())):
+                value = sm.bounded({"error": text, "failures": [{"error": text}],
+                                    "result": {"messages": [text], "worker_deaths": [{"what": text}]}})
+                diagnostics = [value["error"], value["failures"][0]["error"],
+                               value["result"]["messages"][0], value["result"]["worker_deaths"][0]["what"]]
+                for diagnostic in diagnostics:
+                    self.assertLessEqual(len(diagnostic.encode()), 2048)
+                    if len(text.encode()) <= 2048:
+                        self.assertEqual(diagnostic, text)
+                    else:
+                        prefix, marker = diagnostic.rsplit(" ... ", 1)
+                        self.assertEqual(marker, "[truncated, %d bytes total]" % len(text.encode()))
+                        self.assertTrue(text.startswith(prefix))
+                self.assertEqual(sm.bounded(value), value)
+
+    def test_large_duplicate_reply_keeps_failure_summaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            exe = fake_server(directory, "large-duplicate")
+            budget = floor(1)
+            self.assertEqual(quietly([str(exe), "--cases", "1", "--artifacts", directory,
+                                      "--artifact-bytes", str(budget)]), 1)
+            out = Path(directory) / ("seed-%d" % sm.DEFAULT_SEED)
+            run = json.loads((out / "run.json").read_text())
+            self.assertEqual(len(run["failures"]), 1)
+            case = out / "cases" / run["failures"][0]["case"]
+            result_path = case / "result.json"
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result["outcome"], "protocol-failure", result)
+            self.assertIn("duplicate response", result["error"])
+            self.assertIn("[truncated, ", result["error"])
+            self.assertLessEqual(len(result["error"].encode()), 2048)
+            self.assertEqual(run["failures"][0]["error"], result["error"])
+            self.assertLessEqual(result_path.stat().st_size, sm.RESULT_BYTES)
+            self.assertLessEqual((out / "run.json").stat().st_size, sm.RUN_BYTES)
+            self.assertLessEqual(tree_size(out), budget)
+            saved = case / "case.json"
+            self.assertEqual(quietly([str(exe), "--replay", str(saved), "--artifacts", directory]), 1)
+            replay = Path(directory) / ("replay-" + run["failures"][0]["case"])
+            replay_run = json.loads((replay / "run.json").read_text())
+            self.assertEqual(replay_run["result"]["error"], result["error"])
+            self.assertLessEqual((replay / "run.json").stat().st_size, sm.RUN_BYTES)
+            self.assertLessEqual(tree_size(replay), budget)
+
+    def test_harness_traceback_diagnostic_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(sm, "drive", side_effect=RuntimeError("\U0001F600" * 100000)):
+                result, _, _, _ = sm.run_case(single_case("component Mutant {}\n"), fake_server(directory, "null"),
+                                               time.monotonic() + 30, Path(directory), VALIDATOR)
+            self.assertEqual(result["outcome"], "harness-error", result)
+            self.assertIn("Traceback", result["error"])
+            self.assertIn("[truncated, ", result["error"])
+            self.assertLessEqual(len(result["error"].encode()), 2048)
 
     def test_transcript_marker_respects_available_bytes(self):
         transcript = [("send", {"message": "\u00e9" * 20}), ("recv", {"result": None})]

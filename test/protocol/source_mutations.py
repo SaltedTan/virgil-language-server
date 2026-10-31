@@ -1085,6 +1085,7 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     for death in result["worker_deaths"]:
         death["replacement"] = "verified" if result.get("restored") else "not verified"
     result["requests"] = dict(sorted(s.requests.items())) if s else {}
+    result["error"] = bounded(result["error"])
     return result, (s.transcript if s else []), (s.stamps if s else []), log.decode(errors="replace")
 
 
@@ -1222,17 +1223,28 @@ def barrier(s, root_uri, k):
 RESULT_BYTES = 64 * KIB
 RUN_BYTES = 64 * KIB
 LIST_ITEMS = 32
+DIAGNOSTIC_BYTES = 2048
 
 
 def bounded(value):
-    """{value} with each list of more than LIST_ITEMS entries cut to its first
-    ones, and the count of the rest under "<key>_omitted"."""
+    """Bound summary strings and lists, marking truncated strings and counting
+    omitted list entries under "<key>_omitted" in their containing objects."""
+    if isinstance(value, str):
+        data = value.encode()
+        if len(data) <= DIAGNOSTIC_BYTES:
+            return value
+        marker = " ... [truncated, %d bytes total]" % len(data)
+        return data[:DIAGNOSTIC_BYTES - len(marker)].decode("utf-8", errors="ignore") + marker
+    if isinstance(value, list):
+        return [bounded(item) for item in value[:LIST_ITEMS]]
+    if not isinstance(value, dict):
+        return value
     out = {}
     for key, item in value.items():
         if isinstance(item, list) and len(item) > LIST_ITEMS:
-            out[key], out[key + "_omitted"] = item[:LIST_ITEMS], len(item) - LIST_ITEMS
+            out[key], out[key + "_omitted"] = bounded(item), len(item) - LIST_ITEMS
         else:
-            out[key] = item
+            out[key] = bounded(item)
     return out
 
 
