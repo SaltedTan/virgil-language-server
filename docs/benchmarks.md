@@ -5,7 +5,7 @@ requests over real stdio pipes. The [syntax-error tolerance benchmark](#semantic
 measures semantic availability and correctness while editing. Both use Python
 3.9+ and its standard library, including the
 [`Session` protocol client](../test/protocol/worker.py). The [weekly comparison](#scheduled-comparison)
-reports changes without timing budgets; these measurements do not gate releases.
+reports changes without timing budgets; these measurements do not gate releases. A measured performance-budget proposal, marked as not adopted, is in [performance-budgets.md](performance-budgets.md).
 
 ## Run
 
