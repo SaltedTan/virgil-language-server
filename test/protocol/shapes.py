@@ -54,6 +54,13 @@ def reply_kind(value):
     return "populated" if value else "empty"
 
 
+# The server never sends WorkspaceSymbol, so a workspace/symbol result must
+# also be the SymbolInformation[] alternative, a model type. Structures are
+# open, so the model's union alone accepts a SymbolInformation whose
+# location.range is malformed as WorkspaceSymbol's { uri } location.
+SYMBOL_INFORMATION = {"kind": "array", "element": {"kind": "reference", "name": "SymbolInformation"}}
+
+
 class Replies:
     """Check successful replies of the bounded method set and count their kinds."""
     def __init__(self, model):
@@ -62,6 +69,8 @@ class Replies:
 
     def result(self, method, value):
         self.validator.result(method, value)
+        if method == "workspace/symbol" and value is not None:
+            self.validator.check(SYMBOL_INFORMATION, value, method + " result (SymbolInformation[], as the server sends)")
         self.seen[method, reply_kind(value)] += 1
 
     def params(self, method, value):

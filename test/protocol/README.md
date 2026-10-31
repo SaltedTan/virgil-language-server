@@ -197,7 +197,8 @@ alternatives. `integer` and `uinteger` must be JSON integers in their 32-bit
 ranges and `decimal` any finite number; a JSON boolean is never a number. An
 enumeration without custom values accepts only its listed values. `LSPAny`,
 `LSPObject`, and `LSPArray` accept any value of their JSON kind, so `data` and
-`experimental` stay open.
+`experimental` stay open, but the validator still walks them within the same
+bounds below, and their numbers must be finite.
 
 Structures are open: a property the model does not name is allowed and not
 checked, while every property it names must be present when required and have
@@ -206,7 +207,9 @@ annotations show protocol versions adding optional properties to existing
 structures, so rejecting unknown properties would fail lawful replies. The cost
 is that an unknown property cannot rule out a union alternative: a
 `WorkspaceSymbol.location` with a malformed `range` still matches the
-`{ uri }` alternative.
+`{ uri }` alternative. Since the server never sends `WorkspaceSymbol`, the
+shapes runner also checks every non-null `workspace/symbol` result as the
+model's `SymbolInformation[]`, so a malformed `range` there fails.
 
 The validator stops at 64 levels of JSON nesting, at 500,000 type checks for one
 value (failed union alternatives included), and at a reference cycle that

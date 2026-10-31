@@ -7,7 +7,8 @@ Each result type, and each server notification's params type, is read from the
 model's request or notification entry, never from a copy here. Structures are
 open: a property the model does not name is allowed and not checked, as the
 protocol README explains. LSPAny, LSPObject and LSPArray accept any value of
-their JSON kind. Anything outside the supported model kinds or bounds raises
+their JSON kind, walked within the same bounds, with finite numbers only.
+Anything outside the supported model kinds or bounds raises
 UnsupportedModelPath instead of passing unchecked.
 """
 
@@ -180,6 +181,7 @@ class ReplyValidator:
             kind = OPEN[name]
             if kind is not None and type(v) is not kind:
                 raise run.error(path, name, "expected %s, got %s" % ("object" if kind is dict else "array", show(v)))
+            self.open_value(v, path, name, run)
         elif name in model.structures:
             self.properties(name, self.members(name, path, run), v, path, run)
         elif name in model.enums:
@@ -193,6 +195,20 @@ class ReplyValidator:
             self.value(model.aliases[name], v, path, refs, name, run)
         else:
             raise run.unsupported(path, name, "no structure, enumeration, or type alias of this name")
+
+    def open_value(self, v, path, owner, run):
+        """Walk an open value within the same bounds: any JSON, but finite numbers."""
+        run.work += 1
+        if run.work > MAX_WORK:
+            raise run.unsupported(path, owner, "more than %d type checks" % MAX_WORK)
+        if type(v) is float and not math.isfinite(v):
+            raise run.error(path, owner, "expected a finite number, got " + show(v))
+        if type(v) is list:
+            for i, item in enumerate(v):
+                self.open_value(item, self.child(path, i, None, owner, run), owner, run)
+        elif type(v) is dict:
+            for key, item in v.items():
+                self.open_value(item, self.child(path, key, None, owner, run), owner, run)
 
     def members(self, name, path, run, chain=()):
         """A structure's properties with its extends and mixins, the structure's own last."""

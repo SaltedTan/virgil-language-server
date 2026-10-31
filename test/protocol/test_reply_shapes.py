@@ -164,6 +164,22 @@ class Rejections(unittest.TestCase):
             self.validator.check({"kind": "array", "element": {"kind": "reference", "name": "LSPAny"}}, [0] * 600000)
         self.assertLess(time.monotonic() - started, 30)
 
+    def test_open_values_keep_the_bounds_and_finite_numbers(self):
+        nested = 0
+        for _ in range(100):
+            nested = [nested]
+        with self.assertRaisesRegex(UnsupportedModelPath,
+                                    r"^unsupported model path: textDocument/completion result "
+                                    r"\$\[0\]\.data(\[0\]){62}: LSPAny: JSON nesting deeper than 64$"):
+            self.validator.result("textDocument/completion", [dict(ITEM, data=nested)])
+        with self.assertRaisesRegex(UnsupportedModelPath, r"\$\[0\]\.data\[\d+\]: LSPAny: more than 500000 type checks"):
+            self.validator.result("textDocument/completion", [dict(ITEM, data=[0] * 600000)])
+        for bad in (float("inf"), float("nan")):
+            self.rejects("textDocument/completion", [dict(ITEM, data={"x": [bad]})], "$[0].data.x[0]",
+                         "LSPAny: expected a finite number")
+            self.rejects("textDocument/publishDiagnostics", {"uri": URI, "diagnostics": [dict(DIAGNOSTIC, data=bad)]},
+                         "$.diagnostics[0].data", "LSPAny: expected a finite number", params=True)
+
 
 class Acceptance(unittest.TestCase):
     def setUp(self):
@@ -302,6 +318,18 @@ class Integration(unittest.TestCase):
         self.assertIn("textDocument/hover populated", s.replies.missing())
         with self.assertRaisesRegex(ShapeError, r"^textDocument/publishDiagnostics params \$\.diagnostics\[0\]\.range: "):
             s.receive(deadline)
+
+    def test_workspace_symbols_must_be_the_symbol_information_the_server_sends(self):
+        replies = shapes.Replies(MODEL)
+        replies.result("workspace/symbol", [SYMBOL_INFORMATION])
+        replies.result("workspace/symbol", [])
+        replies.result("workspace/symbol", None)
+        # The model's union alone accepts both, through WorkspaceSymbol's { uri } location.
+        prefix = r"^workspace/symbol result \(SymbolInformation\[\], as the server sends\) \$\[0\]\.location"
+        with self.assertRaisesRegex(ShapeError, prefix + r'\.range: Range: expected object, got number 1'):
+            replies.result("workspace/symbol", [{"name": "C", "kind": 5, "location": {"uri": URI, "range": 1}}])
+        with self.assertRaisesRegex(ShapeError, prefix + r': Location: missing required property "range"'):
+            replies.result("workspace/symbol", [{"name": "C", "kind": 5, "location": {"uri": URI}}])
 
     def test_reply_kinds(self):
         self.assertEqual([shapes.reply_kind(v) for v in (None, [], {"isIncomplete": False, "items": []},
