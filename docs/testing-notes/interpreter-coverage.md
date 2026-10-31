@@ -94,6 +94,20 @@ $ $A -run -target=x86-64-linux -output="$SCRATCH" "$SCRATCH/min.v3"
 
 A driver that calls only `DocumentUri.filePath`, compiled with `src/documents/DocumentUri.v3` and `vendor/virgil/lib/util`. `DocumentUri.normalize` calls `filePath` but is never called itself:
 
+`UriDriver.v3`:
+
+```virgil
+// Calls DocumentUri.filePath only. DocumentUri.normalize, which calls
+// filePath, is never reached.
+component UriDriver {
+	def main() -> int {
+		System.puts(DocumentUri.filePath("file:///home/a%2Fb/../c.v3"));
+		System.ln();
+		return 0;
+	}
+}
+```
+
 ```console
 $ $A -run -coverage='DocumentUri.*' -output="$SCRATCH" "$SCRATCH/UriDriver.v3" \
     src/documents/DocumentUri.v3 vendor/virgil/lib/util/*.v3
