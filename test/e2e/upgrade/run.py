@@ -92,8 +92,10 @@ def version_key(version):
 
 
 def archive_manifest(path, version):
-    """The archive's manifest.json, after checking that every member is a
-    regular file or directory under its one top directory."""
+    """The archive's top directory, manifest.json, and executables' SHA-256s,
+    after checking that every member is a regular file or directory under its
+    top directory. Each executable is found by name wherever it is: the
+    rehearsal itself checks that the server finds them in their places."""
     top = f"virgil-lsp-{version}-x86-64-linux"
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
@@ -107,6 +109,12 @@ def archive_manifest(path, version):
         if f"{top}/manifest.json" not in {member.name for member in members}:
             raise Failure(f"{path.name}: no {top}/manifest.json")
         data = archive.extractfile(f"{top}/manifest.json").read()
+        executables = {}
+        for name in ["virgil-lsp", "virgil-lsp-worker"]:
+            found = [member for member in members if member.isfile() and member.name.split("/")[-1] == name]
+            if len(found) != 1:
+                raise Failure(f"{path.name}: expected one {name}, found {[member.name for member in found]}")
+            executables[name] = hashlib.sha256(archive.extractfile(found[0]).read()).hexdigest()
     manifest = json.loads(data)
     expected = {"manifestVersion": 1, "name": "virgil-lsp", "version": version,
                 "target": "x86-64-linux", "tag": f"v{version}", "dirty": False}
@@ -118,11 +126,15 @@ def archive_manifest(path, version):
             raise Failure(f"{path.name}: manifest {field} is not a full commit SHA")
     if manifest.get("library", {}).get("revision") != manifest["virgilRevision"]:
         raise Failure(f"{path.name}: manifest library revision differs from virgilRevision")
-    return top, manifest, data
+    for name, digest in executables.items():
+        if manifest.get("sha256", {}).get(name) != digest:
+            raise Failure(f"{path.name}: its {name} is not its manifest's")
+    return top, manifest, data, executables
 
 
-def vsix_metadata(path, extension_version, manifest, manifest_bytes):
-    """Check the VSIX's identity, target, and that it bundles the archive's server."""
+def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables):
+    """Check the VSIX's identity, target, and that it bundles the archive's
+    server: its manifest, and executables with the archive's contents."""
     with zipfile.ZipFile(path) as package:
         def read(name):
             try:
@@ -150,7 +162,7 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes):
             raise Failure(f"{path.name}: its bundled server/manifest.json is not the archive's "
                           f"(server {manifest['version']})")
         for name in ["virgil-lsp", "virgil-lsp-worker"]:
-            if hashlib.sha256(read(f"extension/server/{name}")).hexdigest() != manifest["sha256"][name]:
+            if hashlib.sha256(read(f"extension/server/{name}")).hexdigest() != executables[name]:
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
@@ -177,8 +189,8 @@ def verify_assets(directory):
             raise Failure(f"{file}: SHA-256 {digests[file.name]}, but {SUMS} lists {sums[file.name]}")
     version = ARCHIVE.fullmatch(archive.name)[1]
     extension_version = VSIX.fullmatch(package.name)[1]
-    top, manifest, manifest_bytes = archive_manifest(archive, version)
-    vsix_metadata(package, extension_version, manifest, manifest_bytes)
+    top, manifest, manifest_bytes, executables = archive_manifest(archive, version)
+    vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -507,13 +519,18 @@ class Rehearsal:
         with (logs / "vscode.log").open("wb") as log:
             group = Group(["node", str(HELPER), "phase", json.dumps(request)], env, self.vscode,
                           stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-            code = group.wait(VSCODE_TIMEOUT)
-            timed_out = code is None
-            if timed_out:
-                # The helper stops VS Code's process groups on SIGTERM.
-                group.signal(signal.SIGTERM)
-                group.wait(STOP_GRACE)
-            left = group.stop()
+            try:
+                code = group.wait(VSCODE_TIMEOUT)
+                timed_out = code is None
+                if timed_out:
+                    # The helper stops VS Code's process groups on SIGTERM.
+                    group.signal(signal.SIGTERM)
+                    group.wait(STOP_GRACE)
+            finally:
+                # Also on an interrupt, which doesn't reach the helper's own
+                # session: stop and reap it before main() removes the
+                # installation that it uses.
+                left = group.stop(grace=STOP_GRACE)
         if code != 0:
             # The suite's or the helper's first complaint.
             reasons = re.findall(r"^(?:AssertionError.*|FAIL: .*)$",
@@ -587,6 +604,12 @@ def rehearse(sets, logs, tracks, receipt):
                 write_receipt(logs, receipt)
                 print(f"FAIL {entry['name']} {track}: {error}", flush=True)
                 return False
+            except KeyboardInterrupt:
+                entry[track] = {"result": "interrupted", "logs": str(directory)}
+                receipt["result"] = "interrupted"
+                write_receipt(logs, receipt)
+                print(f"INTERRUPTED {entry['name']} {track}", flush=True)
+                raise
             entry[track] = {"result": "pass", "logs": str(directory), **details}
             write_receipt(logs, receipt)
             print(f"PASS {entry['name']} {track}", flush=True)
@@ -656,3 +679,6 @@ if __name__ == "__main__":
         sys.exit(main())
     except (Failure, OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit(f"FAIL upgrade rehearsal: {error}")
+    except KeyboardInterrupt:
+        print("INTERRUPTED upgrade rehearsal", file=sys.stderr)
+        sys.exit(130)

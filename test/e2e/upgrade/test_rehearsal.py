@@ -26,9 +26,12 @@ REVISIONS = {OLD[0]: ("1" * 40, "a" * 40), NEW[0]: ("2" * 40, "b" * 40)}
 
 
 def make_assets(root, server=OLD[0], extension=OLD[1], manifest=None, identity=None, target=None,
-                bundled=None, archive_name=None, vsix_name=None, sums=None, member=None):
+                bundled=None, archive_name=None, vsix_name=None, sums=None, member=None,
+                archived=None, packaged=None, places=None):
     """One release's archive, linux-x64 VSIX, and SHA256SUMS in a new
-    directory under root, each changed as the arguments say."""
+    directory under root, each changed as the arguments say: archived and
+    packaged replace executables' contents in the archive and in the VSIX
+    only, and places moves them within the archive."""
     directory = Path(tempfile.mkdtemp(dir=root))
     source, virgil = REVISIONS.get(server, ("3" * 40, "c" * 40))
     files = {"virgil-lsp": b"server " + server.encode(), "virgil-lsp-worker": b"worker " + server.encode()}
@@ -46,8 +49,8 @@ def make_assets(root, server=OLD[0], extension=OLD[1], manifest=None, identity=N
             info = tarfile.TarInfo(f"{top}/{name}")
             info.size, info.mode = len(content), mode
             tar.addfile(info, io.BytesIO(content))
-        for name, content in files.items():
-            add(name, content, 0o755)
+        for name, content in {**files, **(archived or {})}.items():
+            add((places or {}).get(name, name), content, 0o755)
         add("manifest.json", manifest_bytes)
         for name, content in library.items():
             add(f"virgil/{name}", content)
@@ -64,7 +67,7 @@ def make_assets(root, server=OLD[0], extension=OLD[1], manifest=None, identity=N
             "publisher": "virgil-language-server", "name": "virgil-lsp-vscode", "version": extension}))
         package.writestr("extension/server-target.json", json.dumps(target or {"target": "linux-x64"}))
         package.writestr("extension/server/manifest.json", manifest_bytes if bundled is None else bundled)
-        for name, content in files.items():
+        for name, content in {**files, **(packaged or {})}.items():
             package.writestr(f"extension/server/{name}", content)
     lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in [archive, vsix]]
     (directory / "SHA256SUMS").write_text("\n".join(sums(lines) if sums else lines) + "\n")
@@ -74,7 +77,9 @@ def make_assets(root, server=OLD[0], extension=OLD[1], manifest=None, identity=N
 class TemporaryTest(unittest.TestCase):
     def setUp(self):
         # The driver's progress lines.
-        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
         temporary = tempfile.TemporaryDirectory(prefix="upgrade-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -106,7 +111,7 @@ class AssetTests(TemporaryTest):
         self.rejected("VSIX Version is '0.1.4'", identity={"Version": NEW[1]})
         # A VSIX that bundles another release's server.
         other = make_assets(self.root, *NEW)
-        _, _, bundled = run.archive_manifest(next(other.glob("*.tar.gz")), NEW[0])
+        _, _, bundled, _ = run.archive_manifest(next(other.glob("*.tar.gz")), NEW[0])
         self.rejected("bundled server/manifest.json is not the archive's", bundled=bundled)
 
     def test_rejects_missing_or_mismatched_checksums(self):
@@ -123,6 +128,20 @@ class AssetTests(TemporaryTest):
         (directory / "virgil-lsp-0.1.0-alpha.4-x86-64-linux.manifest.json").write_text("{}")
         with self.assertRaisesRegex(run.Failure, "must hold exactly"):
             run.verify_assets(directory)
+
+    def test_compares_both_packages_executables(self):
+        # A changed archive executable, with SHA256SUMS updated to match.
+        self.rejected("its virgil-lsp is not its manifest's", archived={"virgil-lsp": b"changed server"})
+        self.rejected("its virgil-lsp-worker is not its manifest's", archived={"virgil-lsp-worker": b"changed"})
+        # An archive consistent with its manifest, and a VSIX bundling that
+        # manifest with other executables.
+        self.rejected("its bundled virgil-lsp-worker is not the archive's", packaged={"virgil-lsp-worker": b"other"})
+        self.rejected("expected one virgil-lsp-worker", member=tarfile.TarInfo(
+            f"virgil-lsp-{OLD[0]}-x86-64-linux/libexec/virgil-lsp-worker"))
+        # A misplaced worker with the right contents passes; the rehearsal
+        # finds that the server can't start it.
+        assets = run.verify_assets(make_assets(self.root, places={"virgil-lsp-worker": "libexec/virgil-lsp-worker"}))
+        self.assertEqual(assets["serverVersion"], OLD[0])
 
     def test_rejects_unsafe_members(self):
         link = tarfile.TarInfo(f"virgil-lsp-{OLD[0]}-x86-64-linux/virgil/lib/link")
@@ -179,6 +198,21 @@ class PropagationTests(TemporaryTest):
                                    ("rollback", "not run", "not run")])
         self.assertIn("VS Code kept 0.1.3", written["phases"][1]["vscode"]["error"])
         self.assertEqual([p["serverVersion"] for p in written["phases"]], [OLD[0], NEW[0], OLD[0]])
+
+    def test_interruption_is_recorded(self):
+        def track(phase, assets, logs):
+            if phase == "upgrade":
+                raise KeyboardInterrupt
+            return {}
+        logs = self.root / "logs"
+        logs.mkdir()
+        with self.assertRaises(KeyboardInterrupt):
+            run.rehearse(self.sets(), logs, {t: track for t in run.TRACKS}, {})
+        written = receipt_of(logs)
+        self.assertEqual(written["result"], "interrupted")
+        results = [(p["name"], p["archive"]["result"], p["vscode"]["result"]) for p in written["phases"]]
+        self.assertEqual(results, [("install", "pass", "pass"), ("upgrade", "interrupted", "not run"),
+                                   ("rollback", "not run", "not run")])
 
     def test_all_pass(self):
         logs = self.root / "logs"
@@ -277,18 +311,16 @@ class CleanupTests(TemporaryTest):
         self.assertEqual([p["pid"] for p in left], [child])
         self.assertFalse(alive(child))
 
-    def test_vscode_helper_failure_and_timeout(self):
+    def vscode_phase(self):
         rehearsal = run.Rehearsal(self.root / "work", self.root / "code")
         assets = {"extensionVersion": OLD[1], "serverVersion": OLD[0], "tag": "v" + OLD[0],
                   "virgilRevision": "a" * 40, "vsix": {"path": str(self.root / "x.vsix")}}
-        failing = self.root / "failing.cjs"
-        failing.write_text("process.exitCode = 1;\n")
         logs = self.root / "phase"
-        logs.mkdir()
-        with mock.patch.object(run, "HELPER", failing):
-            with self.assertRaisesRegex(run.Failure, "VS Code phase failed \\(status 1\\)"):
-                rehearsal.code("install", assets, logs)
-        # A helper that ignores SIGTERM and leaves a child is killed, with it.
+        logs.mkdir(exist_ok=True)
+        return rehearsal, assets, logs
+
+    def hanging_helper(self):
+        """A helper that ignores SIGTERM and has a child, as VS Code's are."""
         hanging = self.root / "hanging.cjs"
         hanging.write_text(textwrap.dedent(f"""\
             const {{ spawn }} = require('node:child_process');
@@ -297,11 +329,42 @@ class CleanupTests(TemporaryTest):
             require('node:fs').writeFileSync({json.dumps(str(self.root / 'child'))}, String(child.pid));
             setInterval(() => {{}}, 1000);
             """))
-        with mock.patch.object(run, "HELPER", hanging), mock.patch.object(run, "VSCODE_TIMEOUT", 2), \
+        return hanging
+
+    def test_vscode_helper_failure_and_timeout(self):
+        rehearsal, assets, logs = self.vscode_phase()
+        failing = self.root / "failing.cjs"
+        failing.write_text("process.exitCode = 1;\n")
+        with mock.patch.object(run, "HELPER", failing):
+            with self.assertRaisesRegex(run.Failure, "VS Code phase failed \\(status 1\\)"):
+                rehearsal.code("install", assets, logs)
+        with mock.patch.object(run, "HELPER", self.hanging_helper()), mock.patch.object(run, "VSCODE_TIMEOUT", 2), \
                 mock.patch.object(run, "STOP_GRACE", 1):
             with self.assertRaisesRegex(run.Failure, "timed out"):
                 rehearsal.code("rollback", assets, logs)
         self.assertFalse(alive(self.child()))
+
+    def test_interrupt_stops_and_reaps_the_vscode_helper(self):
+        rehearsal, assets, logs = self.vscode_phase()
+        leaders = []
+        wait = run.Group.wait
+
+        def interrupted(group, timeout):
+            # Ctrl-C during the phase's wait, once the helper has started.
+            if not leaders:
+                leaders.append(group.pid)
+                self.child()
+                raise KeyboardInterrupt
+            return wait(group, timeout)
+        with mock.patch.object(run, "HELPER", self.hanging_helper()), mock.patch.object(run, "STOP_GRACE", 1), \
+                mock.patch.object(run.Group, "wait", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                rehearsal.code("upgrade", assets, logs)
+        self.assertFalse(alive(self.child()))
+        self.assertEqual(run.group_members(leaders[0]), [])
+        # Reaped, not just stopped.
+        with self.assertRaises(ChildProcessError):
+            os.waitid(os.P_PID, leaders[0], os.WEXITED | os.WNOHANG)
 
 
 if __name__ == "__main__":
