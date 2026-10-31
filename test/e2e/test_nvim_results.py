@@ -24,6 +24,7 @@ import time
 import unittest
 from unittest import mock
 from pathlib import Path
+from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -114,6 +115,8 @@ def failing(check_id, message):
 # says, and exits with its status.
 FAKE_NVIM = """#!{python}
 import json, os, subprocess, sys, time
+from pathlib import Path
+from urllib.parse import quote
 if sys.argv[1:] == ["--version"]:
     print(os.environ.get("FAKE_NVIM_VERSION", "NVIM v0.11.6\\nBuild type: Release"))
     sys.exit(0)
@@ -136,6 +139,7 @@ if path:
         for line in scenario.get("lines", []):
             moment = int(time.time() * 1000)
             line = line.replace('"<NOW>"', str(moment)).replace('"<LATER>"', str(moment + 100))
+            line = line.replace("<WORK_URI>", Path(work).as_uri()).replace("<WORK_ENCODED>", quote(work, safe="/"))
             out.write(line.replace("<WORK>", work) + "\\n")
         out.write(scenario.get("partial", ""))
         out.flush()
@@ -298,6 +302,23 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual([check["id"] for check in checks], [*ORDER, "nvim.infrastructure.completed"])
         self.assertTrue(all(check["status"] == "pass" for check in checks))
 
+    def test_uri_paths_in_failure_are_redacted(self):
+        self.work = self.work / "release build" / "nvim-smoke"
+        self.work.mkdir(parents=True)
+        message = " | ".join(f"{form}/project/bad.v3" for form in ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>"))
+        malformed = json.dumps({"observation": "<WORK_URI>/project/bad.v3"})
+        self.assertEqual(self.run_reader([malformed, failing(ORDER[0], message)],
+                                         detached=False, sleep=0, exit=1), 1)
+        state = self.assert_cleaned()
+        checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
+        expected = " | ".join(["<work>/project/bad.v3"] * 3)
+        self.assertEqual(checks[0]["observation"], expected)
+        self.assertEqual(checks[0]["reason"], expected)
+        self.assertIn("<work>/project/bad.v3", state["issues"][0])
+        text = self.stream.read_text() + json.dumps(state)
+        for path in (str(self.work), quote(str(self.work), safe="/"), self.work.as_uri()):
+            self.assertNotIn(path, text)
+
     def test_normal_exit_stops_detached_child(self):
         self.assertEqual(self.run_reader([passing(ORDER[0])], sleep=0.2), 0)
         state = self.assert_cleaned()
@@ -425,6 +446,23 @@ class StreamTest(Case):
         # The events are in check.lua's order, between the launcher's own.
         self.assertEqual([event.get("id") for event in self.events()[1:-1]],
                          ["nvim.infrastructure.preflight", *ORDER, "nvim.infrastructure.completed"])
+
+    def test_uri_paths_in_failure_are_redacted(self):
+        server_dir = self.dir / "release build"
+        self.server_dir.rename(server_dir)
+        self.server_dir = server_dir
+        message = " | ".join(f"{form}/project/bad.v3" for form in ("<WORK>", "<WORK_ENCODED>", "<WORK_URI>"))
+        self.scenario(lines=[json.dumps({"observation": "<WORK_URI>/project/bad.v3"}),
+                             failing(ORDER[0], message)], exit=1)
+        self.assertFailed(self.run_sh())
+        failed = self.checks()[ORDER[0]]
+        expected = " | ".join(["<work>/project/bad.v3"] * 3)
+        self.assertEqual(failed["observation"], expected)
+        self.assertEqual(failed["reason"], expected)
+        text = self.stream.read_text()
+        self.assertIn("<work>/project/bad.v3", self.events()[-1]["issues"][0])
+        for path in (str(server_dir), quote(str(server_dir), safe="/"), server_dir.as_uri()):
+            self.assertNotIn(path, text)
 
     def test_release_options(self):
         self.scenario(lines=[passing(check_id) for check_id in ORDER])

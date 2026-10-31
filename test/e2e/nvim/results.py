@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
@@ -106,7 +107,12 @@ class Paths:
         if work:
             pairs.append((os.path.realpath(work), "<work>"))
             pairs.append((str(work), "<work>"))
-        self.pairs = sorted((pair for pair in pairs if len(pair[0]) > 1), key=lambda pair: -len(pair[0]))
+        forms = []
+        for path, name in pairs:
+            if len(path) > 1:
+                quoted = quote(path, safe="/")
+                forms.extend((form, name) for form in {path, quoted, Path(path).as_uri(), "file://" + quoted})
+        self.pairs = sorted(forms, key=lambda pair: -len(pair[0]))
 
     def __call__(self, text):
         # Lua's error positions shorten long paths to "...<end of the path>".
