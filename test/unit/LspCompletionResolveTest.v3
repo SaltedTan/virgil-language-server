@@ -10,6 +10,7 @@
 def T = UnitTests.register;
 def X = [
 	T("LspCompletionResolve:items", test_items),
+	T("LspCompletionResolve:fingerprints", test_fingerprints),
 	T("LspCompletionResolve:names", test_names),
 	T("LspCompletionResolve:members", test_members),
 	T("LspCompletionResolve:builtins", test_builtins),
@@ -50,6 +51,12 @@ def REPAIRED = main("\t\tlo$\n\t\treturn local;\n");
 // After the "." of a Shape, and of a string, as typed.
 def MEMBER = main("\t\treturn s.$area;\n");
 def BUILTIN_MEMBER = main("\t\treturn \"ab\".$length;\n");
+// Lib.v3 with two classes whose fields have the same name, and Main.v3 after
+// the "." of each.
+def VALUES = Strings.format2("%s%s", LIB,
+	"// An alpha.\nclass Alpha {\n\t// The alpha value.\n\tvar value: int;\n}\n// A bravo.\nclass Bravo {\n\t// The bravo value.\n\tvar value: int;\n}\n");
+def ALPHA = main("\t\tvar a: Alpha;\n\t\treturn a.$value;\n");
+def BRAVO = main("\t\tvar b: Bravo;\n\t\treturn b.$value;\n");
 
 def main(body: string) -> string {
 	return Strings.format3("%s%s%s", MAIN_HEAD, body, "\t}\n}\n");
@@ -101,6 +108,18 @@ def named(t: Tester, list: JsonValue, name: string) -> JsonValue {
 }
 def hasData(item: JsonValue) -> bool {
 	return JsonValue.JObject.?(item) && JsonValue.JObject.!(item).v.has("data");
+}
+// The integers of {item}'s data.
+def data(item: JsonValue) -> Array<int> {
+	var v = JsonValue.JArray.!(member(item, "data")).v, result = Array<int>.new(v.length);
+	for (i < v.length) result[i] = JsonValue.Int.!(v[i]).v;
+	return result;
+}
+// {item} with the data {id}, {index}, and {fingerprint}.
+def withData(item: JsonValue, id: int, index: int, fingerprint: int) -> JsonValue {
+	var forged = copy(item);
+	forged["data"] = JsonValue.JArray([JsonValue.Int(id), JsonValue.Int(index), JsonValue.Int(fingerprint)]);
+	return JsonValue.JObject(forged);
 }
 def render(v: JsonValue) -> string {
 	return JsonRpcJson.render(StringBuilder.new(), v).toString();
@@ -154,6 +173,16 @@ def notify(s: RenameTestSession, method: string, params: string) {
 def edit(s: RenameTestSession, text: string) {
 	s.change("Main.v3", s.file("Main.v3").version + 1, text);
 }
+// {list} with each item's data as [0, its index, 0], whatever its list's
+// id and its fingerprint.
+def anonymous(list: JsonValue) -> string {
+	var parsed = JsonValue.JObject(copy(list));
+	for (item in items(parsed)) {
+		var o = JsonValue.JObject.!(item).v;
+		if (o.has("data")) o["data"] = JsonValue.JArray([JsonValue.Int(0), JsonValue.Int(data(item)[1]), JsonValue.Int(0)]);
+	}
+	return render(parsed);
+}
 def errorCode(reply: HashMap<string, JsonValue>) -> int {
 	var code = member(reply["error"], "code");
 	return if(JsonValue.Int.?(code), JsonValue.Int.!(code).v, 0);
@@ -164,9 +193,16 @@ def test_items(t: Tester) {
 	var main = "/w/Main.v3", lib = "/w/Lib.v3", sub = "/w/Sub.v3";
 	var mainUri = "file:///w/Main.v3", libUri = "file:///w/Lib.v3";
 	var snapshot = AnalysisSnapshot.new(1, [main, lib, sub], true, true, [], null, false, []);
-	var versions = [AnalysisDocumentVersion.new(mainUri, 1, DocumentVersionIdentity.new()),
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), mainText = "component Main { }\n";
+	store.open(mainUri, "virgil", 1, mainText);
+	var versions = [AnalysisDocumentVersion.new(mainUri, 1, store.overlay(mainUri).identity),
 		AnalysisDocumentVersion.new(libUri, 0, null), AnalysisDocumentVersion.new("file:///w/Sub.v3", 0, null)];
+	versions[1].hash = 0x0123456789ABCDEFul;
 	versions[2].substitution = AnalysisSubstitution.new("component Sub { }\n", null);
+	// An item's data: the list's id, the item's index, and its fingerprint,
+	// from its file's hash, its offset, and its label.
+	var expected = fun (id: int, item: int, hash: u64, d: AnalysisDeclaration) => Strings.format3("[%d,%d,%d]", id, item,
+		LspItemFingerprint.of(hash, d.range.beginOffset, d.name));
 	var decl = fun (kind: AnalysisDeclKind, name: string, path: string, begin: int) => AnalysisDeclaration.new(kind, name,
 		AnalysisRange.new(path, 1, begin + 1, 1, begin + 1 + name.length, begin, begin + name.length));
 	var A = decl(AnalysisDeclKind.CLASS, "A", lib, 6), bee = decl(AnalysisDeclKind.METHOD, "bee", Arrays.dup(lib), 20);
@@ -175,7 +211,7 @@ def test_items(t: Tester) {
 	var two = base + LspResolveLimits.FILE_BYTES + libUri.length + 2 * LspResolveLimits.ITEM_BYTES + "A".length + "bee".length;
 	var cap = two + LspResolveLimits.ITEM_BYTES + 1;
 	var list = LspCompletionDeclarations.new(7, mainUri, null, null, cap);
-	var docs = LspCompletionItems.new(list, snapshot, versions, 0);
+	var docs = LspCompletionItems.new(store, list, snapshot, versions, 0);
 	t.asserti(base, list.bytes);
 	// Nothing for "this" and builtins, which have no declaration, for a local
 	// or a parameter, for a declaration without source offsets, for the
@@ -195,11 +231,12 @@ def test_items(t: Tester) {
 	t.asserti(base, list.bytes);
 	// The first item from a file adds it to the list; a second item from it,
 	// whose path is an equal string, is charged only for itself.
-	t.assert_string("[7,0]", render(docs.add(A, "A")));
-	t.assert_string("[7,1]", render(docs.add(bee, "bee")));
+	t.assert_string(expected(7, 0, versions[1].hash, A), render(docs.add(A, "A")));
+	t.assert_string(expected(7, 1, versions[1].hash, bee), render(docs.add(bee, "bee")));
 	t.asserti(two, list.bytes);
 	t.asserti(1, list.files.length);
 	t.assert_string(libUri, list.files[0].uri);
+	t.assert(list.hashes[0] == versions[1].hash, "a closed file's hash is its stamp's");
 	t.asserti(0, list.sources[1]);
 	t.assert(list.kinds[1] == AnalysisDeclKind.METHOD, "the item's kind");
 	t.asserti(20, list.begins[1]);
@@ -212,15 +249,41 @@ def test_items(t: Tester) {
 	t.asserti(2, list.labels.length);
 	// One that fits exactly is added.
 	list = LspCompletionDeclarations.new(8, mainUri, null, null, cap);
-	docs = LspCompletionItems.new(list, snapshot, versions, -1);
-	t.assert_string("[8,0]", render(docs.add(A, "A")));
-	t.assert_string("[8,1]", render(docs.add(bee, "bee")));
-	t.assert_string("[8,2]", render(docs.add(C, "C")));
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	t.assert_string(expected(8, 0, versions[1].hash, A), render(docs.add(A, "A")));
+	t.assert_string(expected(8, 1, versions[1].hash, bee), render(docs.add(bee, "bee")));
+	t.assert_string(expected(8, 2, versions[1].hash, C), render(docs.add(C, "C")));
 	t.asserti(cap, list.bytes);
 	// Without the request document excluded, its items have data too.
 	list = LspCompletionDeclarations.new(9, mainUri, null, null, LspResolveLimits.MAX_BYTES);
-	docs = LspCompletionItems.new(list, snapshot, versions, -1);
-	t.assert_string("[9,0]", render(docs.add(decl(AnalysisDeclKind.METHOD, "m", main, 30), "m")));
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	var m = decl(AnalysisDeclKind.METHOD, "m", main, 30);
+	// An open file's hash is that of its analyzed text, the open overlay.
+	t.assert_string(expected(9, 0, LspAnalysisCapture.hash(mainText), m), render(docs.add(m, "m")));
+	// Once that overlay changed, its items have no data.
+	store.change(mainUri, 2, "component Main { def m() { } }\n");
+	list = LspCompletionDeclarations.new(10, mainUri, null, null, LspResolveLimits.MAX_BYTES);
+	docs = LspCompletionItems.new(store, list, snapshot, versions, -1);
+	t.assert_string("null", render(docs.add(m, "m")));
+}
+// A fingerprint is a non-negative 31-bit integer that each of the file's
+// hash, the offset, and the label change.
+def test_fingerprints(t: Tester) {
+	var hashes = [0ul, 1ul, 0x0123456789ABCDEFul, 0xFFFFFFFFFFFFFFFFul], offsets = [0, 1, 255, 256, 65536, 2147483647];
+	var labels = ["", "a", "b", "value", "Value"], seen = Vector<int>.new();
+	for (h in hashes) {
+		for (o in offsets) {
+			for (l in labels) {
+				var f = LspItemFingerprint.of(h, o, l);
+				if (f < 0) t.fail1("negative fingerprint %d", f);
+				t.asserti(f, LspItemFingerprint.of(h, o, Arrays.dup(l)));
+				for (i < seen.length) {
+					if (seen[i] == f) t.fail3("fingerprint %d repeated for offset %d and label %s", f, o, l);
+				}
+				seen.put(f);
+			}
+		}
+	}
 }
 // The declarations in scope that can have a comment have data, in the
 // closed Lib.v3 and in Main.v3, which was analyzed as typed; resolving one
@@ -295,7 +358,8 @@ def test_repeated(t: Tester) {
 	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
 }
-// The reply's size doesn't depend on the length of the comments.
+// The reply doesn't depend on the comments, but for its list id and the
+// fingerprints of the changed file's items.
 def test_reply_size(t: Tester) {
 	var s = session(t, null), list = complete(t, s, AS_TYPED);
 	var longer = StringBuilder.new();
@@ -304,7 +368,8 @@ def test_reply_size(t: Tester) {
 	s.write(t, "Lib.v3", lib);
 	s.reportChanged("Lib.v3");
 	var again = complete(t, s, AS_TYPED);
-	t.asserti(render(list).length, render(again).length);
+	t.assert_string(anonymous(list), anonymous(again));
+	t.assert(data(named(t, list, "Shape"))[2] != data(named(t, again, "Shape"))[2], "another fingerprint");
 	var doc = documentation(resolve(t, s, named(t, again, "Shape")));
 	t.assert(doc != null && doc.length > 40 * 50, "the longer comment");
 	s.write(t, "Lib.v3", LIB);
@@ -368,10 +433,17 @@ def test_byte_cap(t: Tester) {
 def test_malformed(t: Tester) {
 	var s = session(t, null);
 	complete(t, s, AS_TYPED);
+	// Data has three integers, none negative: a number that isn't a 32-bit
+	// integer, such as a fingerprint of 2^31 or 2^53 - 1, is refused before
+	// the handler runs.
 	var bad = ["[1]", "{}", "{\"label\":1}", "{\"label\":\"Shape\",\"data\":\"x\"}",
 		"{\"label\":\"Shape\",\"data\":{\"list\":1,\"item\":0}}", "{\"label\":\"Shape\",\"data\":[1]}",
-		"{\"label\":\"Shape\",\"data\":[1,\"0\"]}", "{\"label\":\"Shape\",\"data\":[1,0,0]}",
-		"{\"label\":\"Shape\",\"data\":[1.5,0]}", "{\"label\":\"Shape\",\"data\":[true,0]}"];
+		"{\"label\":\"Shape\",\"data\":[1,0]}", "{\"label\":\"Shape\",\"data\":[1,0,0,0]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,\"0\"]}", "{\"label\":\"Shape\",\"data\":[1,0,null]}",
+		"{\"label\":\"Shape\",\"data\":[1.5,0,0]}", "{\"label\":\"Shape\",\"data\":[true,0,0]}",
+		"{\"label\":\"Shape\",\"data\":[-1,0,0]}", "{\"label\":\"Shape\",\"data\":[1,-1,0]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,-1]}", "{\"label\":\"Shape\",\"data\":[1,0,2147483648]}",
+		"{\"label\":\"Shape\",\"data\":[1,0,9007199254740991]}"];
 	for (params in bad) {
 		var reply = raw(s, params);
 		if (errorCode(reply) != JsonRpcErrorCode.INVALID_PARAMS) t.fail1("not refused: %s", params);
@@ -385,16 +457,14 @@ def test_malformed(t: Tester) {
 	s.server.close();
 }
 // Data that names no item of the latest list, or an item with another
-// label, leaves the item as it was sent. Other members never select a file.
+// label or fingerprint, leaves the item as it was sent. Other members never
+// select a file.
 def test_unknown(t: Tester) {
 	var s = session(t, null), list = complete(t, s, AS_TYPED), shape = named(t, list, "Shape");
-	var data = JsonValue.JArray.!(member(shape, "data")).v, id = JsonValue.Int.!(data[0]).v, k = JsonValue.Int.!(data[1]).v;
-	var forged = [(id + 1, k), (id - 1, k), (id, 1000), (id, -1), (2147483647, 2147483647), (-2147483648, 0)];
-	for (f in forged) {
-		var item = copy(shape);
-		item["data"] = JsonValue.JArray([JsonValue.Int(f.0), JsonValue.Int(f.1)]);
-		unchanged(t, s, JsonValue.JObject(item));
-	}
+	var d = data(shape), id = d[0], k = d[1], f = d[2];
+	var forged = [(id + 1, k, f), (id - 1, k, f), (id, 1000, f), (2147483647, 2147483647, 2147483647),
+		(id, k, f ^ 1), (id, k, 0), (id, k, data(named(t, list, "Counter"))[2])];
+	for (x in forged) unchanged(t, s, withData(shape, x.0, x.1, x.2));
 	var counter = copy(shape);
 	counter["label"] = JsonValue.String("Counter");
 	unchanged(t, s, JsonValue.JObject(counter));
@@ -539,11 +609,29 @@ def test_repaired(t: Tester) {
 	expect(t, s, list, "Counter", "markdown: Counts \\*things\\*.");
 	s.server.close();
 }
-// A new server has no list, so another server's items come back as sent.
+// A new server's list ids start again, so an item kept from an older server
+// comes back as sent: with no list in the new server, and with a list whose
+// item at the same id and index has the same label but another declaration,
+// here Bravo's value where Alpha's was, which the fingerprint tells apart.
 def test_restart(t: Tester) {
 	var s = session(t, null), list = complete(t, s, AS_TYPED);
 	s.server.close();
 	var restarted = session(t, null);
 	unchanged(t, restarted, named(t, list, "Shape"));
+	restarted.server.close();
+	s = session(t, null);
+	s.write(t, "Lib.v3", VALUES);
+	var alphas = complete(t, s, ALPHA), alpha = named(t, alphas, "value");
+	expect(t, s, alphas, "value", "markdown: The alpha value.");
+	s.server.close();
+	restarted = session(t, null);
+	restarted.write(t, "Lib.v3", VALUES);
+	var bravos = complete(t, restarted, BRAVO), bravo = data(named(t, bravos, "value"));
+	t.asserti(data(alpha)[0], bravo[0]);
+	t.asserti(data(alpha)[1], bravo[1]);
+	t.assert(data(alpha)[2] != bravo[2], "another fingerprint");
+	unchanged(t, restarted, alpha);
+	expect(t, restarted, bravos, "value", "markdown: The bravo value.");
+	restarted.write(t, "Lib.v3", LIB);
 	restarted.server.close();
 }

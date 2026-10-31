@@ -460,7 +460,7 @@ class LspCompletion extends LspQueryRequests {
 	// it was repaired, since the repair moved the text after the cursor.
 	private def documented(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> LspCompletionItems {
 		r.declarations = resolver.start(r);
-		return LspCompletionItems.new(r.declarations, snapshot, r.versions, if(r.repaired, r.index, -1));
+		return LspCompletionItems.new(store, r.declarations, snapshot, r.versions, if(r.repaired, r.index, -1));
 	}
 	// {k} in four decimal digits, which sort as the numbers do: there are
 	// fewer than 10,000 candidates.

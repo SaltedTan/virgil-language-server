@@ -12,59 +12,66 @@
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
 # The members after "Lib.count"'s "."; count's comment comes as it is, without escapes.
 {"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":32},"context":{"triggerKind":2,"triggerCharacter":"."}}}}
-{"recv":{"jsonrpc":"2.0","id":2,"result":{"isIncomplete":false,"items":[{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}},{"data":[1,1],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}]}}}
-{"send":{"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":3,"result":{"data":[1,0],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"isIncomplete":false,"items":[{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}},{"data":[1,1,1702383885],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}]}}}
+{"send":{"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"data":[1,0,2089993084],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
 # lib.v3 changes on disk without a file event: its bytes are no longer those analyzed, though
 # their length is the same, so count comes back as it was sent.
 {"write":["lib.v3","// Counts <b>things</b>.\ncomponent Lib {\n\t// The total, after `def`.\n\tdef count = 1;\n\tdef plain = 2;\n}\n"]}
-{"send":{"jsonrpc":"2.0","id":4,"method":"completionItem/resolve","params":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":4,"result":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"completionItem/resolve","params":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
 # Written back as it was analyzed, lib.v3 documents count again.
 {"write":["lib.v3","// Counts <b>things</b>.\ncomponent Lib {\n\t// The count, after `def`.\n\tdef count = 1;\n\tdef plain = 2;\n}\n"]}
-{"send":{"jsonrpc":"2.0","id":5,"method":"completionItem/resolve","params":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":5,"result":{"data":[1,0],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-# Data that names no item of the list, another list, or an item with another label leaves the
-# item as it was sent.
-{"send":{"jsonrpc":"2.0","id":6,"method":"completionItem/resolve","params":{"label":"count","data":[1,7]}}}
-{"recv":{"jsonrpc":"2.0","id":6,"result":{"data":[1,7],"label":"count"}}}
-{"send":{"jsonrpc":"2.0","id":7,"method":"completionItem/resolve","params":{"label":"count","data":[0,0]}}}
-{"recv":{"jsonrpc":"2.0","id":7,"result":{"data":[0,0],"label":"count"}}}
-{"send":{"jsonrpc":"2.0","id":8,"method":"completionItem/resolve","params":{"label":"plain","data":[1,0]}}}
-{"recv":{"jsonrpc":"2.0","id":8,"result":{"data":[1,0],"label":"plain"}}}
-# Data that no completion reply gives, such as a file and an offset, gets InvalidParams.
-{"send":{"jsonrpc":"2.0","id":9,"method":"completionItem/resolve","params":{"label":"count","data":{"uri":"@TMP@/lib.v3","offset":0}}}}
-{"recv":{"jsonrpc":"2.0","id":9,"error":{"code":-32602,"message":"completion item resolve params require a string label, and data only as a completion reply gave it"}}}
+{"send":{"jsonrpc":"2.0","id":5,"method":"completionItem/resolve","params":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":5,"result":{"data":[1,0,2089993084],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+# Data that names no item of the list, another list, an item with another label, or count with
+# another fingerprint, here plain's, leaves the item as it was sent. The fingerprint, data's
+# last integer, is the same in every server, so an item kept from an older server, whose list
+# ids start again, can't take another declaration's documentation.
+{"send":{"jsonrpc":"2.0","id":6,"method":"completionItem/resolve","params":{"label":"count","data":[1,7,2089993084]}}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":{"data":[1,7,2089993084],"label":"count"}}}
+{"send":{"jsonrpc":"2.0","id":7,"method":"completionItem/resolve","params":{"label":"count","data":[0,0,2089993084]}}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":{"data":[0,0,2089993084],"label":"count"}}}
+{"send":{"jsonrpc":"2.0","id":8,"method":"completionItem/resolve","params":{"label":"plain","data":[1,0,2089993084]}}}
+{"recv":{"jsonrpc":"2.0","id":8,"result":{"data":[1,0,2089993084],"label":"plain"}}}
+{"send":{"jsonrpc":"2.0","id":9,"method":"completionItem/resolve","params":{"label":"count","data":[1,0,1702383885]}}}
+{"recv":{"jsonrpc":"2.0","id":9,"result":{"data":[1,0,1702383885],"label":"count"}}}
+# Data that no completion reply gives, such as a file and an offset, or two integers, gets
+# InvalidParams.
+{"send":{"jsonrpc":"2.0","id":10,"method":"completionItem/resolve","params":{"label":"count","data":{"uri":"@TMP@/lib.v3","offset":0}}}}
+{"recv":{"jsonrpc":"2.0","id":10,"error":{"code":-32602,"message":"completion item resolve params require a string label, and data only as a completion reply gave it"}}}
+{"send":{"jsonrpc":"2.0","id":11,"method":"completionItem/resolve","params":{"label":"count","data":[1,0]}}}
+{"recv":{"jsonrpc":"2.0","id":11,"error":{"code":-32602,"message":"completion item resolve params require a string label, and data only as a completion reply gave it"}}}
 # A list at another cursor, after "Lib.plain"'s ".", replaces the first, whose items then come
 # back as they were sent.
-{"send":{"jsonrpc":"2.0","id":10,"method":"textDocument/completion","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":44},"context":{"triggerKind":2,"triggerCharacter":"."}}}}
-{"recv":{"jsonrpc":"2.0","id":10,"result":{"isIncomplete":false,"items":[{"data":[2,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}},{"data":[2,1],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}]}}}
-{"send":{"jsonrpc":"2.0","id":11,"method":"completionItem/resolve","params":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":11,"result":{"data":[1,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"send":{"jsonrpc":"2.0","id":12,"method":"completionItem/resolve","params":{"data":[2,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":12,"result":{"data":[2,0],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":12,"method":"textDocument/completion","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":44},"context":{"triggerKind":2,"triggerCharacter":"."}}}}
+{"recv":{"jsonrpc":"2.0","id":12,"result":{"isIncomplete":false,"items":[{"data":[2,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}},{"data":[2,1,1702383885],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}]}}}
+{"send":{"jsonrpc":"2.0","id":13,"method":"completionItem/resolve","params":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":13,"result":{"data":[1,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":14,"method":"completionItem/resolve","params":{"data":[2,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":14,"result":{"data":[2,0,2089993084],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
 # A change to main.v3, whose parse is published at once, leaves the list: count is declared in
 # lib.v3, which is unchanged.
 {"send":{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@TMP@/main.v3","version":2},"contentChanges":[{"text":"// Runs the program.\ncomponent Main {\n\t// Adds them.\n\tdef main() -> int { return Lib.count + Lib.plain; }\n}\n\n"}]}}}
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":2}}}
-{"send":{"jsonrpc":"2.0","id":13,"method":"completionItem/resolve","params":{"data":[2,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":13,"result":{"data":[2,0],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":15,"method":"completionItem/resolve","params":{"data":[2,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":15,"result":{"data":[2,0,2089993084],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
 # Closing main.v3, the list's document, forgets the list, which doesn't come back when main.v3
 # is opened again.
 {"send":{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@TMP@/main.v3"}}}}
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":2}}}
 {"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/main.v3","languageId":"virgil","version":3,"text":"// Runs the program.\ncomponent Main {\n\t// Adds them.\n\tdef main() -> int { return Lib.count + Lib.plain; }\n}\n\n"}}}}
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":3}}}
-{"send":{"jsonrpc":"2.0","id":14,"method":"completionItem/resolve","params":{"data":[2,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":14,"result":{"data":[2,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":16,"method":"completionItem/resolve","params":{"data":[2,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":16,"result":{"data":[2,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":44,"line":3},"start":{"character":44,"line":3}}}}}}
 # A list after the reopening resolves until lib.v3 is removed, without a file event.
-{"send":{"jsonrpc":"2.0","id":15,"method":"textDocument/completion","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":32},"context":{"triggerKind":2,"triggerCharacter":"."}}}}
-{"recv":{"jsonrpc":"2.0","id":15,"result":{"isIncomplete":false,"items":[{"data":[3,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}},{"data":[3,1],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}]}}}
-{"send":{"jsonrpc":"2.0","id":16,"method":"completionItem/resolve","params":{"data":[3,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":16,"result":{"data":[3,0],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":17,"method":"textDocument/completion","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":32},"context":{"triggerKind":2,"triggerCharacter":"."}}}}
+{"recv":{"jsonrpc":"2.0","id":17,"result":{"isIncomplete":false,"items":[{"data":[3,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}},{"data":[3,1,1702383885],"detail":"def plain: int","kind":5,"label":"plain","sortText":"0001","textEdit":{"newText":"plain","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}]}}}
+{"send":{"jsonrpc":"2.0","id":18,"method":"completionItem/resolve","params":{"data":[3,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":18,"result":{"data":[3,0,2089993084],"detail":"def count: int","documentation":{"kind":"plaintext","value":"The count, after `def`."},"kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
 {"remove":"lib.v3"}
-{"send":{"jsonrpc":"2.0","id":17,"method":"completionItem/resolve","params":{"data":[3,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"recv":{"jsonrpc":"2.0","id":17,"result":{"data":[3,0],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
-{"send":{"jsonrpc":"2.0","id":18,"method":"shutdown"}}
-{"recv":{"jsonrpc":"2.0","id":18,"result":null}}
+{"send":{"jsonrpc":"2.0","id":19,"method":"completionItem/resolve","params":{"data":[3,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"recv":{"jsonrpc":"2.0","id":19,"result":{"data":[3,0,2089993084],"detail":"def count: int","kind":5,"label":"count","sortText":"0000","textEdit":{"newText":"count","range":{"end":{"character":32,"line":3},"start":{"character":32,"line":3}}}}}}
+{"send":{"jsonrpc":"2.0","id":20,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":20,"result":null}}
 {"send":{"jsonrpc":"2.0","method":"exit"}}
