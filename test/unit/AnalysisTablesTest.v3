@@ -26,6 +26,7 @@ def X = [
 	T("AnalysisTables:seeds", test_seeds),
 	T("AnalysisTables:without_times", test_without_times),
 	T("AnalysisTables:random_words", test_random_words),
+	T("AnalysisTables:sort_prefix", test_sort_prefix),
 	()
 ];
 // The key that tests run with, bytes 0 to 15, as in SipHash's test vectors.
@@ -463,4 +464,24 @@ def test_reserved_indexes(t: Tester) {
 	table.reserve(10);
 	for (i < 200) t.asserti(i, table.find(i));
 	t.asserti(-1, table.find(201));
+}
+
+// Sorting a buffer's first n elements gives sort's stable order in a new
+// array of exactly n, for every count of merge passes, odd or even, and
+// whatever lies in the buffer past n.
+def test_sort_prefix(t: Tester) {
+	// A key in the high bits, ties among them, and the original position below.
+	var before = fun (a: int, b: int) => (a >> 16) < (b >> 16);
+	for (n < 70) {
+		var buffer = Array<int>.new(n + 5), copy = Array<int>.new(n);
+		for (i < buffer.length) buffer[i] = if(i < n, ((i * 37 + 11) % 7) << 16 | i, -1);
+		for (i < n) copy[i] = buffer[i];
+		var expected = AnalysisTables.sort(copy, before), sorted = AnalysisTables.sortPrefix(buffer, n, before);
+		t.asserti(n, sorted.length);
+		var same = true;
+		for (i < n) if (sorted[i] != expected[i]) same = false;
+		t.assert(same, "sortPrefix gives sort's stable order");
+		t.assert(sorted != buffer, "sortPrefix returns a new array");
+	}
+	t.asserti(0, AnalysisTables.sortPrefix<int>(null, 0, before).length);
 }

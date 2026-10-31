@@ -5,16 +5,17 @@
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
 // {packings} is the program's packings, or null if it was not verified.
-// {callEnds} and {names} are shared by the program's files.
+// {callEnds}, {names}, and {buffers} are shared by the program's files.
 class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
-		packings: AnalysisPackings, callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) extends VstVisitor<void, void> {
-	private def result = Vector<AnalysisOccurrence>.new();
-	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
+		packings: AnalysisPackings, callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames,
+		buffers: AnalysisCollectorBuffers) extends VstVisitor<void, void> {
+	private def result = buffers.occurrences;
+	private def builtinUses = buffers.builtins;
 	// Declaration sites in the order the walk finds them, which breaks ties.
-	private def siteList = Vector<AnalysisDeclaration>.new();
+	private def siteList = buffers.sites;
 	// The calls in the order the walk finds them (see calls), and the
 	// argument spans of the call being recorded.
-	private def callRecords = DataWriter.new();
+	private def callRecords = buffers.calls;
 	private def argSpans = Vector<int>.new();
 	// The last call's opening parenthesis, and whether every call so far
 	// opened after the one before it.
@@ -71,6 +72,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def var parents: Array<int>;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
+		result.length = builtinUses.length = siteList.length = 0;
+		callRecords.trim(0);
 		fileName = file.fileName;
 		for (i < file.components.length) visitCompound(file.components[i]);
 		for (i < file.classes.length) visitCompound(file.classes[i]);
@@ -88,10 +91,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			}
 			if (!inline) expr(e);
 		}
-		builtins = AnalysisTables.sort(builtinUses.extract(), builtinBefore);
-		sites = sortSites(siteList.extract());
+		builtins = AnalysisTables.sortPrefix(builtinUses.array, builtinUses.length, builtinBefore);
+		sites = sortSites(AnalysisTables.sortPrefix(siteList.array, siteList.length, siteBefore));
 		calls = sortCalls();
-		return AnalysisTables.sort(result.extract(), before);
+		return AnalysisTables.sortPrefix(result.array, result.length, before);
 	}
 	// The walk finds a file's components, classes, and other declarations in
 	// turn, not in source order, so the calls it records may need sorting:
@@ -99,7 +102,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// records in that order.
 	private def sortCalls() -> Range<byte> {
 		var data = callRecords.alias();
-		if (callsInOrder) return data;
+		if (callsInOrder) return Ranges.dup(data);
 		var keys = Array<long>.new(callCount), c = AnalysisCallCursor.new(DataReader.new(data), callCount);
 		c.absolute = true;
 		for (i = 0; c.next(); i++) {
@@ -133,13 +136,12 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (x.beginOffset != y.beginOffset) return x.beginOffset < y.beginOffset;
 		return x.beginLine < y.beginLine || (x.beginLine == y.beginLine && x.beginColumn < y.beginColumn);
 	}
-	// Sorts declaration sites by byte offset and keeps the first found of
-	// any that overlap. A token names two declarations only where
+	// Keeps the first found of any declaration sites, sorted by byte offset,
+	// that overlap. A token names two declarations only where
 	// verification shares it, as a variant with parameters shares its name
 	// with its single case; the walk finds the declaration a reader means first.
 	// Records the parents of the sites it keeps, in their order (see parents).
 	private def sortSites(list: Array<AnalysisDeclaration>) -> Array<AnalysisDeclaration> {
-		list = AnalysisTables.sort(list, siteBefore);
 		var count = 0, end = 0, links: Vector<int>;
 		for (i < list.length) {
 			var r = list[i].range;
@@ -1237,6 +1239,18 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 // The parents of a file whose sites have none, shared (see
 // OccurrenceCollector.parents).
 def NO_PARENTS: Array<int> = [];
+
+// The growable buffers of an OccurrenceCollector, which a program's
+// collectors use in turn, as they do its AnalysisCallEnds. Each file's
+// results leave them at their exact lengths, so the buffers grow only to the
+// largest file's, rather than to each file's by doubling: that garbage, over
+// a large program, is several MB of the worker's heap.
+class AnalysisCollectorBuffers {
+	def occurrences = Vector<AnalysisOccurrence>.new();
+	def builtins = Vector<AnalysisBuiltinUse>.new();
+	def sites = Vector<AnalysisDeclaration>.new();
+	def calls = DataWriter.new();
+}
 
 // The ends of last arguments that OccurrenceCollector.endOf found before the
 // walk reached their calls, each with its call, which reads it rather than
