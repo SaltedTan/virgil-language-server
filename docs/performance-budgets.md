@@ -101,8 +101,9 @@ observed, and no worker was unobserved.
 ### Error-result workload, `error-result.json`
 
 From `error-result.json`, the `summary` rows with `metric: latency_ms`, for
-the Aeneas project with the pinned unresolved-name edit and 900 generated
-ordinary functions (54,790 extra source bytes).
+the Aeneas project. Only `error_analysis` runs with the pinned
+unresolved-name edit and 900 generated ordinary functions (54,790 extra
+source bytes); the other rows use the ordinary workloads.
 
 | Scenario | p50 | p95 | p10 | p90 | MAD |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -162,10 +163,14 @@ The corpus pins the source density each cell measures: small is 2 files,
 441 bytes, and 20 lines; util is 31 files, 166,628 bytes, and 5,360 lines;
 Aeneas is 206 files, 3,072,972 bytes, and 84,585 lines. A project's program
 may select at most 1,024 files and 4 MiB of paths and source. The Aeneas
-successful analysis encodes a RESULT frame of 4,379,611 to 4,379,612 bytes
-and charges a snapshot of 13,133,432 to 13,133,878 bytes against the 32 MiB
-retained-snapshot budget; the parseable-text cache held at most 4,155,891
-bytes against its 4 MiB limit. The worker's heap is 402,653,184 bytes
+corpus analysis encodes a RESULT frame of 4,379,197 bytes for fresh,
+reused, and rename analyses and 4,379,432 bytes for the semantic
+diagnostic, and charges a snapshot of 13,123,309 bytes against the 32 MiB
+retained-snapshot budget, from the `result_bytes` and `snapshot_bytes`
+probes in `budgets.json` and `error-result.json`. The soak's 207-file
+fixture is a different program: it charged snapshots of 13,133,432 to
+13,133,878 bytes and held the parseable-text cache at most 4,155,891 bytes
+against its 4 MiB limit. The worker's heap is 402,653,184 bytes
 (384 MiB) and the server's is 200 MiB. These budgets bound what the server
 supports; they are not a universal file or line count guarantee, and no
 target below applies to a program outside this envelope.
@@ -199,7 +204,7 @@ Targets are Linux reference-host values. The macOS/Rosetta cells are
 | `prepareRename` | 0.152 ms | 0.161 ms | 1 ms | 1 ms | 0.848 ms | 0.839 ms |
 | `rename` | 0.447 ms | 0.502 ms | 1 ms | 1 ms | 0.553 ms | 0.498 ms |
 | `completion_miss` | 0.678 ms | 0.736 ms | 1 ms | 2 ms | 0.322 ms | 1.264 ms |
-| `completion_hit` | 0.441 ms | 0.668 ms | 1 ms | 1 ms | 0.559 ms | 0.332 ms |
+| `completion_hit` | 0.441 ms | 0.668 ms | 1 ms | 2 ms | 0.559 ms | 1.332 ms |
 | `syntax_diagnostic` | 0.078 ms | 0.085 ms | 1 ms | 1 ms | 0.922 ms | 0.915 ms |
 | `semantic_diagnostic` | 202.101 ms | 202.223 ms | 300 ms | 350 ms | 97.899 ms | 147.777 ms |
 | first semantic, config first | 1.057 ms | 1.089 ms | 2 ms | 2 ms | 0.943 ms | 0.911 ms |
@@ -247,7 +252,7 @@ compare as follows: hover/definition 5/25 ms covers the measured 0.386/0.406
 ms and 0.205/3.768 ms; completion miss 150/250 ms covers 134.286/151.377 ms
 with 15.714 ms and 98.623 ms of margin; completion hit 10/50 ms covers
 5.876/6.602 ms; reused analysis 350/500 ms covers 292.074/310.841 ms with
-57.926 ms and 89.159 ms of margin; publication 600/800 ms covers
+57.926 ms and 189.159 ms of margin; publication 600/800 ms covers
 511.261/520.038 ms with 88.739 ms and 279.962 ms of margin; first-semantic
 config-first 750/1,000 ms covers 691.693/699.226 ms with 58.307 ms and
 300.774 ms of margin. The policy's Aeneas rows match the issue's starting
@@ -302,6 +307,16 @@ independent maxima are not a simultaneous peak.
   `perf_counter_ns` clock from the client. Internal phase clocks use the
   `System.ticksUs` wall clock. The memory sampler reads `/proc` every
   50 ms. No timed interval contains a sleep or a polling request.
+- **Timing boundaries.** Each scenario's timed interval starts and ends as
+  the [scenarios and boundaries
+  table](benchmarks.md#scenarios-and-boundaries) in `docs/benchmarks.md`
+  defines, and the [first-semantic
+  section](benchmarks.md#first-semantic-diagnostics) defines the
+  first-semantic cells (process launch to the first exact semantic
+  publication). The post-edit semantic publication
+  (`semantic_diagnostic`) includes the 200 ms debounce, `DEBOUNCE_MS` in
+  `src/protocol/LspSemanticDiagnostics.v3`, plus the full project
+  analysis.
 - **Units.** Latencies are milliseconds; memory is bytes, with MiB
   (1,048,576 bytes) given where used.
 - **Percentiles.** Each percentile interpolates linearly between the order
@@ -335,8 +350,10 @@ can run in CI or scheduled runs as-is:
 - The soak's budget checks: the 4 MiB parseable-text charge, the 32 MiB
   retained-snapshot charge, the live-heap limit of an eighth of the worker
   heap, the retirement classifications, and the binding and version checks.
-- The worker collection counts and RESULT frame lengths, which are constant
-  across the measured samples.
+- The worker collection counts, and the RESULT frame lengths checked
+  against a documented bound: the lengths vary within a scenario (small's
+  semantic diagnostic records 860, 861, and 863 bytes), so a constant
+  length is not a valid check.
 
 **Calibrated absolute reference-run checks** compare p50/p95 latency and RSS
 against the targets above. They are meaningful only on the reference host
