@@ -2593,3 +2593,38 @@ Most of the saving, 8.3 MB, is in occurrence collection. Each of the 206 files' 
 A same-run comparison of all three projects with three blocks found no regression. Small and util collected zero times in both builds; their worker allocation fell from 54,080 to 53,320 bytes and from 10,302,520 to 9,957,408 bytes for a fresh analysis, and their result lengths and live bytes were unchanged. Their latencies matched within their p10–p90 intervals, except util's `completion_hit`, 0.786 (0.700–1.546) against 1.082 (0.697–1.436) ms, a cached reply that both builds gave in about 0.7 or 1.3 ms by turns, which the change doesn't run.
 
 The worker's RESULT frames were compared byte for byte, with the three elapsed-time fields zeroed and the live-heap field compared apart. A script drove each build's worker directly with the same requests: for each corpus project, its analysis twice in one worker, then with the corpus's semantic error, with that error and the 900 functions (Aeneas only), with the syntax error, and a scope, a member, and a call query at the completion position. All 22 frames, and their live bytes, were identical.
+
+## Encoder table room (2026-10-31)
+
+Measured on 2026-10-31 for [#389](https://github.com/SaltedTan/virgil-language-server/issues/389) against main `20af330d`, on the same host, pinned Virgil, and default 384 MiB worker heap as [worker heap room](#worker-heap-room-2026-10-31). Both candidates were built in this physical checkout, in equal-length `build/bmain` and `build/bfix3` directories, with `BENCH=1 all bench-metadata`: main's before the change, and the change's from its commit `6386782a`, each with generated BuildInfo revision strings of the same length (`t389-` and twelve hex digits). The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used all three projects, six alternating process blocks, two warmups, and five measured operations per block, with every semantic check passing and no samples removed:
+
+```sh
+python3 scripts/bench-lsp.py \
+  --exe build/bmain/virgil-lsp --exe build/bfix3/virgil-lsp \
+  --error-result --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
+  --output build/bench-results/encoder-tables.json
+```
+
+Result encoding interned strings in a table that started at 64 slots and grew by doubling, both its list and its slots: for the Aeneas sources, 1.70 MB of growth for a table of 35,261 strings whose final arrays take about 0.85 MB. It now reserves one string for each of the 43,071 declarations before it fills the table, and sizes the call signature text table from a count of the strings it needs. Each declaration also kept its path's ID, 172 KB in all, which both passes now look up only when the path changes, 234 times. Worker memory at the end of handling is the median, in bytes; room is what the 201,326,592-byte semispace has left. No scenario collected in either build:
+
+| Scenario | Allocated, main | Allocated, change | Room, main | Room, change |
+| --- | ---: | ---: | ---: | ---: |
+| `fresh_analysis` | 188,502,184 | 187,444,544 | 9,731,128 | 10,788,768 |
+| `reused_analysis` | 188,355,552 | 187,297,912 | 9,700,712 | 10,758,352 |
+| `error_analysis` | 189,033,160 | 187,986,328 | 8,968,272 | 10,015,104 |
+| `rename` | 188,353,728 | 187,296,088 | 9,702,536 | 10,760,176 |
+| `semantic_diagnostic` | 185,467,680 | 184,410,048 | 12,588,544 | 13,646,176 |
+| `completion_miss` | 163,207,984 | 163,177,480 | 34,848,272 | 34,878,776 |
+
+Latencies matched within their p10–p90 intervals for every scenario of every project. Each timing is **median (p10–p90), in milliseconds**, over 30 measured operations:
+
+| Scenario | Main | Change |
+| --- | ---: | ---: |
+| `fresh_analysis` | 358.547 (343.167–364.256) | 356.356 (341.933–361.303) |
+| `reused_analysis` | 305.364 (294.846–316.288) | 304.078 (293.934–314.363) |
+| `error_analysis` | 307.752 (297.911–318.064) | 308.385 (295.008–313.239) |
+| `rename` | 350.962 (338.094–357.252) | 349.793 (334.007–354.844) |
+| `semantic_diagnostic` | 516.571 (509.202–523.338) | 509.803 (493.829–517.779) |
+| `completion_miss` | 123.394 (119.122–136.803) | 124.575 (119.525–138.250) |
+
+Util's fresh analysis allocates 66,928 bytes less, 9,890,480 bytes, and small's 88 bytes less. The worker's RESULT frames, compared byte for byte as for #380 with the elapsed-time fields zeroed, were identical for all 22 corpus requests, and so were their live bytes.
