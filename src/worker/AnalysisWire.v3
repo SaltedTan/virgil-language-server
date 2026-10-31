@@ -500,14 +500,13 @@ component AnalysisWire {
 			hintData[i] = hints.encode(files[i].0, sites[i]);
 			hintCounts[i] = hints.count;
 		}
-		// Both wire passes reuse the numeric string and path IDs as well as
-		// declaration IDs; none needs to hash the same declaration again.
-		var declarationIds = Array<int>.new(3 * decls.length());
+		// Both wire passes reuse the numeric string IDs as well as declaration
+		// IDs; none needs to hash the same declaration again.
+		var declarationIds = Array<int>.new(2 * decls.length());
 		for (i < decls.length()) {
 			var d = decls[i];
-			declarationIds[3 * i] = strings.add(d.name);
-			declarationIds[3 * i + 1] = if(d.signature != null, 1 + strings.add(d.signature));
-			declarationIds[3 * i + 2] = paths[d.range.path] - 1;
+			declarationIds[2 * i] = strings.add(d.name);
+			declarationIds[2 * i + 1] = if(d.signature != null, 1 + strings.add(d.signature));
 		}
 		// Defensively drop unexpected cyclic parent data, which the reader rejects.
 		// Verification normally breaks each cycle by rejecting one superclass edge.
@@ -548,16 +547,23 @@ component AnalysisWire {
 			w.put_sleb32(strings.length());
 			for (i < strings.length()) putString(w, strings[i]);
 			w.put_sleb32(decls.length());
-			var link = 0;
+			// The declarations of a file are mostly a run, so a path's ID is
+			// looked up when the path changes, a few hundred times for the
+			// Aeneas sources' 43,000 declarations, rather than kept for each.
+			var link = 0, path: string, pathId = -1;
 			for (i < decls.length()) {
 				var d = decls[i];
+				if (i == 0 || d.range.path != path) {
+					path = d.range.path;
+					pathId = paths[path] - 1;
+				}
 				w.putb(d.kind.tag | if(d.flagged(), FLAGGED));
-				w.put_sleb32(declarationIds[3 * i]);
+				w.put_sleb32(declarationIds[2 * i]);
 				// Every declaration is in one of the request's files; -1 would be
 				// rejected.
-				w.put_sleb32(declarationIds[3 * i + 2]);
+				w.put_sleb32(pathId);
 				putRange(w, d.range);
-				w.put_sleb32(declarationIds[3 * i + 1]);
+				w.put_sleb32(declarationIds[2 * i + 1]);
 				w.put_sleb32(typeEncoding.defaults[i]);
 				var parent = 0;
 				if (link < linked && links[link] == i) {
