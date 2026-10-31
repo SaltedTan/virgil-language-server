@@ -92,6 +92,20 @@ FAKE = textwrap.dedent("""\
             time.sleep(60)
         elif MODE == "eof":
             sys.exit(3)
+        elif MODE == "orphan":
+            import subprocess
+            child = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            open(sys.argv[0] + ".child", "w").write(str(child.pid))
+            sys.exit(3)
+        elif MODE == "nested-item" and method == "textDocument/prepareTypeHierarchy":
+            data = [0] * 3000
+            for depth in range(40):
+                data = {"level": depth, "inner": data}
+            item = {"name": "T", "kind": 5, "uri": msg["params"]["textDocument"]["uri"], "data": data,
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+                    "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}
+            write({"jsonrpc": "2.0", "id": ident, "result": [item]})
         elif MODE == "id-type":
             write({"jsonrpc": "2.0", "id": str(ident), "result": None})
         elif MODE == "undocumented-error":
@@ -151,10 +165,38 @@ def tree_size(directory):
 
 
 def alive(pid):
+    """Whether {pid} runs: it exists and, where /proc says, is not a zombie."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     try:
         return Path("/proc/%d/stat" % pid).read_text().split(")")[-1].split()[0] != "Z"
     except FileNotFoundError:
-        return False
+        return not Path("/proc/self").exists()
+
+
+def gone(pids, wait=2):
+    """{pids} still running after {wait} seconds."""
+    deadline = time.monotonic() + wait
+    while any(map(alive, pids)) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return [pid for pid in pids if alive(pid)]
+
+
+@contextlib.contextmanager
+def without_waitid():
+    """os as it is on macOS before Python 3.13."""
+    saved = getattr(os, "waitid", None)
+    if saved is not None:
+        del os.waitid
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.waitid = saved
 
 
 def children(pid):
@@ -393,6 +435,42 @@ class StandIn(unittest.TestCase):
         self.assertEqual(result["outcome"], "protocol-failure", result)
         self.assertIn('"id": "2"', result["error"])
 
+    def test_end_of_output_leaves_no_child(self):
+        # The server reaped on end of output still has its group ended.
+        with tempfile.TemporaryDirectory() as directory, without_waitid():
+            exe = fake_server(directory, "orphan")
+            limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20})
+            result, _, _, _ = sm.run_case(single_case("component Mutant {}\n", limits=limits), exe,
+                                          time.monotonic() + 20, Path(directory), VALIDATOR)
+            self.assertEqual(result["outcome"], "server-failure", result)
+            child = int(Path(str(exe) + ".child").read_text())
+            self.assertEqual(gone([child]), [])
+
+    def test_failure_with_a_nested_item_keeps_its_record(self):
+        # Indented, this item's record outgrew the reserve, and saving the
+        # failure removed the record saved before the case.
+        prepare = [{"id": 2, "method": "textDocument/prepareTypeHierarchy", "params": {
+            "textDocument": {"uri": sm.ROOT_TOKEN + "/Mutant.v3"}, "position": {"line": 0, "character": 0}}}]
+        limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20, "requests": 15})
+        record = single_case("component Mutant {}\n", prepare, limits=limits)
+        reserve = sm.failure_reserve(record)
+        budget = reserve + sm.RUN_BYTES
+        record["limits"]["artifact_bytes"] = budget
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "out"
+            artifacts = sm.Artifacts(out, budget, reserve)
+            self.assertTrue(artifacts.whole("cases/test/case.json", sm.dump(record), "failure"))
+            result, transcript, stamps, log = sm.run_case(record, fake_server(directory, "nested-item"),
+                                                          time.monotonic() + 20, Path(directory), VALIDATOR)
+            self.assertEqual(result["outcome"], "recovery-failure", result)
+            self.assertEqual(len(record["steps"][0]["followups"]), 2)
+            sm.save_case(artifacts, record, result, transcript, stamps, log)
+            sm.write_run(artifacts, {"result": result})
+            saved = json.loads((out / "cases/test/case.json").read_text())
+            self.assertEqual(saved["steps"][0]["followups"], record["steps"][0]["followups"])
+            self.assertTrue((out / "run.json").exists())
+            self.assertLessEqual(tree_size(out), budget)
+
     def test_error_without_a_message(self):
         rename = [{"id": 2, "method": "textDocument/rename", "params": {
             "textDocument": {"uri": sm.ROOT_TOKEN + "/Mutant.v3"}, "position": {"line": 0, "character": 0},
@@ -515,7 +593,13 @@ class RealServer(unittest.TestCase):
 
     @unittest.skipUnless(STALL.exists() and sys.platform.startswith("linux"), "needs the stall worker and /proc")
     def test_cleanup_ends_a_stopped_servers_worker(self):
+        self.stopped_server_case()
+        with without_waitid():
+            self.stopped_server_case()
+
+    def stopped_server_case(self):
         stalled = self.directory / "stalled"
+        shutil.rmtree(stalled, ignore_errors=True)
         stalled.mkdir()
         shutil.copy2(EXE, stalled / "virgil-lsp")
         shutil.copy2(STALL, stalled / "virgil-lsp-worker")
@@ -537,10 +621,7 @@ class RealServer(unittest.TestCase):
                                               stalled / "virgil-lsp", worker_timeout_ms=30000)
         self.assertEqual(result["outcome"], "deadline", result)
         self.assertTrue(workers)
-        deadline = time.monotonic() + 2
-        while any(map(alive, workers)) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertEqual([pid for pid in workers if alive(pid)], [])
+        self.assertEqual(gone(workers), [])
 
     @unittest.skipUnless(STALL.exists(), "build/stall/virgil-lsp-worker is not built")
     def test_contained_worker_failure(self):

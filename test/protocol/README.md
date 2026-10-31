@@ -335,10 +335,13 @@ Finally the case restores every seed file to clean text and checks that the
 observer's hover and definition, the incoming calls of its method, and the
 supertypes of its class are exact, which needs a completed analysis, on a
 replacement worker if one died, and that no file has diagnostics. Then it
-shuts the server down. The server runs in a session of its own, so its
-workers share its process group; cleanup kills what is left of that group by
-its ID, before the server is reaped, so a stopped or hung server leaves no
-worker behind. Nothing is killed by name.
+shuts the server down. The server leads a process group of its own, which
+its workers share, and a sentinel `cat` that the harness starts joins it; as
+long as the sentinel is unreaped, the group's ID can't be reused, even after
+the server is reaped. Cleanup always kills that group by its ID and then reaps
+the server and the sentinel, so a stopped or hung server, or one whose output
+ended, leaves no worker or child behind. This needs no `os.waitid`, which
+macOS Python lacks before 3.13. Nothing is killed by name.
 
 ### Oracles
 
@@ -371,7 +374,9 @@ If `initialize` advertises a request method that the coverage manifest
 doesn't list, or doesn't advertise one that it lists, the case fails as
 `coverage-manifest`, so that a new capability can't go unexercised: add the
 method to `MAIN_METHODS` or `FOLLOW_UPS`, with its params and documented
-errors.
+errors. An advertised method that a run never sends, such as
+`callHierarchy/outgoingCalls` when no prepare request returns items, is listed
+under `never_exercised` in `run.json` and printed, and doesn't fail the run.
 
 Worker failures are recorded apart from server and protocol failures, from
 the server's log: the worker's process ID, what happened, its exit status, its
@@ -447,14 +452,17 @@ restoration, past the source bound; more feature requests in all than the
 request cap; or a change to a file that the case does not open.
 
 Everything written counts against `--artifact-bytes`: manifests, records,
-results, transcripts, logs, and `run.json`. A run is rejected with exit status
+results, transcripts, logs, and `run.json`. Records, results, and `run.json`
+are compact one-line JSON, counted as the bytes written. A run is rejected with exit status
 2 unless the budget holds the manifests, the complete replay record and
 result of the plan's largest failing case, with room for the 16 KiB items of
 as many follow-ups as its cap allows, and 64 KiB for `run.json`; those last two
 stay reserved. Passing cases may fill the rest, and their records and results
 are written whole or not at all; `run.json` lists the ones left out, which
 `--plan-only` recreates without follow-ups. A failing case's record and result
-are always written whole, from the reserve. A cut transcript ends with a
+are always written whole, from the reserve. Saving a failure never removes the
+complete record saved before the case ran: if the record with its follow-ups
+didn't fit, that one stays and `result.json` has `"record_saved": false`. A cut transcript ends with a
 `{"truncated": true, ...}` line, a cut log with a `[truncated: ...]` line, and
 the case's `result.json` has `"evidence_complete": false`: that evidence is
 partial, and replaying the record recreates it whole. Lists in `run.json` and

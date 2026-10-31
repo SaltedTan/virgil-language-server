@@ -759,9 +759,17 @@ class MutationSession(Session):
     NOTIFICATIONS = ("textDocument/publishDiagnostics", "window/showMessage")
 
     def __init__(self, exe, deadlines, validator, *options):
-        # A session of its own makes the server lead a process group, which
-        # the workers it starts join, so cleanup can end them all by its ID.
-        super().__init__(exe, *options, start_new_session=True)
+        # The server leads a process group of its own, which the workers it
+        # starts join, so cleanup can end them all by its ID. A sentinel joins
+        # it too and lives until that cleanup: while a member, or its unreaped
+        # zombie, is left, the group's ID cannot be reused, even after the
+        # server is reaped, so killing the group never reaches another
+        # process. The sentinel reads a pipe from this harness, so it exits if
+        # the harness does. No waitid: macOS has it only from Python 3.13.
+        super().__init__(exe, *options, preexec_fn=os.setpgrp)
+        group = self.proc.pid
+        self.sentinel = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, preexec_fn=lambda: os.setpgid(0, group))
         self.deadlines = deadlines
         self.validator = validator
         self.expected = {}
@@ -818,7 +826,7 @@ class MutationSession(Session):
         except Exception as exc:
             if time.monotonic() >= limit - 0.01:
                 raise self.deadlines.expired(which, "waiting for %s" % self.waiting_for()) from None
-            if self.exited() or "EOF" in str(exc):
+            if self.proc.poll() is not None or "EOF" in str(exc):
                 raise CaseFailure("server-failure", "the server closed its output; %s" % self.state()) from None
             raise CaseFailure("protocol-failure", "invalid message from the server: %r" % (exc,)) from None
         finally:
@@ -908,13 +916,12 @@ class MutationSession(Session):
         self.send("exit", request=False)
         self.close_input()
         limit, which = self.deadlines.bound(time.monotonic() + 5)
-        while not self.exited():
+        while self.proc.poll() is None:
             if time.monotonic() >= limit:
                 if which == "request":
                     raise CaseFailure("server-failure", "the server did not exit within 5 s of exit")
                 raise self.deadlines.expired(which, "waiting for the server to exit")
             time.sleep(0.01)
-        self.end_group()
         if self.proc.returncode != 0:
             raise CaseFailure("server-failure", "the server exited with status %d after exit" % self.proc.returncode)
         rest = self.buffer
@@ -931,28 +938,23 @@ class MutationSession(Session):
         if missing:
             raise CaseFailure("protocol-failure", "requests without replies: %s" % sorted(missing, key=str))
 
-    def exited(self):
-        """Whether the server has exited, without reaping it: until it is
-        reaped, its process ID, and so its group's, cannot be reused."""
-        if self.proc.returncode is not None:
-            return True
-        try:
-            return os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
-        except ChildProcessError:
-            return True
-
     def state(self):
-        return "the server has exited" if self.exited() else "the server is still running"
+        return "the server has exited" if self.proc.poll() is not None else "the server is still running"
 
     def end_group(self):
-        """Kill what is left of the server's process group, by its ID and
-        before the server is reaped, then reap the server."""
-        if self.proc.returncode is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            self.proc.wait()
+        """Kill what is left of the server's process group by its ID, always,
+        whether or not the server has been reaped: the unreaped sentinel keeps
+        the ID from being reused. Then reap the server and the sentinel."""
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        for process in (self.proc, self.sentinel):
+            process.wait()
+        try:
+            self.sentinel.stdin.close()
+        except OSError:
+            pass
 
     def close(self):
         # A server exits at the end of its input. Never wait past the run
@@ -960,7 +962,7 @@ class MutationSession(Session):
         # the workers it started, never processes selected by name.
         self.close_input()
         stop = time.monotonic() + max(0.1, min(2, self.deadlines.run - time.monotonic()))
-        while not self.exited() and time.monotonic() < stop:
+        while self.proc.poll() is None and time.monotonic() < stop:
             time.sleep(0.01)
         self.end_group()
         # The server and any worker it started have written their last words.
@@ -1123,7 +1125,7 @@ def drive(s, record, root_uri, result, replay):
                     reason = "no items"
                 elif followups + 2 > room:
                     reason = "request cap"
-                elif len(json.dumps(items[0], ensure_ascii=False).encode()) > ITEM_BYTES:
+                elif len(dump(templated(items[0], root_uri))) > ITEM_BYTES:
                     reason = "item larger than %d bytes" % ITEM_BYTES
                 if reason:
                     result["unexercised"].append({"request": r["id"], "method": r["method"], "reason": reason})
@@ -1259,10 +1261,13 @@ class Artifacts:
         self.sizes[rel] = len(data)
 
     def whole(self, rel, data, tier):
-        """Write {data} whole if it fits, or remove {rel}; True if written."""
+        """Write {data} whole if it fits; True if written. If it doesn't, a
+        passing case's {rel} is removed, but a failing case keeps what it
+        saved before, which is complete evidence of the case as planned."""
         if len(data) > self.room(rel, tier):
-            (self.directory / rel).unlink(missing_ok=True)
-            self.sizes.pop(rel, None)
+            if tier == "passing":
+                (self.directory / rel).unlink(missing_ok=True)
+                self.sizes.pop(rel, None)
             self.omitted.append(rel)
             return False
         self.put(rel, data)
@@ -1297,7 +1302,8 @@ class Artifacts:
 
 
 def dump(value):
-    return (json.dumps(value, indent=1, ensure_ascii=False) + "\n").encode()
+    """The bytes written for {value}, and budgeted: one compact line."""
+    return (json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
 def save_case(artifacts, record, result, transcript, stamps, log):
@@ -1306,7 +1312,6 @@ def save_case(artifacts, record, result, transcript, stamps, log):
     base = "cases/%s/" % record["id"]
     result = bounded(result)
     saved = artifacts.whole(base + "case.json", dump(record), tier)
-    assert saved or tier == "passing", "the failure reserve did not hold the replay record"
     complete = artifacts.transcript(base + "transcript.jsonl", transcript, stamps, tier, RESULT_BYTES)
     complete = artifacts.cut(base + "stderr.txt", log.encode(), tier, RESULT_BYTES) and complete
     result.update(evidence_complete=complete, record_saved=saved)
