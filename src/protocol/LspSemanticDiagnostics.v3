@@ -296,6 +296,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				run.inputs.cacheCompleted(ctx, projects.parseableText, snapshot);
 				snapshot.recordProject(ctx);
 				ctx.snapshot = snapshot;
+				if (BenchProbe.enabled) BenchProbe.server(snapshot.generation, "snapshot_bytes", snapshot.retainedBytes);
 				failureReported = false;
 				publish(run, snapshot);
 			}

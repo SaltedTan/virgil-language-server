@@ -469,12 +469,27 @@ class WorkspaceProjects(store: DocumentStore) {
 			}
 		}
 		var limit = long.view(snapshotBudget) - incomingBytes;
-		if (retained <= limit) return true;
-		if (retained - freeable > limit) return false;
+		if (BenchProbe.enabled) {
+			BenchProbe.server(0, "admit_replaces", if(replaces, 1, 0));
+			BenchProbe.server(0, "admit_incoming_bytes", incomingBytes);
+			BenchProbe.server(0, "admit_retained_bytes", retained);
+			BenchProbe.server(0, "admit_latest_bytes", if(latest != null, latest.retainedBytes));
+			BenchProbe.server(0, "admit_pinned_bytes", if(original != null && original != latest, original.retainedBytes));
+			BenchProbe.server(0, "admit_protected_bytes", retained - freeable);
+		}
+		if (retained <= limit) {
+			if (BenchProbe.enabled) BenchProbe.server(0, "admit_outcome", 1);
+			return true;
+		}
+		if (retained - freeable > limit) {
+			if (BenchProbe.enabled) BenchProbe.server(0, "admit_outcome", 0);
+			return false;
+		}
 		var own = if(active != null && replaces, active.snapshot);
 		if (own != null && own != latest && own != original) {
 			retained -= own.retainedBytes;
 			active.snapshot = null;
+			if (BenchProbe.enabled) BenchProbe.server(0, "admit_own_freed_bytes", own.retainedBytes);
 		}
 		while (retained > limit) {
 			var victim: ProjectContext;
@@ -485,8 +500,13 @@ class WorkspaceProjects(store: DocumentStore) {
 				}
 			}
 			retained -= victim.snapshot.retainedBytes;
+			if (BenchProbe.enabled) BenchProbe.server(0, "admit_evicted_bytes", victim.snapshot.retainedBytes);
 			victim.snapshot = null;
 			victim.evicted = true;
+		}
+		if (BenchProbe.enabled) {
+			BenchProbe.server(0, "admit_outcome", 2);
+			BenchProbe.server(0, "admit_after_bytes", retained);
 		}
 		return true;
 	}

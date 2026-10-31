@@ -66,6 +66,9 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 		var keep = OrderedStringMap<bool>.new();
 		for (s in context.sources) keep[s.uri] = true;
 		var seenErrors = 0;
+		// Charges as ParseableText.bytes counts them: before, offered, and
+		// replaced for the same URI, so that the rest freed is evictions.
+		var before = if(BenchProbe.enabled, cache.retainedBytes), offered = 0L, replaced = 0L;
 		for (i < sources.length) {
 			if (seenErrors >= AeneasAdapter.PROGRAM_MAX_ERRORS) break;
 			var source = sources[i];
@@ -74,7 +77,17 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 			if (count > 0) continue;
 			if (versions[i].substitution != null) continue;
 			if (!keep.has(versions[i].uri)) continue;
+			if (BenchProbe.enabled) {
+				var old = if(context.parseableTexts != null, context.parseableTexts[versions[i].uri]);
+				if (old != null) replaced += old.bytes;
+				offered += 512L + versions[i].uri.length + source.input.length;
+			}
 			cache.put(context, versions[i].uri, source.input);
+		}
+		if (BenchProbe.enabled) {
+			BenchProbe.server(0, "text_cache_offered_bytes", offered);
+			BenchProbe.server(0, "text_cache_evicted_bytes", before - replaced + offered - cache.retainedBytes);
+			BenchProbe.server(0, "text_cache_bytes", cache.retainedBytes);
 		}
 	}
 }

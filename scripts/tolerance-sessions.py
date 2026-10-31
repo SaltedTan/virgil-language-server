@@ -105,33 +105,41 @@ def fixtures(corpus, states):
             sources={'A.v3': original, 'B.v3': b, 'Consumer.v3': consumer})
 
 
-def pressure(corpus, states):
-    """Two complete Aeneas contexts exceed the global cache, but each fits analysis."""
+def pressure_project(corpus, states, prefixes, name):
+    """Physical copies of the pinned Aeneas inventory and Observer, one complete
+    context per prefix, with each context's parseable-text cache charge."""
     originals = {str(Path(p).relative_to(states.ROOT / 'vendor/virgil')):
                  corpus.remember(p) for p in states.repair.aeneas_files()}
-    early = 'aeneas/src/arm64/Arm64AddrPatcher.v3'
-    late = 'lib/util/StringBuilder.v3'
-    sources = {f'{prefix}/{path}': text for prefix in ('first', 'second') for path, text in originals.items()}
+    sources = {f'{prefix}/{path}': text for prefix in prefixes for path, text in originals.items()}
     observer = states.OBSERVER
-    sources.update({f'{prefix}/Observer.v3': observer for prefix in ('first', 'second')})
-    project = corpus.project('sessions/cache-pressure', sources)
+    sources.update({f'{prefix}/Observer.v3': observer for prefix in prefixes})
+    project = corpus.project(name, sources)
     del project['sources']['Observer.v3']
     (project['base'] / 'Observer.v3').unlink()
-    project['observer'] = 'first/Observer.v3'
+    project['observer'] = prefixes[0] + '/Observer.v3'
     project['config']['projects'] = [{'name': prefix, 'sources': [p for p in sources if p.startswith(prefix + '/')]}
-                                      for prefix in ('first', 'second')]
+                                      for prefix in prefixes]
     queries = {prefix: [states.query(prefix + '/Observer.v3', observer, 'stable(1)', 'stable'),
                        states.query(prefix + '/aeneas/src/util/Paths.v3', originals['aeneas/src/util/Paths.v3'],
-                                            'StringBuilder.new', 'StringBuilder')] for prefix in ('first', 'second')}
+                                            'StringBuilder.new', 'StringBuilder')] for prefix in prefixes}
+    charge = {prefix: sum(512 + len((project['base'] / p).as_uri().encode()) + len(t.encode())
+                          for p, t in sources.items() if p.startswith(prefix + '/')) for prefix in queries}
+    assert max(charge.values()) < 4 * 1024 * 1024 < sum(charge.values())
+    return project, originals, queries, charge
+
+
+def pressure(corpus, states):
+    """Two complete Aeneas contexts exceed the global cache, but each fits analysis."""
+    project, originals, queries, charge = pressure_project(corpus, states, ('first', 'second'), 'sessions/cache-pressure')
+    early = 'aeneas/src/arm64/Arm64AddrPatcher.v3'
+    late = 'lib/util/StringBuilder.v3'
+    observer = states.OBSERVER
     old = originals[early]
     broken = old.replace('def pos = mw.pos;', 'def pos = ;', 1)
     assert old != broken
     cached = originals[late]
     cached_broken = cached.replace('var offset = 0;', 'var offset = ;', 1)
     assert cached != cached_broken
-    charge = {prefix: sum(512 + len((project['base'] / p).as_uri().encode()) + len(t.encode())
-                          for p, t in sources.items() if p.startswith(prefix + '/')) for prefix in queries}
-    assert max(charge.values()) < 4 * 1024 * 1024 < sum(charge.values())
     return {'id': 'cache-pressure', 'description': 'Analyze two Aeneas contexts, break an evicted file, then a retained file.',
             'project': project, 'initial': {'first/' + early: old}, 'queries': queries['first'],
             'cache_charge': charge,

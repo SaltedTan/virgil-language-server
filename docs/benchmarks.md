@@ -121,8 +121,9 @@ successful definition reply, and checks its version. That reply drains the
 restore's analysis. There is no sleep or snapshot-polling timing barrier. Empty
 clearing notifications and diagnostics from other versions never finish a timed
 publication. The count retirement limit is raised for each block to keep reused
-analyses in one worker; process command lines record the override. Retirement,
-members, and broader cursor distributions need separate benchmarks. The
+analyses in one worker; process command lines record the override. The separate
+[memory soak](#memory-soak) covers default worker retirement; members and broader
+cursor distributions need separate benchmarks. The
 [typing-burst scenario](#cancelled-completion-typing-burst) covers a fixed burst
 of cancelled completions.
 
@@ -2966,3 +2967,200 @@ Every restored and repeated step, and every baseline, stayed exact. The same
 session's full [tolerance capture](#release-scorecard) passed the current floors
 in both modes: primary 180/185, held-out 44/94, zero wrong answers, and zero
 expectation mismatches.
+
+## Memory soak
+
+[`scripts/bench-memory-soak.py`](../scripts/bench-memory-soak.py) qualifies
+long-session memory with the default worker limits (100 analyses, 2^28 UIDs,
+and a live heap of an eighth of the worker's heap) and the shared budgets for
+retained snapshots (32 MiB) and parseable text (4 MiB), for
+[#343](https://github.com/SaltedTan/virgil-language-server/issues/343). It
+reuses `Session`, the per-PID `ResourceSampler`, and the tolerance driver's
+physical-copy fixture. It is opt-in: neither it nor its helper tests are part of
+`make test` or any workflow. It needs a `BENCH=1` build, because the snapshot
+and text-cache charges come from probes, and it has been run only on Linux,
+where `/proc` supplies high-water marks, start times, and process groups. The
+server runs in its own process group, which its workers join. At the end, or
+after a failure, the driver gives the server five seconds to exit, then kills
+the whole group, by group, never by name, and waits until no member is left, so
+that a worker started meanwhile can't outlive the run; it also kills any worker
+it sampled that left the group, after checking its start time and executable.
+A process still running afterward is a finding. Build, then run it under the
+shared benchmark lock:
+
+```sh
+make bench-build
+mkdir -p build/bench-results/soak-work
+flock ~/.t3/scratch-virgil/bench.lock python3 scripts/bench-memory-soak.py \
+  --exe build/bench/virgil-lsp --cpu 12 --work-dir build/bench-results/soak-work \
+  --output build/bench-results/soak.json
+python3 scripts/bench-memory-soak.py --smoke --exe build/bench/virgil-lsp --output build/soak-smoke.json
+python3 test/benchmarks/test_memory_soak.py
+```
+
+The fixture is three complete copies of the pinned Aeneas sources and the
+tolerance observer, `first`, `second`, and `third`, as three projects of one
+configuration. Each copy fits the project input bound on its own (207 files and
+about 3.1 MB as analysis capture counts them in the measured run below, under
+1,024 files and 4 MiB), and each offers the parseable-text cache about 3.21 MB,
+so that any two exceed its 4 MiB. Both charges include paths, so their exact
+values depend on the work directory and context name. One server lifetime with
+no worker options runs two warmup cycles, kept apart, and then 80 measured
+cycles. Each cycle changes a numbered comment
+at the end of each context's open observer in turn and waits until that
+context's analysis completes: a definition of `stable` in the observer and of
+`StringBuilder` in `aeneas/src/util/Paths.v3` must equal the context's first
+answers, and `virgil-lsp/snapshot` must hold that context's sources, current,
+at the edited version. After the second and third analyses, a definition in the
+context analyzed just before must be answered without any analysis, which shows
+that admission kept the latest snapshot. The cycle then sends one completion in
+the third context and cancels it at once, recording whether the cancellation
+came first. Every tenth cycle closes and reopens a context's observer, every
+twentieth opens `aeneas/src/arm64/Arm64AddrPatcher.v3` with `def pos = mw.pos;`
+broken, restores it, and closes it, and every fortieth adds a source with
+descriptor clauses and `-lang:descriptors` to one context through an unsaved
+configuration, then restores both and deletes the file. Each of these takes the
+next context in turn. Every step waits for request barriers, never a sleep.
+Each reply wait and non-blocking write has a 15-second deadline, capped by the
+run's 30-minute deadline, so a server that stops reading ends the run with a
+deadline finding instead of hanging it. `--smoke` runs only cycles 39 and 40,
+without warmups or a build manifest; cycle 40 has every periodic action.
+
+At every step the driver records the server's and worker's current RSS and
+high-water mark, the worker's PID, each admission's charges and outcome, each
+completed analysis's snapshot charge and parseable-text charge, the worker's
+live bytes after its collection, and the server's semispace use after decoding.
+The sampler adds each PID's largest RSS every 50 ms, per cycle, and the largest
+sum of one pass. These are different quantities, in separate fields: RSS and
+high-water marks are what the OS reports for each process; the worker's
+reserved heap is the total for both semispaces from HELLO; live bytes are the worker's
+retirement measure; allocation is cumulative; and charges are the server's own
+accounting of what a snapshot or cached text retains, never its RSS. BENCH
+builds add these server probes for the soak:
+
+| Metric | Meaning |
+| --- | --- |
+| `admit_replaces`, `admit_incoming_bytes`, `admit_retained_bytes`, `admit_latest_bytes`, `admit_pinned_bytes`, `admit_protected_bytes` | One admission's kind (1 for an analysis that replaces the context's snapshot), its reservation, the charge of every retained snapshot, of the latest and a rename's pinned original, and what admission may not free. |
+| `admit_own_freed_bytes`, `admit_evicted_bytes`, `admit_outcome`, `admit_after_bytes` | The context's own snapshot freed, each other context's snapshot evicted, the outcome (0 refused, 1 fit, 2 freed), and the retained charge after freeing. |
+| `snapshot_bytes` | A completed automatic analysis's snapshot charge. |
+| `text_cache_offered_bytes`, `text_cache_evicted_bytes`, `text_cache_bytes` | A completed analysis's parseable texts offered to the cache, the charge it evicted for them, and its total charge after. |
+| `worker_pid`, `worker_analyses`, `worker_uid_next`, `worker_live_bytes`, `worker_live_limit_bytes` | A started worker's PID, and after each completed analysis the restart policy's inputs and its live limit. |
+
+The driver checks that the cache charge stays within 4 MiB while the contexts'
+texts together exceed it; that every retained snapshot charge stays within
+32 MiB and every admitted reservation fits beside what admission keeps; that
+some admission had to evict an inactive context's snapshot; that admission
+never frees what it protects; that each retirement's logged reason is the one
+the limits give for the worker's last analysis, and that none was due and
+missed; that a worker crash, timeout, or other failure produces a retirement
+violation while retaining its `failed` classification, including after its
+query was cancelled; that each worker's reported analysis count, which decides
+retirement by count, matches the completions observed for it, with no reset,
+missing increment, or skip; that the live limit is an eighth of the worker's
+heap; that no answer binds anywhere but the context's own copy; and that no nonempty publication for
+an open document carries a version older than one already confirmed or
+published. A refused admission is recorded with its cause, `pinned` when a
+rename's original alone prevents it and `protected` otherwise. Any failure is a
+finding: the run keeps that cycle's protocol transcript and the whole stderr,
+writes its output, and exits nonzero. A barrier that can't complete ends the
+run, with its transcript, in `<output>.failure.json`. The soak doesn't rename,
+so pinned admission is covered by `WorkspaceProjects:rename_snapshot_budget`,
+which injects the state, and by the helper test of refusal causes.
+
+Analyses are attributed to the step in whose window the server decoded them,
+so a cancelled completion's analysis, which the worker still finishes, counts
+in the next step. The 50 ms sampler reads `/proc` from the driver, which shares
+the pinned CPU with the server and worker. A sampled RSS is a lower bound of the
+peak between samples; a worker that ran entirely between two passes would be
+counted in `unobserved_workers`, with an unknown peak, never zero. A flat RSS
+shows that the processes reused memory they had already committed, as the
+semispaces do; it is not proof that nothing leaks.
+
+### Measured envelope (2026-11-01)
+
+Measured on 2026-11-01 at `500b9f53` (server
+`5856521120f6d5cb40da223b9f63e039426625a1d5ba88c7bfd2b46f502b591e`, worker
+`c611b6e99aaa7fab54693122ce58efc2acaccfc6fc8785547682c5f1d69c893e`, build
+manifest `9a9b59aa69b17e214aff78e6b879214309b1f6e445ecfb4651dcc82f0b93d553`),
+with the driver of `b767dece`
+(`0fae6ec880d3d963b7b7cc48a911f92c6ed6222db1d8e520c998e5ec22f6f547`), on the
+i7-14700KF host of the [reference baseline](#reference-baseline), pinned to CPU
+12 (governor `powersave`), with the default 384 MiB worker heap and the command
+above. The fixture's tree hash was
+`30913a056ae8ab025a596973654a7eadf6825f8e7a975dd410cbef4e044b79f9`. The smoke
+run took 8.5 seconds and the full run 106.3 seconds, with no findings. At the
+end, the server's process group had no members left to kill.
+
+The worker completed 381 analyses: 240 measured and 6 warmup main analyses, 3
+at startup, and 132 others: 82 cancelled completions, 16 for the overlay closes
+and reopens, 12 for the broken and restored file, and 22 for the descriptor
+steps. Every cancellation arrived before its completion's reply. No analysis
+was discarded. A main step took 324.7 ms at p50 and 437.7 ms at p95, through
+its definitions and inspection.
+
+| Bound | Observed | Limit |
+| --- | ---: | ---: |
+| Parseable-text charge, 299 completions | at most 4,161,519 bytes | 4,194,304 |
+| Contexts' parseable texts together | 9,625,069 bytes, evictions in 271 completions | more than 4,194,304 |
+| Retained snapshot charge, 381 admissions | at most 26,288,232 bytes | 33,554,432 |
+| Retained charge and reservation after admission | at most 30,036,801 bytes | 33,554,432 |
+| Snapshot charge of one context | 13,142,798 to 13,145,434 bytes | |
+| Reservation | 16,891,367 to 16,892,902 bytes | |
+| Admissions that evicted an inactive context | 265 (3 more freed only their own) | at least 1 |
+| Refused admissions | 0, pinned charge 0 | |
+| Latest snapshot kept, checked by navigation | 164 of 164 | |
+| Stale bindings, stale-version publications | 0 and 0, over 583 publications | 0 |
+
+Each Aeneas snapshot is charged about 13.1 MB and its analysis reserves
+16 MiB plus provenance, so beside the protected latest snapshot no second one
+fits. Each cycle's cancelled completion in the third context evicted the second
+context's snapshot, so the next cycle's first analysis fit beside the latest
+alone; its second and third analyses each evicted the context analyzed two
+steps before, apart from the steps after a reopen, break, or descriptor action,
+which had already evicted it.
+
+Four workers ran, each with a 402,653,184-byte heap and a live limit of
+50,331,648 bytes, an eighth. Three were replaced after 100 analyses each,
+correctly classified by count; at retirement their UID counters were at
+1,980,223 to 1,980,229, under 1% of 2^28, and their live bytes at 177,088, so
+neither of the other limits was near. The fourth was live at the end, after 81
+analyses. The sampler made 2,192 passes and observed all four workers; every
+PID had a high-water mark. A pass took 162 µs on average, 0.36 seconds of the
+run, including time the driver waited for the shared CPU.
+
+Values settled after each measured cycle's third analysis, over 80 cycles:
+
+| Value | Cycle 1 | Cycle 80 | First 10, median | Last 10, median | Slope per cycle |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Server RSS | 210,608,128 | 210,608,128 | 210,608,128 | 210,608,128 | 0 |
+| Worker RSS | 193,056,768 | 193,069,056 | 193,062,912 | 193,069,056 | 662 |
+| Worker live bytes after collection | 177,088 | 177,088 | 177,088 | 177,088 | 0 |
+| Server semispace use after decoding | 82,805,952 | 56,331,296 | 75,558,020 | 75,562,736 | 5,947 |
+
+The server's RSS and high-water mark reached 210,608,128 bytes in the first
+cycle and never moved, and each worker's high-water mark was 193,064,960 to
+193,077,248 bytes. The largest sum in one pass was 403,685,376 bytes. The
+server's semispace use after decoding ranged from 31,034,304 to 101,563,728
+bytes as its collector ran, and its first and last medians were within 5 KB.
+The 662-byte worker slope is the difference between workers, whose settled RSS
+ranged from 191,733,760 to 193,069,056 bytes, not growth within one. These are
+this schedule's values, not a proof that nothing leaks.
+
+The first full run, with the same executables, passed 79 measured cycles with
+no findings, then stopped at a barrier in cycle 80's descriptor step. To read
+the second context's snapshot, that step asked for an explicit project
+analysis, and admission refused it: an explicit analysis keeps the context's
+own snapshot, and two Aeneas snapshots with the reservation exceed the budget
+whenever another context was analyzed last. That is the documented admission
+rule, so the step now makes the context's analysis the latest with one more
+edit. A full run with that driver, `fd7ee3bb`, before the review fixes of
+`b767dece`, had the same counts, charges, and findings and the same server RSS
+in every cycle; its settled worker RSS differed by at most 208,896 bytes in a
+cycle. A completion or signature help is admitted the same way: with two
+Aeneas-size projects, a completion in the one not analyzed last is refused and
+gets keywords only, with nothing logged, until that project is analyzed again.
+
+The same session ran the full [tolerance capture](#release-scorecard) with the
+same server build. It took 514.5 seconds, and the scorecard passed with the
+current floors in both modes: primary 180/185, held-out 44/94, zero wrong
+answers, zero expectation mismatches, and zero session wrong answers.
