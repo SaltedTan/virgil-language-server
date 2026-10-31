@@ -13,6 +13,7 @@ format, and known compiler traps are described in test/protocol/README.md.
 
 import argparse
 from collections import Counter
+import contextlib
 import copy
 import hashlib
 import json
@@ -748,6 +749,28 @@ class Deadlines:
         return CaseFailure("deadline", "no reply within the request deadline of %ss %s" % (self.limits["request_timeout"], what))
 
 
+@contextlib.contextmanager
+def cancellation():
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    first = None
+
+    def cancel(signum, _frame):
+        nonlocal first
+        if first is None:
+            first = signum
+            raise KeyboardInterrupt
+
+    try:
+        for sig in previous:
+            signal.signal(sig, cancel)
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if first is not None:
+            raise SystemExit(128 + first)
+
+
 class MutationSession(Session):
     """Session's framing, select deadlines, process ownership and cleanup, with
     every read, write, and wait bounded by the request, case, and run deadlines.
@@ -965,11 +988,13 @@ class MutationSession(Session):
         # A server exits at the end of its input. Never wait past the run
         # deadline; then end the server's group: a stopped or hung server and
         # the workers it started, never processes selected by name.
-        self.close_input()
-        stop = time.monotonic() + max(0.1, min(2, self.deadlines.run - time.monotonic()))
-        while self.proc.poll() is None and time.monotonic() < stop:
-            time.sleep(0.01)
-        self.end_group()
+        try:
+            self.close_input()
+            stop = time.monotonic() + max(0.1, min(2, self.deadlines.run - time.monotonic()))
+            while self.proc.poll() is None and time.monotonic() < stop:
+                time.sleep(0.01)
+        finally:
+            self.end_group()
         # The server and any worker it started have written their last words.
         self.err.seek(0)
         self.final_log = self.err.read()
@@ -1543,4 +1568,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with cancellation():
+        sys.exit(main())

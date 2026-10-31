@@ -55,7 +55,7 @@ CAPABILITIES = {
 # A stand-in server: it answers initialize and shutdown, answers every other
 # request with null, and misbehaves as MODE says at the first feature request.
 FAKE = textwrap.dedent("""\
-    import json, os, sys, time
+    import json, os, signal, sys, time
     MODE = %r
     CAPABILITIES = %r
     OBSERVER_DECLARATION = %r
@@ -113,6 +113,14 @@ FAKE = textwrap.dedent("""\
                 result = [{"name": "Wrong" if MODE == "restoration-failure" else "MutationBase"}]
             write({"jsonrpc": "2.0", "id": ident, "result": result})
         elif MODE == "hang":
+            time.sleep(60)
+        elif MODE == "stopped-group":
+            import subprocess
+            child = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            with open(sys.argv[0] + ".group", "w") as ready:
+                json.dump({"server": os.getpid(), "worker": child.pid}, ready)
+            os.kill(os.getpid(), signal.SIGSTOP)
             time.sleep(60)
         elif MODE == "eof":
             sys.exit(3)
@@ -434,6 +442,96 @@ class StandIn(unittest.TestCase):
             result, transcript, _, _ = sm.run_case(record, fake_server(directory, mode),
                                                    started + limits["run_timeout"], Path(directory), VALIDATOR)
             return result, transcript, time.monotonic() - started
+
+    @unittest.skipUnless(shutil.which("ps"), "needs ps to check owned process groups")
+    def test_cancellation_cleans_a_stopped_server_group(self):
+        def members(group):
+            listing = subprocess.run(["ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True, check=True)
+            return {int(pid): state for pid, pgid, state in (line.split() for line in listing.stdout.splitlines())
+                    if int(pgid) == group and not state.startswith("Z")}
+
+        for entry in ("harness", "helpers", "direct", "closing"):
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                with self.subTest(entry=entry, signum=signum), tempfile.TemporaryDirectory() as directory:
+                    exe = fake_server(directory, "stopped-group")
+                    ready = Path(str(exe) + ".group")
+                    script = textwrap.dedent("""\
+                        import runpy, sys, time, unittest
+                        sys.path.insert(0, %r)
+                        import source_mutations as sm
+                        from reply_shapes import ReplyValidator
+                        mode = %r
+                        class Probe(unittest.TestCase):
+                            def runTest(self):
+                                limits = sm.resolve_limits({"request_timeout": 30, "case_timeout": 60, "run_timeout": 60})
+                                now = time.monotonic()
+                                session = sm.MutationSession(%r, sm.Deadlines(now + 60, now + 60, limits), ReplyValidator())
+                                try:
+                                    session.call("initialize", {}, 1)
+                                    key, deadline = session.request("textDocument/hover", {}, 2)
+                                    if mode != "closing":
+                                        session.collect({key: deadline})
+                                finally:
+                                    session.close()
+                        if mode in ("direct", "closing"):
+                            with sm.cancellation():
+                                Probe().runTest()
+                        else:
+                            unittest.main = lambda: unittest.TextTestRunner().run(unittest.TestSuite([Probe()]))
+                            runpy.run_path(%r, run_name="__main__")
+                        """) % (str(Path(sm.__file__).parent), entry, str(exe), str(Path(__file__)))
+                    command = ([sys.executable, str(Path(sm.__file__)), str(exe), "--cases", "1", "--artifacts", directory]
+                               if entry == "harness" else [sys.executable, "-c", script])
+                    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    group = None
+                    try:
+                        deadline = time.monotonic() + 8
+                        owned = {}
+                        while time.monotonic() < deadline and process.poll() is None:
+                            try:
+                                owned = json.loads(ready.read_text())
+                            except (FileNotFoundError, json.JSONDecodeError):
+                                time.sleep(0.02)
+                                continue
+                            group = owned["server"]
+                            live = members(group)
+                            if "T" in live.get(group, "") and len(live) >= 3:
+                                break
+                            time.sleep(0.02)
+                        else:
+                            self.fail("the stand-in server group did not stop before cancellation")
+                        self.assertIn(owned["worker"], live)
+                        process.send_signal(signum)
+                        time.sleep(0.1)
+                        if process.poll() is None:
+                            process.send_signal(signal.SIGHUP if signum == signal.SIGTERM else signal.SIGTERM)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, 128 + signum, (stdout, stderr))
+                        deadline = time.monotonic() + 2
+                        while members(group) and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        self.assertEqual(members(group), {})
+                    finally:
+                        if process.poll() is None:
+                            process.send_signal(signal.SIGTERM)
+                        try:
+                            process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate()
+                        if group is not None:
+                            try:
+                                os.killpg(group, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    def test_cancellation_restores_handlers_and_preserves_sigint(self):
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        with self.assertRaisesRegex(RuntimeError, "probe"):
+            with sm.cancellation():
+                self.assertEqual(signal.getsignal(signal.SIGINT), before[signal.SIGINT])
+                raise RuntimeError("probe")
+        self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
 
     def test_request_deadline(self):
         result, transcript, elapsed = self.run_fake("hang")
@@ -862,4 +960,5 @@ class RealServer(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    with sm.cancellation():
+        unittest.main()
