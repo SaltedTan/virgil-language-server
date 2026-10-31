@@ -132,6 +132,7 @@ The editor clients set the option:
 
 - **VS Code:** the machine setting `virgil.virgilRoot`, or, when it is empty, `VIRGIL_LOC` from the extension host's environment. With Remote-SSH or Remote-WSL, that is the remote machine's environment. The client logs the root it sends, and changing the setting restarts the server ([client settings](../clients/vscode/README.md#settings)).
 - **Neovim:** `init_options.virgilRoot`, which the shipped configurations take from `VIRGIL_LOC` ([Neovim setup](../editors/nvim/README.md#the-virgil-root)).
+- **Helix:** see [The Virgil root](../editors/helix/README.md#the-virgil-root) in the best-effort setup guide.
 
 The server never searches `PATH`, reads `VIRGIL_LOC`, runs `v3c`, or uses the network to find a root. Environment fallback belongs to the clients; executable-relative bundle discovery belongs to the server. Library traversal still rejects symlinks, including a symlinked `virgil/` directory.
 

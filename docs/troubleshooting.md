@@ -75,6 +75,10 @@ The shipped configurations start `virgil-lsp --stdio` from the `PATH` that Neovi
 
 LazyVim's configuration sets `mason = false`, because the server isn't in mason.nvim: install it from a release archive yourself.
 
+### Helix doesn't find `virgil-lsp`
+
+The [Helix configuration](../editors/helix/README.md) starts `virgil-lsp --stdio` from the `PATH` that Helix sees. If it isn't there, no client attaches and Helix shows no error when a `.v3` file opens; `hx --health virgil` then reports the server as not found. Check that `virgil-lsp --version` works in the terminal that starts Helix, and that a directory the install added to `PATH`, such as `~/.local/bin`, is in the shell's startup file for new terminals ([Editor setup](../README.md#editor-setup)). Alternatively, edit `command` in the configuration to give the server's absolute path.
+
 ## No diagnostics or navigation in a file
 
 Syntax errors and the outline work in any open `.v3` file. Type errors, definition, type definition, hover, references, document highlights, signature help, rename, workspace symbols, and the names in completion need a whole-program analysis, and the causes below stop it.
@@ -101,7 +105,7 @@ A project file with any error defines no projects, so every file it governs stay
 
 A project's `virgilDependencies`, such as `lib/util/*.v3`, are relative to a Virgil root. Without a root, the project file gets `MissingVirgilRoot`, "virgilDependencies requires a Virgil root (initializationOptions.virgilRoot)", and its files stay in single-file mode. The server chooses the root once, when it starts, and logs it ([The Virgil root](configuration.md#the-virgil-root)):
 
-- `virgil-lsp: Virgil root: <path> (client)`: the editor sent a root, from `virgil.virgilRoot` or `VIRGIL_LOC`.
+- `virgil-lsp: Virgil root: <path> (client)`: the editor sent an explicit root ([client configuration](configuration.md#the-virgil-root)).
 - `virgil-lsp: Virgil root: <path> (bundle, revision <revision>)`: the editor sent none, and the server uses the library in `virgil/` beside its resolved executable, which release archives and platform VSIX files include.
 - `virgil-lsp: Virgil root: none (invalid client root; bundle fallback disabled)`: the editor sent a root that isn't an absolute path, such as an empty or relative one. The server doesn't fall back to its bundle then, so that the mistake isn't hidden. Fix the setting or `VIRGIL_LOC`, or clear it.
 - `virgil-lsp: Virgil root: none (<reason>)`: the editor sent none, and there is no usable bundle. The reason is that `bundle REVISION is missing or unreadable`, as for a development build, which has no bundle; that `bundle REVISION does not match the server`, when `virgil/` comes from another release; that `bundle lib directory is missing or unreadable`; or that the server `cannot resolve the executable path`. Keep the archive's `virgil/` beside the executables, or set a root.

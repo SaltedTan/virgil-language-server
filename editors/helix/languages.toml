@@ -1,0 +1,15 @@
+# Virgil registration for Helix. Merge these two tables into your own
+# languages.toml; do not replace it. See the README in this directory for
+# setup, the Virgil root, and what this configuration does not provide.
+
+[language-server.virgil-lsp]
+command = "virgil-lsp"
+args = ["--stdio"]
+
+[[language]]
+name = "virgil"
+language-id = "virgil"
+scope = "source.virgil"
+file-types = ["v3"]
+language-servers = ["virgil-lsp"]
+roots = [".virgil-lsp.json", "DEPS", ".git"]
