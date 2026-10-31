@@ -152,6 +152,48 @@ The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the
 [tested editor versions](../../docs/compatibility.md#editors).
 
+### Result stream
+
+To record the run as a stream of result events, give `run.sh` a file, then
+validate it:
+
+```sh
+test/e2e/nvim/run.sh build/virgil-lsp --results build/nvim.jsonl
+python3 scripts/editor-results.py validate build/nvim.jsonl
+```
+
+The test's output is the same, with a last line that sums up the run, and
+`run.sh` exits with 0 only if the run passed. Without Neovim, the run fails
+instead of skipping. `--release VERSION` and `--purpose PURPOSE` set the
+stream's `release` and `purpose`, which are otherwise none and `development`.
+[The headless Neovim writer](../../test/e2e/RESULTS.md#the-headless-neovim-writer)
+describes what the stream records.
+
+To inspect a failure, list the events that didn't pass, with their reasons, and
+the run-end, with its issues and cleanup:
+
+```sh
+grep -v '"status":"pass"' build/nvim.jsonl
+```
+
+The first failing check's `reason` is the message of the assertion in
+`check.lua` that failed, with its line; the checks after it are skipped. As
+without `--results`, a failing run prints the last 100 lines of the protocol
+log. With `--results`, cleanup kills and verifies every recorded descendant
+PID and process group. Neovim reports `virgil-lsp` descendants on LspAttach,
+every 500 ms, and in a final synchronous exit scan; the launcher also samples
+the process tree at reports, about once a second, and before stopping Neovim.
+On Linux the launcher attempts to become a child subreaper and reaps orphaned
+descendants. On macOS, or if Linux subreaper setup fails, a process whose parent
+exits before any scan has seen it is not covered.
+
+A stream without a run-end is from a run that was interrupted or killed.
+SIGINT, SIGTERM, and SIGHUP received before finalization stop Neovim and leave
+no run-end. During finalization those signals are ignored by the launcher and
+its finalizer, so the run-end and shell exit status agree. An interruption
+already received still leaves no run-end and exits with 128 plus the signal
+number.
+
 ## Troubleshooting
 
 - `:checkhealth vim.lsp` shows whether the client attached.

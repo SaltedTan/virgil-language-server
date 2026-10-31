@@ -221,7 +221,7 @@
       "id": "nvim",
       "label": "Headless Neovim test",
       "prefixes": ["nvim"],
-      "harness": ["test/e2e/nvim/run.sh", "test/e2e/nvim/check.lua"],
+      "harness": ["test/e2e/nvim/run.sh", "test/e2e/nvim/check.lua", "test/e2e/nvim/results.py"],
       "profiles": [
         {
           "id": "main",
@@ -717,7 +717,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/nvim/run.sh",
-      "description": "Neovim 0.11 or later is on PATH, and the server and its worker are executable; without Neovim the test is skipped unless REQUIRE_NVIM=1."
+      "description": "Neovim 0.11 or later is on PATH, and the server and its worker are executable; without Neovim the test is skipped unless REQUIRE_NVIM=1 or --results is given."
     },
     {
       "id": "nvim.infrastructure.completed",
