@@ -37,7 +37,7 @@ metadata explicitly; ordinary `make all` builds need no Python:
 ```sh
 make all bench-metadata
 python3 scripts/bench-lsp.py --exe build/virgil-lsp --output build/bench-results/normal.json
-python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
+python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output build/lsp-smoke.json
 ```
 
 `make test` runs the small smoke case and the client's rejection checks
@@ -1285,7 +1285,7 @@ Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
-python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output /dev/null
+python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output build/tolerance-smoke.json
 ```
 
 ### Tolerance baseline
@@ -2721,12 +2721,13 @@ mkdir -p build/bench-results/cursor-work
 flock ~/.t3/scratch-virgil/bench.lock python3 scripts/bench-cursor-tolerance.py \
   --exe build/bench/virgil-lsp --cpu 12 --work-dir build/bench-results/cursor-work \
   --output build/bench-results/cursor.json
-python3 scripts/bench-cursor-tolerance.py --smoke --exe build/virgil-lsp --output /dev/null
+python3 scripts/bench-cursor-tolerance.py --smoke --exe build/virgil-lsp --output build/cursor-smoke.json
 python3 test/benchmarks/test_cursor_tolerance.py
 ```
 
 `--smoke` replays only the first two seed histories, in one block, and needs no
-build manifest. The full run replays every history in six blocks, alternating
+build manifest; the example also creates `build/cursor-smoke.json.transcripts.jsonl`.
+The full run replays every history in six blocks, alternating
 the order of the modes from block to block. With a file output, the raw protocol
 transcripts and each process's stderr go to `<output>.transcripts.jsonl`, and a
 failed run keeps its partial results in `<output>.failure.json`.
