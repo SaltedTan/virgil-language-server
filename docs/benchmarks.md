@@ -121,8 +121,9 @@ successful definition reply, and checks its version. That reply drains the
 restore's analysis. There is no sleep or snapshot-polling timing barrier. Empty
 clearing notifications and diagnostics from other versions never finish a timed
 publication. The count retirement limit is raised for each block to keep reused
-analyses in one worker; process command lines record the override. Retirement,
-members, and broader cursor distributions need separate benchmarks. The
+analyses in one worker; process command lines record the override. The separate
+[memory soak](#memory-soak) covers default worker retirement; members and broader
+cursor distributions need separate benchmarks. The
 [typing-burst scenario](#cancelled-completion-typing-burst) covers a fixed burst
 of cancelled completions.
 
