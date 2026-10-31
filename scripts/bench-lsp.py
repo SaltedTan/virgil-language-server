@@ -257,6 +257,54 @@ def location(site):
 
 FIRST_SEMANTIC_ORDERS = ("config_first", "source_first")
 
+# --parse-work (#359): one unique anchor in each project's query file and two
+# replacements that iterations alternate, so that every edit changes the text
+# the previous analysis parsed. Each keeps the program's meaning and its line
+# count, so the appended semantic edit's diagnostic is the oracle throughout.
+PARSE_WORK_EDITS = {
+    "small": {
+        "body_edit": ("Shapes.square(3)", ("Shapes.square(4)", "Shapes.square(5)")),
+        "signature_edit": ("def main() -> int {", ("def main() -> i32 {", "def main() -> int {"))},
+    "util": {
+        "body_edit": ("return if(index >= 0 && index < length, array[index]);",
+                      ("return if(index > -1 && index < length, array[index]);",
+                       "return if(0 <= index && index < length, array[index]);")),
+        "signature_edit": ("def get(index: int) -> T {", ("def get(index: i32) -> T {", "def get(index: int) -> T {"))},
+    "aeneas": {
+        "body_edit": ("if (explicitName != null) return explicitName;",
+                      ("if (null != explicitName) return explicitName;",
+                       "if (!(explicitName == null)) return explicitName;")),
+        "signature_edit": ("def name() -> string {", ("def name() -> Array<byte> {", "def name() -> string {"))},
+}
+# A library file no corpus project contains or refers to, added to and removed
+# from the program by its unsaved configuration's virgilDependencies.
+PARSE_WORK_MEMBER = "lib/math/Math.v3"
+# A language option that the parser reads and the corpus doesn't need.
+PARSE_WORK_OPTION = "-lang:open-types"
+PARSE_WORK_SCENARIOS = ("unchanged_reanalysis", "body_edit", "signature_edit", "membership_add",
+                        "membership_remove", "options_set", "options_reset")
+PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_unchanged_bytes", "parse_unchanged_us",
+                      "parse_changed_files", "parse_changed_bytes", "parse_changed_us", "parse_unvisited_files")
+
+
+def parse_work_inputs(name, project):
+    """The fixed texts and configurations of --parse-work, with their hashes."""
+    text = (ROOT / project["query"]["path"]).read_text()
+    oracle = text + project["edits"]["semantic"]["append"]
+    edits = {}
+    for scenario, (anchor, replacements) in PARSE_WORK_EDITS[name].items():
+        check(oracle.count(anchor) == 1, (name, scenario, "edit anchor must occur once", anchor))
+        texts = [oracle.replace(anchor, r) for r in replacements]
+        check(len(set(texts)) == 2 and oracle.count("\n") == texts[0].count("\n") == texts[1].count("\n"),
+              (name, scenario, "edits must differ and keep every line"))
+        edits[scenario] = {"anchor": anchor, "replacements": list(replacements), "texts": texts,
+                           "sha256": [corpus.sha256(t.encode()) for t in texts]}
+    member = ROOT / "vendor/virgil" / PARSE_WORK_MEMBER
+    check(member.as_uri() not in {(ROOT / f["path"]).as_uri() for f in project["files"]}, (name, "member already in project"))
+    return {"query_sha256": corpus.sha256(text.encode()), "oracle_sha256": corpus.sha256(oracle.encode()),
+            "oracle": oracle, "edits": edits, "member": str(member.relative_to(ROOT)),
+            "member_sha256": corpus.sha256(member.read_bytes()), "option": PARSE_WORK_OPTION}
+
 
 class Block:
     def __init__(self, exe, project, args, row):
@@ -418,8 +466,8 @@ class Block:
         self.analysis_generation = 0
         self.command = [str(self.exe), "--stdio", *self.options]
         self.s = (HintsSession if self.args.inlay_refresh else Session)(self.exe, *self.options)
-        if self.args.error_result:
-            # Per-process memory for the opt-in error workload; the default run is unsampled.
+        if self.args.error_result or self.args.parse_work:
+            # Per-process memory for the opt-in workloads; the default run is unsampled.
             self.sampler = ResourceSampler(self.s.proc.pid).start()
         self.initialize()
         open_document(self.s, ROOT / self.p["query"]["path"], self.text)
@@ -445,10 +493,13 @@ class Block:
             self.s.close()
             self.s = None
 
-    def config(self):
+    def config(self, member=False, option=False):
         # Unsaved config: the original source files and their directories stay untouched.
-        return {"version": 1, "projects": [{"name": self.row["project"], "sources": self.p["patterns"],
-                                           "compilerArgs": self.p["compiler_args"]}]}
+        project = {"name": self.row["project"], "sources": self.p["patterns"],
+                   "compilerArgs": self.p["compiler_args"] + ([PARSE_WORK_OPTION] if option else [])}
+        if member:
+            project["virgilDependencies"] = [PARSE_WORK_MEMBER]
+        return {"version": 1, "projects": [project]}
 
     def semantic_snapshot_diagnostics(self):
         expected = self.p["edits"]["semantic"]["expected"]
@@ -512,11 +563,80 @@ class Block:
             for order in FIRST_SEMANTIC_ORDERS[::1 if i % 2 == 0 else -1]:
                 self.first_semantic(order, i)
 
+    def publication(self):
+        """The query file's next nonempty publication at its current version.
+
+        The parser's publication of an edit is empty, since it drops the
+        file's semantic diagnostics, and a configuration change clears them
+        before the replacement analysis; so only that analysis ends this.
+        """
+        deadline = time.monotonic() + 60
+        while True:
+            msg = self.s.receive(deadline)
+            check("id" not in msg, ("unexpected pending request", msg))
+            params = msg["params"]
+            if params["uri"] == self.uri and params.get("version") == self.version and params["diagnostics"]:
+                return params
+
+    def configure(self, config):
+        self.config_version += 1
+        self.config_text = json.dumps(config)
+        notify(self.s, "textDocument/didChange", {"textDocument": {"uri": self.config_uri, "version": self.config_version},
+                                                "contentChanges": [{"text": self.config_text}]})
+        return self.publication()
+
+    def edit(self, text):
+        self.change(text)
+        return self.publication()
+
+    def checked(self, result):
+        """Semantic oracle: the exact publication, then an untimed current snapshot."""
+        self.validate_diagnostic("semantic", result)
+        self.analysis_generation = self.snapshot(diagnostics=self.semantic_snapshot_diagnostics())["generation"]
+
+    def run_parse_work(self):
+        """Fixed edits and controls for unchanged versus changed parse work (#359)."""
+        count = self.args.warmups + self.args.operations
+        inputs = parse_work_inputs(self.row["project"], self.p)
+        base_uris, member_uri = self.uris, (ROOT / inputs["member"]).as_uri()
+        self.session()
+        self.config_uri, self.config_version = (ROOT / self.p["base"] / ".virgil-lsp.json").as_uri(), 1
+        open_document(self.s, ROOT / self.p["base"] / ".virgil-lsp.json", json.dumps(self.config()), "json")
+        self.checked(self.edit(inputs["oracle"]))
+        diagnostics = self.semantic_snapshot_diagnostics()
+        # Every file unchanged: the explicit project analysis of the same texts.
+        for i in range(count):
+            self.measure("unchanged_reanalysis", i, lambda: self.request("virgil-lsp/analyze", {"uri": self.uri}),
+                         lambda r: self.analysis(r, diagnostics))
+        for scenario in ("body_edit", "signature_edit"):
+            for i in range(count):
+                self.measure(scenario, i, lambda: self.edit(inputs["edits"][scenario]["texts"][i % 2]), self.checked)
+            self.checked(self.edit(inputs["oracle"]))
+        for name, setting in (("membership", {"member": True}), ("options", {"option": True})):
+            changed, reset = ("membership_add", "membership_remove") if name == "membership" else ("options_set", "options_reset")
+            for i in range(count):
+                if name == "membership":
+                    self.uris = base_uris + [member_uri]
+                self.measure(changed, i, lambda: self.configure(self.config(**setting)), self.checked)
+                self.uris = base_uris
+                self.measure(reset, i, lambda: self.configure(self.config()), self.checked)
+        self.row["parse_work"] = {key: value for key, value in inputs.items() if key != "oracle"}
+        self.row["parse_work"]["configurations"] = {
+            name: {"text": text, "sha256": corpus.sha256(text.encode())} for name, text in (
+                ("base", json.dumps(self.config())), ("member", json.dumps(self.config(member=True))),
+                ("option", json.dumps(self.config(option=True))))}
+        for edit in self.row["parse_work"]["edits"].values():
+            del edit["texts"]
+        self.finish_session()
+
     def run(self):
         count = self.args.warmups + self.args.operations
         try:
             if self.args.first_semantic:
                 self.run_first_semantic()
+                return
+            if self.args.parse_work:
+                self.run_parse_work()
                 return
             for i in range(count):
                 self.session()
@@ -651,9 +771,13 @@ def main():
                         help="also type four letters 20 ms apart, cancelling obsolete completions (#262)")
     parser.add_argument("--first-semantic", action="store_true",
                         help="instead time fresh launches to the first semantic diagnostic, in both open orders (#338)")
+    parser.add_argument("--parse-work", action="store_true",
+                        help="instead time fixed edits, membership and option changes, and an unchanged control (#359)")
     args = parser.parse_args()
-    if args.first_semantic and (args.error_result or args.typing_burst or args.inlay_refresh):
+    if args.first_semantic and (args.error_result or args.typing_burst or args.inlay_refresh or args.parse_work):
         parser.error("--first-semantic runs alone; measure the other workloads separately")
+    if args.parse_work and (args.error_result or args.typing_burst or args.inlay_refresh):
+        parser.error("--parse-work runs alone; measure the other workloads separately")
     if args.smoke:
         args.blocks, args.operations, args.warmups, args.project = 1, 1, 0, ["small"]
     check(args.blocks > 0 and args.operations > 0 and args.warmups >= 0, "invalid sample counts")
@@ -667,7 +791,8 @@ def main():
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
                                 "error_result": args.error_result, "typing_burst": args.typing_burst,
-                                "inlay_refresh": args.inlay_refresh, "first_semantic": args.first_semantic},
+                                "inlay_refresh": args.inlay_refresh, "first_semantic": args.first_semantic,
+                                "parse_work": args.parse_work},
               "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
@@ -689,6 +814,10 @@ def main():
                               "result_encode_us", "gc_count", "allocated_bytes", "heap_after_handle_bytes",
                               "live_after_gc_bytes", "force_gc_us", "result_bytes"}
             server_metrics = {"request_encode_us", "result_decode_us", "roundtrip_us", "gc_count", "allocated_bytes"}
+            # A build either has the parse-work probes in every transaction or in none.
+            parse_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
+                            for probe in sample["probes"] if probe["metric"] in PARSE_WORK_METRICS}
+            check(not args.parse_work or parse_builds, "no build has the parse-work probes")
             for block in result["blocks"]:
                 for sample in block["samples"]:
                     measured = collections.defaultdict(list)
@@ -709,6 +838,18 @@ def main():
                                   ("missing transaction probes", block["build"], block["project"], scenario, role, measured[role]))
                         check("capture_us" in measured["server"] and "worker_start_us" in measured["server"],
                               (scenario, "missing capture or worker start"))
+                    elif scenario in PARSE_WORK_SCENARIOS:
+                        probed = block["build"] in parse_builds
+                        required = {"worker": worker_metrics | (set(PARSE_WORK_METRICS) if probed else set()),
+                                    "server": server_metrics | {"capture_us"} | (
+                                        {"substitution_us", "substituted_files", "prepare_us"} if probed else set())}
+                        if probed and scenario != "unchanged_reanalysis":
+                            required["server"].add("complete_us")
+                        for role in ("worker", "server"):
+                            check(all(measured[role].count(metric) == 1 for metric in required[role]),
+                                  ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))
+                        check(probed or not set(measured["worker"]) & set(PARSE_WORK_METRICS), (scenario, "partial parse-work probes"))
+                        check("worker_start_us" not in measured["server"], (scenario, "unexpected worker replacement/start"))
                     elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis", "refresh_analysis"):
                         for role, required in (("worker", worker_metrics), ("server", server_metrics)):
                             check(all(measured[role].count(metric) == 1 for metric in required),
@@ -718,7 +859,9 @@ def main():
                         started = "worker_start_us" in measured["server"]
                         check(started == (scenario == "fresh_analysis"), (scenario, "unexpected worker replacement/start"))
                     else:
-                        check(not measured, (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
+                        # An edit's synchronous parser diagnostics are the server's own parse.
+                        measured["server"] = [m for m in measured["server"] if m != "parser_diagnostics_us"]
+                        check(not any(measured.values()), (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
         for row in result["summary"]:
             first = row["scenario"].startswith("first_semantic_")
             if row["metric"] == "latency_ms" or first and row["metric"] in ("open_latency_ms", "initialize_ms"):

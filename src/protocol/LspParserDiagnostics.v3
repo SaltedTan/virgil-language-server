@@ -12,7 +12,9 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	private def parsedWith = OrderedStringMap<LspParsedDocument>.new();
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
+		var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+		if (BenchProbe.enabled) BenchProbe.server(0, "parser_diagnostics_us", long.view(BenchProbe.now() - start));
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
 		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);

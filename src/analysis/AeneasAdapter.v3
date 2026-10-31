@@ -748,6 +748,7 @@ component AeneasAdapter {
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
 		var compilation = Compilation.new(compiler, prog);
+		if (BenchProbe.enabled) BenchProbe.classifyParse(prog.files, prog.inputs, languageFingerprint());
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
 		var syntax = if(scoped, OrderedStringMap<SymbolSyntaxIndex>.new());
@@ -785,8 +786,10 @@ component AeneasAdapter {
 		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
 			var index = if(syntax != null, SymbolSyntaxIndex.new());
 			if (syntax != null) syntax.add(prog.files[i], index);
+			var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
 			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, index,
 				prog.typeCache, coordinates.capture(prog.files[i])));
+			if (BenchProbe.enabled) BenchProbe.parsedFile(i, prog.inputs[i].length, BenchProbe.now() - start);
 		}
 		prog.vst.files = files.extract();
 		prog.ERROR.copy(errors);
@@ -799,6 +802,16 @@ component AeneasAdapter {
 			prog.vst.fieldRedefs = redefs.1;
 		}
 		return errors;
+	}
+	// The language options in effect, one bit each in declaration order, for
+	// benchmark probes that compare one program's parse with the next.
+	private def languageFingerprint() -> u64 {
+		var bits = 0ul;
+		for (l = CLOptions.langOpt.list; l != null; l = l.tail) {
+			var opt = l.head.0;
+			bits = (bits << 1) | if(Option<bool>.?(opt) && Option<bool>.!(opt).get(), 1ul, 0ul);
+		}
+		return bits;
 	}
 	// The next value of Aeneas's process-wide UID counter. It never resets, so
 	// it measures how many IDs analyses have consumed.

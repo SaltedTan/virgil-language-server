@@ -12,6 +12,21 @@ component BenchProbe {
 	var workerStart: int;
 	var serverGcStart: int;
 	var serverAllocatedStart: long;
+	// Parse work of the last whole-program analysis, by whether each file
+	// matches one the previous analysis in this process parsed: the same path,
+	// bytes, and language options. Only hashes of those are kept.
+	private var parsePaths: Array<u64>;
+	private var parseTexts: Array<u64>;
+	private var parseOptions: u64;
+	private var parseSame: Array<bool>;
+	private var parseVisited: int;
+	private var parseClassifyUs: long;
+	private var sameFiles: long;
+	private var sameBytes: long;
+	private var sameUs: long;
+	private var changedFiles: long;
+	private var changedBytes: long;
+	private var changedUs: long;
 
 	def now() -> int { return if(enabled, System.ticksUs()); }
 	def gcCount() -> int { return if(enabled, GcStats.gc_count); }
@@ -24,6 +39,60 @@ component BenchProbe {
 	}
 	def worker(id: int, name: string, value: long) {
 		if (enabled) sample("worker", id, name, value);
+	}
+	// Before a program's parse: notes which of its files the previous
+	// program's parse saw unchanged, with language options {options} (see
+	// AeneasAdapter). Its own time is reported apart from the parse.
+	def classifyParse(paths: Array<string>, inputs: Array<Array<byte>>, options: u64) {
+		if (!enabled) return;
+		var start = now();
+		var count = paths.length;
+		var hashes = Array<u64>.new(count), texts = Array<u64>.new(count);
+		parseSame = Array<bool>.new(count);
+		for (i < count) {
+			var path = paths[i], input = inputs[i];
+			hashes[i] = AnalysisTables.hashBytes(path, if(path != null, path.length), 0);
+			texts[i] = AnalysisTables.hashBytes(input, input.length, u64.view(input.length));
+			if (parsePaths == null || options != parseOptions) continue;
+			// Same index first; a membership change shifts the rest.
+			var j = if(i < parsePaths.length && parsePaths[i] == hashes[i], i, -1);
+			for (k = 0; j < 0 && k < parsePaths.length; k++) {
+				if (parsePaths[k] == hashes[i]) j = k;
+			}
+			parseSame[i] = j >= 0 && parseTexts[j] == texts[i];
+		}
+		parsePaths = hashes;
+		parseTexts = texts;
+		parseOptions = options;
+		parseVisited = 0;
+		sameFiles = sameBytes = sameUs = changedFiles = changedBytes = changedUs = 0;
+		parseClassifyUs = now() - start;
+	}
+	// File {i} of the program took {us} to parse.
+	def parsedFile(i: int, bytes: int, us: int) {
+		if (!enabled || parseSame == null || i >= parseSame.length) return;
+		if (parseSame[i]) {
+			sameFiles++;
+			sameBytes += bytes;
+			sameUs += us;
+		} else {
+			changedFiles++;
+			changedBytes += bytes;
+			changedUs += us;
+		}
+		parseVisited++;
+	}
+	// Reports the last program's parse work as analysis {id}'s.
+	def reportParse(id: int) {
+		if (!enabled || parseSame == null) return;
+		worker(id, "parse_classify_us", parseClassifyUs);
+		worker(id, "parse_unchanged_files", sameFiles);
+		worker(id, "parse_unchanged_bytes", sameBytes);
+		worker(id, "parse_unchanged_us", sameUs);
+		worker(id, "parse_changed_files", changedFiles);
+		worker(id, "parse_changed_bytes", changedBytes);
+		worker(id, "parse_changed_us", changedUs);
+		worker(id, "parse_unvisited_files", parseSame.length - parseVisited);
 	}
 	private def sample(process: string, id: int, name: string, value: long) {
 		end = 0;
