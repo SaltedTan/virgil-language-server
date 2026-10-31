@@ -14,6 +14,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -625,12 +627,63 @@ def verdict(kind, reply, facts):
     return (completion_verdict if kind == "completion" else signature_verdict)(reply, facts)
 
 
+class GroupSession(bench.Session):
+    """A server that leads a process group of its own, which the workers it
+    starts join, so that cleanup ends them all by the group's ID, as
+    test/protocol/source_mutations.py does, and never selects processes by
+    name. A sentinel joins the group and lives until that cleanup: while a
+    member, or its unreaped zombie, is left, the ID can't be reused, even
+    after the server is reaped, so killing the group never reaches another
+    process. The sentinel reads a pipe from this driver, so it exits if the
+    driver does."""
+
+    def __init__(self, exe):
+        self.proc = self.sentinel = None
+        try:
+            super().__init__(exe, preexec_fn=os.setpgrp)
+            group = self.proc.pid
+            self.sentinel = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL, preexec_fn=lambda: os.setpgid(0, group))
+        except BaseException:
+            if self.proc is not None:
+                self.end_group()
+            raise
+
+    def end_group(self):
+        """Kill what is left of the server's group, whether or not the server
+        has exited, then reap the server and the sentinel."""
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        for process in (self.proc, self.sentinel):
+            if process is not None:
+                process.wait()
+        if self.sentinel is not None:
+            try:
+                self.sentinel.stdin.close()
+            except OSError:
+                pass
+
+    def close(self):
+        # Session.close ends the input, waits a bounded time for the server,
+        # and kills only it; a hung worker, or one that a stopped server left,
+        # goes with the group.
+        try:
+            super().close()
+        finally:
+            self.end_group()
+
+
 class Process(tolerance.Run):
     """One server process replaying a history in one mode, or its intended
-    program (mode "oracle")."""
+    program (mode "oracle"). It sets up tolerance.Run's state itself, with
+    the server in a process group of its own (GroupSession)."""
 
     def __init__(self, exe, project, history, mode, texts):
-        super().__init__(exe, project, {"history": history["id"], "mode": mode})
+        self.exe, self.p, self.row = exe, project, {"history": history["id"], "mode": mode}
+        self.s = GroupSession(exe)
+        self.versions, self.diagnostics, self.cursor = {}, {}, 0
         self.history, self.mode, self.texts = history, mode, texts
         self.closed = set()
 

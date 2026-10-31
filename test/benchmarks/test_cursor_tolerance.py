@@ -10,9 +10,11 @@ These checks need no server. Run them by hand with
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -276,6 +278,53 @@ class Verdicts(unittest.TestCase):
             "items": [item("sum", 2, SUM)]}
         with self.assertRaisesRegex(AssertionError, "stale answer was not rejected"):
             cursor.stale_control(THIRD, stale_record(current))
+
+
+# A stand-in server that starts a child, as the server starts its worker, and
+# then never answers.
+HUNG_SERVER = """#!/usr/bin/env python3
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+open(sys.argv[0] + ".child", "w").write(str(child.pid))
+time.sleep(600)
+"""
+
+
+def alive(pid):
+    """Whether {pid} runs: it exists and, where /proc shows it, isn't a zombie."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = Path("/proc/%d/stat" % pid)
+    try:
+        return stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return not stat.parent.parent.is_dir()
+
+
+class Cleanup(unittest.TestCase):
+    def test_a_timed_out_server_leaves_no_process_of_its_group(self):
+        history = HISTORIES["member-with-prefix"]
+        with tempfile.TemporaryDirectory() as temp:
+            exe = Path(temp) / "hung-server"
+            exe.write_text(HUNG_SERVER)
+            exe.chmod(0o755)
+            project = cursor.project_for(history, INVENTORY, Path(temp), None)
+            texts = cursor.texts_for(history, INVENTORY, None)
+            # The driver's requests wait 60 s; this server's wait half a second.
+            short = lambda run, method, params=None: run.s.result(run.s.send(method, params), timeout=0.5)
+            # Cleanup then takes its real path: a shutdown that times out too,
+            # and the session's bounded wait for the server to exit.
+            with mock.patch.object(cursor.Process, "request", short):
+                with self.assertRaisesRegex(AssertionError, "timed out|did not answer"):
+                    cursor.replay(exe, project, history, "warm", texts)
+            child = int(Path(str(exe) + ".child").read_text())
+            # SIGKILL is asynchronous for the orphaned child, which init reaps.
+            deadline = time.monotonic() + 5
+            while alive(child) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(alive(child), "the server's child outlived the cleanup")
 
 
 class Records(unittest.TestCase):
