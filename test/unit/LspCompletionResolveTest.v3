@@ -5,7 +5,7 @@
 // the last completion list with names keeps, on the real worker. Each session
 // writes its project file and sources into the build's
 // project-fixtures/completion-resolve directory; Main.v3 is open in the
-// editor, and Lib.v3 is closed. "$" marks the cursor in the texts below, and
+// editor, and Lib.v3 is closed unless a test opens it. "$" marks the cursor in the texts below, and
 // is removed before they are sent. LspCompletionScopeTest covers the lists.
 def T = UnitTests.register;
 def X = [
@@ -21,8 +21,11 @@ def X = [
 	T("LspCompletionResolve:byte_cap", test_byte_cap),
 	T("LspCompletionResolve:malformed", test_malformed),
 	T("LspCompletionResolve:unknown", test_unknown),
+	T("LspCompletionResolve:typed", test_typed),
+	T("LspCompletionResolve:declaring_edited", test_declaring_edited),
 	T("LspCompletionResolve:closed_file_changed", test_closed_file_changed),
-	T("LspCompletionResolve:edits", test_edits),
+	T("LspCompletionResolve:closed_file_opened", test_closed_file_opened),
+	T("LspCompletionResolve:close", test_close),
 	T("LspCompletionResolve:project_change", test_project_change),
 	T("LspCompletionResolve:cancel", test_cancel),
 	T("LspCompletionResolve:repaired", test_repaired),
@@ -38,6 +41,10 @@ def MAIN = main("\t\treturn local;\n");
 // Two cursors in Main.v3 as it is, which parses as typed.
 def AS_TYPED = main("\t\treturn lo$cal;\n");
 def AT_END = main("\t\treturn local$;\n");
+// Names after the "lo" of "return lo", and the text once the "c" after it
+// is typed.
+def PREFIX = main("\t\treturn lo$;\n");
+def TYPED = main("\t\treturn loc;\n");
 // A cursor where Main.v3 doesn't parse, so it is repaired.
 def REPAIRED = main("\t\tlo$\n\t\treturn local;\n");
 // After the "." of a Shape, and of a string, as typed.
@@ -139,6 +146,14 @@ def expect(t: Tester, s: RenameTestSession, list: JsonValue, name: string, expec
 def unchanged(t: Tester, s: RenameTestSession, item: JsonValue) {
 	t.assert_string(render(item), render(resolve(t, s, item)));
 }
+// Sends the notification {method} with the JSON params {params}.
+def notify(s: RenameTestSession, method: string, params: string) {
+	s.server.handle(Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"%s\",\"params\":%s}", method, params));
+}
+// Main.v3's next version is {text}.
+def edit(s: RenameTestSession, text: string) {
+	s.change("Main.v3", s.file("Main.v3").version + 1, text);
+}
 def errorCode(reply: HashMap<string, JsonValue>) -> int {
 	var code = member(reply["error"], "code");
 	return if(JsonValue.Int.?(code), JsonValue.Int.!(code).v, 0);
@@ -159,7 +174,7 @@ def test_items(t: Tester) {
 	var base = LspResolveLimits.LIST_BYTES + mainUri.length;
 	var two = base + LspResolveLimits.FILE_BYTES + libUri.length + 2 * LspResolveLimits.ITEM_BYTES + "A".length + "bee".length;
 	var cap = two + LspResolveLimits.ITEM_BYTES + 1;
-	var list = LspCompletionDeclarations.new(7, mainUri, null, null, null, cap);
+	var list = LspCompletionDeclarations.new(7, mainUri, null, null, cap);
 	var docs = LspCompletionItems.new(list, snapshot, versions, 0);
 	t.asserti(base, list.bytes);
 	// Nothing for "this" and builtins, which have no declaration, for a local
@@ -196,14 +211,14 @@ def test_items(t: Tester) {
 	t.asserti(two, list.bytes);
 	t.asserti(2, list.labels.length);
 	// One that fits exactly is added.
-	list = LspCompletionDeclarations.new(8, mainUri, null, null, null, cap);
+	list = LspCompletionDeclarations.new(8, mainUri, null, null, cap);
 	docs = LspCompletionItems.new(list, snapshot, versions, -1);
 	t.assert_string("[8,0]", render(docs.add(A, "A")));
 	t.assert_string("[8,1]", render(docs.add(bee, "bee")));
 	t.assert_string("[8,2]", render(docs.add(C, "C")));
 	t.asserti(cap, list.bytes);
 	// Without the request document excluded, its items have data too.
-	list = LspCompletionDeclarations.new(9, mainUri, null, null, null, LspResolveLimits.MAX_BYTES);
+	list = LspCompletionDeclarations.new(9, mainUri, null, null, LspResolveLimits.MAX_BYTES);
 	docs = LspCompletionItems.new(list, snapshot, versions, -1);
 	t.assert_string("[9,0]", render(docs.add(decl(AnalysisDeclKind.METHOD, "m", main, 30), "m")));
 }
@@ -396,49 +411,108 @@ def test_unknown(t: Tester) {
 	t.assert(member(result, "textEdit") == JsonValue.Null, "the edit as sent");
 	s.server.close();
 }
-// A closed file whose bytes changed on disk without a file event documents
-// nothing until it has the analyzed bytes again; a file event forgets the list.
+// The character typed after a list leaves it: the items declared in the
+// unchanged Lib.v3 still resolve, and those declared in Main.v3, whose text
+// is no longer the one analyzed, come back as they were sent, even once it
+// has the analyzed text again.
+def test_typed(t: Tester) {
+	var s = session(t, null), list = complete(t, s, PREFIX);
+	edit(s, TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	expect(t, s, list, "Counter", "markdown: Counts \\*things\\*.");
+	for (name in ["inc", "Main"]) {
+		t.assert(hasData(named(t, list, name)), name);
+		expect(t, s, list, name, null);
+	}
+	edit(s, unmark(PREFIX).0);
+	expect(t, s, list, "inc", null);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.server.close();
+}
+// An open declaring file documents nothing once it is edited, though a
+// version-only change keeps its text; the other files' items still resolve.
+def test_declaring_edited(t: Tester) {
+	var s = session(t, null);
+	s.open("Lib.v3", 1, LIB);
+	var list = complete(t, s, AS_TYPED);
+	s.versionOnly("Lib.v3", 2);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.change("Lib.v3", 3, Strings.format2("%s%s", LIB, "\n"));
+	expect(t, s, list, "Shape", null);
+	expect(t, s, list, "Counter", null);
+	expect(t, s, list, "inc", "markdown: Adds one.");
+	s.server.close();
+}
+// A closed file whose bytes changed on disk, with or without a file event,
+// documents nothing until it has the analyzed bytes again, whatever the
+// request document's edits.
 def test_closed_file_changed(t: Tester) {
-	var s = session(t, null), list = complete(t, s, AS_TYPED), shape = named(t, list, "Shape");
+	var s = session(t, null), list = complete(t, s, PREFIX), shape = named(t, list, "Shape");
+	edit(s, TYPED);
 	var same = Arrays.dup(LIB);
 	same[3] = 'a';
 	s.write(t, "Lib.v3", same);
 	unchanged(t, s, shape);
 	s.write(t, "Lib.v3", Strings.format2("%s%s", LIB, "\n"));
 	unchanged(t, s, shape);
+	s.reportChanged("Lib.v3");
+	unchanged(t, s, shape);
 	s.write(t, "Lib.v3", LIB);
 	expect(t, s, list, "Shape", "markdown: A shape with sides.");
 	s.reportChanged("Lib.v3");
-	unchanged(t, s, shape);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
 	s.server.close();
 }
-// An edit or a close of the request document forgets the list.
-def test_edits(t: Tester) {
+// A file closed when the list was made, and opened since, documents its
+// items while the editor's text is the analyzed one.
+def test_closed_file_opened(t: Tester) {
 	var s = session(t, null), list = complete(t, s, AS_TYPED);
-	s.change("Main.v3", 2, Strings.format2("%s%s", MAIN, "\n"));
-	unchanged(t, s, named(t, list, "Shape"));
-	s.change("Main.v3", 3, MAIN);
-	list = complete(t, s, AS_TYPED);
-	s.closeDocument("Main.v3");
-	s.open("Main.v3", 3, MAIN);
-	unchanged(t, s, named(t, list, "Shape"));
-	// Were the list kept anyway, its document's identity would not match.
-	list = complete(t, s, AS_TYPED);
-	var kept = s.server.completion.resolver.latest;
-	s.change("Main.v3", 4, Strings.format2("%s%s", MAIN, "\n"));
-	t.assert(s.server.completion.resolver.latest == null, "forgotten");
-	s.server.completion.resolver.keep(kept);
-	unchanged(t, s, named(t, list, "Shape"));
+	s.open("Lib.v3", 1, LIB);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.change("Lib.v3", 2, Strings.format2("%s%s", LIB, "\n"));
+	expect(t, s, list, "Shape", null);
+	s.change("Lib.v3", 3, LIB);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	s.closeDocument("Lib.v3");
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
 	s.server.close();
 }
-// A new revision of the project file forgets the list; were it kept anyway,
-// its project would not be current.
+// Closing another document keeps the list, though a file whose editor text
+// was analyzed documents nothing once closed. Closing the request document
+// forgets it, even if it is opened again with the same text.
+def test_close(t: Tester) {
+	var s = session(t, null);
+	s.open("Lib.v3", 1, LIB);
+	var list = complete(t, s, AS_TYPED);
+	s.closeDocument("Lib.v3");
+	expect(t, s, list, "Shape", null);
+	expect(t, s, list, "inc", "markdown: Adds one.");
+	s.closeDocument("Main.v3");
+	t.assert(s.server.completion.resolver.latest == null, "forgotten");
+	s.open("Main.v3", 5, MAIN);
+	expect(t, s, list, "inc", null);
+	s.server.close();
+}
+// A new revision of the project file, a source created, and a workspace
+// folder change each forget the list, though they leave Lib.v3 as it was;
+// were it kept anyway after the first, its project would not be current.
 def test_project_change(t: Tester) {
 	var s = session(t, null), list = complete(t, s, AS_TYPED), kept = s.server.completion.resolver.latest;
 	s.write(t, ".virgil-lsp.json", "{\"version\":1,\"projects\":[{\"name\":\"r2\",\"sources\":[\"Main.v3\",\"Lib.v3\"]}]}");
 	s.reportChanged(".virgil-lsp.json");
+	t.assert(s.server.completion.resolver.latest == null, "a new project file forgets the list");
 	unchanged(t, s, named(t, list, "Shape"));
 	s.server.completion.resolver.keep(kept);
+	unchanged(t, s, named(t, list, "Shape"));
+	list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	notify(s, "workspace/didChangeWatchedFiles", Strings.format1("{\"changes\":[{\"uri\":\"%s\",\"type\":1}]}", s.uri("Extra.v3")));
+	t.assert(s.server.completion.resolver.latest == null, "a created source forgets the list");
+	unchanged(t, s, named(t, list, "Shape"));
+	list = complete(t, s, AS_TYPED);
+	expect(t, s, list, "Shape", "markdown: A shape with sides.");
+	notify(s, "workspace/didChangeWorkspaceFolders", "{\"event\":{\"added\":[],\"removed\":[]}}");
+	t.assert(s.server.completion.resolver.latest == null, "a folder change forgets the list");
 	unchanged(t, s, named(t, list, "Shape"));
 	s.write(t, ".virgil-lsp.json", CONFIG);
 	s.server.close();

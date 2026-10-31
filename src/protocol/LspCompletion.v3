@@ -340,10 +340,6 @@ class LspCompletion extends LspQueryRequests {
 		dispatcher.onDeferredRequest("textDocument/completion", receive);
 		dispatcher.onRequest("completionItem/resolve", resolver.resolve);
 	}
-	// The last reply is forgotten, so its items no longer resolve.
-	def forgotten() {
-		resolver.forget();
-	}
 	private def receive(request: JsonRpcMessage.Request) {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
 		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");

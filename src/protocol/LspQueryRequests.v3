@@ -219,11 +219,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		cachedResult = JsonValue.Null;
 		cachedIdentity = null;
 		cachedUri = null;
-		forgotten();
 	}
-	// Called once the last reply is forgotten; LspCompletion forgets the
-	// declarations that its items resolve with.
-	def forgotten() { }
 	// Sends {reply} to {r}, unless it was answered, and withdraws its job.
 	def finish(r: LspQueryRequest, reply: JsonRpcReply) {
 		if (r.answered) return;

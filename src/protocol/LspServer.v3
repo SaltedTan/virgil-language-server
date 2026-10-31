@@ -130,6 +130,7 @@ class LspServer {
 		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
+		workspaceEvents.projectsChanged = completion.resolver.forget;
 		workspaceEvents.warn = projectWarning;
 		workspaceEvents.info = projectInfo;
 		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
@@ -195,6 +196,7 @@ class LspServer {
 	private def configChanged(c: WorkspaceConfig) {
 		rename.configChanged();
 		invalidateQueries();
+		completion.resolver.forget();
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 		configurationChanged = true;
@@ -246,6 +248,7 @@ class LspServer {
 		inlayHints.documentClosed(doc.uri);
 		semanticTokens.documentClosed(doc.uri);
 		invalidateQueries();
+		completion.resolver.closed(doc.uri);
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);

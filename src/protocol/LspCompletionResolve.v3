@@ -3,15 +3,15 @@
 
 // The declarations of one completion list's source-backed items, which
 // completionItem/resolve documents (LspCompletionResolve), kept without the
-// list's analysis: the list's id, its request document's URI and identity,
-// and its project's revision and definition; each file that declares an
+// list's analysis: the list's id, its request document's URI, and its
+// project's revision and definition; each file that declares an
 // item, as its source was captured for the analysis (AnalysisDocumentVersion,
 // which holds no text); and for each item, its label, its file, and its
 // declaration's kind and name offsets in that file's analyzed text. No
 // snapshot, syntax tree, or source text is kept. {bytes} is what the list is
 // charged, which never exceeds {maxBytes}.
-class LspCompletionDeclarations(id: int, uri: string, identity: DocumentVersionIdentity,
-		config: ProjectRevision, definition: ProjectDefinition, maxBytes: int) {
+class LspCompletionDeclarations(id: int, uri: string, config: ProjectRevision, definition: ProjectDefinition,
+		maxBytes: int) {
 	def files = Vector<AnalysisDocumentVersion>.new();
 	def labels = Vector<string>.new();
 	def sources = Vector<int>.new();
@@ -119,11 +119,13 @@ component LspResolveLimits {
 // LspDocumentation). Every other member of the item is returned as the client
 // sent it. Only that list's declarations are kept (LspCompletionDeclarations),
 // for at most AnalysisScopeOrder.MAX_DECLARATIONS items and {maxBytes} bytes;
-// a newer list with names replaces them, and an event that makes completion
-// forget its last reply (LspQueryRequests.invalidate) drops them. An item's
-// data, the list's id and its index, selects its declaration: nothing else
-// the client sends is read, and it is checked against the server's own
-// record before any file is read. See docs/architecture.md#item-documentation.
+// a newer list with names replaces them, and a change of the projects or the
+// close of the list's request document drops them, but an edit doesn't: each
+// item is documented only while its own file has the text the list was made
+// from. An item's data, the list's id and its index, selects its
+// declaration: nothing else the client sends is read, and it is checked
+// against the server's own record before any file is read. See
+// docs/architecture.md#item-documentation.
 class LspCompletionResolve(store: DocumentStore, projects: WorkspaceProjects) {
 	// Tests may lower it.
 	var maxBytes = LspResolveLimits.MAX_BYTES;
@@ -138,13 +140,20 @@ class LspCompletionResolve(store: DocumentStore, projects: WorkspaceProjects) {
 
 	// The declarations of a new list for {r}, whose analysis completed, empty.
 	def start(r: LspQueryRequest) -> LspCompletionDeclarations {
-		return LspCompletionDeclarations.new(nextId++, r.uri, r.identity, r.context.config, r.context.definition, maxBytes);
+		return LspCompletionDeclarations.new(nextId++, r.uri, r.context.config, r.context.definition, maxBytes);
 	}
 	def keep(list: LspCompletionDeclarations) {
 		latest = list;
 	}
+	// The projects changed, as a configuration change, a file event that
+	// expands their sources again, or a workspace folder change does.
 	def forget() {
 		latest = null;
+	}
+	// The document {uri} was closed; the list goes if it is its request
+	// document's.
+	def closed(uri: string) {
+		if (latest != null && Strings.equal(latest.uri, uri)) latest = null;
 	}
 	// The item in {request}'s params, with its documentation if its data
 	// selects a declaration of the latest list that still has a comment; as
@@ -168,21 +177,23 @@ class LspCompletionResolve(store: DocumentStore, projects: WorkspaceProjects) {
 			"completion item resolve params require a string label, and data only as a completion reply gave it"));
 	}
 	// The MarkupContent of the comment of item {item} of list {id}, if it is
-	// the latest list, its request document is open with the identity it was
-	// requested at, in the same current project, the item is {label}, its
-	// file's text is still the one analyzed (LspAnalysisCapture.versionText),
-	// and its declaration has a comment there; otherwise Null.
+	// the latest list, its request document is still in the same current
+	// project, the item is {label}, its file's text is still the one analyzed
+	// ({analyzed}), and its declaration has a comment there; otherwise Null.
+	// Edits since the list, to the request document or another, matter only
+	// for the items declared in the file they changed.
 	private def documentation(id: int, item: int, label: string) -> JsonValue {
 		var list = latest;
 		if (list == null || list.id != id || item < 0 || item >= list.labels.length
 			|| !Strings.equal(list.labels[item], label)) return JsonValue.Null;
-		var overlay = store.overlay(list.uri), ctx = projects.forDocument(list.uri).active;
-		if (overlay == null || overlay.identity != list.identity || ctx == null || ctx.config != list.config
-			|| ctx.definition != list.definition || !ctx.config.current) return JsonValue.Null;
+		var ctx = projects.forDocument(list.uri).active;
+		if (ctx == null || ctx.config != list.config || ctx.definition != list.definition || !ctx.config.current) {
+			return JsonValue.Null;
+		}
 		var v = list.files[list.sources[item]];
 		// The comment parse reads no larger file; don't read one from disk.
 		if (v.length > DeclarationComments.MAX_INPUT) return JsonValue.Null;
-		var text = LspAnalysisCapture.versionText(store, v);
+		var text = analyzed(v);
 		if (text == null) return JsonValue.Null;
 		var path = DocumentUri.filePath(v.uri);
 		var doc = AeneasAdapter.declarationComment(if(path != null, path, v.uri), text, list.definition.compilerArgs,
@@ -192,5 +203,16 @@ class LspCompletionResolve(store: DocumentStore, projects: WorkspaceProjects) {
 		content["kind"] = JsonValue.String(if(markdown, "markdown", "plaintext"));
 		content["value"] = JsonValue.String(if(markdown, LspDocumentation.prose(doc), doc));
 		return JsonValue.JObject(content);
+	}
+	// The text of {v}'s file if it is still the text the list's analysis
+	// read, or null: as LspAnalysisCapture.versionText checks it, and, for a
+	// file that was closed then but is open now, with the open text, which
+	// must have the captured length and hash. An offset is never mapped
+	// across an edit.
+	private def analyzed(v: AnalysisDocumentVersion) -> Array<byte> {
+		var doc = if(v.identity == null, store.overlay(v.uri));
+		if (doc == null) return LspAnalysisCapture.versionText(store, v);
+		var text = doc.text;
+		return if(text.length == v.length && LspAnalysisCapture.hash(text) == v.hash, text);
 	}
 }
