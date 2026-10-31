@@ -343,6 +343,10 @@ the server and the sentinel, so a stopped or hung server, or one whose output
 ended, leaves no worker or child behind. This needs no `os.waitid`, which
 macOS Python lacks before 3.13. Nothing is killed by name.
 
+Both the runner and helper-test entrypoints run cleanup on SIGTERM or SIGHUP
+and exit with 128 plus the first signal's number; repeated SIGTERM or SIGHUP
+cannot interrupt cleanup. SIGINT keeps Python's `KeyboardInterrupt` behavior.
+
 ### Oracles
 
 A case fails if:
@@ -364,9 +368,11 @@ A case fails if:
 - a `window/showMessage` is not the documented warning that an automatic
   analysis failed, or there are more of them than failures in the server log;
 - a request, the case, or the run passes its deadline; every read, write,
-  wait for exit, and cleanup checks all three, and a write also stops at the
+  and wait for exit checks all three, and a write also stops at the
   deadline of any request still waiting for its reply, which starts before
-  the request is written;
+  the request is written. Cleanup waits at most two seconds for the server
+  to exit, shortened to the run time left with a 0.1-second minimum, then
+  kills the process group;
 - restoration does not give the clean answers above;
 - a worker failure matches no documented signature.
 
@@ -389,10 +395,10 @@ signature names the trap, its innermost frame, and a condition that the
 source of the failed analysis must meet, from a row of the
 [Aeneas crash paths](../../docs/aeneas-crash-paths.md): row 1's `0i` literal at
 either trap site, rows 2, 7, and 17, and a stack overflow, which prints no
-frames, after nesting deeper than 1,000 (row 13) or a chain longer than 1,000
-(row 25). The conditions count only executable tokens: a lexer pass drops
-comments, strings, and characters first, so 1,000 `(` in a comment are no
-nesting. A long chain may also exceed the worker's decoded
+frames, after nesting at least 1,000 levels (row 13) or a chain of at least
+1,000 links (row 25). The conditions count only executable tokens: a lexer
+pass drops comments, strings, and characters first, so 1,000 `(` in a comment
+are no nesting. A long chain may also exceed the worker's decoded
 [result budget](../../docs/decisions/0004-analysis-worker-process.md#restart-policy).
 Any other worker failure, including a timeout, fails the case as
 `worker-failure`. Each records whether restoration then succeeded on a
@@ -416,7 +422,7 @@ are rejected with exit status 2 before anything runs. The request cap counts
 every feature request a case sends: its planned requests, the follow-ups, a
 barrier after opening and after each of up to three steps, and the six
 restoration requests. A plan leaves four requests for follow-ups, so at
-least 15 are needed, and the 24 by default leave 9 to 12 for a case's
+least 15 are needed; the remaining room is available for a case's
 planned requests. The source bound counts the observer too. With `--stress`, it counts the
 [document store's](../../docs/architecture.md#document-store) charge instead:
 each open document's text plus 256 bytes of metadata, its language ID, and its
@@ -432,8 +438,8 @@ A run replaces `build/source-mutations/seed-<seed>/`
 - `mutations.json` and `requests.json`: each case's mutations, with the
   SHA-256 and size of each resulting text, and its planned requests, after a
   header with the seed, the bounds, and the SHA-256 of the harness and every
-  seed file. They hold no paths or times, so the same seed and inputs give
-  identical bytes; compare two runs with `cmp`.
+  seed file. They hold no absolute paths or times, so the same seed and
+  inputs give identical bytes; compare two runs with `cmp`.
 - `run.json`: the server and worker SHA-256 and `--version`, the outcome and
   request counts, worker failures, follow-ups not sent, unchecked shapes,
   failures with replay commands, the elapsed time, the bytes written, and
@@ -467,15 +473,21 @@ result of the plan's largest failing case, with room for the 16 KiB items of
 as many mutation follow-ups as its cap allows and both restoration follow-ups,
 and 64 KiB for `run.json`; those last two
 stay reserved. Passing cases may fill the rest, and their records and results
-are written whole or not at all; `run.json` lists the ones left out, which
-`--plan-only` recreates without follow-ups. A failing case's record and result
+are written whole or not at all; `run.json` lists the files left out.
+`--plan-only` can regenerate planned case records without follow-ups, with a
+larger `--artifact-bytes` budget if necessary. A failing case's record and result
 are always written whole, from the reserve. Saving a failure never removes the
 complete record saved before the case ran: if the record with its follow-ups
 didn't fit, that one stays and `result.json` has `"record_saved": false`. A cut transcript ends with a
 `{"truncated": true, ...}` line, a cut log with a `[truncated: ...]` line, and
 the case's `result.json` has `"evidence_complete": false`: that evidence is
-partial, and replaying the record recreates it whole. Lists in `run.json` and
-`result.json` keep their first 32 entries and count the rest.
+partial, and replay's evidence is subject to the saved artifact budget too.
+Lists in `run.json` and `result.json` keep their first 32 entries and count
+the rest.
+Diagnostic strings in those summaries, including replay's nested result,
+are limited to 2,048 UTF-8 bytes on a character boundary, including an
+explicit ` ... [truncated, N bytes total]` marker when cut. Full replies
+remain in the transcript when its artifact budget permits.
 A transcript is omitted when even its truncation marker cannot fit in its
 tier's available space; `run.json` lists it under `artifacts_omitted`.
 Passing artifacts, including truncation markers, never spend the reserves
@@ -510,7 +522,8 @@ so a file with CR line ends never parses. In the default run, about a quarter
 of the mutated steps parse, and few semantic requests get populated answers.
 
 `test_source_mutations.py` checks the harness itself, runs in `make test`, and
-needs the server only for its replay, known-trap, and stalled-worker tests:
+needs the server only for its replay, known-trap, and worker cleanup and
+replacement tests:
 
 ```sh
 python3 test/protocol/test_source_mutations.py

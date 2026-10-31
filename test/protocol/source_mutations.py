@@ -5,7 +5,7 @@
 
 Each case starts its own server on a temporary project, opens a clean observer
 and the files of one reviewed repair seed, applies bounded token-aware UTF-8
-edits in one to three steps, and sends every advertised request kind with
+edits in one to three steps, and sends requests from the coverage manifest with
 params from the current text. It then restores clean sources, checks that the
 project analyzes again, and shuts the server down. The oracles, bounds, replay
 format, and known compiler traps are described in test/protocol/README.md.
@@ -109,8 +109,8 @@ def restored(index):
 # The coverage manifest: every request method the server may advertise, in
 # round-robin order, then the hierarchy follow-ups, which take items that the
 # prepare requests returned. A method advertised but not listed here, or listed
-# but not advertised, fails the run, so that a new capability cannot go
-# unexercised.
+# but not advertised, fails the run, so that a new capability requires an
+# explicit coverage decision.
 MAIN_METHODS = (
     "textDocument/hover", "textDocument/definition", "textDocument/typeDefinition",
     "textDocument/implementation", "textDocument/references", "textDocument/documentHighlight",
@@ -772,8 +772,7 @@ def cancellation():
 
 
 class MutationSession(Session):
-    """Session's framing, select deadlines, process ownership and cleanup, with
-    every read, write, and wait bounded by the request, case, and run deadlines.
+    """Session's framing, select deadlines, process ownership and cleanup.
 
     IDs match by type and value, so a reply with a changed ID type, or a reply
     to a notification, is an unexpected response. Successful replies of the
