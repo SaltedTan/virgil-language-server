@@ -356,6 +356,34 @@ component AnalysisTables {
 		}
 		return src;
 	}
+	// Sorts the first {n} elements of {a} as sort does, into a new array of
+	// length {n}, and returns it. It merges through {a} itself, which it
+	// leaves in no particular order, so the result is all it allocates: a
+	// collector's shared buffer (AnalysisCollectorBuffers) need not be copied
+	// out before it is sorted.
+	def sortPrefix<T>(a: Array<T>, n: int, before: (T, T) -> bool) -> Array<T> {
+		var result = Array<T>.new(n);
+		if (n < 2) {
+			if (n == 1) result[0] = a[0];
+			return result;
+		}
+		var src = a, dst = result;
+		for (width = 1; width < n; width = 2 * width) {
+			for (low = 0; low < n; low += 2 * width) {
+				var middle = Ints.min(low + width, n), high = Ints.min(low + 2 * width, n);
+				var i = low, j = middle;
+				for (k = low; k < high; k++) {
+					if (j >= high || (i < middle && !before(src[j], src[i]))) dst[k] = src[i++];
+					else dst[k] = src[j++];
+				}
+			}
+			var t = src;
+			src = dst;
+			dst = t;
+		}
+		if (src != result) for (k < n) result[k] = src[k];
+		return result;
+	}
 	// Spreads a hash's bits into the low bits that select a slot, for keys
 	// that are already numbers, such as the indexes that a snapshot's
 	// signature reader keys. A SipHash keeps its spread, and the string table

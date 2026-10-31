@@ -5,6 +5,7 @@ def X = [
 	UnitTests.register("AnalysisTypeTargets:checkpoints", checkpoints),
 	UnitTests.register("AnalysisTypeTargets:malformed", malformed),
 	UnitTests.register("AnalysisTypeTargets:merged_names", merged_names),
+	UnitTests.register("AnalysisTypeTargets:record_writer", record_writer),
 	()
 ];
 def base(count: int, site: bool) -> DataWriter {
@@ -91,4 +92,31 @@ def merged_names(t: Tester) {
 		var bad = DataWriter.new().puta(encoded).put_sleb32(1).put_sleb32(offset).put_sleb32(0).put_sleb32(0);
 		t.assert(AnalysisResultDecode.Malformed.?(decode(bad)), "non-name offset rejected");
 	}
+}
+
+// Each take returns exactly the bytes written since the one before, in an
+// array of their length that later writes leave alone, and an empty record
+// when nothing was written.
+def record_writer(t: Tester) {
+	var w = AnalysisRecordWriter.new(), records = Vector<Range<byte>>.new();
+	for (n in [0, 1, 0, 300, 7, 1000, 0, 2]) {
+		for (i < n) w.putb(n + i);
+		var record = w.take();
+		t.asserti(n, record.length);
+		t.asserti(0, w.end());
+		records.put(record);
+	}
+	var k = 0;
+	for (n in [0, 1, 0, 300, 7, 1000, 0, 2]) {
+		var record = records[k++];
+		var exact = true;
+		for (i < n) if (record[i] != byte.view(n + i)) exact = false;
+		t.assert(exact, "a record keeps its own bytes after later writes");
+	}
+	// A record is its own array, not a range of the writer's storage.
+	w.putb(1).putb(2).putb(3);
+	var first = w.take();
+	w.putb(9);
+	t.asserti(1, first[0]);
+	t.asserti(1, w.take().length);
 }

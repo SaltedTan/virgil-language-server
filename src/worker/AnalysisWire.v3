@@ -426,7 +426,7 @@ component AnalysisWire {
 		// per use; send each once.
 		for (i < files.length) {
 			for (d in sites[i]) typeEncoding.choose(typeEncoding.declaration(d), d.sourceType);
-			var text = DataWriter.new(), ordinal = 0, previous = 0;
+			var text = typeEncoding.records, ordinal = 0, previous = 0;
 			for (o in files[i].1) {
 				var useType = if(o.useType != null, strings.add(o.useType), -1);
 				var index = typeEncoding.add(o.declaration);
@@ -438,7 +438,7 @@ component AnalysisWire {
 				}
 				ordinal++;
 			}
-			typeEncoding.typedUses[i] = text.alias();
+			typeEncoding.typedUses[i] = text.take();
 		}
 		if (scope != null) for (d in scope.declarations) typeEncoding.add(d);
 		if (call != null && call.target != null) typeEncoding.add(call.target);
@@ -470,7 +470,7 @@ component AnalysisWire {
 			}
 		}
 		for (i < files.length) {
-			var encoded = DataWriter.new();
+			var encoded = typeEncoding.records;
 			for (u in builtins[i]) {
 				var useType = strings.add(u.useType);
 				if (!u.range.isTokenSpan()) continue;
@@ -478,7 +478,7 @@ component AnalysisWire {
 				putSpan(encoded, u.range);
 				encoded.put_sleb32(useType);
 			}
-			typeEncoding.builtinUses[i] = encoded.alias();
+			typeEncoding.builtinUses[i] = encoded.take();
 		}
 		// Collection registered distinct targets. Indexing marked those the
 		// selected files need, including explicit nondefault uses; ignore
@@ -521,9 +521,9 @@ component AnalysisWire {
 		// Validate and translate call bytes once, shared by sizing and writing.
 		var callData = Array<Range<byte>>.new(files.length), check = AnalysisCallCheck.new(uses.length);
 		for (i < files.length) {
-			var encoded = DataWriter.new(), f = files[i];
+			var encoded = typeEncoding.records, f = files[i];
 			encodeCalls(encoded, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank, hints);
-			callData[i] = encoded.alias();
+			callData[i] = encoded.take();
 		}
 		var text = AnalysisStringTable.new();
 		for (i in order) {

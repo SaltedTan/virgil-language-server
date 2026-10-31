@@ -339,6 +339,15 @@ retain outliers. Do not treat milliseconds from unrelated machines, a 1 GB heap,
 or different source path lengths as an interchangeable baseline. A large spread
 or changing medians calls for another run, not a claimed regression or win.
 
+For a change to the worker, include `--project aeneas --error-result` in the
+comparison and report the room each Aeneas scenario leaves under the collection
+boundary: 201,326,592 bytes, half the default 384 MiB heap, minus the worker's
+median `heap_after_handle_bytes`. A scenario that collects during handling has
+none; a `WORKER_HEAP=1g` control build shows how far over it ends. An analysis
+that ends a few hundred KB under the boundary passes every check until the next
+small change makes it collect, as [worker heap room](#worker-heap-room-2026-10-31)
+records.
+
 [`scripts/bench-analysis.sh`](../scripts/bench-analysis.sh) remains available for
 fresh CLI parse/verify statistics and retains its regression tests. Its CLI output
 path and statistics differ from this full-snapshot protocol workload; it cannot
@@ -2539,3 +2548,48 @@ the pinned Aeneas sources, which this bump changes, so 18 of the 24 are on
 different files than at the old pin: 5 next-line, 6 body-end, and 7 two-bodies
 states. There are 67 partial answers, including session diagnostics, as in that
 comparison's run; each is an exact subset of its own current-program oracle.
+
+## Worker heap room (2026-10-31)
+
+Measured on 2026-10-31 for [#380](https://github.com/SaltedTan/virgil-language-server/issues/380) against main `fa53d2a7`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `57318d37` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in equal-length `build/bmain` and `build/bnext` directories, with `BENCH=1 all bench-metadata`: main's before the change, and the change's from its commit `bfedd574`, each with generated BuildInfo revision strings of the same length (`bisect-` and twelve hex digits). The build metadata's source hashes differ only in BuildInfo and the six changed sources. The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed:
+
+```sh
+python3 scripts/bench-lsp.py \
+  --exe build/bmain/virgil-lsp --exe build/bnext/virgil-lsp \
+  --project aeneas --error-result --require-probes --blocks 6 --cpu 12 \
+  --output build/bench-results/heap-room.json
+```
+
+On main, the 900-function `error_analysis` collected once during every handled request, in result encoding, which took 207.0 ms instead of 54.3 ms. Each timing is **median (p10–p90), in milliseconds**, over 30 measured operations:
+
+| Scenario | Main | Change | Worker collections |
+| --- | ---: | ---: | ---: |
+| `fresh_analysis` | 365.417 (346.031–369.846) | 359.910 (354.549–369.367) | 0 → 0 |
+| `reused_analysis` | 321.486 (298.169–344.910) | 319.603 (298.774–342.674) | 0 → 0 |
+| `error_analysis` | 482.804 (465.797–557.823) | 316.248 (301.428–333.048) | 1 → 0 |
+| `rename` | 358.130 (341.975–367.275) | 357.809 (337.061–364.313) | 0 → 0 |
+| `semantic_diagnostic` | 519.027 (501.975–528.291) | 511.277 (500.726–522.817) | 0 → 0 |
+| `completion_miss` | 126.297 (118.233–139.352) | 124.234 (115.234–142.302) | 0 → 0 |
+| `prepareRename` | 32.960 (17.571–49.785) | 32.930 (17.826–55.249) | — |
+| `completion_hit` | 6.139 (5.549–44.802) | 5.783 (3.601–45.013) | — |
+
+`error_analysis` block medians were 477, 557, 481, 489, 483, and 480 ms on main and 316, 305, 316, 338, 320, and 318 ms with the change, which puts its latency alongside `reused_analysis`, despite the error and 900 extra functions. Parse, verify, and collection medians moved by at most 4.4 ms, in both directions. Navigation, hover, references, and syntax diagnostics are unchanged.
+
+Worker memory at the end of handling is the median, in bytes, which varied by at most 22 KB across samples. Room is what the 201,326,592-byte semispace has left, before the explicit collection that follows. Main's `error_analysis` collected, so its heap after handling, 130,755,152 bytes, is after that collection; a 1 GiB control build of main, run once with the same command and `--blocks 1`, put its end without one at 201,717,344 bytes, 390,752 over the boundary.
+
+| Scenario | Allocated, main | Allocated, change | Heap after, main | Heap after, change | Room, main | Room, change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fresh_analysis` | 197,749,952 | 188,502,184 | 200,843,232 | 191,595,464 | 483,360 | 9,731,128 |
+| `reused_analysis` | 197,603,320 | 188,355,552 | 200,873,648 | 191,625,880 | 452,944 | 9,700,712 |
+| `error_analysis` | 198,392,184 | 189,033,160 | 201,717,344 (1 GiB) | 192,358,320 | −390,752 | 8,968,272 |
+| `rename` | 197,601,496 | 188,353,728 | 200,871,824 | 191,624,056 | 454,768 | 9,702,536 |
+| `semantic_diagnostic` | 194,715,456 | 185,467,680 | 197,985,824 | 188,738,048 | 3,340,768 | 12,588,544 |
+| `completion_miss` | 163,206,112 | 163,207,984 | 166,476,448 | 166,478,320 | 34,850,144 | 34,848,272 |
+
+Live bytes after the explicit collection are unchanged, 177,344, and so are the RESULT frames' lengths: 4,379,196 bytes for a successful analysis and 4,510,800 for `error_analysis`. A completion miss collects no occurrences and encodes no files, so it doesn't change.
+
+Most of the saving, 8.3 MB, is in occurrence collection. Each of the 206 files' collectors grew its own vectors of occurrences, builtin uses, and declaration sites, and its own call-record writer, by doubling; then `extract` copied each vector to its length, and the merge sort allocated one more array for it. Over 194,000 occurrences, the vectors alone ended at 287,000 slots. A program's collectors now use one set of buffers in turn (`AnalysisCollectorBuffers`), which grows only to the largest file's, and `AnalysisTables.sortPrefix` sorts a buffer's first elements into an array of exactly their number, merging through the buffer itself, so the sorted array is the only copy. Calls that the walk found in order are copied at their exact length rather than kept in the writer's larger array. Result encoding saves the other 1.07 MB: its per-file typed uses, builtin uses, type-target overrides, hint records, and calls were each written to a new `DataWriter`, which grows to twice its size plus what it needs, so they allocated 1.57 MB to send 568 KB. They now share one `AnalysisRecordWriter`, which hands each record out as an exact copy. With an instrumented build of main, the five encoders grew 90,925, 201,329, 87,824, 214,844, and 976,759 bytes of buffer for 30,612, 78,308, 32,897, 78,792, and 346,907 bytes sent, on a successful analysis. Encoding still allocates about 3.5 MB for its declaration and string tables, and the 4.4 MB frame itself.
+
+A same-run comparison of all three projects with three blocks found no regression. Small and util collected zero times in both builds; their worker allocation fell from 54,080 to 53,320 bytes and from 10,302,520 to 9,957,408 bytes for a fresh analysis, and their result lengths and live bytes were unchanged. Their latencies matched within their p10–p90 intervals, except util's `completion_hit`, 0.786 (0.700–1.546) against 1.082 (0.697–1.436) ms, a cached reply that both builds gave in about 0.7 or 1.3 ms by turns, which the change doesn't run.
+
+The worker's RESULT frames were compared byte for byte, with the three elapsed-time fields zeroed and the live-heap field compared apart. A script drove each build's worker directly with the same requests: for each corpus project, its analysis twice in one worker, then with the corpus's semantic error, with that error and the 900 functions (Aeneas only), with the syntax error, and a scope, a member, and a call query at the completion position. All 22 frames, and their live bytes, were identical.
