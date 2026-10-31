@@ -139,9 +139,10 @@ class LspWorkspaceSymbolMatch(quality: int, file: LspWorkspaceSymbolFile, decl: 
 // The lexical container of declaration {decl}: the names of the outline
 // symbols that contain the one declaring it, outermost first, joined with
 // ".", such as "V.C" for a field of case C of variant V, or "" at file scope.
-// The declaring symbol is the one with {decl}'s kind whose name is exactly
-// {decl}'s name in the text. If there is none, as for a declaration that the
-// compiler synthesized, or more than one, there is no container.
+// The declaring symbol is the one with {decl}'s kind and exactly the same
+// beginning and ending byte offsets for its name. If there is none, as for
+// a declaration that the compiler synthesized, or more than one, there is
+// no container.
 class LspWorkspaceSymbolContainer(decl: AnalysisDeclaration) {
 	private var found: int;
 	private var names: string;
