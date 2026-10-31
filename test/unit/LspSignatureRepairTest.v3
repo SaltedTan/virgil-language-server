@@ -560,20 +560,36 @@ def test_time_limit(t: Tester) {
 }
 
 // The result is admitted within the workspace's snapshot budget, as a
-// completion's is; when it does not fit, the reply is null and no analysis
-// starts.
+// completion's is; when it does not fit, the reply is null, no analysis
+// starts, and the refusal is logged once, with its charges.
 def test_admission(t: Tester) {
-	var s = session(t);
+	var s = session(t), rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
 	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
 	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
 	var id = request(t, s, inRun("\t\tUtil.add($"));
 	s.settle();
 	t.assert(isNull(s, id), "null when the snapshot does not fit");
 	t.asserti(0, analyses(s));
+	var refused = signatureRefusals(rec);
+	t.asserti(1, refused.length);
+	if (refused.length == 1) {
+		t.assert(Strings.startsWith(refused[0], "the signature help's analysis was refused: retained snapshots take 33554432 bytes, of which 33554432 bytes can't be freed, and a reservation of "), refused[0]);
+		t.assert(Strings.endsWith(refused[0], " bytes doesn't fit beside them within the budget of 33554432 bytes"), refused[0]);
+	}
 	latest.retainedBytes = bytes;
 	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1, $")));
 	t.asserti(1, analyses(s));
+	t.asserti(1, signatureRefusals(rec).length);
 	s.server.close();
+}
+// The refusals of signature help's analyses that {rec} logged.
+def signatureRefusals(rec: DocumentWarningRecorder) -> Array<string> {
+	var result = Vector<string>.new();
+	for (i < rec.lines.length) {
+		if (Strings.startsWith(rec.lines[i], "the signature help's analysis was refused: ")) result.put(rec.lines[i]);
+	}
+	return result.extract();
 }
 
 // Signature help and completion requests wait side by side: neither replaces

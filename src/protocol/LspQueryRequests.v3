@@ -75,6 +75,8 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void, what: string) {
 	// Starts the analyses, or null without an analysis worker.
 	var scheduler: LspSemanticDiagnostics;
+	// Logs an analysis that admission refused, or null.
+	var warn: string -> void;
 	// The analyses started, for tests.
 	def var analyses: int;
 	// The request whose job waits for the worker, and the one whose job runs.
@@ -142,6 +144,9 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		r.versions = inputs.versions;
 		r.index = index;
 		if (!projects.admitKeeping(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+			// Once for each refused analysis: the reply alone doesn't say why
+			// it has no answer.
+			if (warn != null) warn(Strings.format2("the %s's analysis was refused: %s", what, projects.refusal()));
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
 		analyses++;
