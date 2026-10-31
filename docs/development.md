@@ -180,6 +180,8 @@ custom `BUILD`).
 
 The [manual test matrix](manual-testing.md) covers the editor and platform combinations that these tests don't. [Known limitations](known-limitations.md) lists what the alpha doesn't do yet.
 
+The tests have no coverage report. The [interpreter coverage note](testing-notes/interpreter-coverage.md) records why the pinned compiler's `-coverage` option, which works only in its interpreter, can't measure the unit suite, and what it reports for the small groups that do run there.
+
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
 
 ```sh
