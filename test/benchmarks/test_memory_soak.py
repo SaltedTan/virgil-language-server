@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,14 +138,67 @@ class RetirementTest(unittest.TestCase):
                          ["the worker counted analyses that the trace doesn't show"])
         # A replacement worker counts from zero again.
         crashed = "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
-        self.assertEqual(self.classify(started(10) + analyses(1, 5) + crashed + started(11) + analyses(1, 2)).findings, [])
+        workers = self.classify(started(10) + analyses(1, 5) + crashed + started(11) + analyses(1, 2))
+        self.assertEqual([f["detail"] for f in workers.findings], ["worker failed"])
+        self.assertEqual(workers.workers[1]["analyses"], 2)
 
     def test_failure_and_unknown_worker(self):
         text = started(10) + "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
         text += "virgil-lsp: replacing analysis worker 99 after 100 analyses (limit 100)\n"
         workers = self.classify(text)
         self.assertEqual(workers.workers[0]["ended"]["reason"], "failed")
-        self.assertEqual([f["detail"] for f in workers.findings], ["retirement of an unknown worker"])
+        self.assertEqual([f["detail"] for f in workers.findings],
+                         ["worker failed", "retirement of an unknown worker"])
+
+    def test_every_failure_preserves_classification_and_reports_a_finding(self):
+        for detail, status in (("crashed during an analysis", "signal 9"),
+                               ("exceeded the analysis time limit of 10000 ms and was killed", "signal 9"),
+                               ("sent a malformed result and was killed", "exit 1"),
+                               ("sent a result exceeding the allocation budget and was replaced", "exit 0"),
+                               ("sent no handshake before the startup deadline", "signal 9")):
+            with self.subTest(detail=detail):
+                line = f"virgil-lsp: analysis worker 10 {detail}; it ended with {status}"
+                workers = self.classify(started(10) + line + "\n")
+                workers.end()
+                self.assertEqual(workers.workers[0]["ended"],
+                                 {"reason": "failed", "detail": detail, "status": status})
+                self.assertEqual(workers.findings,
+                                 [{"bound": "retirement", "detail": "worker failed", "pid": 10, "line": line}])
+                unknown = self.classify(line + "\n")
+                self.assertEqual([f["detail"] for f in unknown.findings], ["failure of an unknown worker"])
+
+    def test_failure_after_cancelled_query_reaches_retirement_violations(self):
+        run = soak.Soak.__new__(soak.Soak)
+        run.base = ROOT
+        run.queries = {"third": [{"path": "third/Observer.v3", "position": {"line": 1, "character": 2}}]}
+        run.s = Mock()
+        run.s.send.side_effect = [7, None]
+        run.s.reply.return_value = {"id": 7, "error": {"code": soak.REQUEST_CANCELLED}}
+        run.s.transcript = []
+        run.deadline = time.monotonic() + 10
+        run.cursor = 0
+        run.workers = self.classify(started(10) + analysis(1))
+        run.findings = []
+        run.result = {"findings": run.findings, "transitions": [], "expected_counts": {}}
+        run.where = {"cycle": 1, "action": "temporary", "context": "third"}
+        run.step_start = run.cycle_findings = 0
+        extra = run.temporary("third")
+        self.assertEqual(extra, {"cancel_preceded_completion": True})
+        run.s.send.assert_any_call("$/cancelRequest", {"id": 7}, request=False)
+        run.trace = Mock(return_value=(
+            "virgil-lsp: analysis worker 10 crashed during an analysis; it ended with signal 9\n"
+            + started(11) + analysis(1)))
+        run.resources = Mock(return_value={})
+        record = run.transition(1, False, "temporary", "third", time.perf_counter_ns(), **extra)
+        run.workers.end()
+        run.result["workers"] = run.workers.summary()
+        self.assertEqual(record["findings"], 1)
+        self.assertEqual(run.cycle_findings, 1)
+        self.assertEqual(run.findings[0]["bound"], "retirement")
+        self.assertEqual(run.findings[0]["at"], run.where)
+        self.assertEqual(run.result["workers"]["reasons"], {"failed": 1, "live at end": 1})
+        self.assertEqual(soak.bounds(run.result, True)["retirement_classified"],
+                         {"retirements": 0, "violations": 1})
 
 
 class AdmissionTest(unittest.TestCase):

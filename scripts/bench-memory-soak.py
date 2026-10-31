@@ -237,6 +237,8 @@ class Workers:
                 worker = self.current()
                 if worker and worker["pid"] == int(failed[1]):
                     worker["ended"] = {"reason": "failed", "detail": failed[2], "status": failed[3]}
+                    self.findings.append({"bound": "retirement", "detail": "worker failed",
+                                          "pid": worker["pid"], "line": line})
                 else:
                     self.findings.append({"bound": "retirement", "detail": "failure of an unknown worker", "line": line})
 
