@@ -92,6 +92,7 @@ SUITES = \
 	'python3 test/protocol/document_symbol_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
 	'$(BUILD)/retain-probe' \
 	'python3 test/e2e/clean-install/test_readme.py'
 
