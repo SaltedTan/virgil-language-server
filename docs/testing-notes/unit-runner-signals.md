@@ -15,10 +15,10 @@ Both runs are before `27c57e97`, which merged on 2026-10-26 at 03:16 UTC.
 
 ## How `EPERM` gives both signatures
 
-`total` starts the count probe (`[copy, "*"]`) in a session of its own, reads its `##>N unit tests` line, and then kills the probe's process group with `killpg` before waiting for it. On macOS that `killpg` can report `EPERM` while the group is going away, whichever signal brought the run down.
+`total` starts the count probe (`[copy, "*"]`) in a session of its own, reads its `##>N unit tests` line, and then kills the probe's process group with `killpg` before waiting for it. The first macOS run proves that this `killpg` can report `EPERM`; its log doesn't establish the group's exit state at that point.
 
 - At `dde709d5` the cleanup was `except ProcessLookupError: pass` and then `process.wait()`, and `main` had no exception handling, so `EPERM` left `total` and reached the test as an error: the first signature. **Proof:** the traceback in the run log shows the `killpg` call and the mock wrapper only, with no assertion.
-- Between the two runs, #273 and #276 rewrote the runner to per-group processes and slots, and `main` gained `except BaseException: if not children.signum: raise`. An `EPERM` at `11baf9d6` would therefore have raised inside `total`, been discarded by `main` because the signal was recorded, and left the probe unreaped: `os.waitpid(probe.pid, os.WNOHANG)` then returns instead of raising, which is the second signature. At `11baf9d6` the `poll()`-based handler re-raised in exactly that state, since the killed probe was not yet waitable. **Proof** that this path gives the second signature: the injected case below. **Not proven:** that this path is the one the 2026-10-26 run took.
+- Between the two runs, #273 and #276 rewrote the runner to per-group processes and slots, and `main` gained `except BaseException: if not children.signum: raise`. An `EPERM` at `11baf9d6` would therefore have raised inside `total`, been discarded by `main` because the signal was recorded, and left the probe unreaped: `os.waitpid(probe.pid, os.WNOHANG)` then returns instead of raising, which is the second signature. At `11baf9d6` the `poll()`-based handler would re-raise if the killed probe was not yet waitable, as the injected `poll()` result of `None` simulates. **Proof** that this path gives the second signature: the injected case below. **Not proven:** that this path is the one the 2026-10-26 run took.
 - `27c57e97` replaced that handler with `process.kill()` and an unconditional `process.wait()`, so a refused `killpg` no longer leaves `total` before the probe is stopped and reaped. **Proof:** with the `poll()`-based handler restored, the new cases and the `probe-exiting` boundary fail with each signature; with `27c57e97` they pass.
 
 ## What isn't proven
@@ -28,7 +28,7 @@ Both runs are before `27c57e97`, which merged on 2026-10-26 at 03:16 UTC.
 
 ## Reproducing it without macOS
 
-This machine is Ubuntu 24.04 on x86-64, and this note's evidence is local and deterministic. The tests inject the state the macOS runs showed, with the stand-in executable the file already uses: no sleeps, no retries, and real child processes, so the no-child assertion still runs against a real pid.
+This machine is Ubuntu 24.04 on x86-64, and this note's evidence is local and deterministic. The tests inject the proven `EPERM` and a process state consistent with the second macOS failure, with the stand-in executable the file already uses: no added sleeps or retries, and real child processes, so the no-child assertion still runs against a real pid.
 
 `test/unit/test_run.py` gained two cases:
 
