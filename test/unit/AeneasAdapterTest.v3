@@ -37,6 +37,7 @@ def X = [
 	T("AeneasAdapter:shared_nested_tuple_cleanup", test_shared_nested_tuple_cleanup),
 	T("AeneasAdapter:optional_global_stats", test_optional_global_stats),
 	T("AeneasAdapter:program_error_limit", test_program_error_limit),
+	T("AeneasAdapter:file_diagnostic_cap", test_file_diagnostic_cap),
 	T("AeneasAdapter:language_options_parse", test_language_options_parse),
 	T("AeneasAdapter:language_options_verify", test_language_options_verify),
 	T("AeneasAdapter:language_options_order", test_language_options_order),
@@ -721,6 +722,52 @@ def test_program_error_limit(t: Tester) {
 	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], [], false);
 	t.assert(r.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS, "reaches the limit");
 	for (d in r.diagnostics) t.assert(!Strings.equal(d.message, "identifier \"later\" cannot be found"), "B is not verified");
+}
+
+// Verification reports an error for each unresolved operator of one field
+// (#393), past the program's error limit, so each file keeps only its first
+// MAX_FILE_DIAGNOSTICS, and the last of them counts the rest.
+def test_file_diagnostic_cap(t: Tester) {
+	var max = AeneasAdapter.MAX_FILE_DIAGNOSTICS;
+	for (operators in [max - 1, max, 8000]) {
+		var chain = StringBuilder.new().puts("component C { var b = 0; def chain = c");
+		for (i < operators) chain.puts("+1");
+		var sources = [AnalysisSource.new("other.v3", "component D { def f() -> int { return missing; } }\n"),
+			AnalysisSource.new("chain.v3", chain.puts("; }\n").extract())];
+		var r = AeneasAdapter.analyzeProgram(sources, [], false);
+		// The other file's error comes first, then one for "c" and one for
+		// each operator, in source order.
+		var reported = 1 + operators, kept = Ints.min(reported, max);
+		t.asserti(1 + kept, r.diagnostics.length);
+		if (r.diagnostics.length != 1 + kept) continue;
+		t.assert_string("other.v3", r.diagnostics[0].path);
+		t.asserti(0, r.diagnostics[0].omitted);
+		for (i = 1; i <= kept; i++) {
+			var d = r.diagnostics[i];
+			t.assert_string("chain.v3", d.path);
+			if (i > 1) t.asserti(38 + 2 * (i - 2), d.beginOffset);
+			t.asserti(if(i == kept, reported - kept), d.omitted);
+		}
+	}
+	// Paths are compared by their bytes, and null is a path of its own; the
+	// order of the diagnostics kept is theirs.
+	var diagnostics = Vector<AnalysisDiagnostic>.new();
+	for (i < 2 * max + 50) {
+		var path = if(i % 2 == 0, Strings.format1("%s.v3", "a"));
+		diagnostics.put(AnalysisDiagnostic.new(path, 1, i + 1, 1, i + 2, "Error", "e"));
+	}
+	diagnostics.put(AnalysisDiagnostic.new("b.v3", 1, 1, 1, 2, "Error", "e"));
+	var capped = AeneasAdapter.capDiagnostics(diagnostics.extract());
+	t.asserti(2 * max + 1, capped.length);
+	for (i < 2 * max) {
+		t.asserti(i + 1, capped[i].beginColumn);
+		t.asserti(if(i >= 2 * max - 2, 25), capped[i].omitted);
+	}
+	t.assert_string("b.v3", capped[2 * max].path);
+	t.asserti(0, capped[2 * max].omitted);
+	// Within the cap, the array itself is returned.
+	var few = [AnalysisDiagnostic.new("a.v3", 1, 1, 1, 2, "Error", "e")];
+	t.assert(few == AeneasAdapter.capDiagnostics(few), "the diagnostics are kept as they are");
 }
 
 // The fixture from issue #80: a descriptor clause parses only with -lang:descriptors.

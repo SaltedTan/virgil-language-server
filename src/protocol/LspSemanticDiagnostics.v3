@@ -336,6 +336,12 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				found[i] = Vector<LspDiagnostic>.new();
 			}
 			found[i].put(LspDiagnostics.make(maps[i], mapped.0, mapped.1, 1, "aeneas", d.kind, Strings.nonnull(d.message)));
+			// The rest of the file's errors were not sent; say so after the
+			// last one sent, which they follow. If it is excluded, so is the
+			// notice: omitting it is safe.
+			if (d.omitted > 0) found[i].put(LspDiagnostics.make(maps[i], mapped.0, mapped.1, 3, "virgil-lsp", "DiagnosticLimit",
+				Strings.format2("%d more errors in this file are not shown; at most %d are reported for each file.",
+					d.omitted, AeneasAdapter.MAX_FILE_DIAGNOSTICS)));
 		}
 		// At its error limit Aeneas stops checking, hiding errors in later
 		// declarations and files; say so where the last reported error is.

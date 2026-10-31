@@ -398,6 +398,58 @@ def inheritance_cycles(exe, work):
             s.close()
 
 
+def long_error_chains(exe, work):
+    # One unresolved operator after another is an error each (#393). The
+    # file gets its first 100 and a notice of the rest, and the project stays
+    # analyzed: the other file still has definitions and hover. It comes
+    # first, since Aeneas checks nothing after its error limit.
+    observer = "def target() -> int { return 42; }\ndef use() -> int { return target(); }\n"
+    for operators in (3000, 8000):
+        root = work / ("chain-" + str(operators))
+        root.mkdir()
+        chain, other = root / "Chain.v3", root / "Other.v3"
+        chain.write_text("component C { var b = 0; def chain = c" + "+1" * operators + "; }\n")
+        other.write_text(observer)
+        (root / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": [
+            {"name": "chain", "sources": ["Other.v3", "Chain.v3"]}]}))
+        s = Session(exe)
+        try:
+            s.result(s.send("initialize", {"rootUri": root.as_uri()}))
+            s.send("textDocument/didOpen", {"textDocument": {
+                "uri": other.as_uri(), "languageId": "virgil", "version": 1, "text": observer}}, request=False)
+            query = {"textDocument": {"uri": other.as_uri()}, "position": {"line": 1, "character": 27}}
+            expected = {"uri": other.as_uri(), "range": {
+                "start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 10}}}
+            assert s.result(s.send("textDocument/definition", query)) == expected, s.transcript
+            hover = s.result(s.send("textDocument/hover", query))
+            assert hover and "target() -> int" in hover["contents"]["value"], hover
+            lists = [m["params"]["diagnostics"] for direction, m in s.transcript
+                     if direction == "recv" and m.get("method") == "textDocument/publishDiagnostics"
+                     and m["params"]["uri"] == chain.as_uri()]
+            assert lists, s.transcript
+            published = lists[-1]
+            assert len(published) == 102, len(published)
+            assert all(d["source"] == "aeneas" for d in published[:100]), published
+            assert published[0]["code"] == "UnresolvedIdentifier", published[0]
+            assert published[99]["code"] == "UnresolvedOp", published[99]
+            notice = published[100]
+            assert notice["code"] == "DiagnosticLimit" and notice["severity"] == 3, notice
+            assert notice["message"] == (str(operators + 1 - 100)
+                                         + " more errors in this file are not shown; at most 100 are reported for each file."), notice
+            assert notice["range"] == published[99]["range"], notice
+            assert published[101]["code"] == "ErrorLimit", published[101]
+            snapshot = s.result(s.send("virgil-lsp/analyze", {"uri": other.as_uri()}))
+            diagnostics = snapshot["diagnostics"]
+            assert len(diagnostics) == 100, len(diagnostics)
+            assert diagnostics[-1]["omitted"] == operators + 1 - 100, diagnostics[-1]
+            assert all("omitted" not in d for d in diagnostics[:-1]), diagnostics
+            assert not any("failed" in message.lower() or "too large" in message.lower()
+                           for message in s.logs().splitlines()), s.logs()
+            s.shutdown()
+        finally:
+            s.close()
+
+
 def aeneas_repeats(exe):
     # Match the CLI's Aeneas file set and default time limit: 20 full
     # parse/verify/index analyses, crossing multiple forced replacements while
@@ -475,11 +527,12 @@ def main():
         shutil.copy2(exe.parent / "stall/virgil-lsp-worker", stalled / "virgil-lsp-worker")
         exercise(stalled / "virgil-lsp", work)
         inheritance_cycles(exe, work)
+        long_error_chains(exe, work)
         aeneas_repeats(exe)
         startup_and_eof(exe, work)
         memory_headroom(exe, work)
         large_hang(stalled / "virgil-lsp", work)
-    print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown, startup and memory headroom passed")
+    print("protocol worker: crash, hang, retained snapshots, long error chains, 20 Aeneas analyses, shutdown, startup and memory headroom passed")
 
 
 if __name__ == "__main__":

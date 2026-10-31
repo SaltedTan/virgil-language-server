@@ -63,6 +63,7 @@ component SyntheticAnalysisWorker {
 				for (i < text.length) text[i] = 'x';
 				w.put_sleb32(text.length).puta(text);
 			}
+			w.put_sleb32(0); // no capped diagnostics
 			if (Strings.equal(mode, "malformed")) w.putb(0); // trailing byte
 			if (!send(WorkerFraming.finish(w))) return 1;
 		}
