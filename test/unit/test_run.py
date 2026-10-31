@@ -466,6 +466,97 @@ class RunTest(unittest.TestCase):
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
 
+    def test_probe_cleanup_stops_the_probe_directly_when_killpg_is_refused(self):
+        # macOS can report EPERM for the count probe's group while the probe
+        # itself runs: 40169702035 saw the runner raise that permission error
+        # instead of stopping the probe. The runner stops the probe directly,
+        # then reaps it, so no child outlives the count.
+        runner = runpy.run_path(str(self.run_py))
+        self.stand_in()
+        children = runner["Children"]()
+        popen = subprocess.Popen
+        probes = []
+
+        def launch(command, **kwargs):
+            child = popen(command, **kwargs)
+            probes.append(child)
+            return child
+
+        def refuse(pid, sig):
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+        try:
+            with patch.object(subprocess, "Popen", side_effect=launch), \
+                    patch.object(os, "killpg", side_effect=refuse):
+                self.assertEqual(3, runner["total"](str(self.build), str(self.executable), children))
+            self.assertEqual(1, len(probes))
+            # The probe was waiting for its 60 seconds when the group's signal
+            # was refused, so its SIGKILL came from the runner, not the group.
+            self.assertEqual(-signal.SIGKILL, probes[0].returncode)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(probes[0].pid, os.WNOHANG)
+            self.assertEqual([], children.processes)
+            # The count's own tree went with the probe.
+            self.assertEqual(["project-fixtures", "unit-tests"],
+                             sorted(path.name for path in self.build.iterdir()))
+        finally:
+            for probe in probes:
+                probe.kill()
+                if probe.stdout is not None:
+                    probe.stdout.close()
+                probe.wait()
+
+    def test_a_recorded_signal_does_not_hide_a_probe_cleanup_failure(self):
+        # 40261185342 saw SIGHUP as the count probe started and a probe left
+        # unreaped; main discards an exception once a signal is recorded, so
+        # its log doesn't say which one. This injects the likely one: the
+        # probe's killpg refused with EPERM while the probe was not yet
+        # waitable. The runner must still stop and reap the probe.
+        runner = runpy.run_path(str(self.run_py))
+        popen = subprocess.Popen
+        signum = signal.SIGHUP
+        handlers = {stopped: signal.getsignal(stopped)
+                    for stopped in (signal.SIGTERM, signum, signal.SIGINT)}
+        self.stand_in()
+        modes = [stat.S_IMODE(directory.stat().st_mode) for directory in self.restricted]
+        probes = []
+        try:
+            def launch(command, **kwargs):
+                child = popen(command, **kwargs)
+                probes.append(child)
+                # The probe's group can exit before waitpid reports the probe.
+                patches.enter_context(patch.object(child, "poll", return_value=None))
+                os.kill(os.getpid(), signum)
+                return child
+
+            def refuse(pid, sig):
+                raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+            try:
+                with ExitStack() as patches, \
+                        patch.object(subprocess, "Popen", side_effect=launch), \
+                        patch.object(os, "killpg", side_effect=refuse):
+                    status = runner["main"](1, str(self.build), str(self.executable), [])
+                self.assertEqual(128 + signum, status)
+                self.assertEqual(1, len(probes))
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(probes[0].pid, os.WNOHANG)
+                self.assertEqual(-signal.SIGKILL, probes[0].returncode)
+                # The count stopped before the fixtures were restricted, and
+                # left them as it found them.
+                self.assertEqual(modes, [stat.S_IMODE(directory.stat().st_mode) for directory in self.restricted])
+                self.assertEqual(["project-fixtures", "unit-tests"],
+                                 sorted(path.name for path in self.build.iterdir()))
+            finally:
+                for probe in probes:
+                    probe.kill()
+                    if probe.stdout is not None:
+                        probe.stdout.close()
+                    probe.wait()
+        finally:
+            for stopped, handler in handlers.items():
+                signal.signal(stopped, handler)
+
     def test_signal_status_survives_preparation_and_restriction_failures(self):
         prepare = self.run_py.parent.parent / "fixtures" / "projects" / "prepare.py"
         prepare.rename(prepare.with_name("real_prepare.py"))
