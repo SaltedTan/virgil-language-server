@@ -1375,13 +1375,14 @@ def test_refusal_evicts_nothing(t: Tester) {
 	s.server.close();
 }
 // A completion's analysis doesn't replace its project's snapshot, so its
-// admission never frees it: under the pressure of test_edit_frees_own_snapshot
-// it is refused, and the server keeps its snapshot.
+// admission never frees it: with a budget a byte short of both snapshots and
+// a query's decoding budget, as in test_edit_frees_own_snapshot, it is
+// refused, and the server keeps its snapshot.
 def test_completion_keeps_own_snapshot(t: Tester) {
 	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
 	var server = s.context(names[0]), client = s.context(names[1]);
 	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
-	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_QUERY_ALLOCATION
 		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
 	var kept = server.snapshot, latest = client.snapshot, before = s.analyses();
 	var completion = s.at("textDocument/completion", names[0], 4, 16);

@@ -11,12 +11,17 @@
 // in its preflight alone. A request with a scope query whose sources spell
 // {SCOPE_CRASH} ends the worker too, and one whose sources spell
 // {SCOPE_MALFORMED} gets a scope answer that names a declaration twice, so
-// that a completion fails while the project's own analyses succeed.
+// that a completion fails while the project's own analyses succeed, and one
+// whose sources spell {SCOPE_TOO_LARGE} gets a result over the query's
+// decoding budget but within a full analysis's. A request for one source at
+// a path that names a mode gets that mode's fixed result: "too-large" and
+// "query-too-large" are over those budgets.
 component SyntheticAnalysisWorker {
 	def CRASH = "workerEndsHere";
 	def TOO_LARGE = "resultTooLarge";
 	def SCOPE_CRASH = "scopeEndsHere";
 	def SCOPE_MALFORMED = "scopeMalformed";
+	def SCOPE_TOO_LARGE = "scopeTooLarge";
 
 	def run() -> int {
 		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, 384L * 1024 * 1024))) return 1;
@@ -36,30 +41,35 @@ component SyntheticAnalysisWorker {
 			if (Strings.endsWith(mode, ".v3")) {
 				if (spells(request.sources, CRASH)) return 1;
 				if (request.scope() != null && spells(request.sources, SCOPE_CRASH)) return 1;
-				if (!spells(request.sources, TOO_LARGE)) {
+				if (spells(request.sources, TOO_LARGE)) {
+					mode = "too-large";
+				} else if (request.scope() != null && spells(request.sources, SCOPE_TOO_LARGE)) {
+					mode = "query-too-large";
+				} else {
 					if (!send(analyze(request))) return 1;
 					continue;
 				}
-				mode = "too-large";
 			} else if (request.sources.length != 1) {
 				return 1;
 			}
 			var large = Strings.equal(mode, "too-large") || Strings.equal(mode, "wrong-id");
+			var queryLarge = Strings.equal(mode, "query-too-large");
 			var id = request.id + if(Strings.equal(mode, "wrong-id"), 1);
 			var w = WorkerFraming.start().putb(AnalysisWire.RESULT).put_b32(id).put_b32(1).put_b32(1).put_b64(0);
 			w.putb(3); // parsed and verified, no occurrence index
 			for (i < 6) w.put_sleb32(0);
 			// Skipped uses, which the supervisor reports.
 			w.put_sleb32(if(Strings.equal(mode, "skipped"), 2, 0));
-			w.put_sleb32(if(large, 1, 0));
-			if (large) {
+			w.put_sleb32(if(large || queryLarge, 1, 0));
+			if (large || queryLarge) {
 				// A complete diagnostic, encoded well within the frame limit but
 				// charged at 32 bytes per message byte for JSON response headroom.
 				w.put_sleb32(-1);
 				for (i < 4) w.put_sleb32(1);
 				w.put_sleb32(-1).put_sleb32(-1);
 				w.put_sleb32(-1);
-				var text = Array<byte>.new(AnalysisWire.MAX_RESULT_ALLOCATION / 32);
+				var budget = if(queryLarge, AnalysisWire.MAX_QUERY_ALLOCATION, AnalysisWire.MAX_RESULT_ALLOCATION);
+				var text = Array<byte>.new(budget / 32);
 				for (i < text.length) text[i] = 'x';
 				w.put_sleb32(text.length).puta(text);
 			}

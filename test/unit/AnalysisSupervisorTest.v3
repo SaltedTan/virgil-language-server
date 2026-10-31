@@ -23,6 +23,7 @@ def X = [
 	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
 	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
 	T("AnalysisSupervisor:over_budget_result_keeps_snapshot", test_over_budget_result_keeps_snapshot),
+	T("AnalysisSupervisor:query_over_budget", test_query_over_budget),
 	T("AnalysisSupervisor:skipped_uses_warn", test_skipped_uses_warn),
 	T("AnalysisSupervisor:malformed_result_replaces_worker", test_malformed_result_replaces_worker),
 	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
@@ -377,6 +378,46 @@ def test_over_budget_result_keeps_snapshot(t: Tester) {
 	if (next == null) return;
 	t.asserti(2, next.generation);
 	t.asserti(2, s.workersStarted);
+}
+
+// A query's result without occurrences is decoded within the query's budget,
+// not a full analysis's: one between the two fails as too large, with the
+// budget that applied, and replaces the worker, while the same result of a
+// full analysis completes.
+def test_query_over_budget(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
+	var good = [AnalysisSource.new("good", "")], large = [AnalysisSource.new("query-too-large", "")];
+	var first = completed(t, s.analyze(good, [], ALL));
+	if (first == null) return s.close();
+	var outcome = poll(s, s.beginTemporary(large, [], 0, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, "")));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, outcome);
+	match (outcome) {
+		Failed(failure, reason) => {
+			var messages = Vector<string>.new();
+			messages.put(reason);
+			t.assert(contains(messages, "the query's answer is too large"), reason);
+			t.assert(contains(messages, "query allocation budget of 2097152 bytes"), reason);
+			t.assert(!contains(messages, "16777216"), "not the full analysis's budget");
+			t.assert(!contains(messages, "reduce the program's source set"), "no advice for a whole program");
+		}
+		_ => return s.close();
+	}
+	t.assert(contains(sl.1.warnings, "result exceeding the allocation budget of 2097152 bytes"), "the query's budget logged");
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	var full = completed(t, s.analyze(large, [], 0));
+	t.assert(full != null && full.diagnostics.length == 1, "within a full analysis's budget");
+	t.asserti(2, s.workersStarted);
+	s.close();
+}
+// Polls {s} until {outcome}, the start of an analysis, completes.
+def poll(s: AnalysisSupervisor, outcome: AnalysisOutcome) -> AnalysisOutcome {
+	var fds = Array<int>.new(4);
+	while (AnalysisOutcome.Pending.?(outcome)) {
+		var count = s.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.pollTimeout());
+		outcome = s.onPoll();
+	}
+	return outcome;
 }
 
 // A worker reports the uses it dropped as not token spans. The result is

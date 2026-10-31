@@ -29,6 +29,7 @@ def X = [
 	T("LspCompletionScope:time_limit", test_time_limit),
 	T("LspCompletionScope:worker_crash", test_worker_crash),
 	T("LspCompletionScope:malformed_scope", test_malformed_scope),
+	T("LspCompletionScope:answer_too_large", test_answer_too_large),
 	T("LspCompletionScope:shutdown", test_shutdown),
 	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
 	T("LspCompletionScope:admission", test_admission),
@@ -598,6 +599,23 @@ def test_malformed_scope(t: Tester) {
 	s.settle();
 	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a malformed answer");
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from a well-formed answer");
+	s.server.close();
+}
+
+// A result over the query's decoding budget fails safely, as an oversized
+// result of a project's analysis does: the reply has the keywords alone,
+// marked incomplete, the context keeps its snapshot, and the replaced worker
+// answers the next.
+def test_answer_too_large(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	var started = s.supervisor.workersStarted;
+	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tfa$", SyntheticAnalysisWorker.SCOPE_TOO_LARGE)));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a result over the budget");
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from the next worker");
+	t.assert(s.supervisor.workersStarted > started, "a new worker started");
+	t.assert(ctx.snapshot != null, "the context has a snapshot");
 	s.server.close();
 }
 

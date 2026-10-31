@@ -121,7 +121,9 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 	// Starts {r}'s analysis: the project's sources as an automatic analysis
 	// captures them, with {r}'s text for its document, admitted within the
 	// snapshot budget, which the supervisor does not keep as its latest and
-	// which leaves the project's snapshot in place.
+	// which leaves the project's snapshot in place. Its result has no
+	// occurrences, so it reserves only its own decoding budget,
+	// AnalysisWire.MAX_QUERY_ALLOCATION, and the provenance.
 	def begin(r: LspQueryRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		if (waiting == r) waiting = null;
 		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the request was answered");
@@ -143,7 +145,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
 		r.versions = inputs.versions;
 		r.index = index;
-		if (!projects.admitKeeping(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+		if (!projects.admitKeeping(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_QUERY_ALLOCATION) + inputs.snapshotBytes)) {
 			// Once for each refused analysis: the reply alone doesn't say why
 			// it has no answer.
 			if (warn != null) warn(Strings.format2("the %s's analysis was refused: %s", what, projects.refusal()));

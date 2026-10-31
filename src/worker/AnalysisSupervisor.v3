@@ -55,6 +55,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// The AnalysisScopeKinds of the pending analysis's scope or member
 	// query, or 0 without one.
 	private var queryKinds: int;
+	// The pending analysis has a query and no occurrences, and its result
+	// is decoded within AnalysisWire.MAX_QUERY_ALLOCATION.
+	private var queryOnly: bool;
 
 	def busy() -> bool { return pending; }
 
@@ -106,6 +109,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		}
 		pending = true;
 		queryKinds = if(scope != null, scope.kinds);
+		queryOnly = scope != null && (flags & AnalysisWire.WANT_OCCURRENCES) == 0;
 		if (!starting) sendRequest();
 		return AnalysisOutcome.Pending;
 	}
@@ -118,7 +122,8 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// or, for AnalysisScopeKinds.MEMBERS, the member query
 	// (AnalysisSnapshot.members);
 	// without WANT_OCCURRENCES too, its snapshot has only the candidates'
-	// declarations, and no files.
+	// declarations, no files, and no diagnostics, and its result is decoded
+	// within AnalysisWire.MAX_QUERY_ALLOCATION.
 	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int,
 			scope: AnalysisScopeRequest) -> AnalysisOutcome {
 		var outcome = start(sources, options, flags, scope);
@@ -162,13 +167,13 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 				}
 				var result: AnalysisWorkerResult;
 				var decodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
-				match (AnalysisWire.decodeResultWithQuery(payload, generation + 1, paths, queryKinds)) {
+				match (AnalysisWire.decodeResultWithin(payload, generation + 1, paths, queryKinds, budget())) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {
 						if (id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 						// Decoding stopped at the budget, so the remainder and the
 						// restart-policy state are not trusted. Replace conservatively.
-						return discard(AnalysisFailure.TOO_LARGE, "sent a result exceeding the allocation budget and was replaced");
+						return discard(AnalysisFailure.TOO_LARGE, Strings.format1("sent a result exceeding the allocation budget of %d bytes and was replaced", budget()));
 					}
 					Malformed => return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				}
@@ -225,6 +230,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		pending = false;
 		temporary = false;
 		queryKinds = 0;
+		queryOnly = false;
 		request = null;
 		paths = null;
 	}
@@ -234,7 +240,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		request = null;
 	}
 	private def discard(failure: AnalysisFailure, what: string) -> AnalysisOutcome {
-		var pid = worker.pid, status = worker.terminate();
+		var pid = worker.pid, status = worker.terminate(), query = queryOnly;
 		worker = null;
 		starting = false;
 		clearPending();
@@ -242,15 +248,24 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		buf.put3("analysis worker %d %s; it ended with %s", pid, what, status);
 		if (snapshot != null) buf.put1("; snapshot %d is kept", snapshot.generation);
 		log(warn, buf.toString());
-		return AnalysisOutcome.Failed(failure, Strings.format2("%s (%s)", describe(failure), status));
+		return AnalysisOutcome.Failed(failure, Strings.format2("%s (%s)", describe(failure, query), status));
 	}
-	private def describe(failure: AnalysisFailure) -> string {
+	// The allocation budget of the pending analysis's result.
+	private def budget() -> int {
+		return if(queryOnly, AnalysisWire.MAX_QUERY_ALLOCATION, AnalysisWire.MAX_RESULT_ALLOCATION);
+	}
+	// What {failure} means, for an analysis with a query and no occurrences
+	// if {query}.
+	private def describe(failure: AnalysisFailure, query: bool) -> string {
 		match (failure) {
 			UNAVAILABLE => return "no analysis worker could be started";
 			CRASHED => return "the analysis worker crashed";
 			TIMED_OUT => return "the analysis worker timed out";
 			MALFORMED => return "the analysis worker sent a malformed result";
-			TOO_LARGE => return Strings.format1("the program is too large to analyze: result exceeds the allocation budget of %d bytes; reduce the program's source set", AnalysisWire.MAX_RESULT_ALLOCATION);
+			TOO_LARGE => {
+				if (query) return Strings.format1("the query's answer is too large: result exceeds the query allocation budget of %d bytes", AnalysisWire.MAX_QUERY_ALLOCATION);
+				return Strings.format1("the program is too large to analyze: result exceeds the allocation budget of %d bytes; reduce the program's source set", AnalysisWire.MAX_RESULT_ALLOCATION);
+			}
 			BUSY => return "an analysis is already running";
 		}
 	}

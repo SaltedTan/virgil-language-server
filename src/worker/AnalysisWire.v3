@@ -10,6 +10,15 @@
 component AnalysisWire {
 	def PROTOCOL_VERSION = 16;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
+	// The decoding budget of a query's result without occurrences, which
+	// has no diagnostics (encodeResultWithQuery) and so only the answer: at
+	// most AnalysisScopeOrder.MAX_DECLARATIONS candidates, whose display
+	// text is at most AnalysisDisplayText.MAX_BYTES, or one call. At those
+	// caps, the parts with a bound charge about 0.55 MB for a scope answer
+	// and 0.89 MB for a member answer; the rest is room for names and
+	// argument lists, which have none. See
+	// docs/architecture.md#analysis-snapshots-partly-present.
+	def MAX_QUERY_ALLOCATION = 2 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
 	// The argument that makes the worker serve a server.
@@ -215,7 +224,8 @@ component AnalysisWire {
 	// names and details its string table, and its call's signature the call
 	// signatures. A result whose occurrence section has no files, a query's
 	// answer without occurrences, has no diagnostics: nothing reads them, and
-	// they are the only part of it that can grow with the program.
+	// they are the only part of it that can grow with the program, which its
+	// decoding budget (MAX_QUERY_ALLOCATION) must not have to allow for.
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
@@ -711,7 +721,13 @@ component AnalysisWire {
 	// query, a call answer to a CALL query, and a scope answer to another. An
 	// answer to a request that did not ask for its kind is malformed.
 	def decodeResultWithQuery(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int) -> AnalysisResultDecode {
+		return decodeResultWithin(payload, generation, paths, kinds, MAX_RESULT_ALLOCATION);
+	}
+	// Decodes a RESULT as {decodeResultWithQuery} does, within an allocation
+	// budget of {budget} bytes: a result that would allocate more is TooLarge.
+	def decodeResultWithin(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int, budget: int) -> AnalysisResultDecode {
 		var r = AnalysisWireReader.new(payload, RESULT);
+		r.limit(budget);
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
 		var flags = r.readByte();
@@ -1033,6 +1049,7 @@ class AnalysisWireReader {
 	private var hintLabelStrings: Array<string>;
 	private var r: DataReader;
 	private var remaining: long;
+	private var budget = long.view(AnalysisWire.MAX_RESULT_ALLOCATION);
 	def var overBudget: bool;
 
 	new(payload: Array<byte>, kind: byte) {
@@ -1041,7 +1058,11 @@ class AnalysisWireReader {
 		if (r.read1() != kind) r.fail("unexpected message kind");
 	}
 	def allocationBytes() -> long {
-		return long.view(AnalysisWire.MAX_RESULT_ALLOCATION) - remaining;
+		return budget - remaining;
+	}
+	// Makes a RESULT's allocation budget {bytes}, before anything is read.
+	def limit(bytes: int) {
+		budget = remaining = long.view(bytes);
 	}
 	def ok() -> bool {
 		return r.ok;
