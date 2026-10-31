@@ -2628,3 +2628,78 @@ Latencies matched within their p10–p90 intervals for every scenario of every p
 | `completion_miss` | 123.394 (119.122–136.803) | 124.575 (119.525–138.250) |
 
 Util's fresh analysis allocates 66,928 bytes less, 9,890,480 bytes, and small's 88 bytes less. The worker's RESULT frames, compared byte for byte as for #380 with the elapsed-time fields zeroed, were identical for all 22 corpus requests, and so were their live bytes.
+
+## prepareRename on one CPU (2026-10-31)
+
+Measured on 2026-10-31 for [#390](https://github.com/SaltedTan/virgil-language-server/issues/390),
+after the [worker heap room](#worker-heap-room-2026-10-31) comparison recorded
+Aeneas `prepareRename` at 32.960 ms (17.571–49.785). The request is cached: it
+starts no worker transaction, and its work is the server's eligibility check. On
+the Aeneas corpus that check reads and hashes every source, 10.9 ms; expands
+the project and compares each source's stamp, 5.8 ms; scans declarations,
+members, and other programs, 0.8 ms; and does the rest in 0.1 ms, a floor of
+17.6 ms.
+
+Two steps in that column are explained here: 17.9 to 25.3 ms at
+[#290](https://github.com/SaltedTan/virgil-language-server/pull/290)
+(`06672f2b`), and 26.5 to 33.3 ms at the Virgil pin bump
+[#315](https://github.com/SaltedTan/virgil-language-server/pull/315)
+(`54800cef`). Both are the one-CPU effect that
+[Scheduled comparison](#scheduled-comparison) records for `completion_hit`,
+landing on a longer request.
+
+Each step was reproduced with six alternating process blocks of thirty measured
+operations for the Aeneas project on hardware thread 12, under the shared
+benchmark lock, with `--error-result --require-probes --cpu 12` and every
+semantic check passing. Each pair is the commit against its parent, built in its
+own checkout at its own pin's corpus, with equal-length generated BuildInfo
+(`bisect-` and twelve hex digits). Timings are median (p10–p90), milliseconds:
+
+| Step | Parent | Commit |
+| --- | ---: | ---: |
+| #290, old-pin corpus | 17.649 (17.572–18.097) | 25.994 (17.655–30.574) |
+| #315, new-pin corpus | 25.821 (17.890–42.018) | 33.164 (19.210–46.604) |
+| #315, old-pin corpus | 25.542 (17.763–26.924) | 32.681 (19.396–36.183) |
+
+`completion_hit` in the #290 runs moved from 2.712 to 5.907 ms, the step that
+section already explains. Then the same pairs with the worker's executable
+wrapped to run on CPU 14, leaving the server on CPU 12 as editors run them on
+separate cores, and with no repository change:
+
+| Step | Parent | Commit |
+| --- | ---: | ---: |
+| #290 | 17.827 (17.697–18.378) | 17.935 (17.732–18.133) |
+| #315 | 18.324 | 18.200 |
+
+Every block's median stayed between 17.7 and 18.0 ms in the #290 pair and
+between 18.1 and 18.6 in the #315 pair. One sample in each build of every #315
+block took about 35 ms, in both builds, so the comparison is unaffected.
+Neither step changes the request's own work.
+
+Instrumented scratch builds, not committed, timed the server's eligibility call
+and the worker's collection window per sample. In the shared #290 run, the
+request began 9 to 18 ms into the worker's 34 ms collection of the previous
+`completion_miss` result, with 10 to 20 ms of it left. The eligibility call then
+measured 23.4 ms against 17.6 ms uncontended, its extra time inside the project
+expansion and member scan, while samples that began after the collection had
+ended measured 17.5 ms. Those are the two modes. With the worker on CPU 14 the
+same collection windows overlapped the same request windows in wall time, but
+the call stayed at 17.7 ms because the processes no longer share a core.
+
+#290 added that collection. Before it, the worker collected before sending a
+result, so nothing was pending when the cached requests that follow ran; since
+then it collects after sending, which takes 40.5 ms (33.9–52.0) for an Aeneas
+result. #315 makes the collection 13 ms longer, 38.6 to 51.0 ms on the new
+corpus and 38.8 to 50.9 on the old one, with the new pin and its corpus. More of
+it remains when `prepareRename` starts, deepening the slow mode by the measured
+7 ms without moving the floor. The collection stays for the reasons
+[ADR-0004](decisions/0004-analysis-worker-process.md) and
+[#294](https://github.com/SaltedTan/virgil-language-server/issues/294) record,
+and it costs cached requests nothing on separate cores.
+
+Read the column as two modes, not one median. The Aeneas floor is about 17.6 ms,
+and a run pinned to one CPU can put the median anywhere between that and about
+twice it, depending on where the worker's collections fall; p10–p90 spans both.
+The scheduled Linux job pins server and worker to one CPU, so this column alone
+is not a latency regression signal there, and with server and worker on
+separate cores it is the floor.
