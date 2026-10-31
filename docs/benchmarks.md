@@ -37,7 +37,7 @@ metadata explicitly; ordinary `make all` builds need no Python:
 ```sh
 make all bench-metadata
 python3 scripts/bench-lsp.py --exe build/virgil-lsp --output build/bench-results/normal.json
-python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
+python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output build/lsp-smoke.json
 ```
 
 `make test` runs the small smoke case and the client's rejection checks
@@ -1285,7 +1285,7 @@ Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
-python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output /dev/null
+python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output build/tolerance-smoke.json
 ```
 
 ### Tolerance baseline
@@ -2703,3 +2703,244 @@ twice it, depending on where the worker's collections fall; p10–p90 spans both
 The scheduled Linux job pins server and worker to one CPU, so this column alone
 is not a latency regression signal there, and with server and worker on
 separate cores it is the floor.
+
+## Cursor tolerance histories (2026-10-31)
+
+The [tolerance benchmark](#semantics-during-syntax-errors) queries intact files,
+so its 180/185 primary availability says nothing about completion and signature
+help where the user types. [`scripts/bench-cursor-tolerance.py`](../scripts/bench-cursor-tolerance.py)
+measures them through 17 fixed typing histories, for
+[#342](https://github.com/SaltedTan/virgil-language-server/issues/342). It reuses
+`Session`, the tolerance driver's process and scoring helpers, and its
+corpus hash checks. It is opt-in: neither it nor its helper tests are part of
+`make test` or any workflow. Build, then run it under the shared benchmark lock:
+
+```sh
+make bench-build
+mkdir -p build/bench-results/cursor-work
+flock ~/.t3/scratch-virgil/bench.lock python3 scripts/bench-cursor-tolerance.py \
+  --exe build/bench/virgil-lsp --cpu 12 --work-dir build/bench-results/cursor-work \
+  --output build/bench-results/cursor.json
+python3 scripts/bench-cursor-tolerance.py --smoke --exe build/bench/virgil-lsp --output build/cursor-smoke.json
+python3 test/benchmarks/test_cursor_tolerance.py
+```
+
+`--smoke` replays only the first two seed histories, in one block, and needs no
+build manifest; the example also creates `build/cursor-smoke.json.transcripts.jsonl`.
+The full run replays every history in six blocks, alternating
+the order of the modes from block to block. With a file output, the raw protocol
+transcripts and each process's stderr go to `<output>.transcripts.jsonl`, and a
+failed run keeps its partial results in `<output>.failure.json`.
+
+### Inventory
+
+The histories were frozen in
+[`cursor-tolerance-histories.json`](../test/benchmarks/cursor-tolerance-histories.json)
+before any damaged state was measured. It records each small or seed file's
+exact text, the hash of every Aeneas source a history reads, every edit
+operation, the probe and observer anchors with their resolved positions, each
+step's syntactic role and which files the CLI parser must accept, and the
+oracle facts. The driver regenerates the inventory from its definitions and
+refuses to run if the two differ. Each anchor must occur exactly once in its
+text, so a missing or repeated site is refused rather than replaced by another.
+`python3 scripts/bench-cursor-tolerance.py --write-inventory` regenerates it
+after a reviewed change.
+
+- **Six seeds** from the [repair corpus](decisions/0006-incomplete-code-repair.md#cases):
+  `member-with-prefix`, `call-open-arguments`, `call-trailing-comma`,
+  `member-in-field-initializer`, `member-in-component-field`, and
+  `syntax-error-in-other-file`. Their fixtures must match the hashes in
+  [`tolerance-seeds.json`](../test/benchmarks/tolerance-seeds.json). Each has
+  four steps: the intended program, the fixture's damaged text, the intended
+  program again, and the same query again. The intended program uses the seed's
+  insertion where that is a real program, and otherwise the member `x`: the
+  `virgilLspCursor` insertions of three seeds name no member.
+- **Nine small histories** on one three-file fixture: `Util.add(left: int,
+  right: int) -> int`; `A`, with typed and inferred `Util.add(1, 2)` fields, an
+  `edit(n: int) -> int` holding `Util.add(n, 2)`, a string local, a block
+  comment, and an inner `if`, an intact `sibling()` that calls `Util.add`, and a
+  `third()` with `var x = 0;`; and `Consumer.use()`, which calls `A.sibling()`.
+  The file is indented with tabs, within the brace rules' premise. Each history
+  has five steps: the valid baseline, one token removed, one more typed
+  character or damage, the restored baseline, and the restored query again.
+  `parameter-type` and `return-type` remove `int` from `edit`'s header, then
+  type `i`. `typed-initializer` removes the `2`, leaving `Util.add(1, )` paired,
+  then its `)`. `inferred-initializer` removes the `)`, then types `3` before
+  the `2`. `open-string`, `open-block-comment`, `missing-inner-closer`, and
+  `missing-method-closer` remove the string's closing quote, the comment's
+  `*/`, the inner `if`'s `}`, and `edit`'s own `}`, after the query's call, then
+  type one character at the cursor. `third-damaged-body` renames `Util.add`
+  to `sum` and its parameter `right` to `amount`, with every call site updated,
+  then removes the `)` of the calls in `edit` and `sibling`, then types `Util.`
+  in `third`, and finally restores both calls and completes `third`'s
+  `Util.sum`.
+- **Two real histories** in the pinned compiler's 206 sources: `var vst =
+  prog.vst;` in `aeneas/src/vst/Verifier.v3` and `def pos = mw.pos;` in
+  `aeneas/src/arm64/Arm64AddrPatcher.v3`. Each queries after `prog.` or `mw.`
+  in the upstream file, with the member removed, with its first character
+  typed, and in the restored file, then repeats that query. The upstream file is
+  the intended program of every step. These are member completions only, not
+  signature help. Only the edited file is open.
+
+Signature help is asked inside a real call's argument list, including within a
+number; completion at a `.` or a typed prefix. `third-damaged-body` asks for
+both: completion in `third` and signature help at `edit`'s call.
+
+Every step also asks for definitions: in the edited body or declaration, in an
+intact sibling, in another file, at the probed call's callee, and, where its use
+is typed, at the required completion candidate. A probe that has no such site
+is recorded as inapplicable: the seeds are one file, or another file with
+nothing to navigate, and `int` has no source declaration.
+
+### Oracles and verdicts
+
+Oracles are reviewed facts about the intended program, not captured replies. A
+completion must offer every required candidate with its reviewed kind and
+detail, such as `add` with `def add(left: int, right: int) -> int`, or `int`
+as a builtin type. A signature must have the reviewed label, parameters, and
+active parameter. A definition must point at the reviewed declaration's name.
+Whole completion lists are not compared, and a nonempty reply is not correct by
+itself:
+
+- `exact`: every fact holds.
+- `partial`: some required candidates or leading parameters, and nothing wrong.
+- `keywords-only`: no required candidate, and every item is a keyword.
+- `missing`: no reply, an empty one, or names in scope without the required
+  candidates.
+- `wrong`: a candidate or signature that only an older program has, a required
+  candidate with another kind or type, another signature or active parameter,
+  another definition, or, after a `.`, members without any of the receiver's
+  required ones.
+
+Before it measures anything, the driver checks the CLI parser's verdict on
+every text, replays each history's intended texts in an oracle process, and
+requires every fact there to be exact. The stale-answer control replays
+`third-damaged-body` with `add` and `right` kept. Its answers, scored against
+the renamed history's facts, must be wrong at all eight probes that the rename
+affects: signature help at every step, and completion once `Util.` is typed.
+
+### Modes and barriers
+
+Each history runs in three modes, each in a fresh server process. Warm opens
+the initial texts and replays every step. Cold starts with the first damaged
+step's texts already open, so its baseline is recorded as not run. Saved replays
+as warm, but writes each change to disk and sends `didSave`. It then closes a
+saved file that fails to parse if no probe reads it: only the damaged
+`other.v3` of `syntax-error-in-other-file`, which then changes on disk with a
+watched-file event. A probe whose overlay is closed would be recorded as
+unsupported; the inventory keeps every probe's file open. Every step waits only
+on replies: the probes' replies, the definitions, which wait for the current
+project analysis, and then one `virgil-lsp/snapshot` inspection. That
+inspection must show a current configuration and current documents at the
+versions sent, and records the substitution and excluded bodies of each file.
+There are no sleeps or polling loops. Latency is from a request to its reply,
+and a step's from its first change to the inspection.
+
+### Results
+
+Measured on 2026-10-31 with the driver at `901c35d9` and a probe-enabled
+`build/bench` server built from `3a3ab37d`, pinned Virgil `57318d37`, the
+default 384 MiB worker heap, Python 3.14.4, and hardware thread 12 of the Intel
+Core i7-14700KF reference host, under the shared benchmark lock. The run took
+69.71 seconds for 306 history/mode/block records. It had no wrong answers and
+no worker replacements, and every probe's and definition's outcome was the same
+in all six blocks. An earlier run at `dfe60b81`, whose only difference was
+uncommitted step-status bookkeeping, had the same verdicts for every record.
+
+Per block and mode, cold mode has no baseline step:
+
+| Probe answers | Warm and saved | Cold |
+| --- | ---: | ---: |
+| Completion, valid steps, exact | 33/33 | 22/22 |
+| Completion, damaged steps | 11 exact, 6 missing, 1 keywords-only, of 18 | same |
+| Signature help, valid steps, exact | 21/21 | 14/14 |
+| Signature help, damaged steps | 5 exact, 7 missing, of 12 | same |
+
+The three modes agree at every damaged step. Definitions at damaged steps differ
+by mode only at `syntax-error-in-other-file`, where saved mode closes
+`other.v3`:
+
+| Definitions at damaged steps, per block | Exact | Missing | Inapplicable |
+| --- | ---: | ---: | ---: |
+| Edited body or declaration | 7 | 21 | 0 |
+| Intact sibling, warm and cold | 12 | 16 | 0 |
+| Intact sibling, saved | 11 | 17 | 0 |
+| Other file | 8 | 14 | 6 |
+| Probed call's callee | 2 | 10 | 0 |
+| Required candidate | 0 | 2 | 16 |
+
+Damaged steps by history, the same in every mode except where noted.
+Navigation counts the definitions that were exact out of those asked:
+
+| History and step | Probe | Navigation | Substitution |
+| --- | --- | ---: | --- |
+| `member-with-prefix` damaged, parses | exact | 2/2 | none |
+| `call-open-arguments` damaged | exact | 1/3 | warm and saved fallback, cold repair |
+| `call-trailing-comma` damaged, parses | exact | 3/3 | none |
+| `member-in-field-initializer` damaged | exact | 0/2 | none |
+| `member-in-component-field` damaged | exact | 0/2 | none |
+| `syntax-error-in-other-file` damaged | missing | 1/2, saved 0/2 | both files, saved `main.v3` only |
+| `parameter-type`, `return-type` removed | exact | 0/3 | none |
+| `parameter-type`, `return-type` extra, parses | exact | 3/3 | none |
+| `typed-initializer` removed, parses | exact | 4/4 | none |
+| `typed-initializer` extra | exact | 0/4 | none |
+| `inferred-initializer` removed | exact | 0/4 | none |
+| `inferred-initializer` extra | missing | 0/4 | none |
+| `open-string`, `missing-inner-closer` removed and extra | missing | 0/4 | none |
+| `open-block-comment`, `missing-method-closer` removed | missing | 0/4 | none |
+| `open-block-comment`, `missing-method-closer` extra | missing | 0/3 | none |
+| `third-damaged-body` removed | completion keywords-only, signature missing | 2/4 | repair of two bodies |
+| `third-damaged-body` extra | both missing | 0/4 | none |
+| Both Aeneas histories, dot | exact | 2/3 | warm and saved fallback, cold repair |
+| Both Aeneas histories, prefix, parses | exact | 3/3 | none |
+
+Every restored and repeated step was exact, in every mode, for every probe and
+definition. So were the baselines.
+
+Completion and signature help at the cursor held wherever the cursor repair
+alone made the file parse: in a body, and in a field initializer or a
+declaration header, where the project analysis substitutes nothing, so that
+every definition in the project was missing there. They had nothing wherever another
+part of the project still failed to parse after the cursor repair: an open
+string, block comment, or brace in the same file, two other damaged bodies in
+the same file, or a body error in another file. That held even where the
+project analysis repaired those bodies and kept the other definitions, as at
+`third-damaged-body`'s removed step, where it emptied both bodies.
+[#346](https://github.com/SaltedTan/virgil-language-server/issues/346) proposes
+that change; these rows are its baseline. `inferred-initializer`'s extra step is
+the other gap: signature help for an unclosed call had nothing when the cursor
+was in or right after a number, as in `Util.add(1, 3|2;`. The repair appends its
+identifier to the number, which doesn't parse. The same call is answered with
+the cursor after `, ` or an identifier, or once the call is closed.
+
+Probe latency on the small fixture was 0.1 to 2.5 ms at p50 and at most 8.3 ms
+at p95. Aeneas completion, p50 (p95) in milliseconds over the six blocks:
+
+| History, step | Warm | Cold | Saved |
+| --- | ---: | ---: | ---: |
+| Verifier, baseline | 525.1 (532.6) | not run | 511.9 (533.9) |
+| Verifier, dot | 149.6 (152.7) | 516.1 (524.2) | 469.9 (477.1) |
+| Verifier, prefix | 143.3 (147.3) | 144.9 (148.5) | 431.2 (439.8) |
+| Verifier, restored | 127.1 (131.9) | 156.6 (158.5) | 473.8 (487.0) |
+| Verifier, repeat | 1.0 (1.0) | 1.0 (1.0) | 1.0 (3.9) |
+| Arm64, baseline | 509.8 (531.3) | not run | 510.1 (518.3) |
+| Arm64, dot | 142.0 (146.7) | 508.6 (513.3) | 479.9 (481.9) |
+| Arm64, prefix | 128.2 (130.9) | 139.8 (145.3) | 481.8 (483.4) |
+| Arm64, restored | 119.4 (120.3) | 126.5 (128.9) | 450.1 (456.4) |
+| Arm64, repeat | 0.8 (4.1) | 0.7 (0.7) | 0.7 (0.7) |
+
+A completion's analysis waits for one that already runs. The first query in a
+process waits for the first project analysis. In saved mode, each `didSave`
+starts a project analysis that the completion's then waits behind. The repeat
+reuses the last reply. A step, through its definitions and inspection, took
+437 to 534 ms at p50 on Aeneas, apart from the repeats.
+
+The same session ran the full [tolerance capture](#release-scorecard) at
+`dfe60b81` with the same build. It took 558.01 seconds, and the scorecard passed
+with the current floors in both modes: primary 180/185, held-out 44/94, exact
+definitions and hovers 616/627, exact references 589/627, exact diagnostic sets
+180/185, zero wrong answers, zero expectation mismatches, and all 56 injections
+rejected.
+
+These counts describe this fixed inventory. They are not rates of how often
+users meet these states, and this report sets no quality threshold.
