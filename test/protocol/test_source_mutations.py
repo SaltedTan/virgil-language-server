@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+"""The source-mutation harness's helpers: limits, planning, oracles, and replay.
+
+A scripted stand-in server drives the deadline, EOF, notification-reply, and
+ID-type failures without a build. Replay, a contained worker failure, and a
+known compiler trap use the built server and the test-only stall worker, and
+are skipped if they are not built.
+"""
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unittest
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shape_model  # noqa: E402
+import source_mutations as sm  # noqa: E402
+from reply_shapes import ReplyValidator  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
+EXE = ROOT / "build/virgil-lsp"
+STALL = ROOT / "build/stall/virgil-lsp-worker"
+SEED = 20261028
+SEEDS, INPUTS = sm.load_seeds()
+LIMITS = sm.resolve_limits({})
+VALIDATOR = ReplyValidator()
+# The capabilities the built server advertises to CLIENT_CAPABILITIES.
+CAPABILITIES = {
+    "callHierarchyProvider": True, "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+    "completionProvider": {"triggerCharacters": ["."]}, "definitionProvider": True,
+    "documentHighlightProvider": True, "documentSymbolProvider": True, "foldingRangeProvider": True,
+    "hoverProvider": True, "implementationProvider": True, "inlayHintProvider": True,
+    "referencesProvider": True, "renameProvider": {"prepareProvider": True}, "selectionRangeProvider": True,
+    "semanticTokensProvider": {"full": True, "legend": {"tokenModifiers": [], "tokenTypes": []}},
+    "signatureHelpProvider": {"triggerCharacters": ["("]},
+    "textDocumentSync": {"change": 1, "openClose": True, "save": {"includeText": False}},
+    "typeDefinitionProvider": True, "typeHierarchyProvider": True,
+    "workspace": {"workspaceFolders": {"changeNotifications": True, "supported": True}},
+    "workspaceSymbolProvider": True,
+}
+
+# A stand-in server: it answers initialize and shutdown, answers every other
+# request with null, and misbehaves as MODE says at the first feature request.
+FAKE = textwrap.dedent("""\
+    import json, os, sys, time
+    MODE = %r
+    CAPABILITIES = %r
+    if "--version" in sys.argv:
+        print("stand-in " + MODE)
+        sys.exit(0)
+    def read():
+        header = b""
+        while not header.endswith(b"\\r\\n\\r\\n"):
+            byte = sys.stdin.buffer.read(1)
+            if not byte:
+                sys.exit(0)
+            header += byte
+        size = int(header.split(b":")[1])
+        return json.loads(sys.stdin.buffer.read(size))
+    def write(msg):
+        data = json.dumps(msg).encode()
+        sys.stdout.buffer.write(b"Content-Length: %%d\\r\\n\\r\\n" %% len(data) + data)
+        sys.stdout.buffer.flush()
+    while True:
+        msg = read()
+        method, ident = msg.get("method"), msg.get("id")
+        if method == "exit":
+            sys.exit(0)
+        if method == "textDocument/didOpen" and MODE == "notification-reply":
+            write({"jsonrpc": "2.0", "id": None, "result": None})
+        if ident is None:
+            continue
+        if method == "initialize":
+            write({"jsonrpc": "2.0", "id": ident, "result": {"capabilities": CAPABILITIES}})
+        elif method == "shutdown":
+            write({"jsonrpc": "2.0", "id": ident, "result": None})
+        elif MODE == "hang":
+            time.sleep(60)
+        elif MODE == "eof":
+            sys.exit(3)
+        elif MODE == "id-type":
+            write({"jsonrpc": "2.0", "id": str(ident), "result": None})
+        elif MODE == "undocumented-error":
+            write({"jsonrpc": "2.0", "id": ident, "error": {"code": -32603, "message": "internal"}})
+        else:
+            write({"jsonrpc": "2.0", "id": ident, "result": None})
+""")
+
+
+def fake_server(directory, mode):
+    path = Path(directory) / ("fake-" + mode)
+    path.write_text("#!%s\n%s" % (sys.executable, FAKE % (mode, CAPABILITIES)))
+    path.chmod(0o755)
+    return path
+
+
+def single_case(text, requests=None, limits=LIMITS, ident="test"):
+    """A case that changes Mutant.v3 to {text} and requests its hover."""
+    if requests is None:
+        requests = [{"id": 2, "method": "textDocument/hover", "params": {
+            "textDocument": {"uri": sm.ROOT_TOKEN + "/Mutant.v3"}, "position": {"line": 0, "character": 0}}}]
+    steps = [{"mutations": [], "texts": {"Mutant.v3": text}, "requests": requests}]
+    return sm.case_record(ident, {"Mutant.v3": "component Mutant {}\n"}, steps, limits)
+
+
+def quietly(argv):
+    """sm.main's status, keeping its report out of this suite's output."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        return sm.main(argv)
+
+
+def sent(transcript):
+    return [msg for direction, msg in transcript if direction == "send"]
+
+
+class Limits(unittest.TestCase):
+    def test_defaults(self):
+        self.assertEqual(LIMITS, {"cases": 100, "source_bytes": 32 * 1024, "requests": 24, "request_timeout": 10,
+                                  "case_timeout": 30, "run_timeout": 180, "artifact_bytes": 64 * 1024 * 1024})
+        stress = sm.resolve_limits({}, stress=True)
+        self.assertEqual((stress["cases"], stress["source_bytes"]), (10, 1024 * 1024))
+        self.assertEqual({k: stress[k] for k in sm.DEADLINES}, {k: LIMITS[k] for k in sm.DEADLINES})
+
+    def test_hard_caps(self):
+        for name, value in (("cases", 1001), ("cases", 0), ("source_bytes", 64 * 1024 + 1), ("requests", 65),
+                            ("request_timeout", 31), ("request_timeout", 0), ("case_timeout", 121),
+                            ("run_timeout", 901), ("artifact_bytes", 256 * 1024 * 1024 + 1), ("source_bytes", 1024)):
+            with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                sm.resolve_limits({name: value})
+        for name, value in (("cases", 11), ("source_bytes", 1024 * 1024 + 1)):
+            with self.subTest(stress=name), self.assertRaises(ValueError):
+                sm.resolve_limits({name: value}, stress=True)
+        with self.assertRaises(ValueError):
+            sm.resolve_limits({"request_timeout": 20, "case_timeout": 15})
+        self.assertEqual(sm.resolve_limits({"source_bytes": 64 * 1024, "cases": 1000})["cases"], 1000)
+
+    def test_command_line_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for flags in (["--cases", "1001"], ["--stress", "--cases", "11"], ["--run-timeout", "1000"]):
+                result = subprocess.run([sys.executable, str(Path(sm.__file__)), str(EXE), "--artifacts", directory,
+                                         "--plan-only", *flags], capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 2, (flags, result.stderr))
+                self.assertIn("at most", result.stderr)
+
+
+class Planning(unittest.TestCase):
+    def manifest_bytes(self, seed, limits=LIMITS, stress=False):
+        plan = sm.plan_run(seed, limits, stress, SEEDS)
+        return [json.dumps(m, sort_keys=True) for m in sm.manifests(seed, limits, stress, INPUTS, plan)], plan
+
+    def test_manifests_are_deterministic(self):
+        first, plan = self.manifest_bytes(SEED)
+        self.assertEqual(first, self.manifest_bytes(SEED)[0])
+        self.assertNotEqual(first, self.manifest_bytes(SEED + 1)[0])
+        # String hashing must not reach the plan.
+        script = ("import json, sys; sys.path.insert(0, %r); import source_mutations as sm; "
+                  "s, i = sm.load_seeds(); l = sm.resolve_limits({}); p = sm.plan_run(%d, l, False, s); "
+                  "print(json.dumps(sm.manifests(%d, l, False, i, p), sort_keys=True))") % (
+                      str(Path(sm.__file__).parent), SEED, SEED)
+        outputs = {subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True,
+                                  env={**os.environ, "PYTHONHASHSEED": h}).stdout for h in ("1", "2")}
+        self.assertEqual(len(outputs), 1)
+        # A shorter run plans the same first cases.
+        short = sm.plan_run(SEED, sm.resolve_limits({"cases": 10}), False, SEEDS)
+        self.assertEqual([c["steps"] for c in short], [c["steps"] for c in plan[:10]])
+
+    def test_plan_bounds_and_coverage(self):
+        plan = sm.plan_run(SEED, sm.resolve_limits({"cases": 300}), False, SEEDS)
+        families = {m["family"] for c in plan for s in c["steps"] for m in s["mutations"]}
+        self.assertEqual(families, set(sm.FAMILIES + sm.STRESS_FAMILIES))
+        counts = {}
+        for case in plan:
+            requests = [r for s in case["steps"] for r in s["requests"]]
+            self.assertLessEqual(len(requests), LIMITS["requests"] - sm.FOLLOW_UP_RESERVE)
+            self.assertEqual(len({(type(r["id"]), r["id"]) for r in requests}), len(requests))
+            self.assertLessEqual({type(r["id"]) for r in requests}, {int, str})
+            for r in requests:
+                counts[r["method"]] = counts.get(r["method"], 0) + 1
+            texts = dict(case["files"])
+            for step in case["steps"]:
+                texts.update(step["texts"])
+                self.assertLessEqual(sm.measure(list(texts.values()), False), LIMITS["source_bytes"])
+                self.assertEqual(step["bytes"], sm.measure(list(texts.values()), False))
+        self.assertEqual(set(counts), set(sm.MAIN_METHODS))
+        self.assertLessEqual(max(counts.values()) - min(counts.values()), 1, counts)
+
+    def test_stress_plan(self):
+        plan = sm.plan_run(SEED, sm.resolve_limits({}, stress=True), True, SEEDS)
+        self.assertEqual(len(plan), 10)
+        for case in plan:
+            self.assertIn(case["steps"][0]["mutations"][0]["family"], sm.STRESS_FAMILIES)
+            self.assertTrue(all(s["bytes"] <= 1024 * 1024 for s in case["steps"]))
+
+    def test_positions(self):
+        self.assertEqual(sm.position("a\r\nb\rc\nd", 7), {"line": 3, "character": 0})
+        self.assertEqual(sm.position("a\r\nb", 2), {"line": 0, "character": 1})
+        self.assertEqual(sm.position("\U0001F600x", 1), {"line": 0, "character": 2})
+        self.assertEqual(sm.templated({"uri": "file:///w/A.v3", "x": ["file:///w"]}, "file:///w"),
+                         {"uri": "${ROOT}/A.v3", "x": ["${ROOT}"]})
+
+
+class Coverage(unittest.TestCase):
+    def test_manifest_matches(self):
+        self.assertEqual(sm.coverage_drift(CAPABILITIES), [])
+        self.assertLessEqual(set(sm.MANIFEST), set(shape_model.REQUESTS))
+
+    def test_drift(self):
+        cases = {
+            "monikerProvider": True,
+            "completionProvider": {"resolveProvider": True},
+            "renameProvider": True,
+            "semanticTokensProvider": {"full": {"delta": True}},
+            "workspace": {"fileOperations": {}},
+            "typeHierarchyProvider": None,
+        }
+        for name, value in cases.items():
+            with self.subTest(name):
+                self.assertTrue(sm.coverage_drift({**CAPABILITIES, name: value}))
+
+
+class WorkerDeaths(unittest.TestCase):
+    TRACE = ("!NullCheckException\n"
+             "\tin MethodEnv.lookupInfix() [vendor/virgil/aeneas/src/vst/MethodEnv.v3 @ 719:45]\n"
+             "\tin TypeChecker.visitBinOp() [vendor/virgil/aeneas/src/vst/Verifier.v3 @ 2271:47]\n\n"
+             "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 255; "
+             "snapshot 3 is kept\n")
+
+    def test_known_signature_needs_its_source(self):
+        known = sm.worker_deaths(self.TRACE, ["def f() -> int { return 0i + 1; }"])
+        self.assertEqual([(d["pid"], d["trap"], d["known"]) for d in known], [(7, "!NullCheckException", "crash-path row 1")])
+        self.assertIsNone(sm.worker_deaths(self.TRACE, ["def f() -> int { return 0i32 + 1; }"])[0]["known"])
+        overflow = ("!StackOverflow\n\nvirgil-lsp: warning: analysis worker 8 crashed during an analysis; "
+                    "it ended with exit status 255\n")
+        self.assertIsNone(sm.worker_deaths(overflow, ["def f() { g(); }"])[0]["known"])
+        self.assertEqual(sm.worker_deaths(overflow, ["def f() { a" + ".b" * 1000 + "; }"])[0]["known"],
+                         "crash-path row 25")
+        timeout = ("virgil-lsp: warning: analysis worker 9 exceeded the analysis time limit of 5000 ms and was "
+                   "killed; it ended with signal 9\n")
+        self.assertIsNone(sm.worker_deaths(timeout, ["0i"])[0]["known"])
+
+    def test_documented_message(self):
+        message = ("Semantic diagnostics for project mutations could not be updated: the analysis worker crashed "
+                   "(exit status 255). The last published diagnostics are kept; see the server log.")
+        self.assertTrue(sm.WORKER_FAILURE_MESSAGE.fullmatch(message))
+        self.assertFalse(sm.WORKER_FAILURE_MESSAGE.fullmatch(message.replace("crashed", "exploded")))
+
+
+class StandIn(unittest.TestCase):
+    """Oracle failures from a scripted server; no build needed."""
+
+    def run_fake(self, mode, limits=None, record=None):
+        limits = limits or sm.resolve_limits({"request_timeout": 1, "case_timeout": 5, "run_timeout": 20})
+        record = record or single_case("component Mutant { def f() {} }\n", limits=limits)
+        with tempfile.TemporaryDirectory() as directory:
+            started = time.monotonic()
+            result, transcript, _, _ = sm.run_case(record, fake_server(directory, mode),
+                                                   started + limits["run_timeout"], Path(directory), VALIDATOR)
+            return result, transcript, time.monotonic() - started
+
+    def test_request_deadline(self):
+        result, _, elapsed = self.run_fake("hang")
+        self.assertEqual(result["outcome"], "deadline", result)
+        self.assertIn("request deadline", result["error"])
+        self.assertLess(elapsed, 4)
+
+    def test_run_deadline_during_a_read(self):
+        limits = sm.resolve_limits({"request_timeout": 1, "case_timeout": 1, "run_timeout": 1})
+        result, _, elapsed = self.run_fake("hang", limits, single_case("component M {}\n", limits=limits))
+        self.assertEqual(result["outcome"], "run-deadline", result)
+        self.assertLess(elapsed, 3)
+
+    def test_end_of_output(self):
+        result, _, _ = self.run_fake("eof")
+        self.assertEqual(result["outcome"], "server-failure", result)
+        self.assertIn("closed its output", result["error"])
+
+    def test_reply_to_a_notification(self):
+        result, _, _ = self.run_fake("notification-reply")
+        self.assertEqual(result["outcome"], "protocol-failure", result)
+        self.assertIn("reply to a notification", result["error"])
+
+    def test_changed_id_type(self):
+        result, _, _ = self.run_fake("id-type")
+        self.assertEqual(result["outcome"], "protocol-failure", result)
+        self.assertIn('"id": "2"', result["error"])
+
+    def test_undocumented_error(self):
+        result, _, _ = self.run_fake("undocumented-error")
+        self.assertEqual(result["outcome"], "protocol-failure", result)
+        self.assertIn("undocumented error for textDocument/hover", result["error"])
+
+    def test_run_deadline_saves_incomplete_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            exe = fake_server(directory, "hang")
+            status = quietly([str(exe), "--cases", "3", "--request-timeout", "1", "--case-timeout", "1",
+                              "--run-timeout", "1", "--artifacts", directory])
+            self.assertEqual(status, 1)
+            out = Path(directory) / ("seed-%d" % sm.DEFAULT_SEED)
+            run = json.loads((out / "run.json").read_text())
+            self.assertTrue(run["incomplete"])
+            self.assertEqual(run["failures"][0]["outcome"], "run-deadline")
+            case = out / "cases" / run["failures"][0]["case"]
+            self.assertTrue((case / "case.json").exists() and (case / "transcript.jsonl").exists())
+            self.assertEqual(json.loads((out / "requests.json").read_text())["seed"], sm.DEFAULT_SEED)
+
+    def test_artifact_budget_marks_truncation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = sm.Artifacts(Path(directory), 4000)
+            self.assertTrue(artifacts.write("small.txt", b"x" * 100))
+            self.assertFalse(artifacts.write("large.txt", b"y" * 10000))
+            self.assertIn(b"[truncated: ", (Path(directory) / "large.txt").read_bytes())
+            artifacts.write("record.json", b"z" * 10000, essential=True)
+            self.assertEqual(len((Path(directory) / "record.json").read_bytes()), 10000)
+            self.assertEqual(artifacts.truncated, ["large.txt"])
+
+
+@unittest.skipUnless(EXE.exists() and EXE.with_name("virgil-lsp-worker").exists(), "build/virgil-lsp is not built")
+class RealServer(unittest.TestCase):
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp(prefix="source-mutations-test-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def run_record(self, record, exe=EXE, **options):
+        return sm.run_case(record, exe, time.monotonic() + 60, self.directory, VALIDATOR, **options)
+
+    def test_replay_from_a_saved_case(self):
+        plan = sm.plan_run(SEED, sm.resolve_limits({"cases": 40}), False, SEEDS)
+        # A case whose prepare requests returned items replays recorded follow-ups.
+        for record in plan:
+            result, live, _, _ = self.run_record(record)
+            self.assertIn(result["outcome"], sm.PASSING, result)
+            if any(s["followups"] for s in record["steps"]):
+                break
+        else:
+            self.fail("no planned case got hierarchy items")
+        saved = self.directory / "case.json"
+        saved.write_text(json.dumps(record))
+        status = quietly([str(EXE), "--replay", str(saved), "--artifacts", str(self.directory)])
+        self.assertEqual(status, 0)
+        path = self.directory / ("replay-" + record["id"]) / "cases" / record["id"] / "transcript.jsonl"
+        replayed = [e["msg"] for e in map(json.loads, path.read_text().splitlines()) if e["dir"] == "send"]
+
+        def normalized(messages):
+            root = messages[0]["params"]["rootUri"]
+            return [sm.templated(m, root) for m in messages]
+        self.assertEqual(normalized(sent(live)), normalized(replayed))
+        # A record must be the format this runner writes.
+        saved.write_text(json.dumps(dict(record, format=sm.FORMAT + 1)))
+        self.assertEqual(quietly([str(EXE), "--replay", str(saved), "--artifacts", str(self.directory)]), 2)
+
+    def test_known_compiler_trap_is_recorded(self):
+        text = "component Mutant {\n\tdef add(a: int, b: int) -> int { return 0i + b; }\n}\n"
+        result, _, _, log = self.run_record(single_case(text))
+        self.assertEqual(result["outcome"], "known-worker-trap", (result, log))
+        self.assertEqual([d["known"] for d in result["worker_deaths"]], ["crash-path row 1"])
+        self.assertEqual(result["worker_deaths"][0]["replacement"], "verified")
+        self.assertEqual(len(result["messages"]), 1)
+
+    @unittest.skipUnless(STALL.exists(), "build/stall/virgil-lsp-worker is not built")
+    def test_contained_worker_failure(self):
+        # The stall worker never finishes an analysis of marked source; the
+        # supervisor kills it, and a replacement analyzes the restored source.
+        stalled = self.directory / "stalled"
+        stalled.mkdir()
+        shutil.copy2(EXE, stalled / "virgil-lsp")
+        shutil.copy2(STALL, stalled / "virgil-lsp-worker")
+        result, _, _, log = self.run_record(single_case("// workerStallsHere\ncomponent Mutant {}\n"),
+                                            stalled / "virgil-lsp", worker_timeout_ms=1000)
+        self.assertEqual(result["outcome"], "worker-failure", (result, log))
+        death, = result["worker_deaths"]
+        self.assertIn("exceeded the analysis time limit of 1000 ms", death["what"])
+        self.assertEqual((death["known"], death["replacement"]), (None, "verified"))
+        self.assertIn("timed out", result["messages"][0])
+        self.assertTrue(result["restored"])
+
+
+if __name__ == "__main__":
+    unittest.main()

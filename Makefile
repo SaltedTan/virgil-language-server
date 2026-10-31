@@ -11,6 +11,10 @@ PROTOCOL_SHAPES_CASES ?= 2000
 PROTOCOL_SHAPES = python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(PROTOCOL_SHAPES_SEED) \
 	--cases $(PROTOCOL_SHAPES_CASES) --artifacts $(BUILD)/protocol-shapes
 
+# Opt-in seeded source mutations, outside `make test`; see test/protocol/README.md.
+SOURCE_MUTATIONS_SEED  ?= 20261028
+SOURCE_MUTATIONS_CASES ?= 100
+
 # Aeneas front end plus the libraries it depends on, as listed in the pinned
 # checkout's aeneas/DEPS. lib/test is excluded here and added only to tests.
 AENEAS_DEPS = $(filter-out lib/test/%,$(shell cat $(VIRGIL)/aeneas/DEPS 2>/dev/null))
@@ -92,12 +96,13 @@ SUITES = \
 	'python3 test/protocol/document_symbol_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/test_reply_shapes.py' \
+	'python3 test/protocol/test_source_mutations.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
 	'$(BUILD)/retain-probe' \
 	'python3 test/e2e/clean-install/test_readme.py'
 
-.PHONY: all test test-protocol-shapes test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -180,6 +185,12 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-w
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	$(PROTOCOL_SHAPES)
+
+# Not part of `make test` or CI. Pass SOURCE_MUTATIONS_ARGS for other bounds,
+# --stress, or --replay CASE.json.
+test-source-mutations: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+	python3 test/protocol/source_mutations.py $(BUILD)/virgil-lsp --seed $(SOURCE_MUTATIONS_SEED) \
+	  --cases $(SOURCE_MUTATIONS_CASES) --artifacts $(BUILD)/source-mutations $(SOURCE_MUTATIONS_ARGS)
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
