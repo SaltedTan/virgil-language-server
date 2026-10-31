@@ -167,7 +167,11 @@ component LspAnalysisCapture {
 	// decides whether the rest of the snapshot is current.
 	def analyzedText(store: DocumentStore, snapshot: AnalysisSnapshot, i: int) -> Array<byte> {
 		if (i < 0 || i >= snapshot.documentVersions.length) return null;
-		var v = snapshot.documentVersions[i];
+		return versionText(store, snapshot.documentVersions[i]);
+	}
+	// As {analyzedText}, for the source that {v} records, which a completion
+	// list keeps without its snapshot (LspCompletionResolve).
+	def versionText(store: DocumentStore, v: AnalysisDocumentVersion) -> Array<byte> {
 		if (v.identity != null) {
 			var doc = store.overlay(v.uri);
 			if (doc == null || doc.identity != v.identity) return null;

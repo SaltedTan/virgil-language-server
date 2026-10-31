@@ -1,0 +1,196 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The declarations of one completion list's source-backed items, which
+// completionItem/resolve documents (LspCompletionResolve), kept without the
+// list's analysis: the list's id, its request document's URI and identity,
+// and its project's revision and definition; each file that declares an
+// item, as its source was captured for the analysis (AnalysisDocumentVersion,
+// which holds no text); and for each item, its label, its file, and its
+// declaration's kind and name offsets in that file's analyzed text. No
+// snapshot, syntax tree, or source text is kept. {bytes} is what the list is
+// charged, which never exceeds {maxBytes}.
+class LspCompletionDeclarations(id: int, uri: string, identity: DocumentVersionIdentity,
+		config: ProjectRevision, definition: ProjectDefinition, maxBytes: int) {
+	def files = Vector<AnalysisDocumentVersion>.new();
+	def labels = Vector<string>.new();
+	def sources = Vector<int>.new();
+	def kinds = Vector<AnalysisDeclKind>.new();
+	def begins = Vector<int>.new();
+	def ends = Vector<int>.new();
+	var bytes = LspResolveLimits.LIST_BYTES + uri.length;
+	// An item did not fit, so no later item is added.
+	var full: bool;
+}
+
+// Adds the source-backed items of a list to its declarations, in the list's
+// order, while its reply is built: from the declarations of the list's
+// snapshot, whose files are the analysis's {versions}, in order. Neither the
+// snapshot nor {versions} is kept. Source {excluded}, the request's own
+// document when its analyzed text was repaired at the cursor, documents
+// nothing, and neither does a source whose analysis used substituted text:
+// their offsets aren't those of their current text.
+class LspCompletionItems(list: LspCompletionDeclarations, snapshot: AnalysisSnapshot,
+		versions: Array<AnalysisDocumentVersion>, excluded: int) {
+	// Each source's index in the list's files plus one, or 0 before an item
+	// from it is added.
+	private def slots = Array<int>.new(if(versions != null, versions.length));
+	private var lastPath: string;
+	private var lastSource = -1;
+
+	// The data of the item {label}, which completes the declaration {d}, or
+	// Null: if {d} is null, as for "this", a builtin type, or a builtin
+	// member, if it can have no documentation, as a local can't
+	// (DeclarationComments.documents), if its source can't document it, or if
+	// it would take the list past its byte cap, which also leaves every later
+	// item without data. The data is the list's id and the item's index in it.
+	def add(d: AnalysisDeclaration, label: string) -> JsonValue {
+		if (d == null || label == null || list.full || !DeclarationComments.documents(d.kind)
+			|| d.range.beginOffset < 0) return JsonValue.Null;
+		var i = source(d.range.path);
+		if (i < 0 || i == excluded || versions[i].substitution != null) return JsonValue.Null;
+		var slot = slots[i] - 1, cost = LspResolveLimits.ITEM_BYTES + label.length;
+		if (slot < 0) cost += LspResolveLimits.FILE_BYTES + versions[i].uri.length;
+		if (list.bytes + cost > list.maxBytes) {
+			list.full = true;
+			return JsonValue.Null;
+		}
+		if (slot < 0) {
+			slot = list.files.length;
+			list.files.put(versions[i]);
+			slots[i] = slot + 1;
+		}
+		list.bytes += cost;
+		var item = list.labels.length;
+		list.labels.put(label);
+		list.sources.put(slot);
+		list.kinds.put(d.kind);
+		list.begins.put(d.range.beginOffset);
+		list.ends.put(d.range.endOffset);
+		return JsonValue.JArray([JsonValue.Int(list.id), JsonValue.Int(item)]);
+	}
+	// The index of the first of the snapshot's files at {path}, which is its
+	// source's index in {versions}, or -1. A declaration's path is the very
+	// string of the snapshot's paths that the decoder gave it, so the scan
+	// compares references first.
+	private def source(path: string) -> int {
+		if (path == lastPath) return lastSource;
+		var paths = snapshot.paths, k = -1;
+		for (j < paths.length) {
+			if (paths[j] == path) {
+				k = j;
+				break;
+			}
+		}
+		if (k < 0 && path != null) {
+			for (j < paths.length) {
+				if (Strings.equal(paths[j], path)) {
+					k = j;
+					break;
+				}
+			}
+		}
+		if (versions == null || k >= versions.length) k = -1;
+		lastPath = path;
+		lastSource = k;
+		return k;
+	}
+}
+
+// The bytes that the declarations of a completion list are charged
+// (LspCompletionDeclarations).
+component LspResolveLimits {
+	// The most, which holds the declarations of
+	// AnalysisScopeOrder.MAX_DECLARATIONS items in a project of a few hundred
+	// files.
+	def MAX_BYTES = 128 * 1024;
+	// A list's charge for itself, besides its request URI's bytes; for each
+	// file, besides its URI's bytes; and for each item, besides its label's
+	// bytes. They cover the objects, the vectors' slots, and their spare
+	// capacity.
+	def LIST_BYTES = 256;
+	def FILE_BYTES = 160;
+	def ITEM_BYTES = 64;
+}
+
+// completionItem/resolve: an item of the latest completion list with names
+// gets the leading comment of its declaration as its documentation, as hover
+// selects, bounds, and renders it (AeneasAdapter.declarationComment,
+// LspDocumentation). Every other member of the item is returned as the client
+// sent it. Only that list's declarations are kept (LspCompletionDeclarations),
+// for at most AnalysisScopeOrder.MAX_DECLARATIONS items and {maxBytes} bytes;
+// a newer list with names replaces them, and an event that makes completion
+// forget its last reply (LspQueryRequests.invalidate) drops them. An item's
+// data, the list's id and its index, selects its declaration: nothing else
+// the client sends is read, and it is checked against the server's own
+// record before any file is read. See docs/architecture.md#item-documentation.
+class LspCompletionResolve(store: DocumentStore, projects: WorkspaceProjects) {
+	// Tests may lower it.
+	var maxBytes = LspResolveLimits.MAX_BYTES;
+	// False if the client's
+	// textDocument.completion.completionItem.documentationFormat lists
+	// formats, but not markdown.
+	var markdown = true;
+	// The declarations of the latest list with names, or null.
+	var latest: LspCompletionDeclarations;
+	// The id of the next list. The lists of one server have distinct ids.
+	private var nextId = 1;
+
+	// The declarations of a new list for {r}, whose analysis completed, empty.
+	def start(r: LspQueryRequest) -> LspCompletionDeclarations {
+		return LspCompletionDeclarations.new(nextId++, r.uri, r.identity, r.context.config, r.context.definition, maxBytes);
+	}
+	def keep(list: LspCompletionDeclarations) {
+		latest = list;
+	}
+	def forget() {
+		latest = null;
+	}
+	// The item in {request}'s params, with its documentation if its data
+	// selects a declaration of the latest list that still has a comment; as
+	// sent otherwise, as for an item without data, with an unknown list or
+	// item, a label other than the item's, or a stale list or file. Params
+	// that are not an object with a string label, or whose data is neither
+	// absent, null, nor an array of two integers, get InvalidParams.
+	def resolve(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		if (params == null || !params.has("label") || !JsonValue.String.?(params["label"])) return invalid();
+		var item = JsonValue.JObject(params);
+		if (!params.has("data") || params["data"] == JsonValue.Null) return JsonRpcReply.Result(item);
+		var data = if(JsonValue.JArray.?(params["data"]), JsonValue.JArray.!(params["data"]).v);
+		if (data == null || data.length != 2 || !JsonValue.Int.?(data[0]) || !JsonValue.Int.?(data[1])) return invalid();
+		var doc = documentation(JsonValue.Int.!(data[0]).v, JsonValue.Int.!(data[1]).v, JsonValue.String.!(params["label"]).v);
+		if (doc != JsonValue.Null) params["documentation"] = doc;
+		return JsonRpcReply.Result(item);
+	}
+	private def invalid() -> JsonRpcReply {
+		return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
+			"completion item resolve params require a string label, and data only as a completion reply gave it"));
+	}
+	// The MarkupContent of the comment of item {item} of list {id}, if it is
+	// the latest list, its request document is open with the identity it was
+	// requested at, in the same current project, the item is {label}, its
+	// file's text is still the one analyzed (LspAnalysisCapture.versionText),
+	// and its declaration has a comment there; otherwise Null.
+	private def documentation(id: int, item: int, label: string) -> JsonValue {
+		var list = latest;
+		if (list == null || list.id != id || item < 0 || item >= list.labels.length
+			|| !Strings.equal(list.labels[item], label)) return JsonValue.Null;
+		var overlay = store.overlay(list.uri), ctx = projects.forDocument(list.uri).active;
+		if (overlay == null || overlay.identity != list.identity || ctx == null || ctx.config != list.config
+			|| ctx.definition != list.definition || !ctx.config.current) return JsonValue.Null;
+		var v = list.files[list.sources[item]];
+		// The comment parse reads no larger file; don't read one from disk.
+		if (v.length > DeclarationComments.MAX_INPUT) return JsonValue.Null;
+		var text = LspAnalysisCapture.versionText(store, v);
+		if (text == null) return JsonValue.Null;
+		var path = DocumentUri.filePath(v.uri);
+		var doc = AeneasAdapter.declarationComment(if(path != null, path, v.uri), text, list.definition.compilerArgs,
+			list.kinds[item], list.begins[item], list.ends[item]);
+		if (doc == null) return JsonValue.Null;
+		var content = Strings.newMap<JsonValue>();
+		content["kind"] = JsonValue.String(if(markdown, "markdown", "plaintext"));
+		content["value"] = JsonValue.String(if(markdown, LspDocumentation.prose(doc), doc));
+		return JsonValue.JObject(content);
+	}
+}

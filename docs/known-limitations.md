@@ -195,7 +195,17 @@ Virgil has no doc-comment syntax. Hover shows, as documentation, the run of full
 - A target file larger than 256 KiB, or one that doesn't parse on its own with its project's options, shows no documentation; nor does a run of comments that starts more than 64 KiB before its declaration.
 - Documentation over 4 KiB is cut, at a character, and ends with an ellipsis. Each byte that isn't valid UTF-8 shows as U+FFFD and counts as its three bytes.
 - The comment is shown as plain prose: Markdown, HTML, and links in it show as their text, and tags such as `@param` mean nothing. A bare `http` or `https` URL or an email address may still show as a link, as GitHub-flavored Markdown makes them. In Markdown, each line keeps its line break but loses its indentation.
-- Completion doesn't show documentation yet ([#358](https://github.com/SaltedTan/virgil-language-server/issues/358)).
+- Completion items show the same documentation, with [limits of their own](#completion-documentation).
+
+## Completion documentation
+
+A completion item's details show the same documentation that hover shows for its declaration, with the limits above, but only while the server still keeps the list that the item came from, and only for the declarations it can still find in your current text ([Item documentation](architecture.md#item-documentation)). Otherwise the item shows no documentation:
+
+- **After the next edit.** The server keeps the declarations of only the latest list with names, and forgets them at any change to the text of an open document, a save, a close, a project file change, and a reported change on disk. An editor that filters the list as you type, without asking the server again, then shows documentation only for the items whose details it fetched before your next keystroke. Ask for completion again, as with Ctrl+Space in VS Code, to see the rest.
+- **After another completion.** A newer list with names replaces the older one, whose items then show no documentation.
+- **In a file being completed while it doesn't parse.** When the file you complete in doesn't parse as you typed it, as while you type a statement, its own declarations show no documentation, because the server analyzed a copy repaired at the cursor, whose positions after the cursor differ from your text. Declarations in other files still show theirs.
+- **For a file changed on disk.** A closed file whose bytes changed on disk since the list was built, whether or not the editor reported the change, documents nothing, as for hover and definition.
+- **In a very large list.** A list keeps at most 128 KiB of what it needs to find its declarations, which holds a full list of 1,000 suggestions from a few hundred files. Past that, the last items in the list's order show no documentation.
 
 ## Signature help
 

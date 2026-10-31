@@ -24,6 +24,26 @@ const INLAY_TOKENS = [
   [4, 28, 5, 'variable', ['declaration']],
   [4, 36, 4, 'function', []],
 ];
+// The comment above StringBuilder in the library's StringBuilder.v3, as hover
+// and completion show it: Markdown prose, whose lines lose their indentation
+// and end with hard breaks, and whose * is escaped.
+const STRING_BUILDER_DOC = [
+  'Utility for building and formatting strings, including the ability to render  ',
+  'integers, characters, strings, etc according to printf-like format  ',
+  'specifiers.',
+  '',
+  'These format specifiers are supported:',
+  '',
+  '%d - render an integer as a decimal  ',
+  '%c - render an integer as an 8-bit ASCII character  ',
+  '%s - inline a string argument  ',
+  '%x - render an integer as a hexadecimal  ',
+  '%z - render a boolean as "true" or "false"  ',
+  '%q - call a closure of type StringBuilder -> StringBuilder',
+  '',
+  'Additionally, a number of explicit {put\\*} methods provide explicit one-by-one  ',
+  'appending capabilities.',
+].join('\n');
 
 async function waitFor(description, predicate, timeout = 10000) {
   const deadline = Date.now() + timeout;
@@ -446,25 +466,7 @@ async function workspace(extension) {
   // then the comment above the class in the closed library file, as Markdown
   // prose: indentation goes, each line ends with a hard break, and * is escaped.
   assert.deepEqual(await hovers(words, use, column), [
-    [[[
-      '```virgil\nclass StringBuilder\n```',
-      '',
-      'Utility for building and formatting strings, including the ability to render  ',
-      'integers, characters, strings, etc according to printf-like format  ',
-      'specifiers.',
-      '',
-      'These format specifiers are supported:',
-      '',
-      '%d - render an integer as a decimal  ',
-      '%c - render an integer as an 8-bit ASCII character  ',
-      '%s - inline a string argument  ',
-      '%x - render an integer as a hexadecimal  ',
-      '%z - render a boolean as "true" or "false"  ',
-      '%q - call a closure of type StringBuilder -> StringBuilder',
-      '',
-      'Additionally, a number of explicit {put\\*} methods provide explicit one-by-one  ',
-      'appending capabilities.',
-    ].join('\n')], [use, column, use, column + 'StringBuilder'.length]],
+    [[`\`\`\`virgil\nclass StringBuilder\n\`\`\`\n\n${STRING_BUILDER_DOC}`], [use, column, use, column + 'StringBuilder'.length]],
   ]);
   // Signature help just after the ( of .puts(a) on the same line shows the
   // method's label with its one parameter as label offsets, which the client
@@ -661,6 +663,22 @@ async function workspace(extension) {
   assert.deepEqual(range({ range: localRange }), [use + 1, 2, use + 1, 4]);
   const localText = typeof local.insertText === 'string' ? local.insertText : local.insertText.value;
   assert.equal(localText, 'line');
+  // VS Code resolves an item before it shows its details, which adds its
+  // declaration's comment, as hover shows it: here StringBuilder's, from the
+  // closed library file. The edited Words.v3, repaired at the cursor,
+  // documents nothing. Asking again at the same position gets the same list,
+  // whose items the server resolves.
+  const resolved = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 4), undefined,
+    declared.items.length,
+  );
+  const builderItem = resolved.items.find((i) => i.label === 'StringBuilder');
+  assert.ok(builderItem, 'StringBuilder is not offered');
+  assert.ok(builderItem.documentation instanceof vscode.MarkdownString, 'StringBuilder has no Markdown documentation');
+  assert.equal(builderItem.documentation.value, STRING_BUILDER_DOC);
+  assert.equal(builderItem.detail, 'class StringBuilder');
+  assert.equal(resolved.items.find((i) => i.label === 'join').documentation, undefined);
+  console.log('PASS: vscode.completion.resolve');
   await edit(words, (builder) => builder.replace(localRange, localText));
   assert.equal(words.document.lineAt(use + 1).text, '\t\tline');
   await vscode.window.showTextDocument(words.document);
@@ -756,7 +774,7 @@ async function workspace(extension) {
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, member, and insert-replace completion, '
+    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, member, and insert-replace completion, completion item documentation, '
     + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
 
   // The scenarios that restart the server, or could disturb it, come last.

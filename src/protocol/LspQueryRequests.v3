@@ -21,6 +21,11 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	var offset: int;
 	var kinds: int;
 	var prefix: string;
+	// The provenance of the sources that its analysis captured, in order,
+	// and the index of its document among them, whose analyzed text is
+	// {text}. They hold no text.
+	var versions: Array<AnalysisDocumentVersion>;
+	var index: int;
 	// The owner's invalidation generation when its analysis began, and
 	// whether it has run again because the sources changed while it ran.
 	var generation: int;
@@ -51,6 +56,9 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	def answer(snapshot: AnalysisSnapshot) -> JsonValue {
 		return JsonValue.Null;
 	}
+	// Called once the reply from {answer} is the owner's last reply, which
+	// a newer one replaces and {LspQueryRequests.invalidate} forgets.
+	def kept() { }
 }
 
 // The requests of one method whose replies need a query of a temporary
@@ -131,6 +139,8 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		if (captured.1 != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, captured.1);
 		var inputs = captured.0;
 		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
+		r.versions = inputs.versions;
+		r.index = index;
 		if (!projects.admitKeeping(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
@@ -169,6 +179,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 				cachedIdentity = r.identity;
 				cachedCursor = r.cursor;
 				cachedResult = result;
+				r.kept();
 				return finish(r, JsonRpcReply.Result(result));
 			}
 			return finish(r, r.permanentFallback());
@@ -208,7 +219,11 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		cachedResult = JsonValue.Null;
 		cachedIdentity = null;
 		cachedUri = null;
+		forgotten();
 	}
+	// Called once the last reply is forgotten; LspCompletion forgets the
+	// declarations that its items resolve with.
+	def forgotten() { }
 	// Sends {reply} to {r}, unless it was answered, and withdraws its job.
 	def finish(r: LspQueryRequest, reply: JsonRpcReply) {
 		if (r.answered) return;

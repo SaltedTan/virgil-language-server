@@ -93,7 +93,7 @@ The extension runs only in [trusted workspaces](https://code.visualstudio.com/do
 
 With `0.1.0-alpha.5` or `main`, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
 
-The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion).
+The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion). An item's details show its declaration's leading comment, as hover does.
 
 ## Settings
 
@@ -205,6 +205,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 - once an unsaved edit fixes that type error, `vscode.executeDocumentRenameProvider` on the local `line` returns exactly its two uses, renamed to `text`; `vscode.workspace.applyEdit` applies the server's versioned edit to the open document, one undo restores both uses, and another restores the type error;
 - in `words/Words.v3`, after an unsaved line `whi` that the file doesn't parse with, `vscode.executeCompletionItemProvider` at `wh|i` returns, as its `Keyword` items, the keywords that start a statement, in order, among them `while`, with distinct inserting and replacing ranges; applying its replacing range through a `WorkspaceEdit` gives `while`, and two undos restore the file;
 - after an unsaved line `li` there instead, the items that the server ranks start with the local `line`, then `a`, `b`, `this`, and `join`; `line` is a `Variable` with the detail `var line: int` that replaces `li`, applying it gives `line`, and two undos restore the file;
+- asking again after `li` gets the same list, and resolving its items gives `StringBuilder`, from the closed library file, the comment above its class as Markdown documentation, as hover shows it, and `join`, in the repaired `words/Words.v3`, none;
 - after an unsaved line `a.` there instead, completion with the trigger character `.` returns only the string's member `length`, a `Field` with the detail `def length: int` that inserts after the `.`; applying it gives `a.length`, and two undos restore the file;
 - after an unsaved line with a call that has no `)` there instead, `vscode.executeSignatureHelpProvider` at its end returns `def puts(s: Array<byte>) -> this` with its parameter active for `StringBuilder.new().puts(`, and `def max(a: int, b: int) -> int` with the second parameter active for `var n = Ints.max(1, `;
 - inside the comment on line 3, completion returns no items, both after the word `StringBuilder` and after a `.` typed there, with `.` as the trigger character;
