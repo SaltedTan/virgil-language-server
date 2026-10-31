@@ -45,6 +45,8 @@ PURPOSES = ("release", "development", "compatibility", "canary", "demo")
 # end reads before it removes the directory.
 STATE = "launcher.json"
 OBSERVATIONS = "observations.jsonl"
+# The signals that interrupt a run.
+STOP_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 # How long processes that Neovim started may outlive it.
 GRACE = 5.0
 # The longest reason or observation that the stream keeps.
@@ -429,7 +431,10 @@ def run(args):
 
     def stop(signum, frame):
         # An interrupted launcher leaves nothing running, and its stream has
-        # no run-end.
+        # no run-end. run.sh forwards the signal that the whole process group
+        # may have had already; a second stop() would deadlock in wait().
+        for other in STOP_SIGNALS:
+            signal.signal(other, signal.SIG_IGN)
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -438,7 +443,7 @@ def run(args):
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
-    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    for signum in STOP_SIGNALS:
         signal.signal(signum, stop)
 
     buffered = b""

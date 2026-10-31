@@ -482,6 +482,53 @@ class StreamTest(Case):
         self.assertEqual(len(self.events()), 4)
         self.assertInvalid(self.stream.read_bytes(), "incomplete: no run-end")
 
+    def test_early_interruption(self):
+        """A run stopped before it resolves its paths leaves no earlier run's
+        stream behind: a passing stream is emptied before the first command."""
+        self.scenario(lines=[passing(check_id) for check_id in ORDER])
+        self.assertEqual(self.run_sh().returncode, 0)
+        self.assertTrue(self.validate().passed)
+        marker = self.dir / "dirname-started"
+        dirname = self.bin / "dirname"
+        dirname.write_text(f"""#!{sys.executable}
+import os, sys, time
+with open({str(self.pidfile)!r}, "a") as file:
+    file.write(f"{{os.getpid()}}\\n")
+open({str(marker)!r}, "w").close()
+time.sleep(30)
+os.execv({shutil.which("dirname")!r}, ["dirname", *sys.argv[1:]])
+""")
+        dirname.chmod(0o755)
+        process = self.start_run_sh()
+        deadline = time.monotonic() + 20
+        while not marker.exists():
+            self.assertLess(time.monotonic(), deadline, "run.sh didn't run dirname")
+            time.sleep(0.05)
+        os.kill(process.pid, signal.SIGTERM)
+        process.wait(timeout=20)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertInvalid(self.stream.read_bytes(), "the stream is empty")
+
+    def test_signal_to_launcher_only(self):
+        """A signal to run.sh alone, not its process group, stops Neovim at
+        once, through the wrapper, and leaves an incomplete stream."""
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            with self.subTest(signal=signum.name):
+                self.scenario(lines=[passing(check_id) for check_id in ORDER[:2]], sleep=60)
+                process = self.start_run_sh()
+                self.wait_for_events(4)
+                signalled = time.monotonic()
+                os.kill(process.pid, signum)
+                process.wait(timeout=20)
+                self.assertLess(time.monotonic() - signalled, 5)
+                # Bash exits with 128 + the signal, or by the signal itself.
+                self.assertIn(process.returncode, (128 + signum, -signum))
+                self.assertEqual([event["event"] for event in self.events()],
+                                 ["run-start", "check", "check", "check"])
+                self.assertInvalid(self.stream.read_bytes(), "incomplete: no run-end")
+                self.assertStopped()
+                self.assertNoWork()
+
     def test_deadline(self):
         """results.py run stops Neovim at its deadline, which fails the run.
         run.sh's deadline is 120 seconds, so this runs the steps directly."""

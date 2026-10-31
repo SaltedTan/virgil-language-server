@@ -34,13 +34,17 @@ case ${purpose:=development} in
   release|development|compatibility|canary|demo) ;;
   *) usage ;;
 esac
+# Empty the stream before any other command, so that an earlier run's stream
+# can't outlive a run that stops early.
+if [[ -n $results ]]; then
+  { : > "$results"; } 2>/dev/null || usage
+fi
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd -P)
 deadline=120
 if [[ -n $results ]]; then
   results_dir=$(cd "$(dirname "$results")" && pwd -P) || usage
   results=$results_dir/$(basename "$results")
-  : > "$results"
   stream=(--stream "$results" --server "${server:-build/virgil-lsp}" --purpose "$purpose"
     --launched-at "${EPOCHREALTIME:-$(date -u +%s)}" --runtime "bash=$BASH_VERSION")
   [[ -z $release ]] || stream+=(--release "$release")
@@ -55,6 +59,12 @@ if [[ -n $results ]]; then
   finish() {
     local code=$? args=()
     set +e
+    # Stop the wrapper that a signal interrupted, so that it stops Neovim, and
+    # reap it before the cleanup.
+    if [[ -n ${interrupted:-} && -n ${runner:-} ]]; then
+      kill -s "$interrupted" "$runner" 2>/dev/null
+      wait "$runner" 2>/dev/null
+    fi
     [[ -z ${work:-} ]] || args+=(--work "$work")
     [[ -z ${preflight:-} ]] || args+=(--preflight-passed)
     [[ -z ${interrupted:-} ]] || args+=(--interrupted)
@@ -64,11 +74,12 @@ if [[ -n $results ]]; then
     exit "$code"
   }
   trap finish EXIT
-  # Bash runs these after the command in progress ends; results.py stops
-  # Neovim when the same signal reaches it.
-  trap 'interrupted=1; exit 129' HUP
-  trap 'interrupted=1; exit 130' INT
-  trap 'interrupted=1; exit 143' TERM
+  # Bash runs these at once while it waits for the Neovim wrapper, which runs in
+  # the background for that reason, and otherwise after the command in
+  # progress ends.
+  trap 'interrupted=HUP; exit 129' HUP
+  trap 'interrupted=INT; exit 130' INT
+  trap 'interrupted=TERM; exit 143' TERM
 fi
 
 skip() {
@@ -120,9 +131,14 @@ echo "Neovim smoke test: $nvim_version"
 run_nvim() {
   if [[ -n $results ]]; then
     # The same deadline, and check.lua's observations written as they arrive.
+    # A trapped signal ends the wait at once; finish then stops the wrapper.
     python3 "$repo/test/e2e/nvim/results.py" run --stream "$results" --work "$work" --deadline "$deadline" -- \
-      nvim --headless --clean -n -u "$repo/test/e2e/nvim/check.lua" "$work/project/bad.v3"
-    return
+      nvim --headless --clean -n -u "$repo/test/e2e/nvim/check.lua" "$work/project/bad.v3" <&0 &
+    runner=$!
+    local status=0
+    wait "$runner" || status=$?
+    runner=''
+    return "$status"
   fi
   # A portable outer deadline also covers init errors before the Lua checks run.
   python3 - "$repo/test/e2e/nvim/check.lua" "$work/project/bad.v3" "$deadline" <<'PY'
