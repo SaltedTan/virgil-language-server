@@ -153,6 +153,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					heapBytes = hello.heapBytes;
 					if (BenchProbe.enabled) {
 						BenchProbe.server(activeId, "worker_heap_bytes", heapBytes);
+						BenchProbe.server(activeId, "worker_pid", worker.pid);
 						BenchProbe.server(activeId, "worker_start_us", long.view(BenchProbe.now() - BenchProbe.workerStart));
 					}
 					starting = false;
@@ -255,6 +256,12 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	}
 	private def retireIfOverLimit(state: AnalysisWorkerState) {
 		var maxLive = if(limits.maxLiveBytes >= 0, limits.maxLiveBytes, heapBytes / 8);
+		if (BenchProbe.enabled) {
+			BenchProbe.server(activeId, "worker_analyses", state.analyses);
+			BenchProbe.server(activeId, "worker_uid_next", state.uidNext);
+			BenchProbe.server(activeId, "worker_live_bytes", state.liveBytes);
+			BenchProbe.server(activeId, "worker_live_limit_bytes", maxLive);
+		}
 		var why: string;
 		if (state.analyses >= limits.maxAnalyses) {
 			why = Strings.format2("after %d analyses (limit %d)", state.analyses, limits.maxAnalyses);
