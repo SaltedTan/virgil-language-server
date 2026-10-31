@@ -40,6 +40,38 @@ make test
 
 [docs/development.md](docs/development.md) covers the build, tests, and repository layout in more detail. Coding agents and people starting from a single issue can read the repository instructions in [AGENTS.md](AGENTS.md) first.
 
+## From a branch to a pull request
+
+This is the short path from a clone to a reviewable pull request.
+
+1. Check the [prerequisites](docs/development.md#prerequisites).
+2. Fork the repository on GitHub, since outside contributors can't push to `SaltedTan/virgil-language-server`, and clone your fork with its submodule. If you cloned without `--recurse-submodules`, run `git submodule update --init --recursive` in the clone.
+
+   ```sh
+   git clone --recurse-submodules https://github.com/<you>/virgil-language-server.git
+   cd virgil-language-server
+   ```
+
+3. Create a branch from an up-to-date `main`; in a fork, use GitHub's "Sync fork" first.
+
+   ```sh
+   git switch main
+   git pull
+   git switch -c fix/short-name
+   ```
+
+4. Make one focused change, with tests that exercise it, and the documentation and `CHANGELOG.md` updates that the [pull request rules](#pull-requests) ask for. Commit the change on your branch with a message that explains why (`git add <files>`, then `git commit`).
+5. Run the checks that apply:
+   - `make test` builds the server and runs the unit tests and the server suites, [including the headless Neovim smoke test](docs/development.md#tests), which skips locally without Neovim 0.11 or later.
+   - When anything under `clients/vscode/` changes, run `npm ci`, `npm run check`, and `npm test` in `clients/vscode`, after the [client setup](clients/vscode/README.md#setup); see the [client development commands](clients/vscode/README.md#development).
+   - The real Extension Host test is a separate run: `npm run test:e2e` against the server that `make` built, and `xvfb-run -a npm run test:e2e` on Linux without a display; see the [Extension Host test](clients/vscode/README.md#extension-host-test).
+   - When the LazyVim configuration, or a feature that its test drives, changes, run `make test-lazyvim`, which needs tmux and network access; see [Running it](test/e2e/lazyvim/README.md#running-it).
+
+   `make test` runs neither the VS Code client checks nor the LazyVim test, and the editor tests aren't required for every change. If you skip a check, name it in the pull request with the reason, as [AGENTS.md](AGENTS.md#which-checks-apply) says.
+
+6. Push the branch to your fork with `git push -u origin fix/short-name`, then open a pull request against `main` with GitHub's "Compare & pull request" button, or with `gh pr create --repo SaltedTan/virgil-language-server --base main`. Link the issue (`Fixes #N`), and say what you validated and what you skipped.
+7. CI runs the required checks and the maintainer reviews. Changes that need the maintainer's own merge wait for it, as the [pull request rules](#pull-requests) say.
+
 ## Pull requests
 
 - Keep pull requests small and focused on one change. Include tests that exercise it.
