@@ -15,8 +15,8 @@ it alone writes the stream; check.lua's observations reach it through a file.
           run-end. Its exit status is run.sh's: 0 exactly when the run passed.
 
 The stream is the state between the steps: each step reads the run-start and
-counts the events written so far. A launcher that is interrupted or killed
-leaves the events it wrote, without a run-end, so the stream is incomplete.
+counts the events written so far. The headless Neovim writer section of
+test/e2e/RESULTS.md defines interruption handling, including finalization.
 Requires Python 3.9 or later and only the standard library."""
 import argparse
 import ctypes
