@@ -647,10 +647,7 @@ class Soak:
         self.open(name, json.dumps(config), "json")
         for other in CONTEXTS:
             self.barrier(other, strict=False)
-        # An explicit project analysis returns this context's own snapshot.
-        snap = self.request("virgil-lsp/analyze", {"uri": self.uri(f"{ctx}/{OBSERVER}")})
-        self.record(self.snapshot_findings(snap, ctx, {f"{ctx}/{OBSERVER}": self.versions[f"{ctx}/{OBSERVER}"]},
-                                           extra=[DESCRIBED]), context=ctx, check="descriptors")
+        self.latest(n, ctx, extra=[DESCRIBED])
         self.change(name, json.dumps(self.config))
         for other in CONTEXTS:
             self.barrier(other, strict=False)
@@ -660,10 +657,19 @@ class Soak:
             {"uri": self.uri(f"{ctx}/{DESCRIBED}"), "type": 3}]})
         for other in CONTEXTS:
             self.barrier(other, strict=False)
-        snap = self.request("virgil-lsp/analyze", {"uri": self.uri(f"{ctx}/{OBSERVER}")})
-        self.record(self.snapshot_findings(snap, ctx, {f"{ctx}/{OBSERVER}": self.versions[f"{ctx}/{OBSERVER}"]}),
-                    context=ctx, check="restored")
+        self.latest(n, ctx)
         return {}
+
+    def latest(self, n, ctx, extra=()):
+        """Make {ctx}'s analysis the latest with one more edit, then check its snapshot.
+
+        Not an explicit project analysis: that keeps the context's own
+        snapshot beside the latest, so two Aeneas-size snapshots and its
+        reservation exceed the budget, and admission refuses it whenever
+        another context was analyzed last."""
+        path = f"{ctx}/{OBSERVER}"
+        self.change(path, states.OBSERVER + f"// soak cycle {n}, context {ctx}, configuration\n")
+        self.barrier(ctx, {path: self.versions[path]}, extra=extra)
 
     def cycle(self, n, warmup):
         self.sampler.mark("warmup" if warmup else f"cycle-{n:02d}")
