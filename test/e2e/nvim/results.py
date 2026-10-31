@@ -22,6 +22,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -397,99 +398,157 @@ def run(args):
     def take(line):
         try:
             entry = json.loads(line)
-            check_id, status = entry.get("id"), entry.get("status")
-            started, ended = entry["startedAt"] / 1000, entry["endedAt"] / 1000
-            observation = paths(entry["observation"])
-        except (ValueError, KeyError, TypeError, AttributeError):
-            observation = None
-        if not observation:
-            state["issues"].append("check.lua wrote an observation that isn't one: " + paths(line[:200]))
-        elif status not in ("pass", "fail"):
-            state["issues"].append(f"check.lua reported the status {status!r}, which isn't pass or fail")
-        elif check_id is None and status == "fail":
-            # No check failed, so the checks that didn't run have no events.
-            state["issues"].append("check.lua failed outside a check: " + observation)
-        elif check_id not in main:
-            state["issues"].append(f"check.lua reported {check_id}, which isn't a planned check of profile main")
-        elif check_id in reported:
+            check_id, status = entry["id"], entry["status"]
+            started, ended = entry["startedAt"], entry["endedAt"]
+            upper = (now() + 1) * 1000
+            if not (isinstance(check_id, str) and check_id in main
+                    and status in ("pass", "fail")
+                    and all(type(value) in (int, float) and math.isfinite(value)
+                            and (launched - 1) * 1000 <= value <= upper for value in (started, ended))
+                    and started <= ended
+                    and isinstance(entry["observation"], str) and entry["observation"]):
+                raise ValueError("invalid observation fields")
+            if status == "fail" and not (isinstance(entry["reason"], str) and entry["reason"]
+                                         and entry["failureCode"] in ("wait-timeout", "error")):
+                raise ValueError("invalid failure fields")
+        except (ValueError, KeyError, TypeError, OverflowError):
+            state["issues"].append("check.lua wrote a malformed observation: " + paths(line[:200]))
+            return
+        if check_id in reported:
             state["issues"].append(f"check.lua reported {check_id} again")
+            return
+        observation = paths(entry["observation"])
+        reported.add(check_id)
+        if status == "pass":
+            stream.check(check_id, "main", "pass", levels[check_id], started / 1000, ended / 1000, observation)
         else:
-            reported.add(check_id)
-            if status == "pass":
-                stream.check(check_id, "main", "pass", levels[check_id], started, ended, observation)
-            else:
-                reason = paths(str(entry.get("reason") or observation))
-                code = entry.get("failureCode")
-                stream.check(check_id, "main", "fail", levels[check_id], started, ended, observation, reason,
-                             code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", code)
-                             else "error")
-                failed.append(check_id)
+            stream.check(check_id, "main", "fail", levels[check_id], started / 1000, ended / 1000,
+                         observation, paths(entry["reason"]), entry["failureCode"])
+            failed.append(check_id)
 
     env = dict(os.environ, VIRGIL_NVIM_OBSERVATIONS=str(observations))
     launched = now()
-    process = subprocess.Popen(args.nvim, start_new_session=True, env=env)
-
-    def stop(signum, frame):
-        # An interrupted launcher leaves nothing running, and its stream has
-        # no run-end. run.sh forwards the signal that the whole process group
-        # may have had already; a second stop() would deadlock in wait().
-        for other in STOP_SIGNALS:
-            signal.signal(other, signal.SIG_IGN)
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
-
-    for signum in STOP_SIGNALS:
-        signal.signal(signum, stop)
-
+    process = None
+    groups = set()
+    protected = {os.getpgrp()}
+    interrupted = None
+    timed_out = False
+    reader_failed = False
     buffered = b""
-    with open(observations, "rb") as source:
-        def read():
-            nonlocal buffered
-            buffered += source.read()
-            *lines, buffered = buffered.split(b"\n")
-            for line in lines:
-                if line.strip():
-                    take(line.decode("utf-8", "replace"))
 
-        timed_out = False
-        limit = time.monotonic() + args.deadline
-        while process.poll() is None:
-            read()
-            if time.monotonic() >= limit:
-                print(f"FAIL: Neovim smoke test exceeded {args.deadline} seconds", file=sys.stderr)
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-                timed_out = True
-                break
-            time.sleep(0.05)
-        ended = now()
-        read()
-    if buffered.strip():
-        state["issues"].append("check.lua's last observation is incomplete")
+    def collect():
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid="], check=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
+        table = {pid: (parent, group) for pid, parent, group in
+                 (map(int, row.split()) for row in listing.stdout.splitlines())}
+        parent = os.getpid()
+        while parent and parent in table:
+            parent, group = table[parent]
+            protected.add(group)
+        if process is not None:
+            descendants = {process.pid}
+            while True:
+                children = {pid for pid, (parent, _) in table.items() if parent in descendants}
+                if children <= descendants:
+                    break
+                descendants.update(children)
+            groups.update(table[pid][1] for pid in descendants if pid in table)
+        groups.difference_update(protected)
 
-    # Whatever Neovim started must be gone too.
-    left = time.monotonic() + GRACE
-    while True:
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            state["processes"] = "verified"
-            break
-        if time.monotonic() >= left:
+    def alive():
+        remaining = set()
+        for group in groups:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(group, 0)
+                remaining.add(group)
             except ProcessLookupError:
                 pass
+        return remaining
+
+    def stop(signum, frame):
+        nonlocal interrupted
+        interrupted = signum
+
+    previous = {signum: signal.signal(signum, stop) for signum in STOP_SIGNALS}
+    try:
+        collect()
+        if interrupted is None:
+            process = subprocess.Popen(args.nvim, start_new_session=True, env=env)
+            groups.add(process.pid)
+            with open(observations, "rb") as source:
+                def read():
+                    nonlocal buffered
+                    buffered += source.read()
+                    *lines, buffered = buffered.split(b"\n")
+                    for line in lines:
+                        if line.strip():
+                            collect()
+                            take(line.decode("utf-8", "replace"))
+
+                limit = time.monotonic() + args.deadline
+                sampled = time.monotonic()
+                while process.poll() is None and interrupted is None:
+                    read()
+                    if time.monotonic() >= sampled:
+                        collect()
+                        sampled = time.monotonic() + 1
+                    if time.monotonic() >= limit:
+                        print(f"FAIL: Neovim smoke test exceeded {args.deadline} seconds", file=sys.stderr)
+                        timed_out = True
+                        break
+                    time.sleep(0.05)
+                if interrupted is None:
+                    read()
+            if buffered.strip():
+                state["issues"].append("check.lua's last observation is incomplete")
+    except Exception as error:
+        reader_failed = True
+        state["issues"].append("the Neovim observation reader failed: " + paths(str(error)))
+    finally:
+        ended = now()
+        try:
+            collect()
+        except Exception as error:
             state["processes"] = "failed"
-            state["issues"].append(f"processes that Neovim started were still running {GRACE:g} seconds after it "
-                                   "exited, and the launcher killed them")
-            break
-        time.sleep(0.05)
+            state["issues"].append("could not record Neovim's process groups: " + paths(str(error)))
+        try:
+            if process is not None:
+                if not (timed_out or interrupted or reader_failed):
+                    left = time.monotonic() + GRACE
+                    while alive() and time.monotonic() < left and interrupted is None:
+                        time.sleep(0.05)
+                    if alive() and interrupted is None:
+                        state["issues"].append(f"processes that Neovim started were still running {GRACE:g} "
+                                               "seconds after it exited, and the launcher killed them")
+                collect()
+        except Exception as error:
+            state["processes"] = "failed"
+            state["issues"].append("could not inspect Neovim's remaining processes: " + paths(str(error)))
+        try:
+            for group in groups:
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process is not None:
+                process.wait()
+            left = time.monotonic() + GRACE
+            while alive() and time.monotonic() < left:
+                time.sleep(0.05)
+            if alive():
+                state["processes"] = "failed"
+                state["issues"].append("processes that Neovim started remain after SIGKILL")
+            elif state["processes"] != "failed":
+                state["processes"] = "verified"
+        except Exception as error:
+            state["processes"] = "failed"
+            state["issues"].append("could not stop and verify Neovim's processes: " + paths(str(error)))
+        save_state(args.work, state)
+        if interrupted is not None:
+            signal.signal(interrupted, signal.SIG_DFL)
+            os.kill(os.getpid(), interrupted)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
     # check.lua stops at its first failure, so the checks after it didn't run.
     if failed:
@@ -498,7 +557,7 @@ def run(args):
                 stream.check(check_id, profile, "skip", levels[check_id], ended, ended, "not run",
                              f"not run: check.lua stopped after {failed[0]} failed")
 
-    code = process.returncode
+    code = process.returncode if process is not None else 1
     seconds = ended - launched
     if timed_out:
         state["issues"].append(f"Neovim exceeded its {args.deadline}-second deadline")
@@ -519,7 +578,7 @@ def run(args):
                      f"Neovim exited with status 0 after {seconds:.1f} seconds, within its "
                      f"{args.deadline}-second deadline")
     save_state(args.work, state)
-    return 1 if timed_out else code
+    return 1 if timed_out or reader_failed else code
 
 
 def end(args):

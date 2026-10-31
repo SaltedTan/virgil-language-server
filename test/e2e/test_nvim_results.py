@@ -2,8 +2,8 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """Tests the headless Neovim test's result stream, run.sh --results
-(test/e2e/RESULTS.md). check.lua's checks must be coverage.json's, and every
-line of its check() must belong to one. A stand-in nvim on PATH reports
+(test/e2e/RESULTS.md). A real Neovim run checks the manifest's plan.
+A stand-in nvim on PATH reports
 observations as check.lua does, with the real server's executables, so that
 each stream that run.sh writes, for passing, failing, incomplete, and
 interrupted runs, can be checked with scripts/editor-results.py.
@@ -22,17 +22,16 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 RUN = HERE / "nvim" / "run.sh"
 RESULTS = HERE / "nvim" / "results.py"
-CHECK = HERE / "nvim" / "check.lua"
 MANIFEST = json.loads((HERE / "coverage.json").read_bytes())
 SERVER = Path(sys.argv.pop(1) if len(sys.argv) > 1 else REPO / "build" / "virgil-lsp").resolve()
 NVIM_CHECKS = {check["id"]: check for check in MANIFEST["checks"] if "nvim" in check["suites"]}
-WRAPPER = {"nvim.infrastructure.preflight", "nvim.infrastructure.completed"}
 
 
 def load_validator():
@@ -47,26 +46,41 @@ VALIDATOR_MANIFEST = validator.Manifest.load(validator.MANIFEST)
 VALIDATOR_SCHEMA = validator.Schema.load(validator.SCHEMA)
 
 
-def lua_code(line):
-    """A line of Lua without its string literals and comment."""
-    line = re.sub(r'"(\\.|[^"\\])*"|\'(\\.|[^\'\\])*\'', '""', line)
-    return line.split("--", 1)[0]
-
-
-def check_body():
-    """The lines of check.lua's check(), without its first and last."""
-    lines = CHECK.read_text().split("\n")
-    first = lines.index("local function check()")
-    last = next(index for index in range(first, len(lines)) if lines[index] == "end")
-    return lines[first + 1:last]
-
-
-def begun():
-    return re.findall(r'^\s*begin\("([^"]+)"\)', CHECK.read_text(), re.M)
-
-
-# check.lua's checks, in the order that it runs them.
-ORDER = begun()
+ORDER = [
+    "nvim.startup.attach",
+    "nvim.diagnostics.parser",
+    "nvim.symbols.broken-empty",
+    "nvim.diagnostics.semicolon-fix",
+    "nvim.diagnostics.unsaved-clear",
+    "nvim.symbols.hierarchy",
+    "nvim.folding-ranges.response",
+    "nvim.selection-ranges.response",
+    "nvim.configuration.valid-root",
+    "nvim.diagnostics.semantic",
+    "nvim.definition.response",
+    "nvim.inlay-hints.response",
+    "nvim.semantic-tokens.response",
+    "nvim.type-definition.response",
+    "nvim.type-definition.jump",
+    "nvim.hover.response",
+    "nvim.signature.complete",
+    "nvim.workspace-symbols.join",
+    "nvim.references.library",
+    "nvim.document-highlight.response",
+    "nvim.implementation.response",
+    "nvim.implementation.jump",
+    "nvim.type-hierarchy.response",
+    "nvim.type-hierarchy.quickfix",
+    "nvim.call-hierarchy.response",
+    "nvim.call-hierarchy.quickfix",
+    "nvim.rename.apply-undo",
+    "nvim.completion.keyword",
+    "nvim.completion.local",
+    "nvim.completion.member",
+    "nvim.configuration.json-routing",
+    "nvim.configuration.unsaved",
+    "nvim.shutdown.clean",
+]
 
 
 def tree_sha256(root):
@@ -85,14 +99,12 @@ def sha256(path):
 
 
 def passing(check_id):
-    moment = int(time.time() * 1000)
-    return json.dumps({"id": check_id, "status": "pass", "startedAt": moment, "endedAt": moment + 1,
+    return json.dumps({"id": check_id, "status": "pass", "startedAt": "<NOW>", "endedAt": "<NOW>",
                        "observation": f"{check_id} observed"})
 
 
 def failing(check_id, message):
-    moment = int(time.time() * 1000)
-    return json.dumps({"id": check_id, "status": "fail", "startedAt": moment, "endedAt": moment + 1,
+    return json.dumps({"id": check_id, "status": "fail", "startedAt": "<NOW>", "endedAt": "<NOW>",
                        "observation": message, "reason": message, "failureCode": "wait-timeout"})
 
 
@@ -111,20 +123,24 @@ work = os.path.dirname(path) if path else None
 if scenario.get("pidfile"):
     with open(scenario["pidfile"], "a") as file:
         file.write(f"{{os.getpid()}}\\n")
+if scenario.get("linger") or scenario.get("detached"):
+    child = subprocess.Popen([sys.executable, "-c",
+                              "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"],
+                             start_new_session=scenario.get("detached", False))
+    with open(scenario["pidfile"], "a") as file:
+        file.write(f"{{child.pid}}\\n")
 if path:
     with open(path, "a") as out:
         for line in scenario.get("lines", []):
+            moment = int(time.time() * 1000)
+            line = line.replace('"<NOW>"', str(moment)).replace('"<LATER>"', str(moment + 100))
             out.write(line.replace("<WORK>", work) + "\\n")
         out.write(scenario.get("partial", ""))
         out.flush()
-if scenario.get("linger"):
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    with open(scenario["pidfile"], "a") as file:
-        file.write(f"{{child.pid}}\\n")
 if scenario.get("lock"):
     os.makedirs(os.path.join(work, "locked", "inside"))
     os.chmod(os.path.join(work, "locked"), 0o555)
-time.sleep(scenario.get("sleep", 0))
+time.sleep(scenario.get("sleep", 0.2 if scenario.get("linger") or scenario.get("detached") else 0))
 sys.exit(scenario.get("exit", 0))
 """
 
@@ -221,43 +237,110 @@ class Case(unittest.TestCase):
         return run
 
 
-class CheckLuaTest(unittest.TestCase):
-    def test_checks_are_the_manifests(self):
-        self.assertEqual(len(ORDER), len(set(ORDER)), "check.lua begins a check twice")
-        main = {check_id for check_id, check in NVIM_CHECKS.items() if check["profiles"] == ["main"]}
-        self.assertEqual(set(ORDER), main)
-        self.assertEqual(set(NVIM_CHECKS) - main, WRAPPER)
-        for check_id in WRAPPER:
-            self.assertEqual(NVIM_CHECKS[check_id]["profiles"], ["wrapper"])
+class ReaderTest(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("nvim_results", RESULTS)
+        self.writer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.writer)
+        self.directory = tempfile.TemporaryDirectory(prefix="nvim-reader-", dir=REPO)
+        self.addCleanup(self.directory.cleanup)
+        self.work = Path(self.directory.name)
+        self.nvim = self.work / "nvim"
+        self.nvim.write_text(FAKE_NVIM.format(python=sys.executable))
+        self.nvim.chmod(0o755)
+        self.stream = self.work / "r.jsonl"
+        self.stream.write_text(json.dumps({"event": "run-start", "runId": "reader-test"}) + "\n")
+        self.pidfile = self.work / "pids"
+        self.addCleanup(self.stop_children)
 
-    def test_every_line_belongs_to_a_check(self):
-        """Each begin() is followed by one passed(), and between a passed()
-        and the next begin() are only comments and blank lines, so that a
-        failure anywhere in check() is attributed to a check."""
-        body = check_body()
-        code = [(number, lua_code(line).strip()) for number, line in enumerate(body)]
-        code = [(number, line) for number, line in code if line]
-        self.assertTrue(code[0][1].startswith("begin("), body[code[0][0]])
-        open_check = False
-        expect_begin = False
-        depth = 0
-        for number, line in code:
-            if depth == 0 and expect_begin:
-                self.assertTrue(line.startswith("begin("), f"check.lua: {body[number]!r} is outside a check")
-                expect_begin = False
-            if depth == 0 and line.startswith("begin("):
-                self.assertFalse(open_check, f"check.lua: {body[number]!r} begins before a passed()")
-                open_check = True
-            elif depth == 0 and line.startswith("passed("):
-                self.assertTrue(open_check, f"check.lua: {body[number]!r} has no begin()")
-                open_check = False
-                depth = line.count("(") - line.count(")")
-                expect_begin = depth == 0
-                continue
-            if depth:
-                depth += line.count("(") - line.count(")")
-                expect_begin = depth == 0
-        self.assertFalse(open_check, "check.lua's last check has no passed()")
+    def stop_children(self):
+        if self.pidfile.exists():
+            for pid in map(int, self.pidfile.read_text().splitlines()):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def run_reader(self, lines, **changes):
+        scenario = {"lines": lines, "detached": True, "sleep": 60, "pidfile": str(self.pidfile), **changes}
+        with mock.patch.dict(os.environ, FAKE_NVIM=json.dumps(scenario)):
+            return self.writer.main(["run", "--stream", str(self.stream), "--work", str(self.work),
+                                     "--deadline", "1", "--", str(self.nvim)])
+
+    def assert_cleaned(self):
+        state = json.loads((self.work / "launcher.json").read_text())
+        self.assertEqual(state["processes"], "verified", state)
+        for pid in map(int, self.pidfile.read_text().splitlines()):
+            with self.assertRaises(ProcessLookupError, msg=f"process {pid} survived cleanup"):
+                os.kill(pid, 0)
+        return state
+
+    def test_successful_observations(self):
+        self.assertEqual(self.run_reader(list(map(passing, ORDER)), detached=False, sleep=0), 0)
+        state = self.assert_cleaned()
+        self.assertEqual(state["issues"], [])
+        checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
+        self.assertEqual([check["id"] for check in checks], [*ORDER, "nvim.infrastructure.completed"])
+        self.assertTrue(all(check["status"] == "pass" for check in checks))
+
+    def test_normal_exit_stops_detached_child(self):
+        self.assertEqual(self.run_reader([passing(ORDER[0])], sleep=0.2), 0)
+        state = self.assert_cleaned()
+        self.assertTrue(any("still running" in issue for issue in state["issues"]), state)
+
+    def test_malformed_records_continue_to_deadline_and_cleanup(self):
+        lines = []
+        for changes in ({"startedAt": True}, {"id": []}, {"startedAt": float("nan")},
+                        {"endedAt": 10 ** 1000}, {"startedAt": "<LATER>"}):
+            for status in ("pass", "fail"):
+                record = json.loads(passing(ORDER[0]) if status == "pass" else failing(ORDER[0], "failed"))
+                record.update(changes)
+                lines.append(json.dumps(record))
+        self.assertEqual(self.run_reader([*lines, passing(ORDER[0])]), 1)
+        state = self.assert_cleaned()
+        self.assertEqual(sum("malformed observation" in issue for issue in state["issues"]), len(lines))
+        checks = [json.loads(line) for line in self.stream.read_text().splitlines()[1:]]
+        self.assertEqual([check["id"] for check in checks], [ORDER[0], "nvim.infrastructure.completed"])
+        self.assertEqual(checks[0]["status"], "pass")
+        self.assertEqual(checks[1]["failureCode"], "deadline")
+
+    def test_reader_exception_still_stops_descendants(self):
+        original = self.writer.Stream.check
+
+        def write(stream, check_id, *args):
+            if check_id == ORDER[0]:
+                raise OSError("reader regression")
+            return original(stream, check_id, *args)
+
+        with mock.patch.object(self.writer.Stream, "check", write):
+            self.assertEqual(self.run_reader([passing(ORDER[0])]), 1)
+        state = self.assert_cleaned()
+        self.assertTrue(any("reader regression" in issue for issue in state["issues"]), state)
+
+
+class CheckLuaTest(unittest.TestCase):
+    def test_real_result_stream(self):
+        nvim = shutil.which("nvim")
+        if nvim is None:
+            self.skipTest("Neovim 0.11+ is not on PATH")
+        version = subprocess.run([nvim, "--version"], capture_output=True, text=True, check=True)
+        match = re.match(r"NVIM v(\d+)\.(\d+)", version.stdout)
+        if not match or tuple(map(int, match.groups())) < (0, 11):
+            self.skipTest("Neovim on PATH is older than 0.11 or has an unknown version")
+        with tempfile.TemporaryDirectory(prefix="nvim-real-results-", dir=REPO) as directory:
+            stream = Path(directory) / "r.jsonl"
+            result = subprocess.run([str(RUN), str(SERVER), "--results", str(stream)], cwd=REPO,
+                                    capture_output=True, text=True, timeout=150)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            validated = subprocess.run([sys.executable, str(REPO / "scripts" / "editor-results.py"),
+                                        "validate", str(stream)], cwd=REPO, capture_output=True, text=True)
+            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+            events = [json.loads(line) for line in stream.read_text().splitlines()]
+            checks = [event for event in events if event["event"] == "check"]
+            self.assertEqual([check["id"] for check in checks],
+                             ["nvim.infrastructure.preflight", *ORDER, "nvim.infrastructure.completed"])
+            self.assertEqual(sorted(check["id"] for check in checks), sorted(NVIM_CHECKS))
+            self.assertTrue(all(check["status"] == "pass" for check in checks))
 
 
 class StreamTest(Case):
@@ -352,7 +435,7 @@ class StreamTest(Case):
         run = self.assertFailed(self.run_sh())
         self.assertFalse(run.end["complete"])
         self.assertEqual(run.end["counts"]["skip"], 0)
-        self.assertTrue(any("outside a check" in issue for issue in run.end["issues"]), run.end["issues"])
+        self.assertTrue(any("malformed observation" in issue for issue in run.end["issues"]), run.end["issues"])
 
     def test_reports_that_arent_observations(self):
         """Every check passes, but the driver also reported a line that isn't
@@ -434,12 +517,52 @@ class StreamTest(Case):
         self.assertIn("unavailable", self.run_sh().stdout)
 
     def test_lingering_process(self):
-        """A process that outlives Neovim fails the cleanup, and is stopped."""
+        """A process that outlives Neovim fails the run, and is stopped."""
         self.scenario(lines=[passing(check_id) for check_id in ORDER], linger=True)
         run = self.assertFailed(self.run_sh())
-        self.assertEqual(run.end["cleanup"], "failed")
+        self.assertEqual(run.end["cleanup"], "verified")
         self.assertTrue(any("still running" in issue for issue in run.end["issues"]), run.end["issues"])
         self.assertStopped()
+
+    def test_detached_process_after_normal_exit(self):
+        self.scenario(lines=[passing(check_id) for check_id in ORDER], detached=True)
+        run = self.assertFailed(self.run_sh())
+        self.assertTrue(any("still running" in issue for issue in run.end["issues"]), run.end["issues"])
+        self.assertStopped()
+        self.assertEqual(run.end["cleanup"], "verified")
+        self.assertNoWork()
+
+    def test_detached_process_after_launcher_signal(self):
+        self.scenario(lines=[passing(ORDER[0])], sleep=60, detached=True)
+        process = self.start_run_sh()
+        self.wait_for_events(3)
+        os.kill(process.pid, signal.SIGTERM)
+        process.wait(timeout=20)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertInvalid(self.stream.read_bytes(), "incomplete: no run-end")
+        self.assertStopped()
+        self.assertNoWork()
+
+    def test_malformed_observation_fields(self):
+        for changes in ({"startedAt": True}, {"endedAt": False}, {"id": []}, {"id": {}},
+                        {"startedAt": float("nan")}, {"endedAt": float("inf")},
+                        {"endedAt": 10 ** 1000}, {"startedAt": 0},
+                        {"startedAt": "<LATER>", "endedAt": "<NOW>"},
+                        {"observation": []}, {"status": []}, {"reason": []}, {"failureCode": []}):
+            for status in ("pass", "fail"):
+                with self.subTest(changes=changes, status=status):
+                    record = json.loads(passing(ORDER[0]) if status == "pass" else failing(ORDER[0], "failed"))
+                    record.update(changes)
+                    if status == "pass" and ("reason" in changes or "failureCode" in changes):
+                        continue
+                    self.scenario(lines=[json.dumps(record), *map(passing, ORDER)])
+                    run = self.assertFailed(self.run_sh())
+                    self.assertTrue(run.end["complete"])
+                    self.assertTrue(any("malformed observation" in issue for issue in run.end["issues"]),
+                                    run.end["issues"])
+                    self.assertEqual(run.end["cleanup"], "verified")
+                    self.assertStopped()
+                    self.assertNoWork()
 
     def test_temporary_directory_left(self):
         self.scenario(lines=[passing(check_id) for check_id in ORDER], lock=True)
@@ -532,7 +655,7 @@ os.execv({shutil.which("dirname")!r}, ["dirname", *sys.argv[1:]])
     def test_deadline(self):
         """results.py run stops Neovim at its deadline, which fails the run.
         run.sh's deadline is 120 seconds, so this runs the steps directly."""
-        self.scenario(lines=[passing(ORDER[0])], sleep=60)
+        self.scenario(lines=[passing(ORDER[0])], sleep=60, detached=True)
         work = Path(tempfile.mkdtemp(dir=self.server_dir, prefix="nvim-smoke."))
         shutil.copytree(HERE / "nvim" / "fixture", work / "project")
         common = ["--stream", str(self.stream), "--server", str(self.server_dir / "virgil-lsp"),
