@@ -29,6 +29,8 @@ def X = [
 	T("LspWorkspaceSymbols:container_ambiguity", test_container_ambiguity),
 	T("LspWorkspaceSymbols:containers_of_a_shared_file", test_containers_of_a_shared_file),
 	T("LspWorkspaceSymbols:containers_of_stale_and_substituted_files", test_containers_stale_and_substituted),
+	T("LspWorkspaceSymbols:container_budget", test_container_budget),
+	T("LspWorkspaceSymbols:container_budget_skips_a_large_file", test_container_budget_skips),
 	()
 ];
 def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]},{\"name\":\"two\",\"sources\":[\"two/*.v3\",\"shared/*.v3\"]}]}";
@@ -738,4 +740,60 @@ def test_containers_stale_and_substituted(t: Tester) {
 	expectSymbols(t, ["par Two", "par Lib"], s.containers(t, "par"));
 	t.asserti(2, s.outlines() - before);
 	s.server.close();
+}
+// The container budget goes to files in the rank order of their first
+// symbol: for "par", one/One.v3, then two/Two.v3, then lib/Lib.v3. A file
+// whose analyzed text fits in what is left is outlined and takes its size;
+// the others have no containers. The reply is otherwise unchanged.
+def test_container_budget(t: Tester) {
+	var s = session(t);
+	t.asserti(524288, s.server.workspaceSymbols.MAX_OUTLINE_BYTES);
+	// Exactly One.v3 fits.
+	expectBudget(t, s, ONE.length, 1, ONE.length, [
+		"Par -", "par Par", "par -", "par -", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	// One.v3 and Two.v3 fit, and Lib.v3, a byte too large, does not.
+	expectBudget(t, s, ONE.length + TWO.length + LIB.length - 1, 2, ONE.length + TWO.length, [
+		"Par -", "par Par", "par Two", "par -", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	// Nothing fits in an empty budget.
+	expectBudget(t, s, 0, 0, 0, [
+		"Par -", "par -", "par -", "par -", "parse -", "Parser -", "partial -", "compare -",
+		"SPARE -", "PackRow -", "Pair -"
+	]);
+	s.server.close();
+}
+// A file too large for what is left of the budget is skipped, and a later,
+// smaller one still has its containers.
+def test_container_budget_skips(t: Tester) {
+	var s = session(t);
+	t.assert(TWO.length + LIB.length < ONE.length && LIB.length < TWO.length, "One.v3 is the largest, Lib.v3 the smallest");
+	// One.v3 doesn't fit; Two.v3 and Lib.v3 do.
+	expectBudget(t, s, TWO.length + LIB.length, 2, TWO.length + LIB.length, [
+		"Par -", "par -", "par Two", "par Lib", "parse -", "Parser -", "partial -", "compare -",
+		"SPARE -", "PackRow -", "Pair -"
+	]);
+	// One.v3 fits, then Two.v3 doesn't in what is left, and Lib.v3 does.
+	expectBudget(t, s, ONE.length + LIB.length, 2, ONE.length + LIB.length, [
+		"Par -", "par Par", "par -", "par Lib", "parse Par", "Parser -", "partial Parser", "compare Par",
+		"SPARE Tire", "PackRow -", "Pair -"
+	]);
+	s.server.close();
+}
+// Checks that "par", with a container budget of {budget} bytes, parses
+// {outlines} outlines of {bytes} bytes in all, never more than the budget,
+// gives the symbols the containers {expected}, and returns the same names,
+// kinds, and locations, in the same order, as without containers.
+def expectBudget(t: Tester, s: WorkspaceSymbolTestSession, budget: int, outlines: int, bytes: int, expected: Array<string>) {
+	var w = s.server.workspaceSymbols;
+	w.maxOutlineBytes = budget;
+	var before = w.outlines, beforeBytes = w.outlineBytes;
+	expectSymbols(t, expected, s.containers(t, "par"));
+	t.asserti(outlines, w.outlines - before);
+	t.assertl(bytes, w.outlineBytes - beforeBytes);
+	t.assert(w.outlineBytes - beforeBytes <= budget, "parsed bytes within the budget");
+	expectSymbols(t, PAR, s.symbols(t, "par"));
+	w.maxOutlineBytes = w.MAX_OUTLINE_BYTES;
 }

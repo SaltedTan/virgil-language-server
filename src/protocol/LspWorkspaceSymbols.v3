@@ -6,14 +6,24 @@
 // so a project that has not been analyzed yet contributes nothing. A file's
 // symbols are returned only while one of those snapshots still matches its
 // text, and their container names come from an outline of that text, parsed
-// once per reply. See docs/architecture.md#workspace-symbols.
+// at most once per reply and within a budget. See
+// docs/architecture.md#workspace-symbols.
 class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	// The most symbols a reply holds: the first matches in rank order.
 	def MAX_RESULTS = 1000;
+	// The most bytes of analyzed text that one reply parses for containers.
+	// Parsing an outline costs about 30 ms per MB of source, and without a
+	// bound, the empty query's 136 files (2.6 MB) in the Aeneas benchmark
+	// project added 80 ms to a 20 ms reply. Past it, symbols have no
+	// container.
+	def MAX_OUTLINE_BYTES = 524288;
+	// Tests may lower the budget.
+	var maxOutlineBytes = MAX_OUTLINE_BYTES;
 	// The client's workspace.symbol.symbolKind.
 	var clientKinds = LspSymbolKind.symbols(null);
-	// The number of outlines that replies parsed, for tests.
+	// The number of outlines that replies parsed, and their bytes, for tests.
 	var outlines: int;
+	var outlineBytes: long;
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("workspace/symbol", workspaceSymbol);
@@ -32,18 +42,36 @@ class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		for (i < matches.length) result[i] = encode(matches[i]);
 		return JsonRpcReply.Result(JsonValue.JArray(result));
 	}
-	// Sets the container of each of {matches} that has one. The matches are
-	// visited by file, and each file's outline is parsed once, from the text
-	// that the search checked, with the options of the project that analyzed
-	// it, so that the outline has the declarations of that analysis. It is
-	// dropped once the file's matches have their containers.
+	// Sets the container of each of {matches} that has one. Files take the
+	// budget in the rank order of their first match: each whose analyzed
+	// text fits in what is left is outlined, and takes its size from the
+	// budget; one that doesn't fit is not, and a later, smaller file still
+	// can be. Then the matches are visited by file, and each outlined file's
+	// outline is parsed once, from the text that the search checked, with the
+	// options of the project that analyzed it, so that the outline has the
+	// declarations of that analysis. It is dropped once the file's matches
+	// have their containers.
 	private def findContainers(matches: Array<LspWorkspaceSymbolMatch>) {
+		var left = maxOutlineBytes;
+		for (m in matches) {
+			var file = m.file;
+			if (file.budgeted) continue;
+			file.budgeted = true;
+			if (file.text.length > left) continue;
+			file.outlined = true;
+			left -= file.text.length;
+		}
 		var byFile = AnalysisTables.sort(Arrays.dup(matches), fileBefore);
 		var i = 0;
 		while (i < byFile.length) {
 			var file = byFile[i].file, end = i + 1;
 			while (end < byFile.length && byFile[end].file == file) end++;
+			if (!file.outlined) {
+				i = end;
+				continue;
+			}
 			outlines++;
+			outlineBytes += file.text.length;
 			var symbols = AeneasAdapter.documentSymbols(file.path, file.text, file.options);
 			for (k = i; k < end; k++) {
 				var m = byFile[k];
@@ -89,7 +117,9 @@ class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 // analyses are the search's entries from {next} to {end}, in context order.
 // Its declarations come from the first whose stamp still matches, until a
 // check of that analysis's text fails, and then from the next. Once checked,
-// {text}, {uri}, and the compiler {options} are that analysis's.
+// {text}, {uri}, and the compiler {options} are that analysis's. Once the
+// search is done, {budgeted} is set when the container budget reaches the
+// file, and {outlined} if the file's outline fits in it.
 class LspWorkspaceSymbolFile(path: string, member: bool, end: int) {
 	var next: int;
 	var round: int;	// the last round that checked the file
@@ -97,6 +127,8 @@ class LspWorkspaceSymbolFile(path: string, member: bool, end: int) {
 	var uri: string;
 	var options: Array<string>;
 	var lines: LspWorkspaceSymbolLines;
+	var budgeted: bool;
+	var outlined: bool;
 }
 // A declaration in {file} whose name matches the query with {quality}. Once
 // the search is done, {container} is the names of the declarations that
