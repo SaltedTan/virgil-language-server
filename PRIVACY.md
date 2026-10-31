@@ -22,7 +22,7 @@ The server opens files only to read them:
 - **The Virgil root.** It reads the files under the Virgil root that `virgilDependencies` select. When the editor sends no root, it uses the library in the `virgil/` directory beside its own executable, which release archives and platform VSIX files include: it reads that directory's `REVISION` file and checks that its `lib/` can be listed ([The Virgil root](docs/configuration.md#the-virgil-root)).
 - **Its own location.** It looks up the path of its own executable, to find the worker and the `virgil/` library beside it.
 
-It never follows symbolic links when it looks for project files or reads sources ([Symbolic links](docs/configuration.md#symbolic-links)). It reads no environment variables, including `VIRGIL_LOC`: the VS Code, Neovim, and LazyVim integrations read that and send the root to the server.
+It never follows symbolic links when it looks for project files or reads sources ([Symbolic links](docs/configuration.md#symbolic-links)). It reads no environment variables, including `VIRGIL_LOC`.
 
 The server only parses and type-checks your code. It never compiles or runs it, and nothing in a project file can make it run a program ([Security](docs/configuration.md#security)). Its [development commands](docs/development.md), such as `virgil-lsp parse`, read the files that you name on the command line, and an unadvertised development request can name files to analyze; editors don't send it.
 
