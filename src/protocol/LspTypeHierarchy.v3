@@ -183,7 +183,9 @@ class LspTypeHierarchyItems(owner: LspTypeHierarchy, at: LspSnapshotPosition) {
 			if (j >= 0) {
 				map = at.positionMap(j, target.1);
 				// The analyzed text parsed with these options, so its outline has
-				// the declaration.
+				// the declaration, unless the text has too many tokens to parse:
+				// then, as for a text that fails to parse, it has no outline, and
+				// an item's range is its name's.
 				symbols = AeneasAdapter.documentSymbols(path, target.1, at.options);
 			}
 		}

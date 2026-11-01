@@ -1,0 +1,55 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Bounds the server's own parse of one document's text, behind its outline,
+// folding ranges, and selection ranges (AeneasAdapter.outline, which
+// documentSymbols wraps, foldingRanges, and selectionRanges), and the semicolon
+// quick fix (LspCodeActions). That parse runs in the server, not the analysis
+// worker, and its syntax tree and index grow
+// with the tokens it reads, whatever their bytes: a 1 MiB document of
+// "var a,a,a,..." exhausted the server's heap. So, before parsing, a pass
+// that allocates nothing conservatively counts the parser's tokens, and a
+// document with more than {maxTokens} is not parsed. See
+// docs/architecture.md#document-symbols.
+component AnalysisParseBudget {
+	// The densest text, lists such as "(a,a,a,...)" with a token in each byte,
+	// peaked at about 113 bytes of live heap per token in this parse, and the
+	// largest file in the pinned Virgil checkout has 75,593 tokens. With the
+	// default 200 MiB heap, whose copying collector leaves 100 MiB for live
+	// data, 1,007,265 tokens of such a list answered, but only 693,906 with
+	// two analysis snapshots of the Aeneas sources retained and about 107 KB
+	// of other open documents. This bound is half that, and a parse of this
+	// many tokens peaks below 40 MB.
+	def MAX_TOKENS = 350000;
+	// The bound that {admits} applies; tests may lower it.
+	var maxTokens = MAX_TOKENS;
+
+	// Whether {input} has at most {maxTokens} conservatively counted tokens.
+	// Each token takes at least one byte, so a shorter input is not counted.
+	def admits(input: Array<byte>) -> bool {
+		return input.length <= maxTokens || count(input, maxTokens) <= maxTokens;
+	}
+	// The message of a request refused because its document's text has more
+	// than {maxTokens} tokens.
+	def refusal() -> string {
+		return Strings.format1("the document has more than %d tokens", maxTokens);
+	}
+	// The tokens of {input}, or the first count past {limit}, never fewer than
+	// the parser consumes. A maximal name starting with an ASCII letter and
+	// continuing with ASCII letters, digits, or underscores counts once.
+	// Every other byte counts separately except ASCII whitespace: space, tab,
+	// carriage return, line feed, form feed, and vertical tab. Comments,
+	// literals, and representation hints receive no special treatment.
+	def count(input: Array<byte>, limit: int) -> int {
+		var tokens = 0, i = 0, max = input.length;
+		while (i < max) {
+			var ch = input[i++];
+			if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\x0C' || ch == '\x0B') continue;
+			if (++tokens > limit) return tokens;
+			if (Char.isIdentStart(ch)) {
+				while (i < max && Char.isIdentMiddle(input[i])) i++;
+			}
+		}
+		return tokens;
+	}
+}

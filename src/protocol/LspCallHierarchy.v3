@@ -325,7 +325,9 @@ class LspCallHierarchyItems(owner: LspCallHierarchy, at: LspSnapshotPosition) {
 		if (j < 0) return LspCallHierarchyFile.new(path, j, target.1, null, null);
 		owner.outlines++;
 		// The analyzed text parsed with these options, so its outline has the
-		// declaration.
+		// declaration, unless the text has too many tokens to parse: then, as
+		// for a text that fails to parse, it has no outline, and an item's
+		// range is its name's, with no container, and its calls have no callers.
 		return LspCallHierarchyFile.new(path, j, target.1, at.positionMap(j, target.1),
 			AeneasAdapter.documentSymbols(path, target.1, at.options));
 	}
