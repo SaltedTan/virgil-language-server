@@ -13,6 +13,67 @@
 
 The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges.
 
+Each release supports exactly one Virgil revision, the one in this table. To find the revision of a server you have:
+
+- run `virgil-lsp --version`, which prints it as `virgil revision: <full SHA>`;
+- read its release's `manifest.json`, in the archive or as the `virgil-lsp-<version>-<target>.manifest.json` asset, where `virgilRevision` and `library.revision` give it, or the release notes' *Revisions* section;
+- or read `virgil/REVISION` beside the executables, which the server checks against its own revision before it uses that library.
+
+## Support policy
+
+[ADR-0014](decisions/0014-compatibility-and-support-policy.md) records this policy and why. The [project file's stability contract](configuration.md#stability-and-evolution) covers `.virgil-lsp.json` itself, and this section doesn't change it.
+
+### What a release supports
+
+| Layer | Supported | Otherwise |
+| --- | --- | --- |
+| The compiler sources compiled into `virgil-lsp` and `virgil-lsp-worker` | The release's [pinned revision](#virgil-revision), fixed when it was built | Nothing at run time changes it. Upstream `master` is only an advisory CI signal. |
+| The Virgil source you analyze, and `compilerArgs` | Source that the pinned compiler accepts, with its `-lang:` options ([Compiler flags](configuration.md#compiler-flags)) | Source written for another Virgil revision is analyzed as the pinned compiler sees it, best effort. Keep a release whose pin accepts it. |
+| The library that `virgilDependencies` reads | The bundled `virgil/` library, which the server uses only when its `REVISION` matches the pin, or a client root at the pinned revision | A client root at another revision is best effort: the server doesn't check its revision, and doesn't reject it. |
+| `virgil-lsp-worker` | The worker from the same build as the server | Refused: the server rejects a worker from another build ([troubleshooting](troubleshooting.md#a-worker-missing-beside-the-server)). |
+| The VS Code extension | A platform VSIX with the server it bundles; with an external server, the versions in the [extension table](#editors) | Other pairs are untested. |
+| Editors and hosts | The minimum versions in [Editors](#editors) and the platforms in [Host platforms](#host-platforms) | As those tables say, including best-effort WSL 2 and Intel macOS. |
+
+A client root, `virgil.virgilRoot` or `VIRGIL_LOC`, only chooses the library files that a project's `virgilDependencies` reads ([The Virgil root](configuration.md#the-virgil-root)). It doesn't change the compiler compiled into the server, which still parses and type-checks everything at the pinned revision.
+
+### Fixes and older releases
+
+Routine fixes go into the next release of the current minor line only. There are no backports, no long-term-support line, and no second maintained compiler branch. Every published release stays on the [releases page](https://github.com/SaltedTan/virgil-language-server/releases) with its archives, VSIX files, manifests, and `SHA256SUMS`, so you can keep the release whose pin matches your code; it gets no further fixes. For a security or correctness problem, the maintainer may make an exception, such as a fix on an older line, without promising more.
+
+### How changes are announced
+
+`CHANGELOG.md` announces each of these, and its section for a release becomes the release notes:
+
+- a new pinned Virgil revision, with the old and the new one;
+- a language option that a new pin removes or changes, by name ([Language options follow the compiler pin](configuration.md#language-options-follow-the-compiler-pin));
+- a higher minimum editor version, which only a minor or major release makes;
+- a change to the public command line (`--stdio`, its `--max-message-bytes` option, `--version`, and `--help`), the documented initialization options, the client settings, or the advertised capabilities.
+
+The server follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). From 1.0, an intentional incompatible change to the command line or the initialization options needs a new server major version, and one to a client setting a new major version of the extension. Before 1.0, a prerelease may make one, and its notes say so.
+
+### Outside the guarantee
+
+These may change in any release without notice:
+
+- the development commands, which `virgil-lsp --help` lists as unstable (`parse`, `analyze`, `repair`, and their options), and the worker policy options that `--stdio` also accepts;
+- the [development stdio requests](development.md#development-stdio-requests);
+- the protocol between the server and its worker. The server and worker of one build must still stay together;
+- the wording of logs and messages.
+
+### Evidence
+
+The tables on this page record what each release was built with and what was tested with it. A row doesn't mean that every combination in it was tested: a combination is verified only where a named test or a [recorded result](manual-testing.md#results) covers it. These tests cover the policy's paths, and `make test` runs those in the server:
+
+| Path | Tests |
+| --- | --- |
+| `--version` prints the pin | `test/cli/run.sh` ("version reports virgil revision"); [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) checks it against each release archive's manifest |
+| Bundle revision and root precedence | [`test/protocol/bundled_library.py`](../test/protocol/bundled_library.py) (including "revision mismatch"); the `lifecycle-initialize-*-virgil-root` transcripts under [`test/protocol/`](../test/protocol/); [`test/release/test_library.py`](../test/release/test_library.py) for the archive's `REVISION` and manifest |
+| Worker matching | `AnalysisSupervisor:missing_worker`, `AnalysisSupervisor:not_a_worker`, and `AnalysisWire:hello_round_trip`. No test sends a handshake from another build. |
+| Project file version | `ProjectConfig:version` |
+| Client startup | In `npm test` in `clients/vscode`: [`test/lifecycle.cjs`](../clients/vscode/test/lifecycle.cjs)'s "server selection", "a broken bundle", and "a mismatched workspace host" tests |
+
+A release adds the [release workflow's](releasing.md#how-the-workflow-works) evidence: the archive smoke test, the [Extension Host test](../clients/vscode/README.md#extension-host-test) on each VSIX, the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), and the LazyVim test.
+
 ## LSP baseline
 
 The server targets a conservative subset of [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/). See [Lifecycle](architecture.md#lifecycle) for initialization behavior and [Document store](architecture.md#document-store) for synchronization capabilities.
@@ -63,6 +124,8 @@ The [manual test matrix](manual-testing.md) records which of these setups were t
 | Neovim (plain config) | 0.11 (`vim.lsp.config`) | Headless smoke test: 0.11.6 locally and pinned in Linux CI; macOS CI uses Homebrew Neovim (0.11+) and logs its version |
 | LazyVim | 0.11 (`vim.lsp.config`) | Configuration provided. The [LazyVim test](../test/e2e/lazyvim/README.md#ci) runs on Linux with Neovim 0.11.6 on every pull request ([advisory CI policy](#host-platforms)), and weekly and on each release's archives, on Linux with Neovim 0.11.6 and 0.12.6 and on macOS. A scripted run on Linux with LazyVim 16.0.1 passed for 0.1.0-alpha.1, and for 0.1.0-alpha.2 with rename, completion through blink.cmp 1.10.2, and signature help for a call still being typed, also on macOS with Neovim 0.12.4, restarting with `:lsp restart`. For 0.1.0-alpha.3, the LazyVim test passed on Linux with Neovim 0.11.6 and 0.12.4, and on macOS with Neovim 0.12.4, with its one expected failure: noice.nvim drops the missing-root warning ([results](manual-testing.md#results)) |
 | VS Code, including Remote-SSH and Remote-WSL | 1.91 (required by `vscode-languageclient` 11) | [Prerelease extension](../clients/vscode/README.md), [installed from a VSIX](../clients/vscode/README.md#installing-from-a-vsix), type-checked and lifecycle-tested in Linux CI, which also runs the [Extension Host test](../clients/vscode/README.md#extension-host-test) with VS Code 1.142.0, both on the extension loaded from source and on the packaged VSIX installed with `--install-extension`. macOS CI (Apple Silicon, under Rosetta 2) runs it on the extension loaded from source, and a weekly workflow on the packaged VSIX. See the [release runbook](releasing.md#how-the-workflow-works) for bundled and universal VSIX test coverage. The weekly workflow, on a packaged VSIX, and the release workflow, on the release's Linux platform VSIX, also run it through Remote-SSH, from a Linux client to the same machine ([Remote-SSH test](../clients/vscode/README.md#remote-ssh-test)). A [manual checklist](../clients/vscode/README.md#manual-checklist) covers Linux, Remote-SSH, Remote-WSL, and macOS. It was last run on Linux with VS Code 1.140 ([PR #75](https://github.com/SaltedTan/virgil-language-server/pull/75)), before the Virgil-root and project-file steps were added. For 0.1.0-alpha.2 and 0.1.0-alpha.3, the Extension Host test also passed on macOS (Apple Silicon) with VS Code 1.142.0, on each release's VSIX ([results](manual-testing.md#results)). For 0.1.0-alpha.3, it also passed through Remote-SSH, from a Linux client to a Linux host, with the release's VSIX installed on the remote ([results](manual-testing.md#010-alpha3)) |
+
+A minor or major release may raise a minimum version, and `CHANGELOG.md` says so; a patch release doesn't ([support policy](#how-changes-are-announced)).
 
 Helix is not in this matrix. A best-effort, grammar-free [Helix configuration](../editors/helix/README.md) registers the released server without a Tree-sitter grammar and is not tested in CI.
 

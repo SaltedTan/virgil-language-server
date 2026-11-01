@@ -16,5 +16,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0010](0010-analyze-unrepairable-files.md) | Analyze files that bounded repair can't fix | Accepted; amends [0009](0009-current-text-repair.md) |
 | [0011](0011-declaration-comment-spans.md) | Record declaration comment spans in the analysis result | Accepted |
 | [0012](0012-project-configuration-stability.md) | Version 1 project configuration stability | Accepted; builds on [0005](0005-project-file-format.md) |
+| [0014](0014-compatibility-and-support-policy.md) | Supported Virgil, library, and editor combinations | Accepted |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
