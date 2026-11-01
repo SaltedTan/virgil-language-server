@@ -1124,6 +1124,98 @@ In every measured round of both copies, the round's 55 hovers met exactly one se
 - The server could keep each file's comment spans after the first lookup, keyed by its analyzed bytes, so that later hovers on unchanged text parse nothing. The first hover on each new text would still parse, and the cache would hold memory between requests.
 - Without either, only the server's share of the parse could shrink: packing the span table into integer arrays would save part of its 1.2 MB, but the parser's 3.7 MB would stay. A textual check that skipped the parse when no comment line can precede the declaration would help only undocumented targets, such as `verify`, and would have to restate the outline's rule for where a declaration starts.
 
+#### Hover comment spans (2026-11-01)
+
+Measured for [#415](https://github.com/SaltedTan/virgil-language-server/issues/415) after the change that the first option above describes: the worker records each declaration's comment span in the analysis result, and hover and `completionItem/resolve` read the comment's lines at that span, with no parse ([ADR-0011](decisions/0011-declaration-comment-spans.md)). Main `b4308cfe` and the change were built in separate checkouts with the same generated BuildInfo. The client, positions, and rounds were the section above's, with the plaintext content format, and six process blocks alternated four builds: each build's normal executable and its copy with allocation probes. The client, server, and worker ran on hardware thread 12, under the shared benchmark lock. Main now reads a closed file into an array of its length ([#413](https://github.com/SaltedTan/virgil-language-server/issues/413)), so a hover whose target is in a closed file allocates less on main than the section above records.
+
+**Positions.** Bytes are from the probe copies, and times from the normal builds, **median (p10–p90, maximum), milliseconds**, over 150 requests each:
+
+| Hover at | Bytes, main | Bytes, change | Time, main | Time, change |
+| --- | ---: | ---: | ---: | ---: |
+| `Verifier.v3` line 24, `verify`, a method's declaration without a comment | 5,338,872 | 68,872 | 2.620 (2.556–2.787, 19.739) | 0.446 (0.404–3.041, 4.237) |
+| `Verifier.v3` line 26, `vst`, a local | 68,952 | 68,952 | 0.436 (0.403–0.469, 0.504) | 0.426 (0.396–1.527, 4.182) |
+| `Verifier.v3` line 46, `typeCache`, a field without a comment | 5,338,968 | 68,968 | 2.607 (2.531–2.721, 18.465) | 0.425 (0.393–0.547, 3.995) |
+| `Verifier.v3` line 213, `markNeedsDescribes`, a method with a comment | 5,340,088 | 70,208 | 2.607 (2.533–2.758, 18.110) | 0.429 (0.398–0.502, 4.103) |
+| `Verifier.v3` line 7, `Verifier`, a class's declaration with a comment | 5,341,344 | 71,544 | 2.600 (2.539–2.708, 18.479) | 0.426 (0.401–0.488, 3.980) |
+| `Verifier.v3` line 147, `VstClass`, a class with a comment in the closed `Vst.v3` | 1,805,632 | 111,104 | 1.353 (1.315–1.417, 15.090) | 0.475 (0.440–0.552, 18.159) |
+| `IO.v3` line 45, `data`, a local | 33,800 | 33,800 | 0.149 (0.124–0.176, 0.199) | 0.148 (0.125–0.166, 0.185) |
+| `IO.v3` line 44, `writer`, a field without a comment | 86,848 | 33,800 | 0.176 (0.147–0.193, 0.205) | 0.143 (0.123–0.163, 0.175) |
+| `IO.v3` line 38, `flush`, a method with a comment | 87,416 | 34,448 | 0.154 (0.146–0.188, 0.221) | 0.142 (0.123–0.163, 0.178) |
+| `IO.v3` line 19, `Buffer`, a class's declaration with a comment | 88,864 | 35,992 | 0.159 (0.149–0.189, 0.220) | 0.139 (0.124–0.165, 0.176) |
+| `IO.v3` line 22, `DataWriter`, a class with a comment in the closed `lib/util/DataWriter.v3` | 453,944 | 49,536 | 0.345 (0.317–0.375, 0.423) | 0.163 (0.144–0.186, 0.205) |
+
+A hover at a declaration now allocates and takes about what a hover at a local does, whether or not its file is open. 43 of the change's 1,650 measured hovers took 3 to 5 ms, against 2 on main: 16 of 150 at `verify`, 13 at `vst`, and fewer at the next three positions, all among the first 25 hovers after a `virgil-lsp/analyze`. In the probe copy, those requests spent about 0.5 ms in the server and the rest outside it. With the worker on another CPU, as below, they disappear, so the wait is for the worker, which collects after it sends a result and shares hardware thread 12 with the server ([prepareRename on one CPU](#preparerename-on-one-cpu-2026-10-31)); main's hovers, five times longer, met it less often. In six more blocks of the normal builds, with each build's worker wrapped to run on CPU 14, the hover at `verify` took 2.756 ms (2.623–3.017, 20.714) on main and 0.462 ms (0.421–0.540, 0.671) with the change, and no other measured hover of the change took more than 0.7 ms, except one at `VstClass` in each round, which met a server collection.
+
+In the probe copies, the server collected during 36 measured hovers on main, at the five positions whose targets are in `Verifier.v3` or `Vst.v3`, and during 6 with the change, all at `VstClass`. That excludes the first hover of each round, which also holds its `virgil-lsp/analyze`: 18 such hovers collected on main and 12 with the change.
+
+**Phases.** Medians of the probe copies, over 150 requests each, as in the section above. On main, finding the declaration's comment also rendered it:
+
+At `verify` on line 24 of `Verifier.v3`:
+
+| Phase | Main, bytes | Change, bytes | Main, microseconds | Change, microseconds |
+| --- | ---: | ---: | ---: | ---: |
+| Request parameters, document, and project, before the snapshot lookup | 24,832 | 24,832 | 136 | 114 |
+| Find the snapshot, document, and analyzed and current text | 3,664 | 3,664 | 36 | 31 |
+| Position map | 36,048 | 36,048 | 276 | 278 |
+| Find the occurrence or declaration | 56 | 56 | 4 | 3 |
+| Signature and type text | 56 | 56 | 0 | 0 |
+| Comment: copy of the text with normalized line ends | 106,432 | — | 105 | — |
+| Comment: parse of the whole file | 5,132,224 | — | 1,620 | — |
+| Comment: outline | 31,320 | — | 390 | — |
+| Comment: find and render the declaration's comment | 24 | — | 1 | — |
+| Comment: read and render the recorded lines | — | 0 | — | 0 |
+| Markdown of the comment | 0 | 0 | 0 | 0 |
+| The Hover's `JsonValue` tree | 1,440 | 1,440 | 1 | 1 |
+| Encode the response | 2,432 | 2,432 | 3 | 2 |
+| Frame and write the response | 344 | 344 | 66 | 20 |
+| Total | 5,338,872 | 68,872 | 2,638 | 450 |
+
+At `flush` on line 38 of `IO.v3`:
+
+| Phase | Main, bytes | Change, bytes | Main, microseconds | Change, microseconds |
+| --- | ---: | ---: | ---: | ---: |
+| Request parameters, document, and project, before the snapshot lookup | 24,800 | 24,800 | 92 | 97 |
+| Find the snapshot, document, and analyzed and current text | 3,600 | 3,600 | 29 | 29 |
+| Position map | 976 | 976 | 5 | 5 |
+| Find the occurrence or declaration | 128 | 128 | 2 | 2 |
+| Signature and type text | 56 | 56 | 0 | 0 |
+| Comment: copy of the text with normalized line ends | 1,824 | — | 2 | — |
+| Comment: parse of the whole file | 49,184 | — | 18 | — |
+| Comment: outline | 2,016 | — | 4 | — |
+| Comment: find and render the declaration's comment | 280 | — | 1 | — |
+| Comment: read and render the recorded lines | — | 336 | — | 1 |
+| Markdown of the comment | 240 | 240 | 1 | 1 |
+| The Hover's `JsonValue` tree | 1,440 | 1,440 | 0 | 1 |
+| Encode the response | 2,472 | 2,472 | 2 | 2 |
+| Frame and write the response | 400 | 400 | 19 | 17 |
+| Total | 87,416 | 34,448 | 174 | 155 |
+
+**The worker.** `scripts/bench-lsp.py`, with the same benchmark builds of both, six alternating process blocks, two warmups, and five measured operations per block, with every semantic check passing. For the Aeneas project, with `--error-result`, **median (p10–p90), milliseconds**, and bytes:
+
+| Aeneas | `reused_analysis`, main | `reused_analysis`, change | `error_analysis`, main | `error_analysis`, change |
+| --- | ---: | ---: | ---: | ---: |
+| Latency | 336.911 (322.008–355.754) | 346.514 (334.740–366.100) | 342.323 (325.200–349.782) | 350.731 (337.270–357.863) |
+| Worker parse | 44.625 (44.189–45.467) | 51.397 (50.511–53.006) | 45.669 (44.828–47.198) | 51.964 (51.536–52.878) |
+| Worker result encoding | 60.989 (58.936–64.282) | 64.535 (61.371–66.826) | 63.356 (60.298–65.044) | 64.401 (63.512–68.403) |
+| Worker collection after sending | 40.456 (38.941–44.096) | 47.857 (45.076–51.919) | 41.057 (39.685–44.001) | 46.806 (45.392–51.014) |
+| Worker allocation | 187,301,664 | 188,210,976 | 187,990,104 | 188,916,784 |
+| Worker heap after handling | 190,575,848 | 191,485,160 | 191,319,120 | 192,245,800 |
+| Room under the 201,326,592-byte semispace | 10,750,744 | 9,841,432 | 10,007,472 | 9,080,792 |
+| RESULT frame | 4,379,197 | 4,384,791 | 4,510,801 | 4,516,395 |
+
+No scenario collected while handling a request in either build, and the live bytes after the worker's explicit collection stayed 181,200. A fresh analysis's parse took 78.525 ms instead of 69.257, and it had 9,875,592 bytes of room instead of 10,784,904; `rename` and `semantic_diagnostic` moved as `reused_analysis` did. A `completion_miss`, whose analysis with a scope query already built an index for every file, allocated 145,642,312 bytes instead of 163,181,240, because the index is now packed, so its room grew from 34,871,160 to 52,410,088 bytes; its parse time was within 1.2 ms of main's. Decoding an Aeneas result took the server within 1.3 ms of main's time, and 23.5 KB more for the documented declarations. For `lib/util`, over the same six blocks, a reused analysis took 15.245 ms (13.975–18.917) instead of 14.267 (13.156–14.731), its parse 2.954 ms instead of 2.420, its allocation 121,680 bytes more, and its RESULT 183,623 bytes instead of 182,483.
+
+A probe that repeated each step over the Aeneas sources' 206 files on hardware thread 12 put the parse's extra time at about 2 ms for the index, 1.8 ms to scan every file for a carriage return, 2.0 ms to walk the outlines of 15,305 symbols, and 0.9 ms for the comment rule and the records. The 2,235 documented declarations' spans take 5,594 bytes of the RESULT, where their comments' 176,422 bytes of text would have taken more than thirty times as much.
+
+The worker's collection after sending a result took 3.3 to 7.4 ms longer with the change, and 0.5 ms longer in `rename`. That collection clears the semispace that the analysis filled, about 190 MB, which the change grows by 0.5%. An ablation copy of the change that records no comments, run in three more alternating blocks with main and the change, matched main's parse within 0.4 ms and its allocation within 728 bytes in every full analysis, but its collection after sending took about as long as the change's: 45.8 ms against 47.3 and main's 38.9 for `reused_analysis`. These runs therefore don't attribute that collection's extra time to recording the comments.
+
+**Identity.** All 122,040 replies were byte for byte the same in both builds, matched by request id. For each project, a client ran twice, once accepting only plain text and once preferring Markdown, for both hover and completion documentation. It hovered at the name of every outline symbol of every file of the small, `lib/util`, and Aeneas projects, 16,129 hovers per format, with both small files, about half of `lib/util`'s, and five of the Aeneas project's 206 open, so most targets were in closed files; 2,701 of the Markdown hovers showed documentation. In one to three files of each project, it asked for completions at member accesses and at a statement's first letter, and resolved every item with data, 3,150 items per format, of which 1,428 had documentation. A fourth project held the edge cases, where it hovered at every identifier: comments with CRLF line ends and with a bare CR, a file whose bare CR in a comment leaves code on a line of its own once line ends are normalized, a file over 256 KiB, an open file whose unsaved text changes its comments, and a file whose method body fallback substituted. A file whose code lines end in CRLF doesn't parse, so every hover in its project was `null` in both builds. A server with no project also gave the same outlines of all 216 files in both builds.
+
+After the review fix that bounds declarations by their source files' lengths,
+37,454 more hover and resolve replies were byte-identical to main in plaintext
+and Markdown. That check is additional to the 122,040 replies above; the
+measurements and tables in this section are unchanged.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

@@ -1,9 +1,10 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// The bounds of a declaration's leading comment (AeneasAdapter.declarationComment).
-// Virgil has no doc-comment syntax; this is the server's convention. See
-// docs/architecture.md#hover.
+// The bounds of a declaration's leading comment, which an analysis records
+// (AnalysisDeclarationComments) and hover and completion resolve read
+// (DeclarationComments.text). Virgil has no doc-comment syntax; this is the
+// server's convention. See docs/architecture.md#hover.
 component DeclarationComments {
 	// The most bytes of text returned, including the ellipsis that marks a cut.
 	def MAX_BYTES = 4096;
@@ -11,10 +12,10 @@ component DeclarationComments {
 	// scan reads. A run of comment lines that starts further back documents
 	// nothing, since its first line is not in reach.
 	def MAX_SCAN = 65536;
-	// The largest file whose outline is parsed for a comment, more than twice
-	// the largest source in the pinned Virgil checkout. The densest text of
-	// this size, such as "var a,a,a,...;", keeps its parse well inside the
-	// server's heap (issue #372).
+	// The largest file whose comments an analysis records, more than twice
+	// the largest source in the pinned Virgil checkout. It bounded hover's
+	// own parse of a file for a comment (issue #372) before analyses
+	// recorded them, and a larger file still documents nothing.
 	def MAX_INPUT = 256 * 1024;
 	// U+2026, which ends a cut comment.
 	def ELLIPSIS = "\xE2\x80\xA6";
@@ -29,90 +30,68 @@ component DeclarationComments {
 			_ => return true;
 		}
 	}
+	// The text of the comment whose lines are the bytes {begin} to {end} of
+	// {analyzed}, the text that the analysis that recorded them read, as
+	// DocumentCommentCollector.render gives it from those bytes with their
+	// line terminators normalized, as the analysis read them; or null if the
+	// lines are not in the text.
+	def text(analyzed: Array<byte>, begin: int, end: int) -> string {
+		if (begin < 0 || begin >= end || end > analyzed.length) return null;
+		var lines = AeneasAdapter.normalizedRange(analyzed, begin, end);
+		// The last line ends where the declaration's line starts.
+		if (lines[lines.length - 1] != '\n') return null;
+		return DocumentCommentCollector.new(lines, null).render(0, lines.length);
+	}
 }
 
-// Finds the leading comment of a declaration in the outline of a file that
-// parsed: the run of full-line "//" comments that ends on the line before the
-// declaration's first token, with no blank line, code, or other comment
-// between them. The outline selects the declaration by its name and kind,
-// never by the nearest identifier, and its first token comes before any
-// modifiers, as "private" does in "private def". The parser's consumed spans
-// ({tokens}) show that the bytes between the previous token and that one hold
-// only whitespace and comments, so no string or character literal is read as
-// a comment.
-class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
-	// The comment of the symbol of {kind} in {symbols} whose name is the
-	// bytes {begin} to {end}, or null: if there is no such symbol (see
-	// named), if another starts at the same token, as the fields of
-	// "var a, b;" do, if it is a header parameter, as in "class C(x: int)",
-	// or if it has no comment.
-	def find(symbols: Array<AnalysisDocumentSymbol>, kind: AnalysisDeclKind, begin: int, end: int) -> string {
-		var sym = named(symbols, kind, begin, end);
-		if (sym == null || starting(symbols, sym.begin) != 1) return null;
-		var i = tokenAt(sym.begin);
-		if (i < 0) return null;
-		if (kind == AnalysisDeclKind.FIELD && i > 0 && (ch(i - 1) == '(' || ch(i - 1) == ',')) return null;
-		return comment(if(i > 0, tokens[i - 1].end, 0), sym.begin);
-	}
-	// A data type, such as "type Row(x: int);", is its own single case: a use
-	// of its constructor names the case, which the outline lists as the type,
-	// with the same name bytes.
-	private def named(list: Array<AnalysisDocumentSymbol>, kind: AnalysisDeclKind, begin: int, end: int) -> AnalysisDocumentSymbol {
-		for (sym in list) {
-			var same = sym.kind == kind || (kind == AnalysisDeclKind.VARIANT_CASE && sym.kind == AnalysisDeclKind.CLASS);
-			if (same && sym.nameBegin == begin && sym.nameEnd == end) return sym;
-			var inner = named(sym.children, kind, begin, end);
-			if (inner != null) return inner;
-		}
-		return null;
-	}
-	// The number of symbols in {list} and their children that start at {begin}.
-	private def starting(list: Array<AnalysisDocumentSymbol>, begin: int) -> int {
-		var n = 0;
-		for (sym in list) n += if(sym.begin == begin, 1, 0) + starting(sym.children, begin);
-		return n;
-	}
-	// The index of the span that starts at {offset}, or -1.
-	private def tokenAt(offset: int) -> int {
-		var lo = 0, hi = tokens.length;
-		while (lo < hi) {
-			var mid = lo + (hi - lo) / 2;
-			if (tokens[mid].begin < offset) lo = mid + 1;
-			else hi = mid;
-		}
-		return if(lo < tokens.length && tokens[lo].begin == offset, lo, -1);
+// Finds the leading comment of an outline symbol in a file that parsed: the
+// run of full-line "//" comments that ends on the line before the symbol's
+// first token, with no blank line, code, or other comment between them. The
+// outline's first token for a declaration comes before any modifiers, as
+// "private" does in "private def". The parser's consumed spans ({syntax})
+// show that the bytes between the previous token and that one hold only
+// whitespace and comments, so no string or character literal is read as a
+// comment. AnalysisDeclarationComments selects the symbol.
+class DocumentCommentCollector(input: Array<byte>, syntax: SymbolSyntaxIndex) {
+	// The span of the comment of the outline symbol of {kind} whose first
+	// token is {start}, as {comment} finds it, or (-1, -1) if it has none or
+	// is a header parameter, as in "class C(x: int)", which documents nothing.
+	def span(kind: AnalysisDeclKind, start: int) -> (int, int) {
+		if (kind == AnalysisDeclKind.FIELD && start > 0 && (ch(start - 1) == '(' || ch(start - 1) == ',')) return (-1, -1);
+		return comment(if(start > 0, syntax.end(start - 1), 0), syntax.begin(start));
 	}
 	private def ch(i: int) -> byte {
-		var t = tokens[i];
-		return if(t.end - t.begin == 1, input[t.begin], 0);
+		return syntax.single(input, i);
 	}
-	// The text of the comment lines directly above the line of {start}, all
-	// after {gap}, the end of the previous token. Null if the line of {start}
-	// holds anything before it, if there are no such lines, if the first of
-	// them is more than MAX_SCAN bytes back, if any has a "*/", or if they
-	// are the file's header (see header). Each line holds a line comment
+	// The span of the comment lines directly above the line of {start}, all
+	// after {gap}, the end of the previous token: from the start of the
+	// first to the start of the line of {start}, where the last one ends.
+	// (-1, -1) if the line of {start} holds anything before it, if there are
+	// no such lines, if the first of them is more than MAX_SCAN bytes back, if
+	// any has a "*/", if they are the file's header (see header), or if none
+	// of them has any text (see render). Each line holds a line comment
 	// unless a block comment opened above it is still open; that comment
 	// would have to close before {start}, and only a "*/" on one of the lines
 	// could close it.
-	def comment(gap: int, start: int) -> string {
+	def comment(gap: int, start: int) -> (int, int) {
 		var floor = start - DeclarationComments.MAX_SCAN;
 		if (floor < gap) floor = gap;
 		var line = lineStart(start, gap, floor);
-		if (line < 0 || !blank(line, start)) return null;
+		if (line < 0 || !blank(line, start)) return (-1, -1);
 		var top = line;
 		while (top > 0) {
 			var above = lineStart(top - 1, gap, floor);
-			if (above == -2) return null;
+			if (above == -2) return (-1, -1);
 			if (above < 0) break;
 			var m = skipBlank(above, top - 1);
 			if (m + 1 >= top - 1 || input[m] != '/' || input[m + 1] != '/') break;
 			for (j = m + 2; j + 1 < top - 1; j++) {
-				if (input[j] == '*' && input[j + 1] == '/') return null;
+				if (input[j] == '*' && input[j + 1] == '/') return (-1, -1);
 			}
 			top = above;
 		}
-		if (top == line || (top == 0 && header(line))) return null;
-		return render(top, line);
+		if (top == line || (top == 0 && header(line)) || !hasText(top, line)) return (-1, -1);
+		return (top, line);
 	}
 	// Whether the comment lines from the file's start to {end} are its
 	// license header, not documentation: whether the first line's text,
@@ -150,23 +129,47 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 	private def blank(begin: int, end: int) -> bool {
 		return skipBlank(begin, end) == end;
 	}
+	// Where the text of the comment line from {at} to {lineEnd} starts: after
+	// its indentation, its "//", and one space after that.
+	private def textStart(at: int, lineEnd: int) -> int {
+		var text = skipBlank(at, lineEnd) + 2;
+		if (text < lineEnd && input[text] == ' ') text++;
+		return text;
+	}
+	// Where the text of a comment line that starts at {text} and ends at
+	// {lineEnd} ends, before its trailing whitespace.
+	private def textEnd(text: int, lineEnd: int) -> int {
+		var last = lineEnd;
+		while (last > text && (input[last - 1] == ' ' || input[last - 1] == '\t')) last--;
+		return last;
+	}
+	// Whether any of the comment lines from {top} to {end} has text, so that
+	// {render} gives them as text, not null.
+	private def hasText(top: int, end: int) -> bool {
+		for (at = top; at < end; ) {
+			var lineEnd = at;
+			while (input[lineEnd] != '\n') lineEnd++;
+			var text = textStart(at, lineEnd);
+			if (textEnd(text, lineEnd) > text) return true;
+			at = lineEnd + 1;
+		}
+		return false;
+	}
 	// The comment lines from {top} to {end}, each without its indentation,
-	// its "//", one space after that, and trailing whitespace. Empty lines
-	// before the first text and after the last are dropped; those between
-	// are kept. Each byte that is not part of valid UTF-8 becomes U+FFFD, as
-	// a JSON reply would show it, so its three bytes count against the
-	// bound. Text past MAX_BYTES is cut at a code point and ends with an
-	// ellipsis; no more is read once that many bytes are collected.
-	private def render(top: int, end: int) -> string {
+	// its "//", one space after that, and trailing whitespace, or null if
+	// none has text. Empty lines before the first text and after the last
+	// are dropped; those between are kept. Each byte that is not part of
+	// valid UTF-8 becomes U+FFFD, as a JSON reply would show it, so its three
+	// bytes count against the bound. Text past MAX_BYTES is cut at a code
+	// point and ends with an ellipsis; no more is read once that many bytes
+	// are collected. The byte before {end} must be a line feed.
+	def render(top: int, end: int) -> string {
 		var max = DeclarationComments.MAX_BYTES, buf = StringBuilder.new(), blanks = 0;
 		var at = top;
 		while (at < end && buf.length <= max) {
 			var lineEnd = at;
 			while (input[lineEnd] != '\n') lineEnd++;
-			var text = skipBlank(at, lineEnd) + 2;
-			if (text < lineEnd && input[text] == ' ') text++;
-			var last = lineEnd;
-			while (last > text && (input[last - 1] == ' ' || input[last - 1] == '\t')) last--;
+			var text = textStart(at, lineEnd), last = textEnd(text, lineEnd);
 			if (last == text) {
 				if (buf.length > 0) blanks++;
 			} else {
@@ -190,3 +193,173 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 		return buf.puts(DeclarationComments.ELLIPSIS).toString();
 	}
 }
+
+// The leading comments of the declarations in a program's files, which an
+// analysis records as it parses each file (AeneasAdapter.analyzeProgram), so
+// that its result can carry each declaration's comment as a span of its
+// file's text (AnalysisWire.encodeResult), and hover and completion resolve
+// read the comment from that text without parsing it again. A declaration is
+// found in its file's outline by its name's bytes and its kind, never by the
+// nearest identifier, and one that starts at the same token as another, as
+// the fields of "var a, b;" do, documents nothing. Only the outline's symbols
+// that have a comment are kept: for each file, five ints for each, in order
+// of name: its name's begin and end, its kind's tag, and its comment's span
+// (DocumentCommentCollector.comment). See docs/architecture.md#hover.
+class AnalysisDeclarationComments {
+	// The index that a program's parse reuses for each file whose comments
+	// it records, if it keeps no index of its own for the file.
+	var syntax = SymbolSyntaxIndex.new();
+	// Each file's records, or NO_RECORDS; the first source is kept if a path
+	// repeats.
+	private def files = OrderedStringMap<Array<int>>.new();
+	// The walk's list, and its symbols of the file being recorded: each
+	// one's kind, first token, and name token.
+	private var scratch = Vector<AnalysisDocumentSymbol>.new();
+	private var kinds = Array<AnalysisDeclKind>.new(64);
+	private var starts = Array<int>.new(64);
+	private var names = Array<int>.new(64);
+	private var count: int;
+	// For each token of the file being recorded, the number of its symbols
+	// that start there, up to 2; zero between files.
+	private var starting = Array<byte>.new(0);
+	// The records of the file being recorded.
+	private var found = Vector<int>.new();
+
+	// Makes room in {syntax} for the tokens of the largest of {inputs} whose
+	// comments are recorded, so that the index grows once, not for each
+	// larger file in turn.
+	def reserve(inputs: Array<Array<byte>>) {
+		var max = 0;
+		for (input in inputs) {
+			if (input.length <= DeclarationComments.MAX_INPUT && input.length > max) max = input.length;
+		}
+		var tokens = max / AnalysisSingleFileParser.BYTES_PER_TOKEN;
+		syntax.reserve(tokens);
+		if (starting.length < tokens) starting = Array<byte>.new(tokens);
+	}
+	// {syntax}, cleared for the next file.
+	def reuse() -> SymbolSyntaxIndex {
+		syntax.clear();
+		return syntax;
+	}
+	// Drops what the parse used to record the comments, keeping the
+	// records, which the analysis keeps until its result is sent.
+	def release() {
+		syntax = null;
+		scratch = null;
+		kinds = null;
+		starts = null;
+		names = null;
+		starting = null;
+		found = null;
+	}
+	// Records the comments in {file}, which parsed without errors from
+	// {input} at {path} with its consumed spans in {tokens}, with the
+	// language options in effect. A file over MAX_INPUT has none. The
+	// outline reads a carriage return as a line terminator, which the
+	// compiler does not, so a file that holds one is parsed again alone with
+	// its line terminators normalized, as an open document's outline is
+	// (AeneasAdapter.documentSymbols).
+	def add(path: string, input: Array<byte>, file: VstFile, tokens: SymbolSyntaxIndex) {
+		if (files.has(path)) return;
+		if (input.length > DeclarationComments.MAX_INPUT) {
+			files[path] = NO_RECORDS;
+			return;
+		}
+		for (b in input) {
+			if (b == '\r') {
+				parse(path, input);
+				return;
+			}
+		}
+		record(path, input, file, tokens);
+	}
+	// Records the comments in {input} at {path} from its own parse, with its
+	// line terminators normalized and the language options in effect. A file
+	// over MAX_INPUT, or one that does not parse, has none.
+	def parse(path: string, input: Array<byte>) {
+		if (files.has(path)) return;
+		files[path] = NO_RECORDS;
+		if (input.length > DeclarationComments.MAX_INPUT) return;
+		var normalized = AeneasAdapter.normalizedRange(input, 0, input.length);
+		var errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS), own = reuse();
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, own, TypeCache.new(), null);
+		if (errors.numErrors == 0) record(path, normalized, file, own);
+	}
+	private def record(path: string, input: Array<byte>, file: VstFile, tokens: SymbolSyntaxIndex) {
+		count = 0;
+		if (starting.length < tokens.count) starting = Array<byte>.new(if(2 * starting.length > tokens.count, 2 * starting.length, tokens.count));
+		DocumentSymbolCollector.new(file, tokens).each(visit, scratch);
+		var c = DocumentCommentCollector.new(input, tokens);
+		found.length = 0;
+		for (k < count) {
+			var start = starts[k], name = names[k];
+			if (start < 0 || name < 0 || starting[start] > 1) continue;
+			var span = c.span(kinds[k], start);
+			if (span.0 >= 0) insert(tokens.begin(name), tokens.end(name), kinds[k].tag, span.0, span.1);
+		}
+		for (k < count) if (starts[k] >= 0) starting[starts[k]] = 0;
+		files[path] = if(found.length > 0, found.copy(), NO_RECORDS);
+	}
+	private def visit(kind: AnalysisDeclKind, start: int, name: int) {
+		if (count == kinds.length) {
+			kinds = Arrays.grow(kinds, 2 * count);
+			starts = Arrays.grow(starts, 2 * count);
+			names = Arrays.grow(names, 2 * count);
+		}
+		kinds[count] = kind;
+		starts[count] = start;
+		names[count] = name;
+		count++;
+		// A comment above several symbols that start at one token, such
+		// as the fields of "def a = 1, b = 2;", documents none of them.
+		if (start >= 0 && starting[start] < 2) starting[start]++;
+	}
+	// Adds a record to {found} in order of its name's begin. The walk finds
+	// symbols mostly in that order already.
+	private def insert(begin: int, end: int, tag: int, top: int, bottom: int) {
+		var at = found.length;
+		while (at > 0 && found[at - 5] > begin) at -= 5;
+		found.put(0).put(0).put(0).put(0).put(0);
+		for (k = found.length - 1; k >= at + 5; k--) found[k] = found[k - 5];
+		found[at] = begin;
+		found[at + 1] = end;
+		found[at + 2] = tag;
+		found[at + 3] = top;
+		found[at + 4] = bottom;
+	}
+
+	// The records of {path}, or null if it has none.
+	def records(path: string) -> Array<int> {
+		if (path == null) return null;
+		var a = files[path];
+		return if(a != null && a.length > 0, a);
+	}
+	// The index in {records} of the record of the declaration of {kind} whose
+	// name is the bytes {begin} to {end}, or -1. A data type, such as "type
+	// Row(x: int);", is its own single case: a use of its constructor names
+	// the case, which the outline lists as the type, with the same name bytes.
+	def find(records: Array<int>, kind: AnalysisDeclKind, begin: int, end: int) -> int {
+		if (records == null || begin < 0) return -1;
+		var lo = 0, hi = records.length / 5;
+		while (lo < hi) {
+			var mid = lo + (hi - lo) / 2;
+			if (records[5 * mid] < begin) lo = mid + 1;
+			else hi = mid;
+		}
+		var want: int = kind.tag, alias: int = AnalysisDeclKind.CLASS.tag;
+		for (k = 5 * lo; k < records.length && records[k] == begin; k += 5) {
+			var tag = records[k + 2];
+			var same = tag == want || (kind == AnalysisDeclKind.VARIANT_CASE && tag == alias);
+			if (same && records[k + 1] == end) return k;
+		}
+		return -1;
+	}
+	// The span of the comment of the declaration of {kind} whose name is the
+	// bytes {begin} to {end} of {path}, or (-1, -1).
+	def span(path: string, kind: AnalysisDeclKind, begin: int, end: int) -> (int, int) {
+		var records = records(path), k = find(records, kind, begin, end);
+		return if(k >= 0, (records[k + 3], records[k + 4]), (-1, -1));
+	}
+}
+def NO_RECORDS = Array<int>.new(0);

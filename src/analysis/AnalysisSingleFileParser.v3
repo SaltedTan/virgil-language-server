@@ -487,10 +487,15 @@ component AnalysisSingleFileParser {
 	def CHAIN_FRAME = 72;
 	// Stack left for range() after parser recursion.
 	def CHAIN_STACK = CHAIN_LIMIT * CHAIN_FRAME;
+	// A parse with a SymbolSyntaxIndex first makes room in it for one token
+	// for each this many bytes of input, more than any of the pinned Virgil
+	// sources needs, so that a file's tokens rarely grow the index.
+	def BYTES_PER_TOKEN = 3;
 
 	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex,
 			typeCache: TypeCache, coordinates: AnalysisTokenCoordinates) -> VstFile {
 		var file = VstFile.new(path, input);
+		if (syntax != null) syntax.reserve(input.length / BYTES_PER_TOKEN);
 		errors.startFile();
 		var p = AnalysisParserState.new(file, errors, syntax, typeCache, coordinates);
 		p.enableFunExprs = CLOptions.FUN_EXPRS.get();

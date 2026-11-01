@@ -9,7 +9,7 @@ class AnalysisSelectionRange(begin: int, end: int) {
 // One index for a batch of positions. Delimiters come only from complete
 // consumed spans; comments are recognized only in the gaps between them.
 // After a parse error the lexer supplies tokens, never syntax extents.
-class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSyntaxToken>, cutoff: int,
+class DocumentSelectionCollector(input: Array<byte>, consumed: SymbolSyntaxIndex, cutoff: int,
 		symbols: Array<AnalysisDocumentSymbol>) {
 	def MAX_LEVELS = 128;
 	private def tokens = Vector<AnalysisSelectionRange>.new();
@@ -18,25 +18,25 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 
 	def collect(positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
 		var open = Vector<int>.new(), end = 0;
-		for (i < consumed.length) {
-			var t = consumed[i];
-			if (cutoff >= 0 && t.end > cutoff) break;
-			comments(end, t.begin);
-			tokens.put(AnalysisSelectionRange.new(t.begin, t.end));
+		for (i < consumed.count) {
+			var begin = consumed.begin(i), finish = consumed.end(i);
+			if (cutoff >= 0 && finish > cutoff) break;
+			comments(end, begin);
+			tokens.put(AnalysisSelectionRange.new(begin, finish));
 			var c = ch(i);
 			if (c == '(' || c == '[' || c == '{') open.put(i);
 			else if ((c == ')' || c == ']' || c == '}') && open.length > 0) {
 				var o = open[open.length - 1], a = ch(o);
 				if ((a == '(' && c == ')') || (a == '[' && c == ']') || (a == '{' && c == '}')) {
 					open.length--;
-					var begin = consumed[o].end, last = t.begin;
-					while (begin < last && whitespace(input[begin])) begin++;
-					while (last > begin && whitespace(input[last - 1])) last--;
-					if (begin < last) extents.put(AnalysisSelectionRange.new(begin, last));
-					extents.put(AnalysisSelectionRange.new(consumed[o].begin, t.end));
+					var inner = consumed.end(o), last = begin;
+					while (inner < last && whitespace(input[inner])) inner++;
+					while (last > inner && whitespace(input[last - 1])) last--;
+					if (inner < last) extents.put(AnalysisSelectionRange.new(inner, last));
+					extents.put(AnalysisSelectionRange.new(consumed.begin(o), finish));
 				} else open.length = 0;
 			}
-			end = t.end;
+			end = finish;
 		}
 		if (cutoff < 0) comments(end, input.length);
 		else recoverTokens(end);
@@ -87,8 +87,7 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 		}
 	}
 	private def ch(i: int) -> byte {
-		var t = consumed[i];
-		return if(t.end == t.begin + 1, input[t.begin], 0);
+		return consumed.single(input, i);
 	}
 	private def whitespace(c: byte) -> bool {
 		return c == ' ' || c == '\t' || c == '\r' || c == '\n';

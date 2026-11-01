@@ -238,9 +238,9 @@ def test_items(t: Tester) {
 	t.assert_string(libUri, list.files[0].uri);
 	t.assert(list.hashes[0] == versions[1].hash, "a closed file's hash is its stamp's");
 	t.asserti(0, list.sources[1]);
-	t.assert(list.kinds[1] == AnalysisDeclKind.METHOD, "the item's kind");
 	t.asserti(20, list.begins[1]);
-	t.asserti(23, list.ends[1]);
+	t.asserti(-1, list.commentBegins[1]);
+	t.asserti(-1, list.commentEnds[1]);
 	// An item that would pass the cap gets no data, and neither does any later
 	// item, even one that fits.
 	t.assert_string("null", render(docs.add(dd, "dd")));
