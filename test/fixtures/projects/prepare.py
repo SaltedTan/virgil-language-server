@@ -544,3 +544,24 @@ for name in ["A.v3", "README.md"]:
         path.chmod(0o600)
     path.write_text("def value = 1;\n", encoding="utf-8")
 (unrelated_files / "README.md").chmod(0)
+
+# AnalysisSupervisorTest spawns fake workers whose handshake reports a build
+# identity that differs from the server's in one field. Generate them into the
+# build directory, beside the worker and the unit-test executable, so that
+# every slot gets its own. The scripts capture the real worker's handshake at
+# run time, so they always match the build under test; the absolute interpreter
+# path is needed because the server spawns workers with an empty environment.
+# The template lives in the source tree, which the runner's scratch slots do
+# not copy, so skip generation there: those slots run a stand-in executable
+# that never spawns a worker.
+template_path = Path(__file__).parents[2] / "worker" / "fake_worker_template.py"
+if template_path.exists():
+    worker_fakes = build / "worker-fakes"
+    worker_fakes.mkdir(exist_ok=True)
+    template = template_path.read_text(encoding="utf-8")
+    for field in ["protocol", "version", "revision"]:
+        script = worker_fakes / f"handshake-{field}.py"
+        script.write_text(
+            template.replace("__PYTHON__", sys.executable).replace("__FIELD__", field), encoding="utf-8",
+        )
+        script.chmod(0o755)

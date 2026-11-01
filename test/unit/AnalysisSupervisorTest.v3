@@ -306,10 +306,11 @@ def test_not_a_worker(t: Tester) {
 	t.assert(contains(sl.1.warnings, "closed its result pipe before its handshake; it ended with exit status 0"), "handshake failure logged");
 }
 
-// A fake worker (test/worker/handshake-<field>.py) sends the real worker's
-// handshake with one field of its build identity changed. The supervisor must
-// refuse it: the analysis fails as unavailable, no snapshot is used, and the
-// refusal is logged with the worker's end.
+// A fake worker (generated into the build directory's worker-fakes/ by
+// prepare.py) sends the real worker's handshake with one field of its build
+// identity changed. The supervisor must refuse it: the analysis fails as
+// unavailable, no snapshot is used, and the refusal is logged with the
+// worker's end.
 def assertRefusedWorker(t: Tester, s: AnalysisSupervisor, log: SupervisorTestLog) {
 	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
 	t.asserti(1, s.workersStarted);
@@ -320,17 +321,17 @@ def assertRefusedWorker(t: Tester, s: AnalysisSupervisor, log: SupervisorTestLog
 }
 
 def test_refuses_other_server_version(t: Tester) {
-	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-version.py"), s = sl.0;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), ExecutableFiles.adjacent("worker-fakes/handshake-version.py")), s = sl.0;
 	assertRefusedWorker(t, s, sl.1);
 }
 
 def test_refuses_other_source_revision(t: Tester) {
-	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-revision.py"), s = sl.0;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), ExecutableFiles.adjacent("worker-fakes/handshake-revision.py")), s = sl.0;
 	assertRefusedWorker(t, s, sl.1);
 }
 
 def test_refuses_other_protocol_version(t: Tester) {
-	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-protocol.py"), s = sl.0;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), ExecutableFiles.adjacent("worker-fakes/handshake-protocol.py")), s = sl.0;
 	assertRefusedWorker(t, s, sl.1);
 }
 
