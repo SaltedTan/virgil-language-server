@@ -3491,7 +3491,7 @@ analysis stopped at the parse. The substitution column is the server's
 `substitution_us` probe in the completion's capture: with the file intact, a
 lookup of each open file's last parse; warm, one parse of the cached text;
 cold, the scan and one parse of the blanked text. Per-block medians with the
-file intact were 129.4 to 139.8 ms in both builds, and the warm and cold
+file intact were 129.4 to 140.3 ms across both builds, and the warm and cold
 medians differ from them by less than that spread. Cold's p10–p90 was wider
 in both runs. Its slowest samples took about 65 ms longer than its fastest,
 with no server collection, and only 4 to 15 ms of that was in the worker round
