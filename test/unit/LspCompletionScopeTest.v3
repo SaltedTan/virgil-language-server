@@ -28,6 +28,7 @@ def X = [
 	T("LspCompletionScope:cancel", test_cancel),
 	T("LspCompletionScope:time_limit", test_time_limit),
 	T("LspCompletionScope:worker_crash", test_worker_crash),
+	T("LspCompletionScope:parse_budget", test_parse_budget),
 	T("LspCompletionScope:malformed_scope", test_malformed_scope),
 	T("LspCompletionScope:answer_too_large", test_answer_too_large),
 	T("LspCompletionScope:shutdown", test_shutdown),
@@ -1335,5 +1336,34 @@ def test_members_malformed(t: Tester) {
 	s.settle();
 	t.assert_string("| 0 +", render(t, s.result(t, id)));
 	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tthis.$")));
+	s.server.close();
+}
+
+// A document with more conservatively counted tokens than the server's parse
+// budget (AnalysisParseBudget) isn't parsed for a completion, as typed or
+// repaired: it gets the keywords alone, at once, as one that doesn't parse
+// does, and one at the budget gets the names, as without it.
+def test_parse_budget(t: Tester) {
+	var s = session(t);
+	var names = Strings.format1("total unsaved factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins());
+	var marked = inScale("\t\tvar unsaved = 1;\n\t\tre$turn total;"), count = AnalysisParseBudget.count(unmark(marked).0, int.max);
+	var analyses = s.server.completion.analyses;
+	AnalysisParseBudget.maxTokens = count - 1;
+	var id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once");
+	t.asserti(analyses, s.server.completion.analyses);
+	// A repaired text has more tokens than the document; neither is parsed.
+	marked = inScale("\t\ttotal = $");
+	count = AnalysisParseBudget.count(unmark(marked).0, int.max);
+	AnalysisParseBudget.maxTokens = count - 1;
+	id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once for a repaired text");
+	t.asserti(analyses, s.server.completion.analyses);
+	// Within the budget, the same names as without it, on a new version.
+	marked = inScale("\t\tvar unsaved = 1;\n\t\tre$turn total;");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(unmark(marked).0, int.max);
+	t.assert_string(names, complete(t, s, marked));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 	s.server.close();
 }

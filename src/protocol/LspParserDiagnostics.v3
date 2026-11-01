@@ -13,7 +13,7 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
 		var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
-		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+		var result = parse(doc, options);
 		if (BenchProbe.enabled) BenchProbe.server(0, "parser_diagnostics_us", long.view(BenchProbe.now() - start));
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
@@ -33,7 +33,7 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	def outcome(doc: DocumentOverlay, options: Array<string>) -> (LspParsedDocument, bool) {
 		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return (last, false);
-		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+		var result = parse(doc, options);
 		return (LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt,
 			result.errorAt()), true);
 	}
@@ -43,6 +43,15 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	// analysis.
 	def versioned(doc: DocumentOverlay, owner: ProjectContext) -> bool {
 		return lists.versioned(doc, owner);
+	}
+	// The parse of {doc}'s text with language options {options}. A text with
+	// more conservatively counted tokens than the server's parse budget
+	// (AnalysisParseBudget) isn't parsed: it has no parser diagnostics and
+	// counts as parsing, so that the analysis worker, which contains its own
+	// failures, analyzes it as it is, without fallback or repair.
+	private def parse(doc: DocumentOverlay, options: Array<string>) -> FileParseResult {
+		if (!AnalysisParseBudget.admits(doc.text)) return FileParseResult.new(pathOf(doc), [], 0);
+		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
 	}
 	// The path that names {doc} in its diagnostics: its file's, or its URI.
 	private def pathOf(doc: DocumentOverlay) -> string {

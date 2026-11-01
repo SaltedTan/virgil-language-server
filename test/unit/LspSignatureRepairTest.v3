@@ -32,6 +32,7 @@ def X = [
 	T("LspSignatureRepair:admission", test_admission),
 	T("LspSignatureRepair:less_recent_large_project", test_less_recent_large_project),
 	T("LspSignatureRepair:takes_turns_with_completion", test_takes_turns_with_completion),
+	T("LspSignatureRepair:parse_budget", test_parse_budget),
 	()
 ];
 
@@ -697,4 +698,26 @@ def stringAt(v: JsonValue, key: string) -> string {
 }
 def member(v: JsonValue, key: string) -> JsonValue {
 	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+
+// A document with more conservatively counted tokens than the server's parse
+// budget (AnalysisParseBudget) isn't parsed, so its parser diagnostics count
+// it as parsing: signature help answers from the project's snapshot, with no
+// repaired text to parse or analyze, and that analysis of the broken text
+// has no call. One whose repaired text is at the budget is repaired, as
+// without it.
+def test_parse_budget(t: Tester) {
+	var s = session(t);
+	var marked = inRun("\t\tUtil.add(1, $"), u = unmark(marked);
+	var repaired = LspCompletionRepair.repair(LspCursorScanner.new(u.0).scan(u.1));
+	var count = AnalysisParseBudget.count(u.0, int.max);
+	t.assert(AnalysisParseBudget.count(repaired, int.max) > count, "the repair adds tokens");
+	AnalysisParseBudget.maxTokens = count - 1;
+	t.assert_string("null", help(t, s, marked));
+	t.asserti(0, analyses(s));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(repaired, int.max);
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1,$")));
+	t.asserti(1, analyses(s));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+	s.server.close();
 }

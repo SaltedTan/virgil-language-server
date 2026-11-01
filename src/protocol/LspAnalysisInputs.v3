@@ -44,8 +44,10 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 			var parses = PARSES_PER_FILE - if(outcome.1, 1, 0);
 			var effective = cache.get(context, doc.uri), result: LspBodyFallback;
 			// Closed disk files can seed larger texts. Reparse a predecessor only
-			// within the same byte limit as an open document's parser diagnostics.
-			if (effective != null && effective.length <= DocumentLimits.MAX_BYTES) {
+			// within the same byte limit as an open document's parser diagnostics,
+			// and, since that parse keeps a syntax index as an outline's does,
+			// within the outline's token budget (AnalysisParseBudget).
+			if (effective != null && effective.length <= DocumentLimits.MAX_BYTES && AnalysisParseBudget.admits(effective)) {
 				parses--;
 				var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, options);
 				if (bodies != null) result = LspBodyEligibility.compare(effective, doc.text, bodies).0;

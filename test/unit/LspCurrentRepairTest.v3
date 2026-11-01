@@ -14,6 +14,8 @@ def X = [
 	T("LspCurrentRepair:two_body_analysis", test_two_body_analysis),
 	T("LspCurrentRepair:error_limit", test_error_limit),
 	T("LspCurrentRepair:fallback_first", test_fallback_first),
+	T("LspCurrentRepair:token_budget", test_token_budget),
+	T("LspCurrentRepair:fallback_token_budget", test_fallback_token_budget),
 	()
 ];
 def wrap(body: string) -> string {
@@ -370,5 +372,44 @@ def test_fallback_first(t: Tester) {
 		s.text(snapshot, "A.v3"));
 	// The blanked text is not parseable text for the cache.
 	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	s.server.close();
+}
+
+// A document with more conservatively counted tokens than the outline
+// parse's budget (AnalysisParseBudget) isn't repaired, before any parse, and
+// one at the budget is repaired as without it.
+def test_token_budget(t: Tester) {
+	var current = wrap("var x = ;"), count = AnalysisParseBudget.count(current, int.max);
+	var before = repair(current);
+	t.assert(before.0 != null, "the text is repaired");
+	AnalysisParseBudget.maxTokens = count;
+	var r = repair(current);
+	t.assert(r.0 != null && Strings.equal(before.0, r.0), "the same repair at the budget");
+	AnalysisParseBudget.maxTokens = count - 1;
+	refuse(t, current, AnalysisParseBudget.refusal());
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+
+// Fallback doesn't parse a cached text with more conservatively counted
+// tokens than the outline parse's budget, so the current text is repaired
+// instead, if that is within the budget, and otherwise analyzed as it is.
+def test_fallback_token_budget(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var old = "component A { def broken() -> int { var x = 1; return x; } def a() -> int { return B.b(); } }\n";
+	var current = "component A { def broken() -> int { var x = ; return x; } def a() -> int { return B.b(); } }\n";
+	var blanked = Strings.format1("component A { def broken() -> int {%s} def a() -> int { return B.b(); } }\n", spaces(" var x = ; return x; "));
+	s.open("A.v3", 1, old);
+	s.settle();
+	var count = AnalysisParseBudget.count(old, int.max);
+	t.asserti(count - 1, AnalysisParseBudget.count(current, int.max));
+	var expected = [old, blanked, current];
+	for (k < expected.length) {
+		AnalysisParseBudget.maxTokens = count - k;
+		t.assert_eq(null, s.store.change(s.uri("A.v3"), 2 + k, current));
+		var snapshot = s.analyze(t);
+		t.assertb(expected[k], s.text(snapshot, "A.v3"));
+		t.assert(snapshot.degraded() == (k < 2), "only a substituted text degrades the snapshot");
+	}
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 	s.server.close();
 }
