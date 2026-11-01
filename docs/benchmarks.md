@@ -3786,7 +3786,7 @@ server collection falls in one of a block's five measured hits, not the hit's
 own work. One of five hits is 20% of the samples, so both percentiles land on
 it when it falls there and miss it when it doesn't, and a change that only
 moves allocation, even one that reduces it as #418 did, can move it. A target
-should either allow one server collection on top of the hit's own time, which
-took 18 to 52 ms in a hit on this host, or apply to hits without a collection and count server
-collections around each request separately, which the committed probes don't
-yet do.
+should either allow one server collection, which took 18 to 52 ms in a hit on
+this host, on top of the hit's own time, or apply to hits without a collection
+and count server collections around each request separately, which the
+committed probes don't yet do.
