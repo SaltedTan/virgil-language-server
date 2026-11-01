@@ -3696,3 +3696,97 @@ The same session ran the full [tolerance capture](#release-scorecard) with the
 same server build. It took 514.5 seconds, and the scorecard passed with the
 current floors in both modes: primary 180/185, held-out 44/94, zero wrong
 answers, zero expectation mismatches, and zero session wrong answers.
+
+## Server collections in completion hits (2026-11-02)
+
+Measured on 2026-11-02 for [#433](https://github.com/SaltedTan/virgil-language-server/issues/433).
+The 2026-11-01 re-measurement of the [budget proposal](performance-budgets.md)
+at `bf9e70a8` found the fourth measured Aeneas `completion_hit` of every block
+at 29.6 to 35.3 ms, in both the full-scenario and the error-result captures,
+while the 2026-10-31 capture at `85baf49d` had no such tail. The cause is a
+collection in the server process. No change made a cache hit allocate more, and
+the bytes surviving each collection stayed broadly similar. [#418](https://github.com/SaltedTan/virgil-language-server/issues/418)
+cut the server's allocation over the request loop by about 38%, so fewer
+collections run, and one of them now falls in that hit.
+
+The captures' JSON keeps each session's whole stderr. The traces of 1,918 to
+1,920 characters are the fresh-analysis sessions, which end after one analysis.
+The last session's trace is complete, but the default probes record server
+collections only inside worker round trips, and a cache hit has none.
+
+**Method.** The capture's command, restricted to `--project aeneas`, on a
+`BENCH=1` build of main `aebe48eb` reproduced the tail: the fourth measured hit
+of all six blocks took 30.7 to 36.9 ms, and the hits' median was 6.959 ms.
+For attribution, a temporary probe, not committed, wrapped the server's
+handling of each LSP message and wrote, before the handler returned, the
+server's collections, their time (the runtime's `GcStats.collection_us`), the
+bytes that survived them, and the bytes allocated. A completion reply leaves
+from a deferred handler before that wrapper returns, so the client copy that
+read these probes waited 5 ms after each validated reply, outside the timed
+interval, and skipped them in the cache-hit check of `--require-probes`.
+Nine builds carried the probe: `85baf49d` and the merge of each runtime change
+since then, leaving out #423, which changed only a comment in `src/`. They were built in equal-length worktrees with
+`BENCH=1 all bench-metadata` and byte-identical generated BuildInfo text, and
+ran as one comparison: Aeneas only, six alternating process blocks, two
+warmups and five measured operations per block, pinned to hardware thread 12
+under the shared benchmark lock, with every semantic check passing and no
+samples removed. Other agents' work on the machine put the one-minute load
+average at 8 to 12 when the runs started, which may widen the spread of the
+times below. The allocation and where each collection fell were the same in
+every block of a build. The raw data, the temporary probe and client, and the
+scripts are in the lead's scratch directory
+`/home/sean-tan/.t3/scratch-virgil/tail-433/`: `README.md` indexes them, and
+`runs/probe-main.json` and `runs/ablation.json` are the reproduction and the
+ablation.
+
+Allocation and collections are the same in every block of a build. The loop
+is the seven iterations, two warmups and five measured, of definition through
+`completion_hit`, with the inspections between them, from the first definition
+to the last hit. A miss's own allocation is its message's handling, which includes the source
+capture; its worker round trip allocated another 8,186 to 8,194 KB in every
+build. Times are milliseconds:
+
+| Build | Hit allocation (KB) | Miss allocation (KB) | Loop allocation (MB) | Loop collections | Surviving (MB) | Hits with a collection | Hit median without one |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| `85baf49d` (#409) | 3,093.8 | 20,731.1 | 749.5 | 9 | 19.1–22.8 | none | 6.1 |
+| `d7bd2444` (#411) | 3,093.8 | 20,731.1 | 749.5 | 9 | 19.1–22.8 | none | 5.9 |
+| `1d296d55` (#412) | 3,093.8 | 20,731.1 | 749.5 | 9 | 19.1–22.8 | none | 7.3 |
+| `f3cf0707` (#416) | 3,093.8 | 20,731.1 | 749.5 | 9 | 19.1–22.8 | none | 7.4 |
+| `265fc8d6` (#417) | 3,056.6 | 20,693.9 | 747.4–747.5 | 9 | 19.1–22.8 | first measured, 6 of 6 blocks | 7.6 |
+| `109d5ca5` (#418) | 3,056.6 | 12,645.3 | 465.6 | 5 | 19.1–23.9 | fourth measured, 6 of 6 | 7.1 |
+| `b62d7f37` (#421) | 3,056.6 | 12,646.1 | 463.3 | 5 | 19.1–24.0 | fourth measured, 6 of 6 | 5.9 |
+| `f8b1a37e` (#425) | 3,056.6 | 13,021.2 | 466.0 | 5 | 19.1–24.0 | fourth measured, 6 of 6 | 7.3 |
+| `aebe48eb` (#427) | 3,056.6 | 13,021.2 | 466.0 | 5 | 19.1–24.0 | fourth measured, 6 of 6 | 7.5 |
+
+The surviving bytes are those of each collection in the measured samples. They
+were broadly similar in every build, though the largest rose from 22.8 MB to
+24.0 MB; collections at different points don't measure retained data exactly.
+A miss allocated 375 KB more after [#425](https://github.com/SaltedTan/virgil-language-server/issues/425). A hit's own allocation, about 3 MB,
+fell by 37 KB with [#417](https://github.com/SaltedTan/virgil-language-server/issues/417).
+#418 reads a closed project file into one array of its length. In the Aeneas
+project, that took 8 MB from each completion miss and each prepareRename,
+16 MB from each rename, and about 40 MB from each loop iteration in all. The
+server's default 200 MiB heap has a copying collector that collects when its
+100 MiB half fills, so the loop's collections fell from nine to five. Each
+block runs the same messages with the same allocation, so a collection falls
+on the same operation in every block. Before #417 they all fell in renames,
+misses, prepareRename requests, and requests outside the samples. #417's 2 MB
+less over the loop put one in the first measured hit, and #418 put one in the
+fourth. The later changes moved allocation by less than 3 MB and
+left it there.
+
+A collection in a hit took 26.3 to 30.0 ms at each build's median, 18.2 to
+52.4 ms in all, and a hit with one took 30.3 to 33.9 ms at each build's median.
+Collections elsewhere in the samples took 18.7 to 22.7 ms at each build's
+median with similar surviving bytes; this benchmark doesn't show why one in a
+hit takes longer. Without a collection, hits took 5.9 to 7.6 ms at the median.
+
+For a `completion_hit` budget target, the Aeneas p90 and p95 measure whether a
+server collection falls in one of a block's five measured hits, not the hit's
+own work. One of five hits is 20% of the samples, so both percentiles land on
+it when it falls there and miss it when it doesn't, and a change that only
+moves allocation, even one that reduces it as #418 did, can move it. A target
+should either allow one server collection, which took 18 to 52 ms in a hit on
+this host, on top of the hit's own time, or apply to hits without a collection
+and count server collections around each request separately, which the
+committed probes don't yet do.
