@@ -155,6 +155,7 @@ class HierarchyProgram {
 		var items: Array<JsonValue>;
 		match (reply) {
 			Result(v) => if (JsonValue.JArray.?(v)) items = JsonValue.JArray.!(v).v;
+			ResultJson(_) => t.fail1("%s gave a pre-rendered result", label);
 			Error(e) => return t.fail2("%s failed: %s", label, e.message);
 		}
 		if (items == null) return t.fail1("%s gave no list", label);
@@ -506,12 +507,14 @@ def reply_bounds(t: Tester) {
 	var all = LspReferences.MAX_REPLY_BYTES;
 	match (p.expandWithin(shape, true, n, bytes)) {
 		Result(v) => t.asserti(n, JsonValue.JArray.!(v).v.length);
+		ResultJson(_) => t.fail("bounded reply was pre-rendered");
 		Error(e) => t.fail1("bounded at the limit: %s", e.message);
 	}
 	for (bound in [(n - 1, all, "the type Shape has more than 2 subtypes"),
 			(n, bytes - 1, Strings.format1("the subtypes of the type Shape need more than %d bytes", bytes - 1))]) {
 		match (p.expandWithin(shape, true, bound.0, bound.1)) {
 			Result(v) => t.fail1("not bounded: %s", bound.2);
+			ResultJson(_) => t.fail1("not bounded: %s", bound.2);
 			Error(e) => {
 				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
 				t.assert_string(bound.2, e.message);

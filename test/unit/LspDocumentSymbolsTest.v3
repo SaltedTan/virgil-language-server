@@ -398,6 +398,7 @@ def symbolReply(s: LspServer, uri: string) -> string {
 def encodeReply(r: JsonRpcReply) -> string {
 	match (r) {
 		Result(v) => return JsonRpcMessage.Response(JsonRpcId.Int(9), v).encode();
+		ResultJson(r) => return JsonRpcMessage.RawResponse(JsonRpcId.Int(9), r).encode();
 		Error(e) => return JsonRpcMessage.ErrorResponse(JsonRpcId.Int(9), e).encode();
 	}
 }

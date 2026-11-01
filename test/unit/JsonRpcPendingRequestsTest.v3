@@ -32,6 +32,7 @@ class CompletionRecorder {
 		var buf = StringBuilder.new();
 		match (r) {
 			Result(v) => JsonRpcJson.render(buf.puts("result "), v);
+			ResultJson(r) => buf.puts("result ").putr(r);
 			Error(e) => e.render(buf.puts("error "));
 		}
 		replies.put(buf.toString());

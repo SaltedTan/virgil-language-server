@@ -60,6 +60,7 @@ class LspWorkspaceEvents(store: DocumentStore, projects: WorkspaceProjects) {
 	private def registrationDone(reply: JsonRpcReply) {
 		match (reply) {
 			Result(v) => log(info, "the client watches project files and sources");
+			ResultJson(_) => log(info, "the client watches project files and sources");
 			Error(e) => log(warn, Strings.format2(
 				"client/registerCapability for watched files failed: %d %s; project files and sources are refreshed only when they are used",
 				e.code, e.message));

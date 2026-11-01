@@ -73,14 +73,16 @@ class JsonRpcError(code: int, message: string) {
 	}
 }
 
-// One JSON-RPC message. The four shapes are distinct: a request has an ID and a
+// One JSON-RPC message. The five shapes are distinct: a request has an ID and a
 // method; a notification has a method and no ID, and is never answered; a
-// response has an ID and a result; an error response has an ID, which may be
-// null, and an error.
+// response has an ID and a result; a raw response has an ID and a result
+// already rendered as JSON, for a reply too large to build as a JsonValue
+// tree; an error response has an ID, which may be null, and an error.
 type JsonRpcMessage {
 	case Request(id: JsonRpcId, method: string, params: JsonRpcParams);
 	case Notification(method: string, params: JsonRpcParams);
 	case Response(id: JsonRpcId, result: JsonValue);
+	case RawResponse(id: JsonRpcId, result: Range<byte>);
 	case ErrorResponse(id: JsonRpcId, error: JsonRpcError);
 
 	// Renders this message as compact JSON with members in a fixed order.
@@ -99,6 +101,12 @@ type JsonRpcMessage {
 			Response(id, result) => {
 				id.render(buf.puts(",\"id\":"));
 				JsonRpcJson.render(buf.puts(",\"result\":"), result);
+			}
+			RawResponse(id, result) => {
+				id.render(buf.puts(",\"id\":")).puts(",\"result\":");
+				// Room for the result and the closing brace at once, so that a
+				// large result is copied once, and encode's buffer is exactly full.
+				buf.grow(buf.length + result.length + 1).putr(result);
 			}
 			ErrorResponse(id, error) => {
 				id.render(buf.puts(",\"id\":"));

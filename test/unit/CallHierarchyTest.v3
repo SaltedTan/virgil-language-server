@@ -186,6 +186,7 @@ class CallProgram {
 		var calls: Array<JsonValue>;
 		match (reply) {
 			Result(v) => if (JsonValue.JArray.?(v)) calls = JsonValue.JArray.!(v).v;
+			ResultJson(_) => t.fail1("%s gave a pre-rendered result", label);
 			Error(e) => return t.fail2("%s failed: %s", label, e.message);
 		}
 		if (calls == null) return t.fail1("%s gave no list", label);
@@ -214,6 +215,7 @@ class CallProgram {
 		var items: Array<JsonValue>;
 		match (reply) {
 			Result(v) => if (JsonValue.JArray.?(v)) items = JsonValue.JArray.!(v).v;
+			ResultJson(_) => t.fail1("%s gave a pre-rendered result", label);
 			Error(e) => return t.fail2("%s failed: %s", label, e.message);
 		}
 		if (items == null) return t.fail1("%s gave no list", label);
@@ -622,6 +624,7 @@ def excluded_constructor_body(t: Tester) {
 	var list = fun (reply: JsonRpcReply) -> Array<JsonValue> {
 		match (reply) {
 			Result(v) => if (JsonValue.JArray.?(v)) return JsonValue.JArray.!(v).v;
+			ResultJson(_) => t.fail("constructor hierarchy gave a pre-rendered result");
 			Error(e) => t.fail1("constructor hierarchy failed: %s", e.message);
 		}
 		t.fail("constructor hierarchy returned no list");
@@ -728,12 +731,14 @@ def reply_bounds(t: Tester) {
 	var all = LspReferences.MAX_REPLY_BYTES;
 	match (p.expandWithin(sum, true, n, bytes)) {
 		Result(v) => t.asserti(5, JsonValue.JArray.!(v).v.length);
+		ResultJson(_) => t.fail("bounded reply was pre-rendered");
 		Error(e) => t.fail1("bounded at the limit: %s", e.message);
 	}
 	for (bound in [(n - 1, all, "the method sum has more than 5 incoming calls"),
 			(n, bytes - 1, Strings.format1("the incoming calls of the method sum need more than %d bytes", bytes - 1))]) {
 		match (p.expandWithin(sum, true, bound.0, bound.1)) {
 			Result(v) => t.fail1("not bounded: %s", bound.2);
+			ResultJson(_) => t.fail1("not bounded: %s", bound.2);
 			Error(e) => {
 				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
 				t.assert_string(bound.2, e.message);
@@ -742,6 +747,7 @@ def reply_bounds(t: Tester) {
 	}
 	match (p.expandWithin(p.item(0, "def run", 4), false, 6, all)) {
 		Result(v) => t.fail("outgoing calls not bounded");
+		ResultJson(_) => t.fail("outgoing calls not bounded");
 		Error(e) => t.assert_string("the method run has more than 6 outgoing calls", e.message);
 	}
 }
@@ -765,10 +771,12 @@ def single_group_bounds(t: Tester) {
 				t.asserti(1, groups.length);
 				t.asserti(LspReferences.MAX_LOCATIONS, JsonValue.JArray.!(JsonValue.JObject.!(groups[0]).v["fromRanges"]).v.length);
 			}
+			ResultJson(_) => t.fail("single group reply was pre-rendered");
 			Error(e) => t.fail1("single group at the limits: %s", e.message);
 		}
 		match (p.expandWithin(item, incoming, LspReferences.MAX_LOCATIONS, bytes - 1)) {
 			Result(v) => t.fail("single group byte bound not enforced");
+			ResultJson(_) => t.fail("single group byte bound not enforced");
 			Error(e) => {
 				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
 				t.assert_string(Strings.format3("the %s calls of the method %s need more than %d bytes",
@@ -780,6 +788,7 @@ def single_group_bounds(t: Tester) {
 	for (incoming in [true, false]) {
 		match (p.expand(if(incoming, f, use), incoming)) {
 			Result(v) => t.fail("single group range bound not enforced");
+			ResultJson(_) => t.fail("single group range bound not enforced");
 			Error(e) => {
 				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
 				t.assert_string(Strings.format2("the method %s has more than 10000 %s calls",
