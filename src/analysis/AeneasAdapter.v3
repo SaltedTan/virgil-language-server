@@ -512,7 +512,7 @@ component AeneasAdapter {
 		var syntax = SymbolSyntaxIndex.new();
 		var result = parseWith(path, input, options, syntax);
 		if (result.repairAt >= 0 && result.diagnostics.length > 0) {
-			var walk = AnalysisStatementStart.new(input, syntax.tokens);
+			var walk = AnalysisStatementStart.new(input, syntax);
 			result.statementStart = walk.find(result.repairAt, result.diagnostics[0].beginOffset);
 			result.alternativeAt = walk.alternative;
 		}
@@ -577,7 +577,7 @@ component AeneasAdapter {
 		resetLanguageOptions();
 		if (errors.numErrors > 0) return null;
 		var symbols = DocumentSymbolCollector.new(file, syntax).collect();
-		return DocumentCommentCollector.new(normalized, syntax.tokens).find(symbols, kind, begin, end);
+		return DocumentCommentCollector.new(normalized, syntax).find(symbols, kind, begin, end);
 	}
 	// Foldable brace blocks and comments from the current text, without
 	// verification. A failed parse keeps only what ends before its first
@@ -594,7 +594,7 @@ component AeneasAdapter {
 			if (errors.offsets.length == 0 || errors.offsets[0].0 < 0) return [];
 			cutoff = errors.offsets[0].0;
 		}
-		return DocumentFoldingCollector.new(normalized, syntax.tokens, cutoff).collect();
+		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
 	// All positions share one current-text parse and one syntax index. Only
 	// token recovery after the first error uses a conservative lexer.
@@ -609,7 +609,7 @@ component AeneasAdapter {
 		var symbols = DocumentSymbolCollector.new(file, syntax);
 		symbols.partial = cutoff >= 0;
 		if (cutoff >= 0) symbols.cutoff = cutoff;
-		return DocumentSelectionCollector.new(input, syntax.tokens, cutoff, symbols.collect()).collect(positions);
+		return DocumentSelectionCollector.new(input, syntax, cutoff, symbols.collect()).collect(positions);
 	}
 	// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
 	// line terminators the compiler understands; never mutate the overlay.

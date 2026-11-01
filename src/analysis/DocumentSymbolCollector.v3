@@ -11,36 +11,67 @@ class AnalysisDocumentSymbol(name: string, kind: AnalysisDeclKind, begin: int, e
 // The VST records names, but not complete declaration ranges. Record parser
 // consumption boundaries (before whitespace/comments are skipped), rather than
 // guessing ends from the next declaration or counting braces in raw text.
-class SymbolSyntaxToken(begin: int, end: int, line: int, column: int) { }
+// Each consumed span, a token, is its begin and end offsets and the compiler
+// line and column of its begin, four ints in one array, so that no token takes
+// an object of its own. A program's parse can clear one index and reuse it for
+// each file.
 class SymbolSyntaxIndex {
-	def tokens = Vector<SymbolSyntaxToken>.new();
-	private var begin = -1;
-	private var line: int;
-	private var column: int;
+	// The number of tokens.
+	def var count: int;
+	private var spans: Array<int>;
+	// The token being consumed: its begin, or -1, and its line and column.
+	private var open = -1;
+	private var openLine: int;
+	private var openColumn: int;
 
+	def begin(i: int) -> int { return spans[4 * i]; }
+	def end(i: int) -> int { return spans[4 * i + 1]; }
+	def line(i: int) -> int { return spans[4 * i + 2]; }
+	def column(i: int) -> int { return spans[4 * i + 3]; }
 	// Called after the parser skips whitespace and comments.
 	def start(p: ParserState) {
-		begin = p.curPos;
-		line = p.curLine;
-		column = p.curCol;
+		open = p.curPos;
+		openLine = p.curLine;
+		openColumn = p.curCol;
 	}
 	// Called before each skip, and once after parsing: advance1 at EOF does
 	// not call skipFunc, so flush that last delimiter.
 	def finish(p: ParserState) {
-		if (begin >= 0 && p.curPos > begin) {
-			tokens.put(SymbolSyntaxToken.new(begin, p.curPos, line, column));
-			begin = p.curPos;
+		if (open >= 0 && p.curPos > open) {
+			var k = 4 * count;
+			if (spans == null || k + 4 > spans.length) reserve(if(count < 64, 64, 2 * count));
+			spans[k] = open;
+			spans[k + 1] = p.curPos;
+			spans[k + 2] = openLine;
+			spans[k + 3] = openColumn;
+			count++;
+			open = p.curPos;
 		}
 	}
+	// Removes every token, keeping the array for the next file's.
+	def clear() {
+		count = 0;
+		open = -1;
+	}
+	// Makes room for at least {n} tokens.
+	def reserve(n: int) {
+		if (spans == null) spans = Array<int>.new(4 * n);
+		else if (4 * n > spans.length) spans = Arrays.grow(spans, 4 * n);
+	}
 	def find(t: Token) -> int {
-		var lo = 0, hi = tokens.length;
+		var lo = 0, hi = count;
 		while (lo < hi) {
-			var mid = lo + (hi - lo) / 2, x = tokens[mid];
-			if (x.line < t.beginLine || (x.line == t.beginLine && x.column < t.beginColumn)) lo = mid + 1;
+			var mid = lo + (hi - lo) / 2, l = line(mid);
+			if (l < t.beginLine || (l == t.beginLine && column(mid) < t.beginColumn)) lo = mid + 1;
 			else hi = mid;
 		}
-		if (lo < tokens.length && tokens[lo].line == t.beginLine && tokens[lo].column == t.beginColumn) return lo;
+		if (lo < count && line(lo) == t.beginLine && column(lo) == t.beginColumn) return lo;
 		return -1;
+	}
+	// The token's byte, in {input}, if it is one byte long, or 0.
+	def single(input: Array<byte>, i: int) -> byte {
+		var b = spans[4 * i];
+		return if(spans[4 * i + 1] - b == 1, input[b]);
 	}
 }
 
@@ -50,11 +81,10 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	var partial: bool;
 	var cutoff = int.max;
 	private def input = file.input;
-	private def tokens = syntax.tokens;
 
 	def compoundEnd(d: VstCompound) -> int {
 		var i = syntax.find(d.token);
-		return if(i >= 0, tokens[declarationEnd(i, true)].end, -1);
+		return if(i >= 0, syntax.end(declarationEnd(i, true)), -1);
 	}
 
 	def collect() -> Array<AnalysisDocumentSymbol> {
@@ -106,7 +136,7 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 			match (m) {
 				x: VstEnumCase => {
 					var end = i;
-					if (i + 1 < tokens.length && ch(i + 1) == '(') end = matching(i + 1);
+					if (i + 1 < syntax.count && ch(i + 1) == '(') end = matching(i + 1);
 					result.put(make(m, AnalysisDeclKind.ENUM_CASE, i, end, []));
 				}
 				x: VstCaseMember => {
@@ -138,15 +168,14 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		}
 	}
 	private def ch(i: int) -> byte {
-		var t = tokens[i];
-		return if(t.end - t.begin == 1, input[t.begin], 0);
+		return syntax.single(input, i);
 	}
 	// Strings are consumed as single spans, so punctuation inside strings and
 	// comments never participates in delimiter balancing.
 	private def matching(i: int) -> int {
 		var open = ch(i), close = if(open == '(', ')', if(open == '[', ']', '}'));
-		for (j = i + 1; j < tokens.length; j++) {
-			if (partial && tokens[j].end > cutoff) return -1;
+		for (j = i + 1; j < syntax.count; j++) {
+			if (partial && syntax.end(j) > cutoff) return -1;
 			var c = ch(j);
 			if (c == close) return j;
 			if (c == '(' || c == '[' || c == '{') {
@@ -168,8 +197,8 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	}
 	private def declarationEnd(i: int, body: bool) -> int {
 		if (i < 0) return -1;
-		for (j = i; j < tokens.length; j++) {
-			if (partial && tokens[j].end > cutoff) return -1;
+		for (j = i; j < syntax.count; j++) {
+			if (partial && syntax.end(j) > cutoff) return -1;
 			var c = ch(j);
 			if (c == ';') return j;
 			if (c == '(' || c == '[' || c == '{') {
@@ -183,7 +212,7 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	}
 	private def parameterEnd(i: int) -> int {
 		var angles = 0;
-		for (j = i + 1; j < tokens.length; j++) {
+		for (j = i + 1; j < syntax.count; j++) {
 			var c = ch(j);
 			if (angles == 0 && (c == ',' || c == ')')) return j - 1;
 			if (c == '<') angles++;
@@ -197,11 +226,10 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	}
 	private def make(d: Decl, kind: AnalysisDeclKind, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
 		var i = syntax.find(d.token);
-		if (partial && (i < 0 || start < 0 || end < start || tokens[end].end > cutoff)) {
+		if (partial && (i < 0 || start < 0 || end < start || syntax.end(end) > cutoff)) {
 			return AnalysisDocumentSymbol.new(d.name(), kind, -1, -1, -1, -1, children);
 		}
-		var name = tokens[i];
-		return AnalysisDocumentSymbol.new(d.name(), kind, tokens[start].begin, tokens[end].end,
-			name.begin, name.end, children);
+		return AnalysisDocumentSymbol.new(d.name(), kind, syntax.begin(start), syntax.end(end),
+			syntax.begin(i), syntax.end(i), children);
 	}
 }

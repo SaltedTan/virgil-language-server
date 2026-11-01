@@ -22,16 +22,14 @@ class AnalysisMethodBodies(file: VstFile, syntax: SymbolSyntaxIndex) {
 			var range = BlockStmt.!(body).stmts.src;
 			var i = syntax.find(Token.new(file.fileName, "{", range.beginLine, range.beginColumn));
 			if (i < 0) continue;
-			var tokens = syntax.tokens, depth = 0;
-			for (j = i; j < tokens.length; j++) {
-				var t = tokens[j];
-				if (t.end - t.begin != 1) continue;
-				var c = file.input[t.begin];
+			var depth = 0;
+			for (j = i; j < syntax.count; j++) {
+				var c = syntax.single(file.input, j);
 				if (c == '{') depth++;
 				if (c == '}') {
 					depth--;
 					if (depth == 0) {
-						result.put((tokens[i].begin, t.end));
+						result.put((syntax.begin(i), syntax.end(j)));
 						break;
 					}
 				}

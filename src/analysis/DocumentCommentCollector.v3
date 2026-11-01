@@ -37,10 +37,10 @@ component DeclarationComments {
 // between them. The outline selects the declaration by its name and kind,
 // never by the nearest identifier, and its first token comes before any
 // modifiers, as "private" does in "private def". The parser's consumed spans
-// ({tokens}) show that the bytes between the previous token and that one hold
+// ({syntax}) show that the bytes between the previous token and that one hold
 // only whitespace and comments, so no string or character literal is read as
 // a comment.
-class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
+class DocumentCommentCollector(input: Array<byte>, syntax: SymbolSyntaxIndex) {
 	// The comment of the symbol of {kind} in {symbols} whose name is the
 	// bytes {begin} to {end}, or null: if there is no such symbol (see
 	// named), if another starts at the same token, as the fields of
@@ -52,7 +52,7 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 		var i = tokenAt(sym.begin);
 		if (i < 0) return null;
 		if (kind == AnalysisDeclKind.FIELD && i > 0 && (ch(i - 1) == '(' || ch(i - 1) == ',')) return null;
-		return comment(if(i > 0, tokens[i - 1].end, 0), sym.begin);
+		return comment(if(i > 0, syntax.end(i - 1), 0), sym.begin);
 	}
 	// A data type, such as "type Row(x: int);", is its own single case: a use
 	// of its constructor names the case, which the outline lists as the type,
@@ -74,17 +74,16 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 	}
 	// The index of the span that starts at {offset}, or -1.
 	private def tokenAt(offset: int) -> int {
-		var lo = 0, hi = tokens.length;
+		var lo = 0, hi = syntax.count;
 		while (lo < hi) {
 			var mid = lo + (hi - lo) / 2;
-			if (tokens[mid].begin < offset) lo = mid + 1;
+			if (syntax.begin(mid) < offset) lo = mid + 1;
 			else hi = mid;
 		}
-		return if(lo < tokens.length && tokens[lo].begin == offset, lo, -1);
+		return if(lo < syntax.count && syntax.begin(lo) == offset, lo, -1);
 	}
 	private def ch(i: int) -> byte {
-		var t = tokens[i];
-		return if(t.end - t.begin == 1, input[t.begin], 0);
+		return syntax.single(input, i);
 	}
 	// The text of the comment lines directly above the line of {start}, all
 	// after {gap}, the end of the previous token. Null if the line of {start}
