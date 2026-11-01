@@ -7,6 +7,7 @@
 # scripts/release-notes.py on the release assets. The check-release.sh cases
 # write VERSION and CHANGELOG.md to a temporary repository root; the others
 # construct VSIX files, build manifests, and archives in a temporary directory.
+# It also checks the checkout's pin agreement; see check_pin.py.
 # Usage: test/release/run.sh [--archive <archive>]
 # Backticks in single-quoted patterns are Markdown, not command substitutions.
 # shellcheck disable=SC2016

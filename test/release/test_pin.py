@@ -23,7 +23,8 @@ OTHER_ABBREV = '7cf038fc'
 
 
 def notices_text(sha):
-    return f'| Pinned revision | `{sha}` (2026-10-27) |\n'
+    return ('## Virgil (Aeneas compiler and libraries)\n\n'
+            f'| Pinned revision | `{sha}` (2026-10-27) |\n')
 
 
 def compatibility_text(abbrev, full):
@@ -282,6 +283,61 @@ class CommandLineTest(unittest.TestCase):
         result = run_cli(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('unmerged', result.stdout)
+
+    def test_missing_index_entry_falls_back_to_head(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        subprocess.run(['git', '-C', str(self.root), 'update-index',
+                        '--force-remove', 'vendor/virgil'], check=True,
+                       capture_output=True, text=True)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(f'Virgil pin agrees everywhere: {FULL}', result.stdout)
+
+    def test_head_fallback_rejects_regular_file(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        blob = subprocess.run(['git', '-C', str(self.root), 'hash-object',
+                               '-w', '--stdin'], input='not a submodule\n',
+                              check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run(['git', '-C', str(self.root), 'update-index', '--add',
+                        '--cacheinfo', f'100644,{blob},vendor/virgil'],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(['git', '-C', str(self.root), 'commit', '-qm', 'regular file'],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(['git', '-C', str(self.root), 'update-index',
+                        '--force-remove', 'vendor/virgil'], check=True,
+                       capture_output=True, text=True)
+        write_tree(self.root, notices=blob, abbrev=blob[:8], full=blob, corpus=blob)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('malformed', result.stdout)
+        self.assertNotIn('skipped:', result.stdout)
+
+    def test_head_fallback_rejects_missing_pin(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        subprocess.run(['git', '-C', str(self.root), 'update-index',
+                        '--force-remove', 'vendor/virgil'], check=True,
+                       capture_output=True, text=True)
+        subprocess.run(['git', '-C', str(self.root), 'commit', '-qm', 'remove pin'],
+                       check=True, capture_output=True, text=True)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing', result.stdout)
+        self.assertNotIn('skipped:', result.stdout)
+
+    def test_other_dependency_cannot_supply_missing_or_invalid_virgil_revision(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        for value in ('', FULL[:5], None):
+            with self.subTest(virgil_revision=value):
+                text = notices_text(value) if value is not None else ''
+                text += f'\n## Another dependency\n\n| Pinned revision | `{FULL}` |\n'
+                (self.root / 'THIRD_PARTY_NOTICES.md').write_text(text)
+                result = run_cli(self.root)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('THIRD_PARTY_NOTICES.md: no pinned revision found', result.stdout)
 
 
 if __name__ == '__main__':

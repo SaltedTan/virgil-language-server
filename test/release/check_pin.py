@@ -21,8 +21,8 @@ when its SHA is a prefix of the gitlink, which covers both forms.
 
 The check runs only from a checkout: it verifies the given root is itself the
 top of a repository, and skips with a message (exit 0) when there is no Git
-metadata, as in an exported tree. The release workflow runs from a checkout, so
-skipping there is correct.
+metadata, as in an exported tree. Checkout runs, including the release workflow,
+fail when the gitlink is missing or malformed.
 """
 import json
 import re
@@ -44,8 +44,11 @@ class PinError(Exception):
 
 
 def extract_notices(text):
-    """The pinned revision from `THIRD_PARTY_NOTICES.md`, a full SHA in backticks."""
-    match = re.search(r'Pinned revision\s*\|\s*`(' + HEX + r'{7,40})`', text)
+    """The pinned revision from the Virgil section of `THIRD_PARTY_NOTICES.md`."""
+    section = re.search(r'^## Virgil[^\n]*\n(.*?)(?=^## |\Z)', text, re.MULTILINE | re.DOTALL)
+    if section is None:
+        return None
+    match = re.search(r'Pinned revision\s*\|\s*`(' + HEX + r'{7,40})`', section.group(1))
     return match.group(1) if match else None
 
 
@@ -133,10 +136,13 @@ def read_gitlink(root):
         raise PinError(f'cannot read the vendor/virgil index: {tree.stderr.strip()}')
     lines = [line for line in tree.stdout.splitlines() if line.strip()]
     if not lines:
-        head = _git(root, 'rev-parse', 'HEAD:vendor/virgil')
-        if head.returncode == 0 and re.fullmatch(HEX + r'{40}', head.stdout.strip()):
-            return head.stdout.strip()
-        return None
+        head = _git(root, 'ls-tree', 'HEAD', '--', 'vendor/virgil')
+        if head.returncode != 0:
+            raise PinError(f'cannot read the vendor/virgil gitlink in HEAD: {head.stderr.strip()}')
+        match = re.fullmatch(r'160000 commit (' + HEX + r'{40})\tvendor/virgil', head.stdout.strip())
+        if not match:
+            raise PinError(f'missing or malformed vendor/virgil gitlink in HEAD: {head.stdout.strip()!r}')
+        return match.group(1)
     if len(lines) > 1:
         raise PinError('vendor/virgil has more than one index entry (unmerged)')
     match = re.fullmatch(r'160000 (' + HEX + r'{40}) (0|[1-9])\tvendor/virgil', lines[0])
