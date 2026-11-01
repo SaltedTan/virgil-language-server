@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The project is pre-1.0. Only the latest release and the `main` branch receive security fixes.
+The project is pre-1.0. Only the latest release and the `main` branch receive security fixes, subject to the maintainer's exceptions under the [support policy](docs/compatibility.md#fixes-and-older-releases).
 
 ## Reporting a vulnerability
 
