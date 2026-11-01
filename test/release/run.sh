@@ -830,6 +830,7 @@ links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
 
 expect_run "VSIX payload integrity and provenance" 0 - - python3 "$ROOT/test/release/test_vsix_payload.py"
+expect_run "release asset selection" 0 - - python3 "$ROOT/test/release/test_release_assets.py"
 expect_run "bundled library integrity and reproducibility" 0 - - python3 "$ROOT/test/release/test_library.py"
 if [ "${1:-}" = --archive ]; then
     expect_run "archive installation (moved, spaces, symlink, read-only library)" 0 \
