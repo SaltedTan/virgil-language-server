@@ -311,8 +311,8 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 
 Phase times include GC that occurs within the phase; do not add `adapter_us` to
 parse/verify, or `roundtrip_us` to its constituent phases. Probe syscalls add some
-end-to-end overhead despite allocating nothing. Prefer normal builds for the
-most precise external latency comparison and instrumented builds for attribution.
+end-to-end overhead. Prefer normal builds for the most precise external latency
+comparison and instrumented builds for attribution.
 
 JSON includes raw samples grouped by build, project, and process block; summaries
 report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
