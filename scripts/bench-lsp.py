@@ -285,6 +285,8 @@ PARSE_WORK_SCENARIOS = ("unchanged_reanalysis", "body_edit", "signature_edit", "
                         "membership_remove", "options_set", "options_reset")
 PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_unchanged_bytes", "parse_unchanged_us",
                       "parse_changed_files", "parse_changed_bytes", "parse_changed_us", "parse_unvisited_files")
+# Capture's source reads and its hash, which split capture_us (#413).
+CAPTURE_SPLIT_METRICS = ("capture_read_us", "capture_hash_us")
 
 
 def parse_work_inputs(name, project):
@@ -817,6 +819,10 @@ def main():
             # A build either has the parse-work probes in every transaction or in none.
             parse_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
                             for probe in sample["probes"] if probe["metric"] in PARSE_WORK_METRICS}
+            # A build either splits capture into its read and its hash in every
+            # capture or in none, so an older build can be the control.
+            split_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
+                            for probe in sample["probes"] if probe["metric"] in CAPTURE_SPLIT_METRICS}
             check(not args.parse_work or parse_builds, "no build has the parse-work probes")
             for block in result["blocks"]:
                 for sample in block["samples"]:
@@ -862,6 +868,13 @@ def main():
                         # An edit's synchronous parser diagnostics are the server's own parse.
                         measured["server"] = [m for m in measured["server"] if m != "parser_diagnostics_us"]
                         check(not any(measured.values()), (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
+                    split = [metric for metric in CAPTURE_SPLIT_METRICS if metric in measured["server"]]
+                    if block["build"] in split_builds and measured["server"].count("capture_us") == 1:
+                        check(all(measured["server"].count(metric) == 1 for metric in CAPTURE_SPLIT_METRICS),
+                              (scenario, "missing or duplicate capture-split probes", measured["server"]))
+                    else:
+                        check(not split, (scenario, "unexpected capture-split probes", measured["server"]))
+
         for row in result["summary"]:
             first = row["scenario"].startswith("first_semantic_")
             if row["metric"] == "latency_ms" or first and row["metric"] in ("open_latency_ms", "initialize_ms"):

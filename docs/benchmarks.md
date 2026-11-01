@@ -270,7 +270,9 @@ configurations, and the hashes of every text are recorded in each block's
 With `--require-probes`, every sample must have exactly one worker transaction
 and source capture, and no worker start. A build either has the parse-work
 probes below in every transaction or in none, so an older build can be the
-control; at least one build must have them.
+control; at least one build must have them. Likewise, a build either splits
+every capture with `capture_read_us` and `capture_hash_us` or has neither, so
+a build from before that split can be the control.
 
 ## Phases, allocation, and output
 
@@ -292,6 +294,7 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | worker `collect_us` | Occurrence collection; zero or near zero for a scope-only completion. |
 | worker `query_us` | Scope/member/call query plus the final alarm/global-stat bookkeeping before encoding. |
 | server `capture_us` | Capture source bytes and their provenance for analysis/query submission. |
+| server `capture_read_us`, `capture_hash_us` | Of `capture_us`: acquiring each source's bytes (`ProjectFiles.load` for a closed project file, `DocumentStore.readBounded` otherwise), and hashing a closed file's text. Their clock reads, two per source and two more per closed file, are inside `capture_us`. |
 | server `rename_capture_us` | Capture and edit the analyzed source bytes for a rename's preflight; excludes the earlier reference/edit planning. |
 | server `request_encode_us`, worker `request_decode_us` | Binary worker-request encoding and decoding. |
 | worker `result_encode_us`, server `result_decode_us` | Binary worker-result encoding and decoding. These are not JSON-only serialization timings. |
