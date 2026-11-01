@@ -71,17 +71,39 @@ component ProjectFiles {
 		var fd = open(path, false);
 		if (fd < 0) return null;
 		var info = HostOs.fileMetadata(fd);
-		if (info.0 != REGULAR || info.1 < 0 || info.1 > budget) { HostOs.close(fd); return null; }
-		var b = StringBuilder.new(), chunk = Array<byte>.new(4096), ok = false;
+		var regular = info.0 == REGULAR && info.1 >= 0 && info.1 <= budget;
+		var text = if(regular, readExpected(fd, int.view(info.1), budget));
+		HostOs.close(fd);
+		return text;
+	}
+	// Reads {fd} to its end, expecting the {expected} bytes that fstat
+	// reported: into an array of that length, so a file whose length holds
+	// costs one read, one end-of-file read, and no copy. A file that shrank
+	// since fstat yields the bytes that remain. One that grew is never cut
+	// short: the read continues in chunks, and the whole is still subject to
+	// {budget}, as before this sized read (#413). Exceeding it fails, as at
+	// fstat. Reads past {expected} are rare, so they favor simplicity.
+	def readExpected(fd: int, expected: int, budget: int) -> Array<byte> {
+		var buf = Array<byte>.new(expected), at = 0;
+		while (at < expected) {
+			var n = HostOs.read(fd, buf[at ..+ (expected - at)]);
+			if (n == HostOs.EINTR) continue;
+			if (n < 0) return null;
+			if (n == 0) return Arrays.range(buf, 0, at);
+			at += n;
+		}
+		// One byte detects growth; once it is found, read in 4,096-byte chunks.
+		var chunk = Array<byte>.new(1), b: StringBuilder;
 		while (true) {
 			var n = HostOs.read(fd, chunk);
 			if (n == HostOs.EINTR) continue;
-			if (n == 0) { ok = true; break; }
-			if (n < 0 || n > budget - b.length) break;
+			if (n == 0) return if(b == null, buf, b.extract());
+			if (n < 0 || n > budget - if(b == null, expected, b.length)) return null;
+			if (b == null) b = StringBuilder.new().putr(buf);
 			b.putr(chunk[0 ..+ n]);
+			if (chunk.length == 1) chunk = Array<byte>.new(4096);
 		}
-		HostOs.close(fd);
-		return if(ok, b.extract());
+		return null;
 	}
 	def list(path: string, maxEntries: int) -> ProjectDirectory {
 		var fd = open(path, true);

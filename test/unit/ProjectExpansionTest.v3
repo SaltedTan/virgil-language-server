@@ -13,6 +13,8 @@ def X = [
 	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
 	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
+	T("ProjectFiles:load", test_load),
+	T("ProjectFiles:load_changed_length", test_load_changed_length),
 	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
 	T("ProjectExpansion:unrelated_and_excluded_entries", test_unrelated_and_excluded_entries),
 	T("ProjectExpansion:colliding_names", test_colliding_names),
@@ -327,6 +329,74 @@ def test_symlinks(t: Tester) {
 	t.asserti(0, r.sources.length);
 	t.asserti(1, r.diagnostics.length);
 	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "deep real trees are bounded too");
+}
+// Bytes that differ from their neighbors, so a misplaced or lost chunk shows.
+def pattern(length: int) -> Array<byte> {
+	var text = Array<byte>.new(length);
+	for (i < length) text[i] = byte.view(i * 31 + i / 4096 + 7);
+	return text;
+}
+def loadFile(t: Tester, name: string, text: Array<byte>) -> string {
+	var path = ProjectFiles.join(ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures"), ProjectFiles.join("file-loads", name));
+	var fd = System.fileOpen(path, false);
+	t.assert(fd >= 0, "fixture file written");
+	if (fd < 0) return path;
+	var at = 0;
+	while (at < text.length) {
+		var n = HostOs.write(fd, text[at ..+ (text.length - at)]);
+		if (n == HostOs.EINTR) continue;
+		if (n <= 0) { t.fail1("cannot write %s", path); break; }
+		at += n;
+	}
+	System.fileClose(fd);
+	return path;
+}
+def sameBytes(t: Tester, what: string, expected: Array<byte>, got: Array<byte>) {
+	if (got == null) return t.fail1("%s: expected the file's bytes, got null", what);
+	if (expected.length != got.length) return t.fail3("%s: expected %d bytes, got %d", what, expected.length, got.length);
+	for (i < expected.length) {
+		if (expected[i] != got[i]) return t.fail2("%s: bytes differ at %d", what, i);
+	}
+}
+// Whole files through the real filesystem: around the 4,096-byte read size,
+// a large file, the fstat budget, and files that are not regular.
+def test_load(t: Tester) {
+	for (length in [0, 1, 4095, 4096, 4097, 3 * 1024 * 1024 + 5]) {
+		var text = pattern(length), path = loadFile(t, Strings.format1("f%d.v3", length), text);
+		sameBytes(t, Strings.format1("%d bytes", length), text, ProjectFiles.load(path, length));
+		sameBytes(t, Strings.format1("%d bytes, larger budget", length), text, ProjectFiles.load(path, length + 4096));
+		if (length > 0) t.assert(ProjectFiles.load(path, length - 1) == null, "a file over the budget is not read");
+	}
+	var dir = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	t.assert(ProjectFiles.load(ProjectFiles.join(dir, "file-loads"), 1 << 20) == null, "a directory is not a file");
+	t.assert(ProjectFiles.load(ProjectFiles.join(dir, "fifo.v3"), 1000) == null, "a FIFO is not a file");
+	t.assert(ProjectFiles.load(ProjectFiles.join(dir, "file-loads/missing.v3"), 1000) == null, "a missing file");
+}
+// A file whose length changes between fstat and the read, simulated by
+// passing readExpected a length other than the file's. The kernel's own
+// fstat cannot be raced deterministically from this single-threaded test.
+def test_load_changed_length(t: Tester) {
+	var text = pattern(10000), path = loadFile(t, "changed.v3", text);
+	var read = readExpected(t, path, _, _);
+	sameBytes(t, "unchanged", text, read(10000, 10000));
+	// Grown: never truncated, within the same budget.
+	for (expected in [0, 1, 100, 4096, 9999]) {
+		sameBytes(t, Strings.format1("grew from %d", expected), text, read(expected, 10000));
+		t.assert(read(expected, 9999) == null, "a file that grew past the budget is not read");
+	}
+	// Shrunk: exactly the bytes that remain.
+	for (expected in [10001, 14096, 20000]) {
+		sameBytes(t, Strings.format1("shrank from %d", expected), text, read(expected, expected));
+	}
+	sameBytes(t, "emptied", [], readExpected(t, loadFile(t, "emptied.v3", []), 100, 100));
+}
+def readExpected(t: Tester, path: string, expected: int, budget: int) -> Array<byte> {
+	var fd = ProjectFiles.open(path, false);
+	t.assert(fd >= 0, "fixture file opened");
+	if (fd < 0) return null;
+	var text = ProjectFiles.readExpected(fd, expected, budget);
+	HostOs.close(fd);
+	return text;
 }
 def workspaceParams(root: string) -> HashMap<string, JsonValue> {
 	var p = Strings.newMap<JsonValue>();

@@ -145,6 +145,8 @@ for name in ["Main.v3", "Library.v3"]:
     '{"version":1,"projects":[{"name":"d","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# ProjectFiles:load writes the files it reads itself.
+(root / "file-loads").mkdir(exist_ok=True)
 # LspHoverTest writes and changes the sources itself.
 hover = root / "hover"
 hover.mkdir(exist_ok=True)
