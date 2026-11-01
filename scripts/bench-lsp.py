@@ -285,6 +285,25 @@ PARSE_WORK_SCENARIOS = ("unchanged_reanalysis", "body_edit", "signature_edit", "
                         "membership_remove", "options_set", "options_reset")
 PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_unchanged_bytes", "parse_unchanged_us",
                       "parse_changed_files", "parse_changed_bytes", "parse_changed_us", "parse_unvisited_files")
+# Capture's source reads and its hash, which split capture_us (#413).
+CAPTURE_SPLIT_METRICS = ("capture_read_us", "capture_hash_us")
+
+
+def capture_split_problem(split_build, server_metrics):
+    """Why a sample's capture-split probes are inconsistent, or None.
+
+    A build with the split emits each split metric once for every capture_us,
+    however many captures a sample holds (a typing burst or a first-semantic
+    open can hold several); an older build, the control, emits none.
+    """
+    captures = server_metrics.count("capture_us")
+    counts = {metric: server_metrics.count(metric) for metric in CAPTURE_SPLIT_METRICS}
+    if split_build:
+        if any(count != captures for count in counts.values()):
+            return ("capture-split probes don't match the captures", captures, counts)
+    elif any(counts.values()):
+        return ("unexpected capture-split probes", counts)
+    return None
 
 
 def parse_work_inputs(name, project):
@@ -817,6 +836,10 @@ def main():
             # A build either has the parse-work probes in every transaction or in none.
             parse_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
                             for probe in sample["probes"] if probe["metric"] in PARSE_WORK_METRICS}
+            # A build either splits capture into its read and its hash in every
+            # capture or in none, so an older build can be the control.
+            split_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
+                            for probe in sample["probes"] if probe["metric"] in CAPTURE_SPLIT_METRICS}
             check(not args.parse_work or parse_builds, "no build has the parse-work probes")
             for block in result["blocks"]:
                 for sample in block["samples"]:
@@ -862,6 +885,9 @@ def main():
                         # An edit's synchronous parser diagnostics are the server's own parse.
                         measured["server"] = [m for m in measured["server"] if m != "parser_diagnostics_us"]
                         check(not any(measured.values()), (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
+                    problem = capture_split_problem(block["build"] in split_builds, measured["server"])
+                    check(problem is None, (scenario, block["build"], problem))
+
         for row in result["summary"]:
             first = row["scenario"].startswith("first_semantic_")
             if row["metric"] == "latency_ms" or first and row["metric"] in ("open_latency_ms", "initialize_ms"):

@@ -181,6 +181,21 @@ class ValidationTest(unittest.TestCase):
                     bench.parse_work_inputs(name, {**project, "edits": {"semantic": {"append": PARSE_WORK_DUPLICATE[name]}}})
 
 
+    def test_capture_split_probes_match_every_capture(self):
+        split = list(bench.CAPTURE_SPLIT_METRICS)
+        # A sample with no capture, one, or several (a typing burst) is consistent
+        # when each split metric appears once per capture.
+        for captures in (0, 1, 3):
+            metrics = ["roundtrip_us"] + (["capture_us"] + split) * captures
+            self.assertIsNone(bench.capture_split_problem(True, metrics), captures)
+        # An older control build has no split at all.
+        self.assertIsNone(bench.capture_split_problem(False, ["capture_us", "capture_us"]))
+        for metrics in (["capture_us"] + split + ["capture_us", "capture_read_us"],
+                        ["capture_us", "capture_us"] + split + split + ["capture_hash_us"],
+                        ["capture_us"]):
+            self.assertIsNotNone(bench.capture_split_problem(True, metrics), metrics)
+        self.assertIsNotNone(bench.capture_split_problem(False, ["capture_us", "capture_read_us"]))
+
 class SummaryTest(unittest.TestCase):
     def test_quantiles_interpolate_raw_samples_without_trimming(self):
         row = bench.summarize([10, 1, 4, 3, 2, 9, 5, 8, 7, 6])
