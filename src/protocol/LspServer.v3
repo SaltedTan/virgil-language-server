@@ -141,6 +141,7 @@ class LspServer {
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
 		projects.warn = projectWarning;
 		projects.info = projectInfo;
+		completion.warn = signatureHelp.warn = projectWarning;
 		projects.onConfig = configChanged;
 		documentSync.onOpen = documentOpened;
 		documentSync.onChange = documentChanged;

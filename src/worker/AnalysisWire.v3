@@ -10,6 +10,15 @@
 component AnalysisWire {
 	def PROTOCOL_VERSION = 16;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
+	// The decoding budget of a query's result without occurrences, which
+	// has no diagnostics (encodeResultWithQuery) and so only the answer: at
+	// most AnalysisScopeOrder.MAX_DECLARATIONS candidates, whose display
+	// text is at most AnalysisDisplayText.MAX_BYTES, or one call. At those
+	// caps, the parts with a bound charge about 0.55 MB for a scope answer
+	// and 0.89 MB for a member answer; the rest is room for names and
+	// argument lists, which have none. See
+	// docs/architecture.md#analysis-snapshots-partly-present.
+	def MAX_QUERY_ALLOCATION = 2 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
 	// The argument that makes the worker serve a server.
@@ -29,7 +38,7 @@ component AnalysisWire {
 	// The kinds are scope kinds, or MEMBERS alone for a member query, or CALL
 	// alone, with no prefix, for a call query. Without WANT_OCCURRENCES, the
 	// result of a query has an occurrence section with no files, whose
-	// declarations are the answer's.
+	// declarations are the answer's, and no diagnostics.
 	def ANALYZE: byte = 2;
 	// Worker to server: see encodeResult.
 	def RESULT: byte = 3;
@@ -213,7 +222,11 @@ component AnalysisWire {
 	// only if a file's calls would send it (see AnalysisCallCheck). The
 	// answer's declarations join the result's after the occurrences', its
 	// names and details its string table, and its call's signature the call
-	// signatures.
+	// signatures. A result whose occurrence section has no files, a query's
+	// answer without occurrences, has no diagnostics: nothing reads them, and
+	// they can grow with errors throughout the program independently of the
+	// query's answer. Its decoding budget (MAX_QUERY_ALLOCATION) must not
+	// have to allow for them.
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
@@ -241,6 +254,7 @@ component AnalysisWire {
 		// call is not sent.
 		var callSignature = if(files != null && call != null, checkCall(call, analysis.callSignatureCount()), -1);
 		if (callSignature < 0) call = null;
+		var diagnostics: Array<AnalysisDiagnostic> = if(files != null && files.length == 0, [], analysis.diagnostics);
 		var flags = if(analysis.parsed, PARSED) | if(analysis.verified, VERIFIED) | if(files != null, OCCURRENCES)
 			| if(files != null && scope != null, SCOPE) | if(files != null && members != null, MEMBERS)
 			| if(call != null, CALL);
@@ -275,8 +289,8 @@ component AnalysisWire {
 			w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
 			w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
 			w.put_sleb32(skipped);
-			w.put_sleb32(analysis.diagnostics.length);
-			for (d in analysis.diagnostics) {
+			w.put_sleb32(diagnostics.length);
+			for (d in diagnostics) {
 				putString(w, d.path);
 				w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
 				w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
@@ -284,10 +298,10 @@ component AnalysisWire {
 				putString(w, d.message);
 			}
 			var capped = 0;
-			for (d in analysis.diagnostics) if (d.omitted > 0) capped++;
+			for (d in diagnostics) if (d.omitted > 0) capped++;
 			w.put_sleb32(capped);
-			for (i < analysis.diagnostics.length) {
-				var omitted = analysis.diagnostics[i].omitted;
+			for (i < diagnostics.length) {
+				var omitted = diagnostics[i].omitted;
 				if (omitted > 0) w.put_sleb32(i).put_sleb32(omitted);
 			}
 		};
@@ -708,7 +722,13 @@ component AnalysisWire {
 	// query, a call answer to a CALL query, and a scope answer to another. An
 	// answer to a request that did not ask for its kind is malformed.
 	def decodeResultWithQuery(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int) -> AnalysisResultDecode {
+		return decodeResultWithin(payload, generation, paths, kinds, MAX_RESULT_ALLOCATION);
+	}
+	// Decodes a RESULT as {decodeResultWithQuery} does, within an allocation
+	// budget of {budget} bytes: a result that would allocate more is TooLarge.
+	def decodeResultWithin(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int, budget: int) -> AnalysisResultDecode {
 		var r = AnalysisWireReader.new(payload, RESULT);
+		r.limit(budget);
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
 		var flags = r.readByte();
@@ -1030,6 +1050,7 @@ class AnalysisWireReader {
 	private var hintLabelStrings: Array<string>;
 	private var r: DataReader;
 	private var remaining: long;
+	private var budget = long.view(AnalysisWire.MAX_RESULT_ALLOCATION);
 	def var overBudget: bool;
 
 	new(payload: Array<byte>, kind: byte) {
@@ -1038,7 +1059,11 @@ class AnalysisWireReader {
 		if (r.read1() != kind) r.fail("unexpected message kind");
 	}
 	def allocationBytes() -> long {
-		return long.view(AnalysisWire.MAX_RESULT_ALLOCATION) - remaining;
+		return budget - remaining;
+	}
+	// Makes a RESULT's allocation budget {bytes}, before anything is read.
+	def limit(bytes: int) {
+		budget = remaining = long.view(bytes);
 	}
 	def ok() -> bool {
 		return r.ok;

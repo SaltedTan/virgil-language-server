@@ -29,6 +29,7 @@ def X = [
 	T("LspCompletionScope:time_limit", test_time_limit),
 	T("LspCompletionScope:worker_crash", test_worker_crash),
 	T("LspCompletionScope:malformed_scope", test_malformed_scope),
+	T("LspCompletionScope:answer_too_large", test_answer_too_large),
 	T("LspCompletionScope:shutdown", test_shutdown),
 	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
 	T("LspCompletionScope:admission", test_admission),
@@ -601,6 +602,23 @@ def test_malformed_scope(t: Tester) {
 	s.server.close();
 }
 
+// A result over the query's decoding budget fails safely, as an oversized
+// result of a project's analysis does: the reply has the keywords alone,
+// marked incomplete, the context keeps its snapshot, and the replaced worker
+// answers the next.
+def test_answer_too_large(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	var started = s.supervisor.workersStarted;
+	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tfa$", SyntheticAnalysisWorker.SCOPE_TOO_LARGE)));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a result over the budget");
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from the next worker");
+	t.assert(s.supervisor.workersStarted > started, "a new worker started");
+	t.assert(ctx.snapshot != null, "the context has a snapshot");
+	s.server.close();
+}
+
 // Shutdown answers the running and the waiting completion with their
 // keywords; later requests are refused.
 def test_shutdown(t: Tester) {
@@ -640,9 +658,11 @@ def test_closed_while_waiting(t: Tester) {
 
 // The completion's result is admitted within the workspace's snapshot budget,
 // as a rename's preflight is; when it does not fit, the keywords are the
-// reply, marked incomplete, and no analysis starts.
+// reply, marked incomplete, no analysis starts, and the refusal is logged
+// once, with its charges.
 def test_admission(t: Tester) {
-	var s = session(t);
+	var s = session(t), rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
 	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
 	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
 	var analyses = s.server.completion.analyses;
@@ -650,10 +670,23 @@ def test_admission(t: Tester) {
 	s.settle();
 	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply when the snapshot does not fit");
 	t.asserti(analyses, s.server.completion.analyses);
+	var refused = refusals(rec, "the completion's analysis was refused: ");
+	t.asserti(1, refused.length);
+	if (refused.length == 1) {
+		t.assert(Strings.startsWith(refused[0], "the completion's analysis was refused: retained snapshots take 33554432 bytes, of which 33554432 bytes can't be freed, and a reservation of "), refused[0]);
+		t.assert(Strings.endsWith(refused[0], " bytes doesn't fit beside them within the budget of 33554432 bytes"), refused[0]);
+	}
 	latest.retainedBytes = bytes;
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once it fits");
 	t.asserti(analyses + 1, s.server.completion.analyses);
+	t.asserti(1, refusals(rec, "the completion's analysis was refused: ").length);
 	s.server.close();
+}
+// The lines of {rec} that begin with {prefix}.
+def refusals(rec: DocumentWarningRecorder, prefix: string) -> Array<string> {
+	var result = Vector<string>.new();
+	for (i < rec.lines.length) if (Strings.startsWith(rec.lines[i], prefix)) result.put(rec.lines[i]);
+	return result.extract();
 }
 
 // A scheduler that has closed, as the server's has as it shuts down, refuses

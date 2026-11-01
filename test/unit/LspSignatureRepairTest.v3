@@ -27,8 +27,10 @@ def X = [
 	T("LspSignatureRepair:stale_reruns_once", test_stale_reruns_once),
 	T("LspSignatureRepair:shutdown", test_shutdown),
 	T("LspSignatureRepair:worker_crash", test_worker_crash),
+	T("LspSignatureRepair:answer_too_large", test_answer_too_large),
 	T("LspSignatureRepair:time_limit", test_time_limit),
 	T("LspSignatureRepair:admission", test_admission),
+	T("LspSignatureRepair:less_recent_large_project", test_less_recent_large_project),
 	T("LspSignatureRepair:takes_turns_with_completion", test_takes_turns_with_completion),
 	()
 ];
@@ -546,6 +548,20 @@ def test_worker_crash(t: Tester) {
 	s.server.close();
 }
 
+// A result over the query's decoding budget fails safely, as an oversized
+// result of a project's analysis does: the reply is null, and the replaced
+// worker answers the next request.
+def test_answer_too_large(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var started = s.supervisor.workersStarted;
+	var id = request(t, s, inRun(Strings.format1("\t\t// %s\n\t\tUtil.add($", SyntheticAnalysisWorker.SCOPE_TOO_LARGE)));
+	s.settle();
+	t.assert(isNull(s, id), "null after a result over the budget");
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, inRun("\t\tUtil.add($")));
+	t.assert(s.supervisor.workersStarted > started, "a new worker started");
+	s.server.close();
+}
+
 // An analysis past the time limit leaves null.
 def test_time_limit(t: Tester) {
 	var s = session(t);
@@ -560,20 +576,92 @@ def test_time_limit(t: Tester) {
 }
 
 // The result is admitted within the workspace's snapshot budget, as a
-// completion's is; when it does not fit, the reply is null and no analysis
-// starts.
+// completion's is; when it does not fit, the reply is null, no analysis
+// starts, and the refusal is logged once, with its charges.
 def test_admission(t: Tester) {
-	var s = session(t);
+	var s = session(t), rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
 	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
 	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
 	var id = request(t, s, inRun("\t\tUtil.add($"));
 	s.settle();
 	t.assert(isNull(s, id), "null when the snapshot does not fit");
 	t.asserti(0, analyses(s));
+	var refused = signatureRefusals(rec);
+	t.asserti(1, refused.length);
+	if (refused.length == 1) {
+		t.assert(Strings.startsWith(refused[0], "the signature help's analysis was refused: retained snapshots take 33554432 bytes, of which 33554432 bytes can't be freed, and a reservation of "), refused[0]);
+		t.assert(Strings.endsWith(refused[0], " bytes doesn't fit beside them within the budget of 33554432 bytes"), refused[0]);
+	}
 	latest.retainedBytes = bytes;
 	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1, $")));
 	t.asserti(1, analyses(s));
+	t.asserti(1, signatureRefusals(rec).length);
 	s.server.close();
+}
+// The refusals of signature help's analyses that {rec} logged.
+def signatureRefusals(rec: DocumentWarningRecorder) -> Array<string> {
+	var result = Vector<string>.new();
+	for (i < rec.lines.length) {
+		if (Strings.startsWith(rec.lines[i], "the signature help's analysis was refused: ")) result.put(rec.lines[i]);
+	}
+	return result.extract();
+}
+
+def TWO_CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"s\",\"sources\":[\"Main.v3\",\"Util.v3\"]},{\"name\":\"o\",\"sources\":[\"Other.v3\"]}]}";
+def OTHER = "component Other {\n\tdef twice(v: int) -> int { return v + v; }\n}\n";
+// The charge of an analysis snapshot of the Aeneas sources (#408).
+def AENEAS_SNAPSHOT_BYTES = 13132540L;
+
+// Issue #408: with two projects whose snapshots are as large as the Aeneas
+// sources', and the other project's the latest, a completion and a signature
+// help in the less recent project are admitted beside both, without evicting
+// either: their queries reserve only their own decoding budget, not a full
+// analysis's.
+def test_less_recent_large_project(t: Tester) {
+	var s = RenameTestSession.new("signature-repair", [(".virgil-lsp.json", TWO_CONFIG), ("Main.v3", MAIN),
+		("Util.v3", UTIL), ("Other.v3", OTHER)], true, null, t), rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	var main = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	s.open("Other.v3", 1, OTHER);
+	if (!othersLatest(t, s, main)) return s.server.close();
+	var other = s.server.projects.forDocument(s.uri("Other.v3")).active;
+	var marked = inRun("\t\tUt$"), u = unmark(marked), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	s.change("Main.v3", 2, u.0);
+	var id = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character));
+	s.settle();
+	var result = s.result(t, id), labels = Vector<string>.new();
+	var items = if(JsonValue.JObject.?(result), JsonValue.JObject.!(result).v["items"]);
+	if (JsonValue.JArray.?(items)) {
+		for (item in JsonValue.JArray.!(items).v) {
+			var label = if(JsonValue.JObject.?(item), JsonValue.JObject.!(item).v["label"]);
+			if (JsonValue.String.?(label)) labels.put(JsonValue.String.!(label).v);
+		}
+	}
+	var names = 0;
+	for (i < labels.length) if (Strings.equal(labels[i], "Util") || Strings.equal(labels[i], "Point")) names++;
+	t.asserti(2, names);
+	t.assert(other.snapshot != null && !other.evicted, "the completion evicts nothing");
+	s.change("Other.v3", 2, Arrays.concat("// changed\n", OTHER));
+	if (!othersLatest(t, s, main)) return s.server.close();
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, inRun("\t\tUtil.add($")));
+	t.assert(other.snapshot != null && !other.evicted, "the signature help evicts nothing");
+	for (i < rec.lines.length) t.assert(!Strings.startsWith(rec.lines[i], "the "), rec.lines[i]);
+	s.server.close();
+}
+// Settles {s}, checks that Other.v3's project's snapshot is the latest and
+// {main} has one, and charges both as the Aeneas sources'.
+def othersLatest(t: Tester, s: RenameTestSession, main: ProjectContext) -> bool {
+	s.settle();
+	var other = s.server.projects.forDocument(s.uri("Other.v3")).active, latest = s.supervisor.snapshot;
+	if (other == null || other.snapshot == null || other.snapshot != latest || main.snapshot == null || main.snapshot == latest) {
+		t.fail("the other project's snapshot is the latest, beside the main project's");
+		return false;
+	}
+	latest.retainedBytes = main.snapshot.retainedBytes = AENEAS_SNAPSHOT_BYTES;
+	return true;
 }
 
 // Signature help and completion requests wait side by side: neither replaces

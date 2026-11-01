@@ -66,6 +66,12 @@ class WorkspaceProjects(store: DocumentStore) {
 	var onConfig: WorkspaceConfig -> void;
 	var renameSnapshot: AnalysisSnapshot;
 	private var discovered: bool;
+	// The charges of the last admission that was refused (refusal): the
+	// snapshots that it counted, those of them that it could not free, and
+	// the reservation.
+	private var refusedRetained: long;
+	private var refusedProtected: long;
+	private var refusedIncoming: long;
 	private var configs = Vector<WorkspaceConfig>.new();
 	private var nextUse: long;
 	private var nextRevision: int;
@@ -448,6 +454,14 @@ class WorkspaceProjects(store: DocumentStore) {
 	def admitKeeping(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
 		return admit(active, latest, incomingBytes, false);
 	}
+	// Why the last refused admission was refused, with its charges.
+	def refusal() -> string {
+		return StringBuilder.new()
+			.put3("retained snapshots take %d bytes, of which %d bytes can't be freed, and a reservation of %d bytes",
+				refusedRetained, refusedProtected, refusedIncoming)
+			.put1(" doesn't fit beside them within the budget of %d bytes", snapshotBudget)
+			.toString();
+	}
 	// Counts {latest}, a rename's pinned original, and every context's
 	// snapshot once each. If they and the reservation exceed the budget, the
 	// snapshots that may be freed are, in order: {active}'s own if {replaces},
@@ -483,6 +497,9 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		if (retained - freeable > limit) {
 			if (BenchProbe.enabled) BenchProbe.server(0, "admit_outcome", 0);
+			refusedRetained = retained;
+			refusedProtected = retained - freeable;
+			refusedIncoming = incomingBytes;
 			return false;
 		}
 		var own = if(active != null && replaces, active.snapshot);

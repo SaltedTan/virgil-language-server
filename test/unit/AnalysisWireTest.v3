@@ -45,6 +45,7 @@ def X = [
 	T("AnalysisWire:scope_request_round_trip", test_scope_request_round_trip),
 	T("AnalysisWire:invalid_scope_requests", test_invalid_scope_requests),
 	T("AnalysisWire:scope_answer_round_trip", test_scope_answer_round_trip),
+	T("AnalysisWire:query_results_have_no_diagnostics", test_query_results_have_no_diagnostics),
 	T("AnalysisWire:invalid_scope_answers", test_invalid_scope_answers),
 	T("AnalysisWire:scope_allocation", test_scope_allocation),
 	T("AnalysisWire:member_request_round_trip", test_member_request_round_trip),
@@ -2081,6 +2082,42 @@ def test_compact_coordinates(t: Tester) {
 		assertMalformed(t, file(declarations(1, 0, 0), -1).puta(span).puta(NO_DISPLAY), "invalid packed coordinate");
 		if (pair.0 > 0 && pair.1 > 0 && pair.1 < int.max) {
 			t.assert(decodedResult(result(0, file(declarations(1, 0, 0), 1).puta(span).puta(NO_DISPLAY)), 1, REQUEST) != null, "full-width fallback");
+		}
+	}
+}
+
+def ERRING = "component E {\n\tdef f(a: int) -> int { return a; }\n\tdef g(e: E) -> int {\n\t\tvar x: Absent;\n\t\treturn f(1) + e.f(2);\n\t}\n}\n";
+// A query's result without occurrences, a scope, member, or call answer, has
+// no diagnostics, though its program has an error; with occurrences, the
+// same result has the error.
+def test_query_results_have_no_diagnostics(t: Tester) {
+	var sources = [AnalysisSource.new("s.v3", ERRING)];
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	t.asserti(1, analysis.diagnostics.length);
+	var x = OccurrenceCollectorTest.indexOf(ERRING, "var x"), e = OccurrenceCollectorTest.indexOf(ERRING, "e.f(") + 2;
+	var call = OccurrenceCollectorTest.indexOf(ERRING, "f(1") + 1;
+	var queries = [
+		AnalysisScopeRequest.new(0, x, AnalysisScopeKinds.VALUES, ""),
+		AnalysisScopeRequest.new(0, e, AnalysisScopeKinds.MEMBERS, ""),
+		AnalysisScopeRequest.new(0, call, AnalysisScopeKinds.CALL, "")
+	];
+	for (query in queries) {
+		var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources, query)));
+		if (r == null) return t.fail("the request did not decode");
+		var scope = r.scopeAnswer(analysis), members = r.memberAnswer(analysis), answer = r.callAnswer(analysis);
+		t.assert(scope != null || members != null || answer != null, "the query has an answer");
+		var empty: Array<(string, Array<AnalysisOccurrence>)> = [];
+		for (files in [empty, [("s.v3", analysis.occurrences("s.v3"))]]) {
+			var frame = AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42,
+				files, scope, members, answer), 1L);
+			match (AnalysisWire.decodeResultWithQuery(payloadOf(frame), 5, ["s.v3"], query.kinds)) {
+				Decoded(result) => {
+					var snapshot = result.snapshot;
+					t.asserti(if(files.length == 0, 0, 1), snapshot.diagnostics.length);
+					t.assert(snapshot.scope != null || snapshot.members != null || snapshot.queriedCall != null, "the answer decodes");
+				}
+				_ => t.fail1("the result of the query of kinds %d did not decode", query.kinds);
+			}
 		}
 	}
 }
