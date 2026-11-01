@@ -3451,6 +3451,53 @@ session's full [tolerance capture](#release-scorecard) passed the current floors
 in both modes: primary 180/185, held-out 44/94, zero wrong answers, and zero
 expectation mismatches.
 
+## Completion beside a broken file (2026-11-01)
+
+Measured on 2026-11-01 for [#346](https://github.com/SaltedTan/virgil-language-server/issues/346),
+whose completions and signature help now substitute the project's other open
+files that fail to parse ([ADR-0013](decisions/0013-recover-other-files-in-query-analyses.md)).
+A throwaway client used `completion_miss`'s method: a completion of names at the
+two alternating positions inside `explicitName` in the Aeneas corpus's
+`core/Program.v3`, timed from its request to its decoded reply, and checked for
+that name and its detail. `vst/Verifier.v3`, 106,419 bytes, was open in one of
+three states:
+
+- **Intact**, as on disk.
+- **Warm**: `buildFile(f);` in `Verifier.verify` became `buildFile(f;` after an
+  analysis of the intact text had cached it, so method-body fallback substitutes
+  that text.
+- **Cold**: the same error, opened before any analysis read the file, so
+  current-text repair empties `verify`'s body.
+
+The base build is `f385487a` with this change's two source files ablated. Both
+builds came from one checkout, in build directories of the same length, with
+identical generated BuildInfo and `BENCH=1`. Each run had six alternating
+process blocks of two warmups and ten measured completions in each state,
+pinned to hardware thread 12 under the shared benchmark lock. Times are median
+(p10–p90), milliseconds:
+
+| Run, state | Base | With the change | Substitution, with the change |
+| --- | ---: | ---: | ---: |
+| 1, intact | 133.0 (127.2–146.9) | 134.3 (128.9–146.7) | 0.5 |
+| 1, warm | no names | 133.8 (123.3–150.7) | 5.2 |
+| 1, cold | no names | 137.2 (117.1–175.0) | 11.6 |
+| 2, intact | 135.6 (128.7–146.2) | 135.1 (127.7–146.6) | 0.5 |
+| 2, warm | no names | 137.4 (124.0–154.7) | 5.2 |
+| 2, cold | no names | 139.5 (116.6–178.5) | 11.7 |
+
+Every completion with the change got the name, 360 of 360. With the error,
+every base completion got the keywords alone, in 77 to 81 ms, since its
+analysis stopped at the parse. The substitution column is the server's
+`substitution_us` probe in the completion's capture: with the file intact, a
+lookup of each open file's last parse; warm, one parse of the cached text;
+cold, the scan and one parse of the blanked text. Per-block medians with the
+file intact were 129.4 to 139.8 ms in both builds, and the warm and cold
+medians differ from them by less than that spread. Cold's p10–p90 was wider
+in both runs. Its slowest samples took about 65 ms longer than its fastest,
+with no server collection, and only 4 to 15 ms of that was in the worker round
+trip and 6 to 10 ms in the substitution; this benchmark doesn't break the rest
+down.
+
 ## Memory soak
 
 [`scripts/bench-memory-soak.py`](../scripts/bench-memory-soak.py) qualifies
