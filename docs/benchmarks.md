@@ -941,7 +941,7 @@ Measured on 2026-11-01 for [#324](https://github.com/SaltedTan/virgil-language-s
 
 On main, the walk put the 40,820 integers in a vector of `JsonValue`s, which grew by doubling, and wrapped it in an object; encoding rendered that tree into a buffer that tripled as it filled, then copied the result out of it. The change writes the result's bytes as it walks, into a buffer with room for 12 bytes for each declaration site and use in the file, which never grew on `Verifier.v3`, and hands that buffer to the response without copying it. The response reserves exactly its own size, so encoding copies the result once, and framing copies it once more, as before. Across the 201 files of the small, `lib/util`, and Aeneas projects, a token took 10.0 to 11.0 bytes on average per file, and every reply was byte for byte the same in both builds.
 
-The position map, which an earlier split of this allocation didn't place, holds 4 bytes for each byte of the document's 106,419-byte current text, and line tables. The snapshot request path builds it for every request, hover included; the token walk uses only its text.
+In both builds measured here, the position map, which an earlier split of this allocation didn't place, held 4 bytes for each byte of the document's 106,419-byte current text, and line tables. The snapshot request path builds it for every request, hover included; the token walk uses only its text.
 
 **Times.** Normal builds, from writing a request to reading the last byte of its reply, **median (p10–p90, maximum), milliseconds**:
 
@@ -955,6 +955,34 @@ Later hover requests, at `verify` on line 24, took 2.960 ms on main and 2.931 ms
 **The tail.** The instrumented copies also counted the server's collections during each request. Each of the 24 measured requests that took 10 ms or more had one collection and took 17.5 to 27.6 ms; no request without a collection took more than 9.0 ms. The collections fell at the same points in every process, since each process allocates the same sequence: on main, during the first request of the fourth token round and the sixth request of the second hover round, counting the warmup rounds; with the change, only during `virgil-lsp/analyze` requests, which aren't timed. The change doesn't remove the tail: a token request still meets a collection whenever the server's heap fills during it, only less often, as each reply allocates less than half as much. These runs didn't measure what a collection copies.
 
 **The first request.** The first token request on a snapshot allocated the same bytes as the later ones, so no additional allocation was observed. In the instrumented copies, among requests without a collection, its median was 4.238 ms on main and 3.947 ms with the change, against 2.624 and 2.096 ms for later requests. By the mean of each phase, about four fifths of the extra time was in writing the reply to the client, which on one CPU also waits for the client to read it, and the rest in the walk. With the worker's executable wrapped to run on CPU 14, the first request took 2.720 and 2.203 ms, about 0.1 ms more than the later ones' 2.604 and 2.094 ms. The slower first request is therefore the worker sharing the server's CPU just after an analysis. That fits the collection the worker runs after sending a result ([prepareRename on one CPU](#preparerename-on-one-cpu-2026-10-31)), but these runs didn't time the worker.
+
+#### Position maps (2026-11-01)
+
+Measured for [#414](https://github.com/SaltedTan/virgil-language-server/issues/414) by the method of the section above: main `f3cf0707` and the change, built in separate checkouts with the same generated BuildInfo, ran six process blocks that alternated the two builds, with the same token and hover rounds on `Verifier.v3`. Main's position map kept the LSP character of every byte of the text, 4 bytes each. The change keeps one byte for each line, which says whether the line is all ASCII, and builds a line's table of characters only when an offset on a line with a non-ASCII byte is converted. `Verifier.v3` has no such line.
+
+**Allocation.** Copies of both builds with allocation probes gave the same bytes for every request of a kind. A standalone program also built the map of the file 51 times and timed each construction:
+
+| `Verifier.v3` | Main | Change |
+| --- | ---: | ---: |
+| One position map, bytes | 547,592 | 36,048 |
+| One position map, median microseconds | 593 | 304 |
+| Full token request, bytes | 853,720 | 342,176 |
+| Hover at `verify` on line 24, bytes | 5,850,408 | 5,338,864 |
+
+These probes read the allocation just before and after the map is built, and a request's bytes start after its decoding. The section above's map phase also held the step that finds the analyzed text, so it gave 549,424 bytes, and its total adds the 2,072 bytes of decoding. With the change, the map is its line tables, which it sizes exactly for the file's 2,758 lines from a first count of the line ends, instead of growing them by doubling. Growing them, it allocated 132,160 bytes in 348 microseconds.
+
+**Times.** Normal builds, **median (p10–p90, maximum), milliseconds**:
+
+| Request | Main | Change |
+| --- | ---: | ---: |
+| `textDocument/semanticTokens/full`, first on a snapshot (30) | 2.209 (2.030–3.094, 4.798) | 1.954 (1.799–2.651, 4.211) |
+| `textDocument/semanticTokens/full`, later (150) | 2.050 (1.881–2.216, 2.361) | 1.824 (1.712–1.951, 2.035) |
+| `textDocument/hover`, first on a snapshot (30) | 2.861 (2.760–3.020, 5.062) | 2.681 (2.635–2.761, 2.849) |
+| `textDocument/hover`, later (150) | 2.808 (2.726–3.056, 5.430) | 2.673 (2.588–2.771, 2.903) |
+
+In the instrumented copies, no token request met a server collection in either build. The first hover on a snapshot met one in four of the six rounds on main and in five with the change, counting the warmup round. The `virgil-lsp/analyze` requests, which allocate about 23 MB each, meet the other collections, and the change moves where the heap fills.
+
+**Identity.** All 1,174 replies were byte for byte the same in both builds, matched by request id: the semantic tokens of all 201 files of the small, `lib/util`, and Aeneas projects, and 973 hovers at the start of lines 1, 2, 25, and the last line of each file, and at character 6 of line 25. Three of those files have non-ASCII characters, all in comments. Token positions don't use the position map, and none of the captured hovers is on one of those lines, so these replies don't exercise a non-ASCII line's table; a unit test does. It compares the change's conversion of every offset with the old whole-text table, for ASCII, mixed, CRLF, lone CR, astral-plane, invalid UTF-8, empty, and long non-ASCII texts, in all three encodings.
 
 ## Scheduled comparison
 
