@@ -10,9 +10,12 @@ The two directories that must be unreadable stay writable until --restrict;
 import json
 import os
 from pathlib import Path
+import select
+import shlex
 import signal
 import socket
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -546,22 +549,195 @@ for name in ["A.v3", "README.md"]:
 (unrelated_files / "README.md").chmod(0)
 
 # AnalysisSupervisorTest spawns fake workers whose handshake reports a build
-# identity that differs from the server's in one field. Generate them into the
-# build directory, beside the worker and the unit-test executable, so that
-# every slot gets its own. The scripts capture the real worker's handshake at
-# run time, so they always match the build under test; the absolute interpreter
-# path is needed because the server spawns workers with an empty environment.
-# The template lives in the source tree, which the runner's scratch slots do
-# not copy, so skip generation there: those slots run a stand-in executable
-# that never spawns a worker.
-template_path = Path(__file__).parents[2] / "worker" / "fake_worker_template.py"
-if template_path.exists():
+# identity that differs from the server's in one field. The supervisor must
+# refuse each one, and each refusal test must fail when its comparison is
+# removed. We generate three fakes, each of which sends the real worker's
+# handshake with exactly one field changed.
+#
+# The real worker's handshake is captured once here, at fixture-generation
+# time, so each fake matches the build under test and no fake ever spawns a
+# child of its own: a fake that captured its handshake at run time would leave
+# its inner worker alive if the fake were killed mid-startup, and a finally
+# block cannot run after SIGKILL. prepare.py is a normal short-lived process,
+# so it can run the real worker, read its handshake, and kill it safely.
+#
+# The worker binary is built before the fixtures are prepared, so it is
+# present here; the runner's scratch slots do not build it, so they skip this
+# section: those slots run a stand-in executable that never spawns a worker.
+
+def _sleb(value):
+    """Encodes {value} as signed LEB128."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        last = (value == 0 and not (byte & 0x40)) or (value == -1 and (byte & 0x40))
+        if not last:
+            byte |= 0x80
+        out.append(byte)
+        if last:
+            return bytes(out)
+
+
+def _read_sleb(data, i):
+    result = 0
+    shift = 0
+    while True:
+        byte = data[i]
+        i += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not (byte & 0x80):
+            if byte & 0x40:
+                result |= -1 << shift
+            break
+    return result, i
+
+
+def _read_string(data, i):
+    length, i = _read_sleb(data, i)
+    if length < 0:
+        return None, i
+    return data[i:i + length].decode("utf-8"), i + length
+
+
+def _parse_handshake(frame):
+    """The (protocol, version, revision, heap) fields of a HELLO frame."""
+    (length,) = struct.unpack("<I", frame[:4])
+    payload = frame[4:4 + length]
+    if payload[0] != 1:
+        raise SystemExit("the captured frame is not a HELLO handshake")
+    i = 1
+    protocol, i = _read_sleb(payload, i)
+    version, i = _read_string(payload, i)
+    revision, i = _read_string(payload, i)
+    heap, i = _read_sleb(payload, i)
+    if i != len(payload):
+        raise SystemExit("trailing bytes in the captured handshake")
+    return protocol, version, revision, heap
+
+
+def _encode_handshake(protocol, version, revision, heap):
+    payload = bytearray([1])
+    payload += _sleb(protocol)
+    payload += _sleb(len(version)) + version.encode("utf-8")
+    payload += _sleb(len(revision)) + revision.encode("utf-8")
+    payload += _sleb(heap)
+    return struct.pack("<I", len(payload)) + bytes(payload)
+
+
+def _capture_handshake(worker, timeout):
+    """Runs {worker} --serve, reads its HELLO frame, and kills it."""
+    request_read, request_write = os.pipe()
+    result_read, result_write = os.pipe()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    pid = os.fork()
+    if pid == 0:
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        os.dup2(request_read, 3)
+        os.dup2(result_write, 4)
+        # Close the source descriptors, but never the two just wired up: the
+        # pipe ends can sit at fd 3 or 4, where we just pointed them.
+        for fd in (devnull, request_read, request_write, result_read, result_write):
+            if fd not in (3, 4):
+                os.close(fd)
+        os.execv(worker, [worker, "--serve"])
+        os._exit(127)
+    os.close(request_write)
+    os.close(result_write)
+    os.close(devnull)
+    try:
+        def _read_exact(n):
+            data = b""
+            while len(data) < n:
+                ready, _, _ = select.select([result_read], [], [], timeout)
+                if not ready:
+                    raise SystemExit(f"the worker sent no handshake within {timeout:.0f}s")
+                chunk = os.read(result_read, n - len(data))
+                if not chunk:
+                    raise SystemExit("the worker closed its result pipe before its handshake")
+                data += chunk
+            return data
+        header = _read_exact(4)
+        (length,) = struct.unpack("<I", header)
+        return header + _read_exact(length)
+    finally:
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        os.close(request_read)
+        os.close(result_read)
+
+
+# The body of each fake worker. prepare.py substitutes __FRAME__ with the
+# captured handshake, one field changed, as a bytes literal.
+_FAKE_WORKER_PY = """\
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+# Generated by test/fixtures/projects/prepare.py into the build directory; do
+# not edit. A fake analysis worker: it sends the real worker's handshake with
+# exactly one field of its build identity changed, so the supervisor's
+# matching check for that field is exercised on its own. The supervisor must
+# refuse it. See test/unit/AnalysisSupervisorTest.v3.
+import os
+import time
+
+FRAME = __FRAME__
+RESULT_FD = 4  # AnalysisWire.RESULT_FD
+WATCHDOG_SECONDS = 60.0
+
+
+def main():
+    parent = os.getppid()
+    deadline = time.monotonic() + WATCHDOG_SECONDS
+    os.write(RESULT_FD, FRAME)
+    while os.getppid() == parent and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
+"""
+
+worker = build / "virgil-lsp-worker"
+# The runner's scratch slots put a stand-in (a text file) at this path to test
+# slot inode distinctness; only capture from a real ELF worker binary.
+if worker.exists() and worker.read_bytes()[:4] == b"\x7fELF":
+    real = _capture_handshake(str(worker), 30.0)
+    protocol, version, revision, heap = _parse_handshake(real)
     worker_fakes = build / "worker-fakes"
     worker_fakes.mkdir(exist_ok=True)
-    template = template_path.read_text(encoding="utf-8")
     for field in ["protocol", "version", "revision"]:
-        script = worker_fakes / f"handshake-{field}.py"
-        script.write_text(
-            template.replace("__PYTHON__", sys.executable).replace("__FIELD__", field), encoding="utf-8",
+        f_protocol, f_version, f_revision = protocol, version, revision
+        if field == "protocol":
+            f_protocol += 1
+        elif field == "version":
+            f_version = "0.0.0-test"
+        elif field == "revision":
+            f_revision = "test-revision"
+        fake = _encode_handshake(f_protocol, f_version, f_revision, heap)
+        # The fake must differ from the captured handshake in exactly this one
+        # field, so every other byte (including the heap size) is untouched.
+        if sum(a != b for a, b in zip((protocol, version, revision, heap), _parse_handshake(fake))) != 1:
+            sys.exit(f"the {field} fake differs from the captured handshake in more than one field")
+        py_path = worker_fakes / f"handshake-{field}.py"
+        py_path.write_text(_FAKE_WORKER_PY.replace("__FRAME__", repr(fake)), encoding="utf-8")
+        py_path.chmod(0o644)
+        # A /bin/sh trampoline runs the Python body. The server spawns workers
+        # with an empty environment, so the interpreter must be an absolute
+        # path; both paths are quoted so a path with spaces works.
+        trampoline = worker_fakes / f"handshake-{field}"
+        trampoline.write_text(
+            "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(py_path.resolve())) + ' "$@"\n',
+            encoding="utf-8",
         )
-        script.chmod(0o755)
+        trampoline.chmod(0o755)
