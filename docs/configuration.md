@@ -277,7 +277,7 @@ From server 1.0 on, every 1.x release reads version 1 files as this page specifi
 - the Virgil root's precedence, the governing project file, and the choice of each file's active project;
 - the configuration diagnostic codes and what each reports.
 
-So a version 1 file that one 1.x release accepts, every later 1.x release accepts too, and it selects the same files with the same active projects, as long as each `compilerArgs` entry is still a language option of the later release's pinned compiler and each program stays within the documented limits. Prereleases before 1.0 follow the same rules. A prerelease that has to change one says so in its release notes.
+So a version 1 file that one 1.x release accepts, every later 1.x release accepts too, and it selects the same files with the same active projects, as long as each `compilerArgs` entry is still a language option of the later release's pinned compiler and each program stays within the documented limits. Before 1.0, a prerelease may still change these rules, and its release notes say so when it does.
 
 This doesn't promise the wording of diagnostic messages and log lines, when the server refreshes after a change, or anything about the analysis itself. Type errors and the other semantic results follow the pinned compiler.
 
