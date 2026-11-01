@@ -151,7 +151,8 @@ def run_repair(exe, name, tail):
     """Opens a dense project file that fails to parse, which an analysis
     would repair, and waits for that analysis with a hover; then a small
     document's outline."""
-    work = Path(tempfile.mkdtemp(prefix='parse-budget-'))
+    # Project discovery rejects symlink ancestors, including macOS's /var.
+    work = Path(tempfile.mkdtemp(prefix='parse-budget-')).resolve()
     s = Session(exe)
     try:
         (work / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [{'name': 'p', 'sources': ['*.v3']}]}))
@@ -186,7 +187,8 @@ def run_pressure(exe):
     analyzed, and each project's snapshot retained, opens and changes a dense
     document; then a small document's outline."""
     ev = evicted_snapshot
-    work = Path(tempfile.mkdtemp(prefix='parse-budget-'))
+    # Project discovery rejects symlink ancestors, including macOS's /var.
+    work = Path(tempfile.mkdtemp(prefix='parse-budget-')).resolve()
     s = ev.Client(exe)
     try:
         for rel in ('aeneas/src', 'apps/Demangle'):
