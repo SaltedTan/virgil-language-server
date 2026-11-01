@@ -28,6 +28,10 @@ def X = [
 	T("LspSignatureHelp:stale_without_analysis", test_stale_without_analysis),
 	T("LspSignatureHelp:parse_failure", test_parse_failure),
 	T("LspSignatureHelp:broken_sibling", test_broken_sibling),
+	T("LspSignatureHelp:broken_sibling_cold", test_broken_sibling_cold),
+	T("LspSignatureHelp:broken_sibling_refused", test_broken_sibling_refused),
+	T("LspSignatureHelp:broken_sibling_edited_while_running", test_broken_sibling_edited_while_running),
+	T("LspSignatureHelp:broken_sibling_options_while_running", test_broken_sibling_options_while_running),
 	T("LspSignatureHelp:shared_waiting_bound", test_shared_waiting_bound),
 	T("LspSignatureHelp:no_project", test_no_project),
 	T("LspSignatureHelp:context_ignored", test_context_ignored),
@@ -123,8 +127,11 @@ class SignatureHelpTestSession {
 		notify("textDocument/didOpen", doc, null);
 	}
 	def change(version: int, text: string) {
+		changeIn(uri(), version, text);
+	}
+	def changeIn(uri: string, version: int, text: string) {
 		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
-		doc["uri"] = JsonValue.String(uri());
+		doc["uri"] = JsonValue.String(uri);
 		doc["version"] = JsonValue.Int(version);
 		change["text"] = JsonValue.String(text);
 		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
@@ -572,26 +579,149 @@ def incompleteCall(callee: string) -> string {
 	return Strings.format2("%s\ncomponent Broken { def f() { %s(1, } }\n", SOURCE, callee);
 }
 // Requests the signature help just past "{callee}(1, " in Sig.v3, which
-// becomes Sig.v3's text {text} at {version}, and returns its rendered reply.
+// becomes Sig.v3's text {text} at {version} and is analyzed first, so that
+// only the request's own analysis runs, and returns its rendered reply. That
+// analysis replaces neither the project's snapshot nor the supervisor's.
 def incompleteHelp(t: Tester, s: SignatureHelpTestSession, version: int, text: string, callee: string) -> string {
 	s.change(version, text);
-	var id = s.request("textDocument/signatureHelp", at(text, Strings.format1("%s(1, }", callee), callee.length + 4));
 	s.settle();
+	var ctx = s.context(), snapshot = ctx.snapshot, latest = s.supervisor.snapshot;
+	var analyses = s.server.signatureHelp.analyses;
+	var id = s.request("textDocument/signatureHelp", at(text, Strings.format1("%s(1, }", callee), callee.length + 4));
+	t.assert(s.reply(id) == null, "the reply waits for its analysis");
+	s.settle();
+	t.asserti(analyses + 1, s.server.signatureHelp.analyses);
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
 	return render(s.result(t, id));
+}
+// Whether the parseable text cached for Decl.v3 is {text}, or none if {text}
+// is null.
+def declCached(s: SignatureHelpTestSession, text: string) -> bool {
+	var cached = s.server.projects.parseableText.get(s.context(), s.fileUri("Decl.v3"));
+	if (text == null || cached == null) return text == cached;
+	return Strings.equal(text, cached);
 }
 
 // An incomplete call gets its signature while another open file of the
 // project has a method body with an eligible syntax error (#346): the call
 // query's analysis recovers that file as the project's analysis does, and
 // Sig.v3 keeps its repair at the cursor. Decl.pick is declared in the
-// damaged file, outside its damaged body.
+// damaged file, outside its damaged body. Warm, Decl.v3's last parseable
+// text stands in for it, and stays cached as it was.
 def test_broken_sibling(t: Tester) {
 	var s = session(t);
 	s.openUri(s.fileUri("Decl.v3"), 1, DECL_BROKEN_BODY);
 	s.settle();
+	t.assert(declCached(s, DECL), "warm: Decl.v3's parseable text is cached");
 	t.assert_string(strings(ADD, ADD_PARAMS, 1), incompleteHelp(t, s, 2, incompleteCall("M.add"), "M.add"));
 	t.assert_string(strings(PICK, PICK_PARAMS, 1), incompleteHelp(t, s, 3, incompleteCall("Decl.pick"), "Decl.pick"));
+	t.assert(declCached(s, DECL), "Decl.v3's parseable text is unchanged");
 	s.server.close();
+}
+// Cold, with no parseable text of Decl.v3 cached since it never parsed:
+// closed, it is not repaired, and the reply is null; open, its damaged body
+// is emptied.
+def test_broken_sibling_cold(t: Tester) {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	s.write(t, "Decl.v3", DECL_BROKEN_BODY);
+	s.open(1, SOURCE);
+	s.settle();
+	t.assert_string("null", incompleteHelp(t, s, 2, incompleteCall("Decl.pick"), "Decl.pick"));
+	s.openUri(s.fileUri("Decl.v3"), 1, DECL_BROKEN_BODY);
+	s.settle();
+	t.assert(declCached(s, null), "cold: no parseable text of Decl.v3");
+	t.assert_string(strings(PICK, PICK_PARAMS, 1), incompleteHelp(t, s, 3, incompleteCall("Decl.pick"), "Decl.pick"));
+	t.assert_string(strings(ADD, ADD_PARAMS, 1), incompleteHelp(t, s, 4, incompleteCall("M.add"), "M.add"));
+	t.assert(declCached(s, null), "nor after the requests");
+	s.server.close();
+}
+// Syntax errors in Decl.v3 that neither fallback nor repair accepts: in the
+// method's header, in a field's initializer, after an unterminated string or
+// block comment in its body, and with two closing braces missing. Each
+// leaves the reply null, warm and cold. So does a second error in Sig.v3,
+// which its repair at the cursor doesn't mend, at once and without an
+// analysis, beside a Decl.v3 that is recovered.
+def test_broken_sibling_refused(t: Tester) {
+	var s = session(t);
+	var decl = s.fileUri("Decl.v3"), version = 1, sig = 1;
+	s.openUri(decl, version, DECL);
+	for (text in ["component Decl {\n\tdef pick(x: int, y: int -> int { return x; }\n}\n",
+			"component Decl {\n\tvar field = ;\n\tdef pick(x: int, y: int) -> int { return x; }\n}\n",
+			"component Decl {\n\tdef pick(x: int, y: int) -> int { var s = \"open; return x; }\n}\n",
+			"component Decl {\n\tdef pick(x: int, y: int) -> int { /* open return x; }\n}\n",
+			"component Decl {\n\tdef pick(x: int, y: int) -> int { if (true) { if (true) { return x;\n}\n"]) {
+		s.changeIn(decl, ++version, DECL);
+		s.settle();
+		s.changeIn(decl, ++version, text);
+		s.settle();
+		t.assert(declCached(s, DECL), "warm");
+		t.assert_string("null", incompleteHelp(t, s, ++sig, incompleteCall("M.add"), "M.add"));
+		s.server.projects.parseableText.removeContext(s.context());
+		t.assert_string("null", incompleteHelp(t, s, ++sig, incompleteCall("Decl.pick"), "Decl.pick"));
+	}
+	s.changeIn(decl, ++version, DECL_BROKEN_BODY);
+	s.settle();
+	var text = Strings.format1("%sdef broken( {\n", incompleteCall("M.add"));
+	s.change(++sig, text);
+	var analyses = s.server.signatureHelp.analyses;
+	t.assert(s.help(t, at(text, "M.add(1, }", 9)) == JsonValue.Null, "null at once");
+	t.asserti(analyses, s.server.signatureHelp.analyses);
+	s.server.close();
+}
+// Decl.v3 with its first parameter renamed, and pick's body damaged.
+def DECL_RENAMED_BROKEN = "component Decl {\n\tdef pick(first: int, y: int) -> int { var unfinished = ; return first; }\n}\n";
+// Editing the damaged file while the request's analysis runs makes it stale:
+// it runs again, recovering the file as edited, and only that reply is sent
+// and kept.
+def test_broken_sibling_edited_while_running(t: Tester) {
+	var s = session(t);
+	var decl = s.fileUri("Decl.v3");
+	s.openUri(decl, 1, DECL_BROKEN_BODY);
+	var text = incompleteCall("Decl.pick"), p = at(text, "Decl.pick(1, }", 13);
+	s.change(2, text);
+	s.settle();
+	var analyses = s.server.signatureHelp.analyses;
+	var id = s.request("textDocument/signatureHelp", p);
+	t.assert(s.reply(id) == null, "the request runs");
+	s.changeIn(decl, 2, DECL_RENAMED_BROKEN);
+	s.settle();
+	var renamed = strings("def pick(first: int, y: int) -> int", ["first: int", "y: int"], 1);
+	t.assert_string(renamed, render(s.result(t, id)));
+	t.asserti(analyses + 2, s.server.signatureHelp.analyses);
+	t.assert_string(renamed, render(s.help(t, p)));
+	t.asserti(analyses + 2, s.server.signatureHelp.analyses);
+	s.server.close();
+}
+// The fixture's project file, and one with a language option, which replaces
+// the project.
+def SIG_CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"g\",\"sources\":[\"*.v3\"]}]}";
+def SIG_CONFIG_OPTIONS = "{\"version\":1,\"projects\":[{\"name\":\"g\",\"sources\":[\"*.v3\"],\"compilerArgs\":[\"-lang:fun-exprs\"]}]}";
+// Changing the project's language options while the request's analysis runs
+// leaves null, and keeps nothing: the next request gets the signature from
+// the project as it now is.
+def test_broken_sibling_options_while_running(t: Tester) {
+	var s = session(t);
+	s.openUri(s.fileUri("Decl.v3"), 1, DECL_BROKEN_BODY);
+	var text = incompleteCall("Decl.pick"), p = at(text, "Decl.pick(1, }", 13);
+	s.change(2, text);
+	s.settle();
+	var previous = s.context();
+	var id = s.request("textDocument/signatureHelp", p);
+	t.assert(s.reply(id) == null, "the request runs");
+	s.write(t, ".virgil-lsp.json", SIG_CONFIG_OPTIONS);
+	s.reportChanged(".virgil-lsp.json");
+	s.settle();
+	t.assert(s.context() != previous, "the project was replaced");
+	t.assert(s.result(t, id) == JsonValue.Null, "null");
+	var analyses = s.server.signatureHelp.analyses;
+	id = s.request("textDocument/signatureHelp", p);
+	t.assert(s.reply(id) == null, "nothing was kept");
+	s.settle();
+	t.assert_string(strings(PICK, PICK_PARAMS, 1), render(s.result(t, id)));
+	t.asserti(analyses + 1, s.server.signatureHelp.analyses);
+	s.server.close();
+	s.write(t, ".virgil-lsp.json", SIG_CONFIG);
 }
 // Signature help and hover requests wait together, within one bound: one
 // more than MAX_WAITING answers the oldest waiting request with null,

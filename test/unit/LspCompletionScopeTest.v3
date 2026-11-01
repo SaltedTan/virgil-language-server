@@ -43,6 +43,13 @@ def X = [
 	T("LspCompletionScope:unreached", test_unreached),
 	T("LspCompletionScope:other_file_unparsed", test_other_file_unparsed),
 	T("LspCompletionScope:broken_sibling", test_broken_sibling),
+	T("LspCompletionScope:broken_sibling_cold", test_broken_sibling_cold),
+	T("LspCompletionScope:broken_sibling_refused", test_broken_sibling_refused),
+	T("LspCompletionScope:querying_document_kept", test_querying_document_kept),
+	T("LspCompletionScope:broken_sibling_edited_while_running", test_broken_sibling_edited_while_running),
+	T("LspCompletionScope:broken_sibling_options_while_running", test_broken_sibling_options_while_running),
+	T("LspCompletionScope:broken_sibling_admission", test_broken_sibling_admission),
+	T("LspCompletionScope:broken_sibling_over_budget", test_broken_sibling_over_budget),
 	T("LspCompletionMembers:as_typed", test_members_as_typed),
 	T("LspCompletionMembers:items", test_members_items),
 	T("LspCompletionMembers:insert_replace", test_members_insert_replace),
@@ -911,25 +918,269 @@ def offsetOf(text: string, needle: string) -> int {
 	return -1;
 }
 
+// The reply of the completion at the "$" in {marked}, with Main.v3's text
+// already that of {marked} and analyzed, so that only the completion's own
+// analysis runs: it replaces neither the project's nor the supervisor's
+// snapshot, and publishes nothing.
+def quiet(t: Tester, s: RenameTestSession, marked: string) -> JsonValue {
+	var u = unmark(marked), f = s.file("Main.v3");
+	if (!Strings.equal(f.text, u.0)) s.change("Main.v3", f.version + 1, u.0);
+	s.settle();
+	var ctx = context(s), snapshot = ctx.snapshot, latest = s.supervisor.snapshot;
+	var published = s.notifications.length, analyses = s.server.completion.analyses;
+	var id = complete0(t, s, marked);
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
+	t.asserti(published, s.notifications.length);
+	return s.result(t, id);
+}
+def context(s: RenameTestSession) -> ProjectContext {
+	return s.server.projects.forDocument(s.uri("Main.v3")).active;
+}
+// Whether the parseable text that {s} caches for {name} is {text}, or none if
+// {text} is null.
+def cachedIs(s: RenameTestSession, name: string, text: string) -> bool {
+	var cached = s.server.projects.parseableText.get(context(s), s.uri(name));
+	if (text == null || cached == null) return text == cached;
+	return Strings.equal(text, cached);
+}
+// The reply at SIBLING_NAMES in the intact program.
+def siblingNames() -> string {
+	return Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins());
+}
+
 // Another open file whose method body has an eligible syntax error doesn't
 // take the names or the members from Main.v3 (#346): hover outside the
 // damaged body is available from the project's analysis, and completion's
 // analysis recovers the other file as that analysis does, so both replies
-// are the ones the intact program gets.
+// are the ones the intact program gets. Warm, Other.v3's last parseable text
+// stands in for it. Its declarations get no documentation from that text, and
+// no text the completion analyzed is cached as parseable.
 def test_broken_sibling(t: Tester) {
 	var s = session(t);
 	s.open("Other.v3", 1, OTHER);
 	s.settle();
-	var names = complete(t, s, inScale(SIBLING_NAMES)), members = complete(t, s, inScale(SIBLING_MEMBERS));
-	t.assert(!Strings.startsWith(names, "|"), "names with the intact file");
+	var intact = quiet(t, s, inScale(SIBLING_NAMES));
+	var names = render(t, intact), members = render(t, quiet(t, s, inScale(SIBLING_MEMBERS)));
+	t.assert_string(siblingNames(), names);
+	t.assert(has(itemOf(intact, "Other"), "data"), "Other resolves while its file is intact");
 	t.assert_string("helper | 0", members);
 	s.change("Main.v3", s.file("Main.v3").version + 1, MAIN);
 	s.change("Other.v3", 2, BROKEN_BODY);
 	s.settle();
 	t.assert(JsonValue.JObject.?(hoverIn(t, s, MAIN, "area * factor")), "hover outside the damaged body");
-	t.assert_string(names, complete(t, s, inScale(SIBLING_NAMES)));
-	t.assert_string(members, complete(t, s, inScale(SIBLING_MEMBERS)));
+	t.assert(cachedIs(s, "Other.v3", OTHER), "warm: Other.v3's parseable text is cached");
+	var recovered = quiet(t, s, inScale(SIBLING_NAMES));
+	t.assert_string(names, render(t, recovered));
+	t.assert(itemOf(recovered, "Other") != JsonValue.Null && !has(itemOf(recovered, "Other"), "data"),
+		"no documentation from substituted text");
+	t.assert(itemOf(recovered, "unfinished") == JsonValue.Null, "no local of the damaged body");
+	t.assert_string(members, render(t, quiet(t, s, inScale(SIBLING_MEMBERS))));
+	t.assert(cachedIs(s, "Other.v3", OTHER), "Other.v3's parseable text is unchanged");
+	var main = s.server.projects.parseableText.get(context(s), s.uri("Main.v3"));
+	t.assert(main != null && offsetOf(main, LspCompletionRepair.SENTINEL) < 0, "no repaired text is cached");
 	s.server.close();
+}
+// As session, with {other} as Other.v3 on disk.
+def sessionWithOther(t: Tester, other: string) -> RenameTestSession {
+	var s = RenameTestSession.new("completion", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Other.v3", other)], true, null, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	return s;
+}
+// Cold, with no parseable text of Other.v3 cached since it never parsed:
+// closed, it is not repaired, and the analysis completes without names, so
+// the replies are complete; open, its damaged body is emptied.
+def test_broken_sibling_cold(t: Tester) {
+	var s = sessionWithOther(t, BROKEN_BODY);
+	t.assert_string("| 13", complete(t, s, inScale(SIBLING_NAMES)));
+	t.assert_string("| 0", complete(t, s, inScale(SIBLING_MEMBERS)));
+	s.open("Other.v3", 1, BROKEN_BODY);
+	s.settle();
+	t.assert(cachedIs(s, "Other.v3", null), "cold: no parseable text of Other.v3");
+	t.assert_string(siblingNames(), render(t, quiet(t, s, inScale(SIBLING_NAMES))));
+	t.assert_string("helper | 0", render(t, quiet(t, s, inScale(SIBLING_MEMBERS))));
+	t.assert(cachedIs(s, "Other.v3", null), "nor after the completions");
+	s.server.close();
+}
+// Syntax errors in Other.v3 that neither fallback nor repair accepts: in a
+// method's header, in a field's initializer, after an unterminated string or
+// block comment in a body, and with two closing braces missing.
+def REFUSED = [
+	"component Other {\n\tdef helper(-> int { return 1; }\n}\ndef otherShared = 2;\n",
+	"component Other {\n\tvar field = ;\n\tdef helper() -> int { return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n",
+	"component Other {\n\tdef helper() -> int { var s = \"open; return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n",
+	"component Other {\n\tdef helper() -> int { /* open return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n",
+	"component Other {\n\tdef helper() -> int { if (true) { if (true) { return hidden();\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n"
+];
+// Each refused error leaves the analysis without names, warm and cold, and
+// the replies complete, as before (#327). A second error in Main.v3, which its
+// repair at the cursor doesn't mend, gets the keywords at once, without an
+// analysis, beside an Other.v3 that is recovered.
+def test_broken_sibling_refused(t: Tester) {
+	var s = session(t);
+	var version = 1;
+	s.open("Other.v3", version, OTHER);
+	for (text in REFUSED) {
+		s.change("Other.v3", ++version, OTHER);
+		s.settle();
+		s.change("Other.v3", ++version, text);
+		s.settle();
+		t.assert(cachedIs(s, "Other.v3", OTHER), "warm");
+		t.assert_string("| 13", complete(t, s, inScale(SIBLING_NAMES)));
+		t.assert_string("| 0", complete(t, s, inScale(SIBLING_MEMBERS)));
+		s.server.projects.parseableText.removeContext(context(s));
+		t.assert_string("| 13", complete(t, s, inScale("\t\tOt$")));
+		t.assert_string("| 0", complete(t, s, inScale("\t\tOther.h$")));
+	}
+	s.change("Other.v3", ++version, BROKEN_BODY);
+	s.settle();
+	var analyses = s.server.completion.analyses;
+	var id = request(t, s, Strings.format1("%sdef broken( {\n", inScale(SIBLING_NAMES)));
+	t.assert(s.reply(id) != null, "answered at once");
+	t.assert_string("| 13", render(t, s.result(t, id)));
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+// {text} with its first {needle} replaced by {replacement}.
+def replaced(text: string, needle: string, replacement: string) -> string {
+	var i = offsetOf(text, needle);
+	return Strings.format3("%s%s%s", Arrays.range(text, 0, i), replacement, Arrays.range(text, i + needle.length, text.length));
+}
+// Main.v3 itself is never substituted: it keeps its repair at the cursor, and
+// no answer comes from its last parseable text, here MAIN, where the local
+// that the edit renamed still has its old name.
+def test_querying_document_kept(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, BROKEN_BODY);
+	s.settle();
+	t.assert(cachedIs(s, "Main.v3", MAIN), "Main.v3's parseable text is MAIN");
+	var result = quiet(t, s, before(replaced(MAIN, "var total", "var fresh"), MARK, "\t\tto$"));
+	t.assert(itemOf(result, "fresh") != JsonValue.Null, "the local as edited");
+	t.assert(itemOf(result, "total") == JsonValue.Null, "not as cached");
+	t.assert(itemOf(result, "Other") != JsonValue.Null, "Other.v3 is recovered");
+	s.server.close();
+}
+// Other.v3, edited into a class whose method body is damaged too.
+def FRESH_BROKEN = "class Fresh {\n\tdef m() -> int { var x = ; return 1; }\n}\ndef otherShared = 2;\n";
+// Editing the damaged file while a completion runs makes its analysis stale:
+// it runs again, recovering the file as edited, and only that reply is sent
+// and cached.
+def test_broken_sibling_edited_while_running(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, BROKEN_BODY);
+	s.settle();
+	var marked = inScale(SIBLING_NAMES), analyses = s.server.completion.analyses;
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) == null, "the completion runs");
+	s.change("Other.v3", 2, FRESH_BROKEN);
+	s.settle();
+	var result = s.result(t, id);
+	t.assert(itemOf(result, "Fresh") != JsonValue.Null, "the new class");
+	t.assert(itemOf(result, "Other") == JsonValue.Null, "not the old component");
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	var again = request(t, s, marked);
+	t.assert(s.reply(again) != null, "answered at once");
+	t.assert_string(render(t, result), render(t, s.result(t, again)));
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	s.server.close();
+}
+// The project file with a language option, which replaces the project.
+def CONFIG_OPTIONS = "{\"version\":1,\"projects\":[{\"name\":\"c\",\"sources\":[\"Main.v3\",\"Other.v3\"],\"compilerArgs\":[\"-lang:fun-exprs\"]}]}";
+// Changing the project's language options while a completion runs leaves the
+// keywords, incomplete, and caches nothing: the next request gets the names
+// of the project as it now is.
+def test_broken_sibling_options_while_running(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, BROKEN_BODY);
+	s.settle();
+	var marked = inScale(SIBLING_NAMES), previous = context(s);
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) == null, "the completion runs");
+	s.write(t, ".virgil-lsp.json", CONFIG_OPTIONS);
+	s.reportChanged(".virgil-lsp.json");
+	s.settle();
+	t.assert(context(s) != previous, "the project was replaced");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply");
+	var analyses = s.server.completion.analyses;
+	t.assert_string(siblingNames(), complete(t, s, marked));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	s.server.close();
+}
+// The reservation that admission refuses for the completion at {marked}, as
+// the server logs it to {rec}.
+def refusedReservation(t: Tester, s: RenameTestSession, rec: DocumentWarningRecorder, marked: string) -> long {
+	var u = unmark(marked), f = s.file("Main.v3");
+	if (!Strings.equal(f.text, u.0)) s.change("Main.v3", f.version + 1, u.0);
+	s.settle();
+	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
+	var logged = refusals(rec, "the completion's analysis was refused: ").length;
+	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
+	var id = complete0(t, s, marked);
+	latest.retainedBytes = bytes;
+	t.assert(keywordsOnly(t, s, id, true), "refused");
+	var refused = refusals(rec, "the completion's analysis was refused: ");
+	t.asserti(logged + 1, refused.length);
+	if (refused.length != logged + 1) return -1;
+	var line = refused[logged], label = "a reservation of ", i = offsetOf(line, label), n = 0L;
+	if (i < 0) return -1;
+	for (j = i + label.length; j < line.length && line[j] >= '0' && line[j] <= '9'; j++) n = n * 10 + (int.view(line[j]) - 48);
+	return n;
+}
+// Admission charges a completion's analysis for Other.v3's substitution
+// too: its effective text and the metadata of AnalysisSubstitution.bytes.
+def test_broken_sibling_admission(t: Tester) {
+	var s = session(t), rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	var intact = refusedReservation(t, s, rec, inScale(SIBLING_NAMES));
+	s.change("Other.v3", 2, BROKEN_BODY);
+	s.settle();
+	var broken = refusedReservation(t, s, rec, inScale(SIBLING_NAMES));
+	t.assert(intact > 0, "a reservation was logged");
+	t.assertl(256L + OTHER.length, broken - intact);
+	t.assert_string(siblingNames(), render(t, quiet(t, s, inScale(SIBLING_NAMES))));
+	s.server.close();
+}
+// The project file of the source-budget test, whose Fill.v3 takes most of
+// LspAnalysisCapture.MAX_SOURCE_BYTES.
+def CONFIG_FILL = "{\"version\":1,\"projects\":[{\"name\":\"c\",\"sources\":[\"Main.v3\",\"Other.v3\",\"Fill.v3\"]}]}";
+// {n} bytes of x.
+def xs(n: int) -> string {
+	var a = Array<byte>.new(n);
+	for (i < n) a[i] = 'x';
+	return a;
+}
+// A substitution that takes the sources past their size budget fails the
+// completion's capture: the keywords, incomplete, as for any failed capture,
+// with no analysis, admission, cached text, or snapshot changed.
+def test_broken_sibling_over_budget(t: Tester) {
+	var fill = Strings.format1("// %s\n", xs(3250000));
+	var s = RenameTestSession.new("completion", [(".virgil-lsp.json", CONFIG_FILL), ("Main.v3", MAIN), ("Other.v3", OTHER),
+		("Fill.v3", fill)], true, null, t);
+	var rec = DocumentWarningRecorder.new();
+	s.server.warnProject = rec.warn;
+	s.open("Main.v3", 1, MAIN);
+	s.open("Other.v3", 1, BROKEN_BODY);
+	s.settle();
+	var marked = inScale(SIBLING_NAMES);
+	t.assert_string(siblingNames(), render(t, quiet(t, s, marked)));
+	// About 1 MB of last parseable text, which the comment in helper's body
+	// fills: substituting it adds about 1 MB to the sources.
+	var big = Strings.format1("component Other {\n\tdef helper() -> int { /*%s*/ return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n", xs(1000000));
+	var ctx = context(s), cache = s.server.projects.parseableText;
+	cache.put(ctx, s.uri("Other.v3"), big);
+	var snapshot = ctx.snapshot, latest = s.supervisor.snapshot, analyses = s.server.completion.analyses;
+	var id = complete0(t, s, Strings.format1("%s\n", marked));
+	t.assert(keywordsOnly(t, s, id, true), "the keywords, incomplete");
+	t.asserti(analyses, s.server.completion.analyses);
+	t.assert(ctx.snapshot == snapshot && s.supervisor.snapshot == latest, "no snapshot changed");
+	t.assert(cache.get(ctx, s.uri("Other.v3")) == big, "Other.v3's parseable text is kept");
+	t.asserti(0, refusals(rec, "the completion's analysis was refused: ").length);
+	s.server.close();
+	s.write(t, "Fill.v3", "");
 }
 
 // Member completion: after ".", the members of the receiver's type alone,
