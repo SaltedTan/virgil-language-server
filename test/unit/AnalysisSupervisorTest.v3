@@ -18,6 +18,9 @@ def X = [
 	T("AnalysisSupervisor:replaces_at_live_heap_limit", test_replaces_at_live_heap_limit),
 	T("AnalysisSupervisor:missing_worker", test_missing_worker),
 	T("AnalysisSupervisor:not_a_worker", test_not_a_worker),
+	T("AnalysisSupervisor:refuses_other_server_version", test_refuses_other_server_version),
+	T("AnalysisSupervisor:refuses_other_source_revision", test_refuses_other_source_revision),
+	T("AnalysisSupervisor:refuses_other_protocol_version", test_refuses_other_protocol_version),
 	T("AnalysisSupervisor:request_too_large", test_request_too_large),
 	T("AnalysisSupervisor:request_size_boundary", test_request_size_boundary),
 	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
@@ -301,6 +304,34 @@ def test_not_a_worker(t: Tester) {
 	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
 	t.asserti(1, s.workersStarted);
 	t.assert(contains(sl.1.warnings, "closed its result pipe before its handshake; it ended with exit status 0"), "handshake failure logged");
+}
+
+// A fake worker (test/worker/handshake-<field>.py) sends the real worker's
+// handshake with one field of its build identity changed. The supervisor must
+// refuse it: the analysis fails as unavailable, no snapshot is used, and the
+// refusal is logged with the worker's end.
+def assertRefusedWorker(t: Tester, s: AnalysisSupervisor, log: SupervisorTestLog) {
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
+	t.asserti(1, s.workersStarted);
+	t.assert(s.snapshot == null, "no snapshot from the refused worker");
+	t.assert(contains(log.warnings, "is from a different build; it ended with signal 9"), "refusal logged");
+	t.assertz(false, s.busy());
+	s.close();
+}
+
+def test_refuses_other_server_version(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-version.py"), s = sl.0;
+	assertRefusedWorker(t, s, sl.1);
+}
+
+def test_refuses_other_source_revision(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-revision.py"), s = sl.0;
+	assertRefusedWorker(t, s, sl.1);
+}
+
+def test_refuses_other_protocol_version(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), "test/worker/handshake-protocol.py"), s = sl.0;
+	assertRefusedWorker(t, s, sl.1);
 }
 
 def test_request_too_large(t: Tester) {

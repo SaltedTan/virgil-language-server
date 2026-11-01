@@ -68,7 +68,7 @@ The tables on this page record what each release was built with and what was tes
 | --- | --- |
 | `--version` prints the pin | `test/cli/run.sh` ("version reports virgil revision"); [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) checks it against each release archive's manifest |
 | Bundle revision and root precedence | [`test/protocol/bundled_library.py`](../test/protocol/bundled_library.py) (including "revision mismatch"); the `lifecycle-initialize-*-virgil-root` transcripts under [`test/protocol/`](../test/protocol/); [`test/release/test_library.py`](../test/release/test_library.py) for the archive's `REVISION` and manifest |
-| Worker matching | `AnalysisSupervisor:missing_worker`, `AnalysisSupervisor:not_a_worker`, and `AnalysisWire:hello_round_trip`. No test sends a handshake with another protocol version, server version, or source revision. |
+| Worker matching | `AnalysisSupervisor:missing_worker`, `AnalysisSupervisor:not_a_worker`, `AnalysisSupervisor:refuses_other_server_version`, `AnalysisSupervisor:refuses_other_source_revision`, `AnalysisSupervisor:refuses_other_protocol_version`, and `AnalysisWire:hello_round_trip` |
 | Project file version | `ProjectConfig:version` |
 | Client startup | In `npm test` in `clients/vscode`: [`test/lifecycle.cjs`](../clients/vscode/test/lifecycle.cjs)'s "server selection", "a broken bundle", and "a mismatched workspace host" tests |
 
