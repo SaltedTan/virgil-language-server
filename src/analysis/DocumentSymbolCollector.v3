@@ -75,20 +75,43 @@ class SymbolSyntaxIndex {
 	}
 }
 
+// A symbol without children shares this empty array, and a walk of the
+// outline (DocumentSymbolCollector.each) puts this placeholder where a
+// symbol would go.
+def NO_SYMBOLS = Array<AnalysisDocumentSymbol>.new(0);
+def PLACEHOLDER = AnalysisDocumentSymbol.new(null, AnalysisDeclKind.LOCAL, -1, -1, -1, -1, NO_SYMBOLS);
+
 class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	// Selection ranges can use completed members of a partial VST. In this
 	// mode an unfinished extent is marked invalid, retaining its children.
 	var partial: bool;
 	var cutoff = int.max;
 	private def input = file.input;
+	// Set while {each} walks the outline, with the one list that the walk
+	// fills and empties in place of each list of symbols.
+	private var visit: (AnalysisDeclKind, int, int) -> void;
+	private var scratch: Vector<AnalysisDocumentSymbol>;
 
 	def compoundEnd(d: VstCompound) -> int {
 		var i = syntax.find(d.token);
 		return if(i >= 0, syntax.end(declarationEnd(i, true)), -1);
 	}
 
+	// Calls {f} with the kind, first token, and name token of each symbol
+	// that {collect} lists, in the order that it finds them, which is not
+	// the outline's, without making any symbol or list of them: {scratch},
+	// which the caller can reuse for each file, holds placeholders in place
+	// of each list (AnalysisDeclarationComments).
+	def each(f: (AnalysisDeclKind, int, int) -> void, scratch: Vector<AnalysisDocumentSymbol>) {
+		visit = f;
+		this.scratch = scratch;
+		collect();
+		scratch.length = 0;
+		visit = null;
+		this.scratch = null;
+	}
 	def collect() -> Array<AnalysisDocumentSymbol> {
-		var result = Vector<AnalysisDocumentSymbol>.new();
+		var result = list();
 		for (i < file.components.length) {
 			var d = file.components[i];
 			if (d.isFileScope) members(d, result);
@@ -106,7 +129,14 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		for (i < file.packings.length) result.put(compound(file.packings[i], AnalysisDeclKind.PACKING));
 		return sorted(result);
 	}
+	private def list() -> Vector<AnalysisDocumentSymbol> {
+		return if(visit != null, scratch, Vector<AnalysisDocumentSymbol>.new());
+	}
 	private def sorted(v: Vector<AnalysisDocumentSymbol>) -> Array<AnalysisDocumentSymbol> {
+		if (visit != null) {
+			v.length = 0;
+			return NO_SYMBOLS;
+		}
 		var a = v.extract();
 		return Arrays.sort(a, 0, a.length, before);
 	}
@@ -115,16 +145,22 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	}
 	private def compound(d: VstCompound, kind: AnalysisDeclKind) -> AnalysisDocumentSymbol {
 		var i = syntax.find(d.token), start = declarationStart(i);
-		return make(d, kind, start, declarationEnd(start, !VstPacking.?(d)), contents(d));
+		return make(d, kind, i, start, extent(start, !VstPacking.?(d)), contents(d));
+	}
+	// The last token of the declaration that starts at {start}, as
+	// declarationEnd finds it; a walk of the outline reads no symbol's end,
+	// so it takes {start} instead.
+	private def extent(start: int, body: bool) -> int {
+		return if(visit != null, start, declarationEnd(start, body));
 	}
 	// The members of {d}, a compound or a variant case's class, and its
 	// header parameters, which declare fields, unlike method parameters.
 	private def contents(d: VstCompound) -> Array<AnalysisDocumentSymbol> {
-		var children = Vector<AnalysisDocumentSymbol>.new();
+		var children = list();
 		members(d, children);
 		if (d.params != null) for (p in d.params.asArray()) {
 			var i = syntax.find(p.token);
-			if (i >= 0) children.put(make(p, AnalysisDeclKind.FIELD, if(p.isReadOnly, i, i - 1), parameterEnd(i), []));
+			if (i >= 0) children.put(make(p, AnalysisDeclKind.FIELD, i, if(p.isReadOnly, i, i - 1), if(visit != null, i, parameterEnd(i)), NO_SYMBOLS));
 		}
 		return sorted(children);
 	}
@@ -136,32 +172,33 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 			match (m) {
 				x: VstEnumCase => {
 					var end = i;
-					if (i + 1 < syntax.count && ch(i + 1) == '(') end = matching(i + 1);
-					result.put(make(m, AnalysisDeclKind.ENUM_CASE, i, end, []));
+					if (visit == null && i + 1 < syntax.count && ch(i + 1) == '(') end = matching(i + 1);
+					result.put(make(m, AnalysisDeclKind.ENUM_CASE, i, i, end, NO_SYMBOLS));
 				}
 				x: VstCaseMember => {
 					// A case, including the default case "_", ends at its
 					// semicolon or its body's closing brace.
 					var start = declarationStart(i);
-					result.put(make(m, AnalysisDeclKind.VARIANT_CASE, start, declarationEnd(start, true), contents(x.decl)));
+					result.put(make(m, AnalysisDeclKind.VARIANT_CASE, i, start, extent(start, true), contents(x.decl)));
 				}
 				x: VstMethod => {
 					var start = declarationStart(i);
-					result.put(make(m, if(VstNew.?(m), AnalysisDeclKind.CONSTRUCTOR, AnalysisDeclKind.METHOD),
-						start, declarationEnd(start, BlockStmt.?(x.func.body)), []));
+					result.put(make(m, if(VstNew.?(m), AnalysisDeclKind.CONSTRUCTOR, AnalysisDeclKind.METHOD), i,
+						start, extent(start, BlockStmt.?(x.func.body)), NO_SYMBOLS));
 				}
 				x: VstField => {
 					// A comma-separated var/def declares several fields. Each
 					// shares the full statement range but selects its own name.
+					// A walk needs the end too, which groups them.
 					if (i > fieldEnd) {
 						fieldStart = declarationStart(i);
 						fieldEnd = declarationEnd(fieldStart, false);
 					}
-					result.put(make(m, AnalysisDeclKind.FIELD, fieldStart, fieldEnd, []));
+					result.put(make(m, AnalysisDeclKind.FIELD, i, fieldStart, fieldEnd, NO_SYMBOLS));
 				}
 				x: VstLayoutField => {
 					var start = declarationStart(i);
-					result.put(make(m, AnalysisDeclKind.LAYOUT_FIELD, start, declarationEnd(start, false), []));
+					result.put(make(m, AnalysisDeclKind.LAYOUT_FIELD, i, start, extent(start, false), NO_SYMBOLS));
 				}
 				_ => ; // compiler-generated tag/name/descriptor members
 			}
@@ -224,8 +261,12 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		}
 		return i;
 	}
-	private def make(d: Decl, kind: AnalysisDeclKind, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
-		var i = syntax.find(d.token);
+	// The symbol of {d}, whose name is the token {i}.
+	private def make(d: Decl, kind: AnalysisDeclKind, i: int, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
+		if (visit != null) {
+			visit(kind, start, i);
+			return PLACEHOLDER;
+		}
 		if (partial && (i < 0 || start < 0 || end < start || syntax.end(end) > cutoff)) {
 			return AnalysisDocumentSymbol.new(d.name(), kind, -1, -1, -1, -1, children);
 		}

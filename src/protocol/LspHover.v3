@@ -49,13 +49,14 @@ class LspHover {
 		result["range"] = at.range(at.map, range.beginOffset, range.endOffset);
 		return JsonValue.JObject(result);
 	}
-	// The leading comment of {d} in the analyzed text {text} of the
-	// snapshot's file {j}, or null. A substituted file's effective text holds
-	// cached bytes, not the current ones, so it documents nothing.
+	// The leading comment of {d}, which the analysis recorded, from the
+	// analyzed text {text} of the snapshot's file {j}, or null. A
+	// substituted file's effective text holds cached bytes, not the current
+	// ones, so it documents nothing.
 	private def documentation(at: LspSnapshotPosition, j: int, text: Array<byte>, d: AnalysisDeclaration) -> string {
-		if (at.snapshot.documentVersions[j].substitution != null) return null;
-		var r = d.range;
-		return AeneasAdapter.declarationComment(r.path, text, at.options, d.kind, r.beginOffset, r.endOffset);
+		if (at.snapshot.documentVersions[j].substitution != null || !AnalysisDocumentedDeclaration.?(d)) return null;
+		var c = AnalysisDocumentedDeclaration.!(d);
+		return DeclarationComments.text(text, c.commentBegin, c.commentEnd);
 	}
 	// The MarkupContent value of {texts}: in Markdown, each in its own fenced
 	// code block with the info string "virgil", and otherwise one per line.

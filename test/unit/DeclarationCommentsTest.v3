@@ -1,8 +1,11 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// AeneasAdapter.declarationComment: which comment documents a declaration,
-// found by its name's bytes and kind, as hover gives them from a snapshot.
+// Which comment documents a declaration, found by its name's bytes and kind,
+// as hover gives them from a snapshot: the span that an analysis records
+// (AnalysisDeclarationComments), read back from the text
+// (DeclarationComments.text), which must give what the old parse at each
+// request did (reference).
 def T = UnitTests.register;
 def X = [
 	T("DeclarationComments:adjacent", test_adjacent),
@@ -17,6 +20,8 @@ def X = [
 	T("DeclarationComments:over_limit", test_over_limit),
 	T("DeclarationComments:parse_failures_and_kinds", test_failures),
 	T("DeclarationComments:dense_bound", test_dense_bound),
+	T("DeclarationComments:analysis_matches_reference", test_analysis_matches_reference),
+	T("DeclarationComments:carriage_returns_in_analysis", test_carriage_returns),
 	()
 ];
 def FIELD = AnalysisDeclKind.FIELD;
@@ -31,7 +36,67 @@ def comment(t: Tester, text: string, needle: string, skip: int, kind: AnalysisDe
 	if (at < 0) return null;
 	var begin = at + skip, end = begin;
 	while (end < text.length && (Char.isIdentMiddle(text[end]) || (end == begin && text[end] == '['))) end++;
-	return AeneasAdapter.declarationComment("c.v3", text, [], kind, begin, end);
+	return both(t, text, [], kind, begin, end);
+}
+// The comment of the declaration of {kind} named by the bytes {begin} to
+// {end} of {text}, with language options {options}, as the recorded span
+// gives it, which must be what {reference} gives.
+def both(t: Tester, text: string, options: Array<string>, kind: AnalysisDeclKind, begin: int, end: int) -> string {
+	var comments = AnalysisDeclarationComments.new();
+	AeneasAdapter.setLanguageOptions(options);
+	comments.parse("c.v3", text);
+	AeneasAdapter.resetLanguageOptions();
+	var span = comments.span("c.v3", kind, begin, end);
+	var got = if(span.0 >= 0, DeclarationComments.text(text, span.0, span.1));
+	same(t, reference("c.v3", text, options, kind, begin, end), got, "the recorded span and the reference");
+	return got;
+}
+def same(t: Tester, want: string, got: string, what: string) {
+	if (want == null || got == null) t.assert(want == got, what);
+	else if (!Strings.equal(want, got)) t.fail3("%s: %s against %s", what, got, want);
+}
+
+// The old AeneasAdapter.declarationComment, which parsed the file for each
+// request, kept as the reference that the recorded spans must match: the
+// file over DeclarationComments.MAX_INPUT bytes, or one that does not parse
+// alone with its line terminators normalized, has none; otherwise the first
+// symbol of the outline, depth first, with the name's bytes and the kind, or
+// a class for a variant case, unless another starts at its first token or it
+// is a header parameter.
+def reference(path: string, input: Array<byte>, options: Array<string>, kind: AnalysisDeclKind, begin: int, end: int) -> string {
+	if (!DeclarationComments.documents(kind) || begin < 0 || input.length > DeclarationComments.MAX_INPUT) return null;
+	var normalized = AeneasAdapter.normalizedRange(input, 0, input.length);
+	var errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+	AeneasAdapter.setLanguageOptions(options);
+	var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+	AeneasAdapter.resetLanguageOptions();
+	if (errors.numErrors > 0) return null;
+	var symbols = DocumentSymbolCollector.new(file, syntax).collect();
+	var sym = named(symbols, kind, begin, end);
+	if (sym == null || starting(symbols, sym.begin) != 1) return null;
+	var i = tokenAt(syntax, sym.begin);
+	if (i < 0) return null;
+	if (kind == FIELD && i > 0 && (syntax.single(normalized, i - 1) == '(' || syntax.single(normalized, i - 1) == ',')) return null;
+	var c = DocumentCommentCollector.new(normalized, syntax), span = c.comment(if(i > 0, syntax.end(i - 1), 0), sym.begin);
+	return if(span.0 >= 0, c.render(span.0, span.1));
+}
+def named(list: Array<AnalysisDocumentSymbol>, kind: AnalysisDeclKind, begin: int, end: int) -> AnalysisDocumentSymbol {
+	for (sym in list) {
+		var same = sym.kind == kind || (kind == AnalysisDeclKind.VARIANT_CASE && sym.kind == CLASS);
+		if (same && sym.nameBegin == begin && sym.nameEnd == end) return sym;
+		var inner = named(sym.children, kind, begin, end);
+		if (inner != null) return inner;
+	}
+	return null;
+}
+def starting(list: Array<AnalysisDocumentSymbol>, begin: int) -> int {
+	var n = 0;
+	for (sym in list) n += if(sym.begin == begin, 1, 0) + starting(sym.children, begin);
+	return n;
+}
+def tokenAt(syntax: SymbolSyntaxIndex, offset: int) -> int {
+	for (i < syntax.count) if (syntax.begin(i) == offset) return i;
+	return -1;
 }
 def find(text: string, needle: string) -> int {
 	for (i = 0; i + needle.length <= text.length; i++) {
@@ -247,14 +312,15 @@ def test_failures(t: Tester) {
 	// The file's options apply: a fun expression parses only with its option.
 	text = "// Doc.\ndef h() { var g = fun () { }; }\n";
 	var h = find(text, "def h") + 4;
-	expect(t, "Doc.", AeneasAdapter.declarationComment("c.v3", text, [], METHOD, h, h + 1), "with the option");
-	expect(t, null, AeneasAdapter.declarationComment("c.v3", text, ["-lang:fun-exprs=false"], METHOD, h, h + 1), "without it");
+	expect(t, "Doc.", both(t, text, [], METHOD, h, h + 1), "with the option");
+	expect(t, null, both(t, text, ["-lang:fun-exprs=false"], METHOD, h, h + 1), "without it");
 	var buf = StringBuilder.new().puts("// Large.\ndef big() { }\n");
 	while (buf.length <= DeclarationComments.MAX_INPUT) buf.puts("// padding\n");
 	expect(t, null, comment(t, buf.toString(), "def big", 4, METHOD), "a file over the parse bound");
 }
-// The densest text of issue #372, "var a,a,a,...;", at the parse bound,
-// parses within this process's heap, the server's default.
+// The densest text of issue #372, "var a,a,a,...;", at the bound has its
+// comment recorded, and its parses fit within this process's heap, the
+// server's default.
 def test_dense_bound(t: Tester) {
 	var tail = "// Last.\ndef last() { }\n", buf = StringBuilder.new().puts("component D {\n\tvar a");
 	while (buf.length + 2 + 4 + tail.length <= DeclarationComments.MAX_INPUT) buf.puts(",a");
@@ -263,4 +329,70 @@ def test_dense_bound(t: Tester) {
 	var text = buf.puts(tail).toString();
 	t.asserti(DeclarationComments.MAX_INPUT, text.length);
 	expect(t, "Last.", comment(t, text, "def last", 4, METHOD), "the densest text at the bound");
+}
+
+// Every kind of declaration, with and without comments, header parameters,
+// shared fields, and a data type's constructor, in a program that parses:
+// each declaration that the analysis sends, decoded as the server keeps it,
+// reads back from the text the comment that the reference finds, and only a
+// documented one has a span.
+def EVERY_KIND = "// The program.\n// Spans lines.\ncomponent Prog {\n\t// A field.\n\tvar count: int;\n\t// Shared.\n\tvar a, b: int;\n\t// A method.\n\tdef run(p: int) -> int { var q = p; return q + count; }\n\tdef bare() { }\n\t// Uses a row.\n\tdef make() -> Row { return Row(1); }\n}\n// A box\n// of things.\nclass Box<T> {\n\t// Its size.\n\tvar size: int;\n\t// Makes one.\n\tnew(size) { }\n\t//\n\tdef empty() { }\n}\nclass Pt(\n\t// A header parameter.\n\tx: int,\n\tvar y: int) { }\n// Colors.\nenum Color {\n\t// Red.\n\tRED,\n\tGREEN\n}\n// A row.\ntype Row(x: int);\n// Shapes.\ntype Shape {\n\t// A circle.\n\tcase Circle(r: int);\n\tcase Dot;\n}\n// Tags.\nlayout Tag {\n\t// Its kind.\n\t+0 kind: u8;\n\t=1;\n}\n// Low bits.\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\n";
+def test_analysis_matches_reference(t: Tester) {
+	var path = "every.v3", sources = [AnalysisSource.new(path, EVERY_KIND)];
+	var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+	t.assert(analysis.parsed, "the program parses");
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, analysis, 0, 0, [(path, analysis.occurrences(path))]), 0L);
+	var decoded: AnalysisSnapshot;
+	match (AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, [path])) {
+		Decoded(result) => decoded = result.snapshot;
+		_ => return t.fail("the result decodes");
+	}
+	var documented = 0, kinds = Array<bool>.new(AnalysisDeclKind.count), names = StringBuilder.new();
+	for (d in decoded.declarations) {
+		var r = d.range, want = reference(path, EVERY_KIND, [], d.kind, r.beginOffset, r.endOffset);
+		var got: string;
+		if (AnalysisDocumentedDeclaration.?(d)) {
+			var c = AnalysisDocumentedDeclaration.!(d);
+			got = DeclarationComments.text(EVERY_KIND, c.commentBegin, c.commentEnd);
+			documented++;
+			kinds[d.kind.tag] = true;
+			names.put2(" %s:%s", d.name, d.kind.name);
+			t.assert(got != null, d.name);
+		}
+		same(t, want, got, d.name);
+	}
+	// The declarations whose comments the reference finds, each once, and
+	// the data type, again as its case, which a use of its constructor names.
+	t.assert_string(" Prog:COMPONENT count:FIELD run:METHOD make:METHOD Box:CLASS size:FIELD new:CONSTRUCTOR Color:ENUM RED:ENUM_CASE Row:CLASS Shape:CLASS Circle:VARIANT_CASE Tag:LAYOUT kind:LAYOUT_FIELD Low:PACKING Row:VARIANT_CASE", names.toString());
+	t.asserti(16, documented);
+	for (kind in [AnalysisDeclKind.COMPONENT, AnalysisDeclKind.FIELD, AnalysisDeclKind.METHOD, CLASS,
+			AnalysisDeclKind.CONSTRUCTOR, AnalysisDeclKind.ENUM, AnalysisDeclKind.ENUM_CASE,
+			AnalysisDeclKind.VARIANT_CASE, AnalysisDeclKind.LAYOUT, AnalysisDeclKind.LAYOUT_FIELD,
+			AnalysisDeclKind.PACKING]) {
+		t.assert(kinds[kind.tag], kind.name);
+	}
+	// The worker's own record agrees with the reference for each site too.
+	for (d in analysis.declarationSites(path)) {
+		var r = d.range, span = analysis.comments.span(path, d.kind, r.beginOffset, r.endOffset);
+		same(t, reference(path, EVERY_KIND, [], d.kind, r.beginOffset, r.endOffset),
+			if(span.0 >= 0, DeclarationComments.text(EVERY_KIND, span.0, span.1)), d.name);
+	}
+}
+// A file whose carriage returns are all in comments parses in a program,
+// and its comments are recorded from its normalized text, with each lone CR
+// a line end and each CR before an LF a space, as the reference reads them.
+def test_carriage_returns(t: Tester) {
+	var text = "// One.\r\n// Two.   \r\ndef f() { } // trailing\r\n// A.\r// B.\ndef g() { }\n// C.\rdef h() { }\n";
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("cr.v3", text)], [], false);
+	t.assert(analysis.parsed, "the program parses");
+	var found = 0;
+	for (d in analysis.declarationSites("cr.v3")) {
+		var r = d.range, span = analysis.comments.span("cr.v3", d.kind, r.beginOffset, r.endOffset);
+		var got = if(span.0 >= 0, DeclarationComments.text(text, span.0, span.1));
+		same(t, reference("cr.v3", text, [], d.kind, r.beginOffset, r.endOffset), got, d.name);
+		if (got != null) found++;
+	}
+	t.asserti(2, found);
+	expect(t, "One.\nTwo.", comment(t, text, "def f", 4, METHOD), "CRLF");
+	expect(t, "A.\nB.", comment(t, text, "def g", 4, METHOD), "a lone CR");
 }

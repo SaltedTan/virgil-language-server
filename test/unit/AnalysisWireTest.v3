@@ -14,6 +14,8 @@ def X = [
 	T("AnalysisWire:type_targets_selected_files", test_type_targets_selected_files),
 	T("AnalysisWire:parents", test_parents),
 	T("AnalysisWire:declaration_flags", test_declaration_flags),
+	T("AnalysisWire:declaration_comments", test_declaration_comments),
+	T("AnalysisWire:invalid_declaration_comments", test_invalid_declaration_comments),
 	T("AnalysisWire:link_cycles", test_link_cycles),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
@@ -1987,6 +1989,117 @@ def test_declaration_flags(t: Tester) {
 		d = if(r != null, r.snapshot.definitionAt("p.v3", 1, 1));
 		t.assert(d != null && !d.flagged(), "an unflagged declaration decodes");
 	}
+}
+
+// Each declaration with a leading comment carries its span, which the
+// snapshot's declaration keeps (AnalysisDocumentedDeclaration), and no other
+// declaration does: none in a program without comments, one, and many in
+// two files, among them flagged ones, and a comment that ends where the
+// file's last line starts. The sizing pass counts the spans too.
+def test_declaration_comments(t: Tester) {
+	var cases = [
+		(["none.v3"], ["class A { def f() { } }\ncomponent C { var x = 1; }\n"], ""),
+		(["one.v3"], ["class A { }\n// Bee.\nclass B { }\n"], " B=Bee."),
+		(["many.v3", "more.v3"], [
+			"// A box.\nclass Box {\n\t// Its size.\n\tvar size: int;\n\t// Makes one.\n\tnew(size) { }\n}\n// Tools.\ncomponent Tools {\n\t// A constant.\n\tdef K = 1;\n\t// A tool.\n\tdef tool() { }\n}\n",
+			"// A variant.\ntype V {\n\t// Its case.\n\tcase X;\n}\nclass P(x: int) { }\n// Last.\ndef last = 1;"],
+			" Box=A box. size=Its size. new=Makes one. Tools=Tools. K=A constant. tool=A tool. V=A variant. X=Its case. last=Last.")
+	];
+	for (c in cases) {
+		var sources = Array<AnalysisSource>.new(c.0.length);
+		for (i < sources.length) sources[i] = AnalysisSource.new(c.0[i], c.1[i]);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+		if (!analysis.verified) return t.fail1("%s verifies", c.0[0]);
+		var r = roundTrip(sources, analysis, true).1;
+		if (r == null) return t.fail1("%s decodes", c.0[0]);
+		var found = StringBuilder.new();
+		for (d in r.snapshot.declarations) {
+			if (!AnalysisDocumentedDeclaration.?(d)) continue;
+			var doc = AnalysisDocumentedDeclaration.!(d), text: string;
+			for (i < sources.length) if (Strings.equal(sources[i].path, d.range.path)) text = sources[i].input;
+			found.put2(" %s=%s", d.name, DeclarationComments.text(text, doc.commentBegin, doc.commentEnd));
+			t.assert(doc.commentEnd <= d.range.beginOffset, "a comment ends before its name");
+		}
+		t.assert_string(c.2, found.toString());
+		var files = Vector<(string, Array<AnalysisOccurrence>)>.new();
+		for (p in c.0) files.put((p, analysis.occurrences(p)));
+		assertCounted(t, c.0[0], AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, analysis, -1, -1, files.extract(), null, null, null));
+	}
+	// Flagged and documented together: a component's method and a def field.
+	var flags = AeneasAdapter.analyzeProgram([AnalysisSource.new("f.v3", "component C {\n\t// K.\n\tdef K = 1;\n\t// M.\n\tdef m() { }\n}\n")], [], false);
+	var decoded = roundTrip([AnalysisSource.new("f.v3", "")], flags, true).1;
+	if (decoded == null) return t.fail("flags decode");
+	var both = 0;
+	for (d in decoded.snapshot.declarationSites("f.v3")) if (d.flagged() && AnalysisDocumentedDeclaration.?(d)) both++;
+	t.asserti(2, both);
+	// A span costs nothing beyond the declaration's charge.
+	var plain = decodedResult(result(0, file(declaration(AnalysisDeclKind.CLASS.tag, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY)), 1, REQUEST);
+	var commented = decodedResult(result(0, commentFile(AnalysisDeclKind.CLASS.tag, 0, 4)), 1, REQUEST);
+	if (plain == null || commented == null) return t.fail("hand-built results decode");
+	t.assertl(plain.snapshot.resultAllocation, commented.snapshot.resultAllocation);
+	t.assertl(plain.snapshot.retainedBytes, commented.snapshot.retainedBytes);
+}
+// One declaration as {declaration} makes it, at bytes 4 to 5 of p.v3, of
+// kind byte {kind} with DOCUMENTED, whose record ends with {gap} and
+// {length}, and a file of one occurrence of it.
+def commentFile(kind: int, gap: int, length: int) -> DataWriter {
+	var w = DataWriter.new();
+	w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
+	w.put_sleb32(1).putb(kind | AnalysisWire.DOCUMENTED).put_sleb32(0).put_sleb32(0);
+	w.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(gap).put_sleb32(length);
+	return file(w, 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
+}
+// A span must lie in the file before its declaration's name, which starts at
+// byte 4, and have a length; only the kinds that the outline lists can have
+// one, flagged or not; and the record must hold it. Every span that ends at
+// or before the name, from the file's start, decodes.
+def test_invalid_declaration_comments(t: Tester) {
+	var c = AnalysisDeclKind.CLASS.tag;
+	for (gap < 4) {
+		for (length = 1; length <= 4 - gap; length++) {
+			var r = decodedResult(result(0, commentFile(c, gap, length)), 1, REQUEST);
+			var d = if(r != null, r.snapshot.definitionAt("p.v3", 1, 1));
+			if (d == null || !AnalysisDocumentedDeclaration.?(d)) {
+				t.fail2("the span %d, %d decodes", gap, length);
+				continue;
+			}
+			var doc = AnalysisDocumentedDeclaration.!(d);
+			t.asserti(4 - gap - length, doc.commentBegin);
+			t.asserti(4 - gap, doc.commentEnd);
+		}
+	}
+	for (bad in [(-1, 1), (0, 0), (0, -1), (0, 5), (1, 4), (4, 1), (5, 1), (int.max, 1), (0, int.max), (int.min, 1)]) {
+		assertMalformed(t, commentFile(c, bad.0, bad.1), Strings.format2("the span %d, %d", bad.0, bad.1));
+	}
+	for (kind in AnalysisDeclKind) {
+		var r = decodedResult(result(0, commentFile(kind.tag, 0, 1)), 1, REQUEST);
+		t.assert((r != null) == DeclarationComments.documents(kind), kind.name);
+		r = decodedResult(result(0, commentFile(kind.tag | AnalysisWire.FLAGGED, 0, 1)), 1, REQUEST);
+		var flagged = false;
+		match (kind) {
+			FIELD, CLASS, METHOD => flagged = true;
+			_ => ;
+		}
+		var d = if(r != null, r.snapshot.definitionAt("p.v3", 1, 1));
+		t.assert((d != null) == flagged, kind.name);
+		if (d != null) t.assert(d.flagged() && AnalysisDocumentedDeclaration.?(d), "flagged and documented");
+	}
+	// A declaration without a source offset has no span, though it decodes
+	// without one, and a result that ends inside a span is malformed.
+	for (flag in [0, AnalysisWire.DOCUMENTED]) {
+		var w = DataWriter.new();
+		w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
+		w.put_sleb32(1).putb(c | flag).put_sleb32(0).put_sleb32(0);
+		w.puta("\x01\x01\x01\x02\x7F\x7F").put_sleb32(1).put_sleb32(0).put_sleb32(0);
+		if (flag != 0) w.put_sleb32(0).put_sleb32(1);
+		var r = decodedResult(result(0, file(w, 0).puta(NO_DISPLAY)), 1, REQUEST);
+		t.assert((r != null) == (flag == 0), "a span without a source offset");
+	}
+	var cut = DataWriter.new();
+	cut.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
+	cut.put_sleb32(1).putb(c | AnalysisWire.DOCUMENTED).put_sleb32(0).put_sleb32(0);
+	cut.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0);
+	assertMalformed(t, cut, "a result that ends inside a span");
 }
 
 def test_parents(t: Tester) {

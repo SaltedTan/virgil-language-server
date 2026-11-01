@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 16;
+	def PROTOCOL_VERSION = 17;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The decoding budget of a query's result without occurrences, which
 	// has no diagnostics (encodeResultWithQuery) and so only the answer: at
@@ -66,6 +66,9 @@ component AnalysisWire {
 	// Set in a declaration's kind byte with its flag (see
 	// AnalysisDeclaration.flagged), above every kind's tag.
 	def FLAGGED: byte = 0x80;
+	// Set in a declaration's kind byte if its record ends with its leading
+	// comment's span (see AnalysisDeclarationComments), above every kind's tag.
+	def DOCUMENTED: byte = 0x40;
 
 	def encodeHello(version: string, revision: string, heapBytes: long) -> Range<byte> {
 		var w = WorkerFraming.start().putb(HELLO);
@@ -182,8 +185,11 @@ component AnalysisWire {
 	// one, or zero, then its default source-type target (declaration ID plus
 	// one, or zero for null), then its parent: a class's or a variant case's
 	// base, or the method that a method overrides, as its declaration ID plus
-	// one, or zero for none (see ProgramAnalysis.parentLinks). Each file's
-	// declaration sites (see
+	// one, or zero for none (see ProgramAnalysis.parentLinks); and, with
+	// DOCUMENTED in its kind byte, which only a declaration with a leading
+	// comment has (see AnalysisDeclarationComments), its comment's span as
+	// the bytes from the comment's end to the start of its name, and the
+	// comment's length. Each file's declaration sites (see
 	// ProgramAnalysis.declarationSites) come first in the declarations, in
 	// files order, so a file sends its path index, then their first index and
 	// count. Then come its occurrences in source order, each its begin line,
@@ -573,14 +579,18 @@ component AnalysisWire {
 			// The declarations of a file are mostly a run, so a path's ID is
 			// looked up when the path changes, a few hundred times for the
 			// Aeneas sources' 43,000 declarations, rather than kept for each.
-			var link = 0, path: string, pathId = -1;
+			// A path's comments are looked up when it changes, too.
+			var link = 0, path: string, pathId = -1, comments = analysis.comments, documented: Array<int>;
 			for (i < decls.length()) {
 				var d = decls[i];
 				if (i == 0 || d.range.path != path) {
 					path = d.range.path;
 					pathId = paths[path] - 1;
+					documented = if(comments != null, comments.records(path));
 				}
-				w.putb(d.kind.tag | if(d.flagged(), FLAGGED));
+				var r = d.range, comment = -1;
+				if (documented != null && DeclarationComments.documents(d.kind)) comment = comments.find(documented, d.kind, r.beginOffset, r.endOffset);
+				w.putb(d.kind.tag | if(d.flagged(), FLAGGED) | if(comment >= 0, DOCUMENTED));
 				w.put_sleb32(declarationIds[2 * i]);
 				// Every declaration is in one of the request's files; -1 would be
 				// rejected.
@@ -594,6 +604,10 @@ component AnalysisWire {
 					link += 2;
 				}
 				w.put_sleb32(parent);
+				if (comment >= 0) {
+					var top = documented[comment + 3], end = documented[comment + 4];
+					w.put_sleb32(r.beginOffset - end).put_sleb32(end - top);
+				}
 			}
 			w.put_sleb32(text.length());
 			for (i < text.length()) putString(w, text[i]);
@@ -773,14 +787,17 @@ component AnalysisWire {
 			// Kind, name, path index, six range ints, signature, default type
 			// target, and parent take at least twelve bytes. The conservative
 			// 128-byte charge covers the declaration (including the type target
-			// int), its range, the array slot, its parent in an int array, and
-			// the byte that checking parents for cycles takes; strings are in
-			// the string table.
+			// int, and a documented declaration's two comment ints), its range,
+			// the array slot, its parent in an int array, and the byte that
+			// checking parents for cycles takes; strings are in the string
+			// table.
 			declarations = Array<AnalysisDeclaration>.new(r.readCount(12, 128));
 			for (i < declarations.length) {
 				var kind = r.readDeclarationKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
 				var range = r.readRange(path);
-				var d = if(kind.1, AnalysisFlaggedDeclaration.new(kind.0, name, range), AnalysisDeclaration.new(kind.0, name, range));
+				var d: AnalysisDeclaration;
+				if (kind.2) d = if(kind.1, AnalysisFlaggedDocumentedDeclaration.new(kind.0, name, range), AnalysisDocumentedDeclaration.new(kind.0, name, range));
+				else d = if(kind.1, AnalysisFlaggedDeclaration.new(kind.0, name, range), AnalysisDeclaration.new(kind.0, name, range));
 				d.signature = r.readOptionalString(strings);
 				d.typeTarget = r.readOptionalTarget(declarations.length);
 				var parent = r.readParent(i, declarations.length);
@@ -788,6 +805,7 @@ component AnalysisWire {
 					if (parents == null) parents = Array<int>.new(declarations.length);
 					parents[i] = parent;
 				}
+				if (kind.2) r.readComment(AnalysisDocumentedDeclaration.!(d));
 				declarations[i] = d;
 			}
 			if (parents != null) r.checkParents(declarations, parents);
@@ -1609,17 +1627,33 @@ class AnalysisWireReader {
 		if (!r.ok || !reserve(long.view(header) + n)) return [];
 		return Ranges.dup(r.data[start ..+ n]);
 	}
-	// A declaration's kind and whether it is flagged. Only the kinds that
-	// have a flag may set it (see AnalysisDeclaration.flagged).
-	def readDeclarationKind() -> (AnalysisDeclKind, bool) {
-		var tag = r.read1(), flagged = (tag & AnalysisWire.FLAGGED) != 0;
-		if (!flagged) return (kindOf(tag), false);
-		var kind = kindOf(tag & ~AnalysisWire.FLAGGED);
-		match (kind) {
-			LOCAL, PARAMETER, FIELD, CLASS, METHOD => ;
-			_ => r.fail("invalid declaration flag");
+	// A declaration's kind, whether it is flagged, and whether its record
+	// ends with a comment. Only the kinds that have a flag may set it (see
+	// AnalysisDeclaration.flagged), and only those that the outline lists
+	// may have a comment (DeclarationComments.documents).
+	def readDeclarationKind() -> (AnalysisDeclKind, bool, bool) {
+		var tag = r.read1(), flagged = (tag & AnalysisWire.FLAGGED) != 0, documented = (tag & AnalysisWire.DOCUMENTED) != 0;
+		var kind = kindOf(tag & ~(AnalysisWire.FLAGGED | AnalysisWire.DOCUMENTED));
+		if (flagged) {
+			match (kind) {
+				LOCAL, PARAMETER, FIELD, CLASS, METHOD => ;
+				_ => r.fail("invalid declaration flag");
+			}
 		}
-		return (kind, true);
+		if (documented && !DeclarationComments.documents(kind)) r.fail("invalid declaration comment");
+		return (kind, flagged, documented);
+	}
+	// The span of {d}'s comment: the bytes from its end to the start of
+	// {d}'s name, which must have a source offset, and its length, which is
+	// not zero, so that the comment lies in the file before the name.
+	def readComment(d: AnalysisDocumentedDeclaration) {
+		var gap = r.read_sleb32(), length = r.read_sleb32(), name = d.range.beginOffset;
+		if (name < 0 || gap < 0 || gap > name || length <= 0 || length > name - gap) {
+			r.fail("invalid declaration comment");
+			return;
+		}
+		d.commentEnd = name - gap;
+		d.commentBegin = d.commentEnd - length;
 	}
 	def readKind() -> AnalysisDeclKind {
 		return kindOf(r.read1());
