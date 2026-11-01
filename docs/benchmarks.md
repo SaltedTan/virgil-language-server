@@ -1211,6 +1211,11 @@ The worker's collection after sending a result took 3.3 to 7.4 ms longer with th
 
 **Identity.** All 122,040 replies were byte for byte the same in both builds, matched by request id. For each project, a client ran twice, once accepting only plain text and once preferring Markdown, for both hover and completion documentation. It hovered at the name of every outline symbol of every file of the small, `lib/util`, and Aeneas projects, 16,129 hovers per format, with both small files, about half of `lib/util`'s, and five of the Aeneas project's 206 open, so most targets were in closed files; 2,701 of the Markdown hovers showed documentation. In one to three files of each project, it asked for completions at member accesses and at a statement's first letter, and resolved every item with data, 3,150 items per format, of which 1,428 had documentation. A fourth project held the edge cases, where it hovered at every identifier: comments with CRLF line ends and with a bare CR, a file whose bare CR in a comment leaves code on a line of its own once line ends are normalized, a file over 256 KiB, an open file whose unsaved text changes its comments, and a file whose method body fallback substituted. A file whose code lines end in CRLF doesn't parse, so every hover in its project was `null` in both builds. A server with no project also gave the same outlines of all 216 files in both builds.
 
+After the review fix that bounds declarations by their source files' lengths,
+37,454 more hover and resolve replies were byte-identical to main in plaintext
+and Markdown. That check is additional to the 122,040 replies above; the
+measurements and tables in this section are unchanged.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

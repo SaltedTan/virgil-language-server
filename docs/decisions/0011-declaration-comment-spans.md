@@ -114,7 +114,10 @@ of every file that it records comments for. It reuses one index for the whole
 program, which holds four ints for each token and makes room once for the
 largest file. That depends on the index being packed, which this change also
 made. It kept an object for each token: parsing each Aeneas file alone with
-it allocated 34.3 MB, against 16.4 MB with the packed index.
+it allocated 34.3 MB, against 16.4 MB with the packed index. Packing the index
+was beyond the original brief, but was needed to keep the worker's room under
+its collection boundary above the maintainer's accepted 8 MB floor once
+every eligible file was indexed.
 
 Any later field added to every declaration must fit in the 128-byte charge too,
 or raise it and the budgets that count it. [#386](https://github.com/SaltedTan/virgil-language-server/issues/386)
