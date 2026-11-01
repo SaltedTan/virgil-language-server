@@ -14,7 +14,7 @@
 component AnalysisParseBudget {
 	// The densest text, lists such as "(a,a,a,...)" with a token in each byte,
 	// peaked at about 113 bytes of live heap per token in this parse, and the
-	// largest file in the pinned Virgil checkout has 75,539 tokens. With the
+	// largest file in the pinned Virgil checkout has 75,593 tokens. With the
 	// default 200 MiB heap, whose copying collector leaves 100 MiB for live
 	// data, 1,007,265 tokens of such a list answered, but only 693,906 with
 	// two analysis snapshots of the Aeneas sources retained and about 107 KB
@@ -24,11 +24,10 @@ component AnalysisParseBudget {
 	// The bound that {admits} applies; tests may lower it.
 	var maxTokens = MAX_TOKENS;
 
-	// Whether {input} has at most {maxTokens} tokens, for a parser that reads
-	// it {raw}, or with its line terminators normalized (see {count}). Each
-	// token takes at least one byte, so a shorter input is not counted.
-	def admits(input: Array<byte>, raw: bool) -> bool {
-		return input.length <= maxTokens || count(input, maxTokens, raw) <= maxTokens;
+	// Whether {input} has at most {maxTokens} conservatively counted tokens.
+	// Each token takes at least one byte, so a shorter input is not counted.
+	def admits(input: Array<byte>) -> bool {
+		return input.length <= maxTokens || count(input, maxTokens) <= maxTokens;
 	}
 	// The message of a request refused because its document's text has more
 	// than {maxTokens} tokens.
@@ -36,75 +35,21 @@ component AnalysisParseBudget {
 		return Strings.format1("the document has more than %d tokens", maxTokens);
 	}
 	// The tokens of {input}, or the first count past {limit}, never fewer than
-	// the parser consumes. A token is a run of identifier characters that
-	// starts with a letter, which covers keywords and names, each byte of a run
-	// that starts with a digit or underscore, as numbers and their malformed
-	// neighbors split there, a character or string literal, or any other
-	// printable byte, so an operator of two or three bytes counts as two or
-	// three. Whitespace, comments, and the bytes that the parser reports as
-	// invalid characters separate tokens, as Parser.skipToNextToken skips them.
-	// A carriage return ends an open literal, as the parser's literal readers
-	// reject it either way. It ends a line comment only if not {raw}: a parser
-	// that reads normalized text (AeneasAdapter.normalizedRange) sees it as a
-	// line end, but one that reads the text raw, as the semicolon quick fix's
-	// does, sees an invalid character inside the comment, which runs to the
-	// next line feed.
-	def count(input: Array<byte>, limit: int, raw: bool) -> int {
+	// the parser consumes. A maximal name starting with an ASCII letter and
+	// continuing with ASCII letters, digits, or underscores counts once.
+	// Every other byte counts separately except ASCII whitespace: space, tab,
+	// carriage return, line feed, form feed, and vertical tab. Comments,
+	// literals, and representation hints receive no special treatment.
+	def count(input: Array<byte>, limit: int) -> int {
 		var tokens = 0, i = 0, max = input.length;
 		while (i < max) {
-			var ch = input[i];
-			if (ch <= ' ' || ch > '~') {
-				i++;
-				continue;
-			}
-			if (ch == '/' && i + 1 < max) {
-				var next = input[i + 1];
-				if (next == '/') {
-					i += 2;
-					while (i < max && input[i] != '\n' && (raw || input[i] != '\r')) i++;
-					continue;
-				}
-				if (next == '*') {
-					i += 2;
-					while (i < max && !(input[i] == '*' && i + 1 < max && input[i + 1] == '/')) i++;
-					i += 2;
-					continue;
-				}
-			}
+			var ch = input[i++];
+			if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\x0C' || ch == '\x0B') continue;
 			if (++tokens > limit) return tokens;
 			if (Char.isIdentStart(ch)) {
-				i++;
 				while (i < max && Char.isIdentMiddle(input[i])) i++;
-			} else if (Char.isIdentMiddle(ch)) {
-				i++;
-				while (i < max && Char.isIdentMiddle(input[i])) {
-					if (++tokens > limit) return tokens;
-					i++;
-				}
-			} else if (ch == '\"' || ch == '\'') {
-				i = afterLiteral(input, i);
-			} else {
-				i++;
 			}
 		}
 		return tokens;
-	}
-	// Where the literal that opens with the quote at {start} ends: after its
-	// closing quote, or at the line end or end of input that leaves it open.
-	private def afterLiteral(input: Array<byte>, start: int) -> int {
-		var quote = input[start], i = start + 1, max = input.length;
-		while (i < max) {
-			var ch = input[i];
-			if (ch == '\\') i += 2;
-			else if (ch == quote) return i + 1;
-			else if (lineEnd(ch)) return i;
-			else i++;
-		}
-		return max;
-	}
-	// Whether {ch} ends an open literal: a line feed, or a carriage return,
-	// which the parser's literal readers reject, raw or normalized.
-	private def lineEnd(ch: byte) -> bool {
-		return ch == '\n' || ch == '\r';
 	}
 }

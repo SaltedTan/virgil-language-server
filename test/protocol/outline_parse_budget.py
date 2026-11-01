@@ -8,11 +8,11 @@ server process. Before #372, a document just under the 1 MiB overlay limit of
 "var a,a,a,...;" made selectionRange and documentSymbol end the server with
 HeapOverflow. Each method now gets one response for the densest texts with the
 default heap: a reply, or RequestFailed for a document of more than 350,000
-tokens, also when a carriage return ends a line comment that hides the rest.
+tokens, including dense bodies after malformed representation hints.
 The semicolon quick fix, whose parse keeps the same syntax index but reads the
 text without normalizing its line terminators, offers no action for such a
-document instead of ending the server, also when a carriage return ends a line
-comment only in normalized text. Each case is followed
+document instead of ending the server, including malformed representation
+hints and mixed line endings. Each case is followed
 by the same request on a small document, a ping, shutdown, and exit with
 status 0.
 """
@@ -92,8 +92,8 @@ def diagnostic(s, uri):
 
 
 def run_code_action(exe, text):
-    """Opens {text}, whose parse error is a missing semicolon, and asks for its
-    quick fix: no action, as for a document with none."""
+    """Opens {text} and asks for a quick fix without client diagnostics:
+    no action, followed by a small document's missing-semicolon action."""
     s = Session(exe)
     try:
         s.result(s.send('initialize', {'capabilities': CODE_ACTIONS}), 5)
@@ -102,9 +102,12 @@ def run_code_action(exe, text):
                 'uri': uri, 'languageId': 'virgil', 'version': 1, 'text': t}}, request=False)
         s.ping()
         for uri, count in ((DENSE_URI, 0), (SMALL_URI, 1)):
-            d = diagnostic(s, uri)
+            d = diagnostic(s, uri) if uri == SMALL_URI else None
+            context = {'diagnostics': [d]} if d else {}
+            span = d['range'] if d else {'start': {'line': 0, 'character': 0},
+                                        'end': {'line': 0, 'character': 0}}
             actions = s.result(s.send('textDocument/codeAction', {
-                'textDocument': {'uri': uri}, 'range': d['range'], 'context': {'diagnostics': [d]}}), 20)
+                'textDocument': {'uri': uri}, 'range': span, 'context': context}), 20)
             assert len(actions) == count, (uri, str(actions)[:200])
         s.ping()
         s.shutdown()
@@ -119,6 +122,8 @@ def run_code_action(exe, text):
 def main():
     exe = Path(sys.argv[1]).resolve()
     lists = fill('var x=(', 'a,', 'a);', SIZE)
+    hints = [('hint slash', 'class C #//* */ {var x=(' + 'a,' * 520000 + 'a);}'),
+             ('hint quote', 'class C #" {var x=(' + 'a,' * 520000 + 'a);}')]
     cases = [
         # The reproduction of #372, a token in each byte.
         ('var a,a,a,...', fill('var ', 'a,', 'a;', SIZE), True),
@@ -135,7 +140,7 @@ def main():
         # "(", "-", two for each "a,", and "a", ")", ";", or "-", "a", ")", ";".
         ('350,000 tokens', 'var x=(-' + 'a,' * 174996 + 'a);', False),
         ('350,001 tokens', 'var x=(-' + 'a,' * 174996 + '-a);', True),
-    ]
+    ] + [(name, text, True) for name, text in hints]
     for name, text, refused in cases:
         assert len(text.encode()) <= SIZE, name
         for method in METHODS:
@@ -144,7 +149,7 @@ def main():
     # Its parse reads the text raw, where a carriage return doesn't end a line
     # comment, so the comment hides "/*" from it, but not from normalized text.
     mixed_fix = '//\r/*\n' + dense_fix
-    for text in (dense_fix, mixed_fix):
+    for text in (dense_fix, mixed_fix, *(text for _, text in hints)):
         assert len(text) + len(SMALL_FIX) - len(SMALL) <= SIZE
         run_code_action(exe, text)
     print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, and a quick fix '

@@ -531,8 +531,8 @@ def parse_budget(t: Tester) {
 	var hexagon = want(1, "Hexagon", "class Hexagon", 6, "{ }", "class Hexagon extends Polygon");
 	var square = want(0, "Square", "class Square", 6, "{ }", "class Square extends Polygon");
 	var named = want(0, "Square", "Square extends", 0, "Square", "class Square extends Polygon");
-	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(MORE, int.max, false);
-	t.assert(AnalysisParseBudget.count(SHAPES, int.max, false) > AnalysisParseBudget.maxTokens, "m.v3 is refused");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(MORE, int.max);
+	t.assert(AnalysisParseBudget.count(SHAPES, int.max) > AnalysisParseBudget.maxTokens, "m.v3 is refused");
 	p.check("subtypes of Polygon", p.expand(p.item(1, "extends Polygon", 8), true), [hexagon, named]);
 	p.check("Square", p.prepare(0, "class Square", 6), [named]);
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;

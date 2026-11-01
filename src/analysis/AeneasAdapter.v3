@@ -579,7 +579,7 @@ component AeneasAdapter {
 	// the compiler stops early and its partial VST is not an outline. Null if
 	// the text has too many tokens to parse (AnalysisParseBudget).
 	def outline(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
-		if (!AnalysisParseBudget.admits(input, false)) return null;
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
@@ -594,7 +594,7 @@ component AeneasAdapter {
 	// everything. Null if the text has too many tokens to parse
 	// (AnalysisParseBudget). See docs/architecture.md#folding-ranges.
 	def foldingRanges(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisFoldingRange> {
-		if (!AnalysisParseBudget.admits(input, false)) return null;
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
@@ -611,7 +611,7 @@ component AeneasAdapter {
 	// token recovery after the first error uses a conservative lexer. Null if
 	// the text has too many tokens to parse (AnalysisParseBudget).
 	def selectionRanges(path: string, input: Array<byte>, options: Array<string>, positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
-		if (!AnalysisParseBudget.admits(input, false)) return null;
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);

@@ -281,7 +281,7 @@ def test_canonical_utf16(t: Tester) {
 def test_parse_budget(t: Tester) {
 	var s = running(CAPS);
 	s.documents.open(URI, "virgil", 1, SOURCE);
-	var count = AnalysisParseBudget.count(SOURCE, int.max, true), d = diagnostic(SOURCE);
+	var count = AnalysisParseBudget.count(SOURCE, int.max), d = diagnostic(SOURCE);
 	var before = render(actions(s, withDiagnostic(d)));
 	t.asserti(1, JsonValue.JArray.!(json(before)).v.length);
 	AnalysisParseBudget.maxTokens = count;
@@ -289,12 +289,11 @@ def test_parse_budget(t: Tester) {
 	AnalysisParseBudget.maxTokens = count - 1;
 	empty(t, s, withDiagnostic(d));
 	empty(t, s, params(null));
-	// The quick fix's parse reads the text raw, so a carriage return doesn't
-	// end a line comment, which here hides "/*" from that parse, and the
-	// raw count bounds it: read normalized, the text would have no tokens.
+	// Comment punctuation counts even when raw and normalized parsing skip
+	// different portions of the text.
 	var mixed = Arrays.concat("//\r/*\n", SOURCE);
-	t.asserti(0, AnalysisParseBudget.count(mixed, int.max, false));
-	t.asserti(count, AnalysisParseBudget.count(mixed, int.max, true));
+	count += 4;
+	t.asserti(count, AnalysisParseBudget.count(mixed, int.max));
 	s.documents.change(URI, 2, mixed);
 	d = diagnostic(mixed);
 	AnalysisParseBudget.maxTokens = count;
