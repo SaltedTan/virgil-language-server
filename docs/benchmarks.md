@@ -3156,9 +3156,11 @@ rule, so the step now makes the context's analysis the latest with one more
 edit. A full run with that driver, `fd7ee3bb`, before the review fixes of
 `b767dece`, had the same counts, charges, and findings and the same server RSS
 in every cycle; its settled worker RSS differed by at most 208,896 bytes in a
-cycle. A completion or signature help is admitted the same way: with two
-Aeneas-size projects, a completion in the one not analyzed last is refused and
-gets keywords only, with nothing logged, until that project is analyzed again.
+cycle. In those builds, a completion or signature help was admitted the same
+way: with two Aeneas-size projects, a completion in the one not analyzed last
+was refused and got keywords only, with nothing logged, until that project was
+analyzed again. [Analysis snapshots](architecture.md#analysis-snapshots-partly-present)
+owns the current query admission rules.
 
 The same session ran the full [tolerance capture](#release-scorecard) with the
 same server build. It took 514.5 seconds, and the scorecard passed with the

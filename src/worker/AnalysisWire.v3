@@ -224,8 +224,9 @@ component AnalysisWire {
 	// names and details its string table, and its call's signature the call
 	// signatures. A result whose occurrence section has no files, a query's
 	// answer without occurrences, has no diagnostics: nothing reads them, and
-	// they are the only part of it that can grow with the program, which its
-	// decoding budget (MAX_QUERY_ALLOCATION) must not have to allow for.
+	// they can grow with errors throughout the program independently of the
+	// query's answer. Its decoding budget (MAX_QUERY_ALLOCATION) must not
+	// have to allow for them.
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
