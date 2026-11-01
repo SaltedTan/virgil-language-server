@@ -289,6 +289,23 @@ PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_uncha
 CAPTURE_SPLIT_METRICS = ("capture_read_us", "capture_hash_us")
 
 
+def capture_split_problem(split_build, server_metrics):
+    """Why a sample's capture-split probes are inconsistent, or None.
+
+    A build with the split emits each split metric once for every capture_us,
+    however many captures a sample holds (a typing burst or a first-semantic
+    open can hold several); an older build, the control, emits none.
+    """
+    captures = server_metrics.count("capture_us")
+    counts = {metric: server_metrics.count(metric) for metric in CAPTURE_SPLIT_METRICS}
+    if split_build:
+        if any(count != captures for count in counts.values()):
+            return ("capture-split probes don't match the captures", captures, counts)
+    elif any(counts.values()):
+        return ("unexpected capture-split probes", counts)
+    return None
+
+
 def parse_work_inputs(name, project):
     """The fixed texts and configurations of --parse-work, with their hashes."""
     text = (ROOT / project["query"]["path"]).read_text()
@@ -868,12 +885,8 @@ def main():
                         # An edit's synchronous parser diagnostics are the server's own parse.
                         measured["server"] = [m for m in measured["server"] if m != "parser_diagnostics_us"]
                         check(not any(measured.values()), (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
-                    split = [metric for metric in CAPTURE_SPLIT_METRICS if metric in measured["server"]]
-                    if block["build"] in split_builds and measured["server"].count("capture_us") == 1:
-                        check(all(measured["server"].count(metric) == 1 for metric in CAPTURE_SPLIT_METRICS),
-                              (scenario, "missing or duplicate capture-split probes", measured["server"]))
-                    else:
-                        check(not split, (scenario, "unexpected capture-split probes", measured["server"]))
+                    problem = capture_split_problem(block["build"] in split_builds, measured["server"])
+                    check(problem is None, (scenario, block["build"], problem))
 
         for row in result["summary"]:
             first = row["scenario"].startswith("first_semantic_")
