@@ -539,7 +539,7 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 ### v1.0 is ready when
 
-The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; it is not yet a release gate.
+The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; it is not yet a release gate, and no candidate has met a clause yet.
 
 - The configuration schema and compatibility policy are stable.
 - References, safe rename, signature help, and useful completion are shipped.
