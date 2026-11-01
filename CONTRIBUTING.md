@@ -89,6 +89,19 @@ The maintainer also works through branches and pull requests, so that CI and dec
 
 Durable technical decisions are recorded as short ADRs in [docs/decisions/](docs/decisions/). To propose a new one, open a pull request that adds the next numbered file using the [template](docs/decisions/0000-template.md), and link the discussion that motivated it.
 
+## Project file compatibility review
+
+Server 1.x keeps the version 1 project file's format and project selection ([ADR-0012](docs/decisions/0012-project-configuration-stability.md)). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, or to the Virgil pin with these questions:
+
+- Does it change how a version 1 file is parsed or validated: a field, type, default, or reserved value, the handling of unknown or repeated fields, the version literal, or a diagnostic code?
+- Does it change which files a project selects or owns: pattern syntax or matching, ordering, exclusion, symbolic links, or the Virgil root?
+- Does it change the governing project file, workspace folders, the active project, or how unsaved and on-disk configuration changes are picked up?
+- Does it lower a capacity limit?
+
+If it does, find the change in the [table of what each change needs](docs/configuration.md#what-a-change-needs). A fix that makes the server match the documentation needs only a changelog entry. A new field or value needs a new format version, and any other change to version 1 needs a new server major version. Update the matching row of the [inventory](docs/configuration.md#inventory) and its tests.
+
+For a Virgil pin update, compare the language options (`CLOptions.langOpt` in `vendor/virgil/aeneas/src/main/CLOptions.v3`) at the old and new revisions: their names, their defaults, and whether they need an unstable build. Update the [compiler flags table](docs/configuration.md#compiler-flags). For each option that was removed, renamed, or changed, add a changelog entry that names it and says how to migrate.
+
 ## Updating the pinned Virgil revision
 
 Virgil upgrades are separate pull requests labelled `dependency/virgil`:
@@ -102,6 +115,7 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade.
 4. Update the revision in `THIRD_PARTY_NOTICES.md` and `docs/compatibility.md`.
+5. Review the language options as [Project file compatibility review](#project-file-compatibility-review) says.
 
 ## Licensing of contributions
 
