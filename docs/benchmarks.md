@@ -984,6 +984,54 @@ In the instrumented copies, no token request met a server collection in either b
 
 **Identity.** All 1,174 replies were byte for byte the same in both builds, matched by request id: the semantic tokens of all 201 files of the small, `lib/util`, and Aeneas projects, and 973 hovers at the start of lines 1, 2, 25, and the last line of each file, and at character 6 of line 25. Three of those files have non-ASCII characters, all in comments. Token positions don't use the position map, and none of the captured hovers is on one of those lines, so these replies don't exercise a non-ASCII line's table; a unit test does. It compares the change's conversion of every offset with the old whole-text table, for ASCII, mixed, CRLF, lone CR, astral-plane, invalid UTF-8, empty, and long non-ASCII texts, in all three encodings.
 
+#### Hover (2026-11-01)
+
+Measured for [#415](https://github.com/SaltedTan/virgil-language-server/issues/415) on main `265fc8d6`, after the position map change above, by the method of the sections above. A client opened the Aeneas project as an unsaved project file, `Verifier.v3`, and `vendor/virgil/aeneas/src/util/IO.v3`, a 1,810-byte file of the same project. In each process, it ran six rounds, the first a warmup, each a `virgil-lsp/analyze` request for `Verifier.v3` and then five hovers at each of eleven positions in turn, with the plaintext content format. Six process blocks alternated the normal build and a copy with allocation probes, built in separate checkouts with the same generated BuildInfo. In a shorter run of the probe copy with the Markdown content format, each hover allocated 144 to 1,736 bytes more, all in rendering, encoding, and framing its text.
+
+**Positions.** Bytes are from the probe copy and vary by 8 with the length of the request id. Times are from the normal build, **median (p10–p90, maximum), milliseconds**, over 150 requests each:
+
+| Hover at | Bytes | Time |
+| --- | ---: | ---: |
+| `Verifier.v3` line 24, `verify`, a method's declaration without a comment | 5,338,872 | 2.648 (2.565–2.734, 2.844) |
+| `Verifier.v3` line 26, `vst`, a local | 68,952 | 0.428 (0.397–0.467, 0.540) |
+| `Verifier.v3` line 46, `typeCache`, a field without a comment | 5,338,968 | 2.632 (2.541–2.721, 2.830) |
+| `Verifier.v3` line 213, `markNeedsDescribes`, a method with a comment | 5,340,088 | 2.681 (2.569–16.824, 20.611) |
+| `Verifier.v3` line 7, `Verifier`, a class's declaration with a comment | 5,341,344 | 2.634 (2.553–2.753, 2.885) |
+| `Verifier.v3` line 147, `VstClass`, a class with a comment in the closed `Vst.v3` | 1,916,264 | 1.477 (1.423–1.544, 1.688) |
+| `IO.v3` line 45, `data`, a local | 33,800 | 0.149 (0.124–0.175, 0.217) |
+| `IO.v3` line 44, `writer`, a field without a comment | 86,848 | 0.160 (0.148–0.196, 0.216) |
+| `IO.v3` line 38, `flush`, a method with a comment | 87,416 | 0.161 (0.146–0.190, 0.222) |
+| `IO.v3` line 19, `Buffer`, a class's declaration with a comment | 88,864 | 0.160 (0.148–0.191, 0.205) |
+| `IO.v3` line 22, `DataWriter`, a class with a comment in the closed `lib/util/DataWriter.v3` | 474,448 | 0.358 (0.336–0.390, 0.440) |
+
+**Phases.** Medians of the probe copy, over 150 requests each. Each probe reads the allocation and the clock where the previous one did, so the phases add up to the request:
+
+| Phase | `verify`, bytes | `verify`, microseconds | `flush`, bytes | `flush`, microseconds |
+| --- | ---: | ---: | ---: | ---: |
+| Request parameters, document, and project, before the snapshot lookup | 24,832 | 126 | 24,808 | 96 |
+| Find the snapshot, document, and analyzed and current text | 3,664 | 37 | 3,600 | 29 |
+| Position map | 36,048 | 296 | 976 | 6 |
+| Find the occurrence or declaration | 56 | 4 | 128 | 2 |
+| Signature and type text | 56 | 0 | 56 | 0 |
+| Comment: copy of the text with normalized line ends | 106,432 | 109 | 1,824 | 2 |
+| Comment: parse of the whole file | 5,132,224 | 1,660 | 49,184 | 19 |
+| Comment: outline | 31,320 | 410 | 2,016 | 4 |
+| Comment: find the declaration's comment | 24 | 2 | 280 | 1 |
+| Markdown of the comment | 0 | 0 | 240 | 0 |
+| The Hover's `JsonValue` tree | 1,440 | 1 | 1,440 | 0 |
+| Encode the response | 2,432 | 3 | 2,472 | 2 |
+| Frame and write the response | 344 | 61 | 392 | 18 |
+| Total | 5,338,872 | 2,709 | 87,416 | 179 |
+
+**The cause.** To find a declaration's leading comment ([Hover](architecture.md#hover)), the server parses the declaration's whole file again and builds its outline, for every hover whose target is of a kind that can be documented, which is every kind but locals, parameters, and type parameters, whether or not it has a comment, in any file of up to 256 KiB. On `Verifier.v3` that is 5,269,976 bytes, 98.7% of the request, and about 2.2 of its 2.7 ms. A copy of the server that also read the allocation around each step of the parser's token skip split the parse's 5,132,224 bytes for the file's 24,033 token spans: 1,231,128 bytes in the server's table of spans, an object for each and the vector that holds them; and 167,504 bytes in the index that maps the parser's line and column positions to offsets for its errors. The rest, 3,733,592 bytes, is the pinned parser's own: its syntax tree, tokens, and names. A hover on a local, which can't be documented, skips the parse and allocated 68,952 bytes. A declaration in a closed file is read from disk to check its bytes, 152,296 bytes for `Vst.v3`, and then that file is parsed. `completionItem/resolve` reads a comment the same way.
+
+In every measured round of both copies, the round's 55 hovers met exactly one server collection, during the hover at `markNeedsDescribes`. In the normal build, those 30 of that hover's 150 measured requests took 16.1 to 20.6 ms, and no other measured hover took more than 2.93 ms.
+
+**Options.** No code was changed, because each way to remove the parse needs a decision:
+- The worker, which already parses every file, could record each documented declaration's comment span, or the offsets of its first token and of the end of the token before, in the analysis result. Hover and resolve would then parse nothing, and the request's other phases at `verify` add up to 68,896 bytes. This adds a field for each declaration to the wire format and the snapshot, as [#386](https://github.com/SaltedTan/virgil-language-server/issues/386) asks for containers, and it costs worker heap room.
+- The server could keep each file's comment spans after the first lookup, keyed by its analyzed bytes, so that later hovers on unchanged text parse nothing. The first hover on each new text would still parse, and the cache would hold memory between requests.
+- Without either, only the server's share of the parse could shrink: packing the span table into integer arrays would save part of its 1.2 MB, but the parser's 3.7 MB would stay. A textual check that skipped the parse when no comment line can precede the declaration would help only undocumented targets, such as `verify`, and would have to restate the outline's rule for where a declaration starts.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
