@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The sources of one stdio submission, captured together with their
-// provenance, which the completed snapshot keeps. Disk inputs' stamps also
-// record their length and a 64-bit FNV-1a hash, so that text read again to
+// provenance, which a project snapshot or a temporary query keeps. Disk inputs'
+// stamps also record their length and a 64-bit FNV-1a hash, so text read again to
 // convert ranges can be checked against what the worker analyzed (see
-// {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
-// completed analysis has updated the last-parseable text cache.
+// {LspAnalysisCapture.analyzedText}). Submitters drop {sources} after handling
+// the result; only project analyses update the last-parseable text cache.
 class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
 	// The current text's parse, if its parser diagnostics' parse is stale,
 	// fallback's parse of the last parseable text, and current-text repair's
@@ -19,12 +19,24 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 	// broken file that fallback cannot substitute gets current-text repair
 	// instead (LspCurrentRepair). Either way the capture parses each broken
 	// file at most PARSES_PER_FILE times, besides brace rule 3's places.
+	// Returns null, or why the sources exceed the size budget, after which the
+	// caller discards these inputs: some sources may already be substituted.
 	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
 			parser: LspParserDiagnostics) -> string {
+		return substituteOthers(store, context, cache, parser, -1);
+	}
+	// {substitute} for every open source but source {excluded}, whose text a
+	// completion or a signature help supplies as typed or repaired at its
+	// cursor (LspQueryRequests, ADR-0013); -1 excludes none. The excluded source is
+	// never substituted from the cache nor repaired again, but its bytes count
+	// toward the size budget.
+	def substituteOthers(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
+			parser: LspParserDiagnostics, excluded: int) -> string {
 		var start = if(BenchProbe.enabled, BenchProbe.now(), 0), substituted = 0;
 		var bytes = 32L, options = context.definition.compilerArgs;
 		for (s in sources) bytes += 16L + s.path.length + s.input.length;
 		for (i < sources.length) {
+			if (i == excluded) continue;
 			var doc = store.overlay(versions[i].uri);
 			if (doc == null) continue;
 			var outcome = parser.outcome(doc, options);

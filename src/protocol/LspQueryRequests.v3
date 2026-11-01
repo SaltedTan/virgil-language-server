@@ -23,7 +23,7 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	var prefix: string;
 	// The provenance of the sources that its analysis captured, in order,
 	// and the index of its document among them, whose analyzed text is
-	// {text}. They hold no text.
+	// {text}. They hold no text but that of another document's substitution.
 	var versions: Array<AnalysisDocumentVersion>;
 	var index: int;
 	// The owner's invalidation generation when its analysis began, and
@@ -63,11 +63,13 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 
 // The requests of one method whose replies need a query of a temporary
 // analysis of their document's project, with the document's text, as typed
-// or repaired at the cursor, in place of its overlay: textDocument/completion
-// (LspCompletion) and textDocument/signatureHelp (LspSignatureHelp), each
-// with its own, so that neither replaces the other's requests. An analysis
-// is a job of semantic diagnostics (LspAnalysisJob), which takes turns with
-// other jobs and the projects' analyses. One request waits for the worker,
+// or repaired at the cursor, in place of its overlay, and the other open
+// documents that don't parse substituted as an automatic analysis substitutes
+// them (ADR-0013): textDocument/completion (LspCompletion) and
+// textDocument/signatureHelp (LspSignatureHelp), each with its own, so that
+// neither replaces the other's requests. An analysis is a job of semantic
+// diagnostics (LspAnalysisJob), which takes turns with other jobs and the
+// projects' analyses. One request waits for the worker,
 // and one runs: a newer request replaces the one that waits, which gets its
 // fallback reply. The last reply with an answer is kept for its document
 // identity and cursor, including across version-only changes. See
@@ -119,11 +121,12 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		if (!scheduler.submit(r.job)) finish(r, r.permanentFallback());
 	}
 	// Starts {r}'s analysis: the project's sources as an automatic analysis
-	// captures them, with {r}'s text for its document, admitted within the
-	// snapshot budget, which the supervisor does not keep as its latest and
-	// which leaves the project's snapshot in place. Its result has no
-	// occurrences, so it reserves only its own decoding budget,
-	// AnalysisWire.MAX_QUERY_ALLOCATION, and the provenance.
+	// captures and substitutes them, with {r}'s text for its document, admitted
+	// within the snapshot budget, which the supervisor does not keep as its
+	// latest and which leaves the project's snapshot in place. Its result has
+	// no occurrences, so it reserves only its own decoding budget,
+	// AnalysisWire.MAX_QUERY_ALLOCATION, and the provenance, with the bytes of
+	// any substitution.
 	def begin(r: LspQueryRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		if (waiting == r) waiting = null;
 		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the request was answered");
@@ -143,6 +146,14 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		if (captured.1 != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, captured.1);
 		var inputs = captured.0;
 		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
+		// The other open documents that don't parse are substituted as an
+		// automatic analysis substitutes them; {r}'s own keeps its repair at
+		// the cursor (ADR-0013).
+		var parser = scheduler.parser;
+		if (parser != null) {
+			var reason = inputs.substituteOthers(store, ctx, projects.parseableText, parser, index);
+			if (reason != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, reason);
+		}
 		r.versions = inputs.versions;
 		r.index = index;
 		if (!projects.admitKeeping(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_QUERY_ALLOCATION) + inputs.snapshotBytes)) {

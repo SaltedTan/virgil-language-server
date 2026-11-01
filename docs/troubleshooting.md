@@ -129,7 +129,7 @@ Two exceptions keep most answers while you edit a method. Both leave definition,
 
 Neither applies to any other missing `}`, such as a method's own, a missing `{` that the indentation doesn't place, an edit to a declaration's header or a field initializer, errors in more than two bodies, an unterminated string or comment, or a closed file ([No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing)).
 
-Completion and signature help repair the code at the cursor in their own way ([Completion](architecture.md#completion)).
+Completion and incomplete-call signature help keep their own repair at the cursor in the requesting file, and use the same fallback or body blanking for recoverable errors in the project's other open files ([Completion](architecture.md#completion)).
 
 ### Waiting for an analysis
 
