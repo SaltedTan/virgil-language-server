@@ -63,7 +63,9 @@ maintainer chose this on 2026-11-01, as #415's first option. It overrides
   are sent as before.
 - **Checked when decoded.** The decoder rejects a span that doesn't lie before
   the name, a span on a kind that the outline doesn't list, and a span on a
-  declaration without a source offset.
+  declaration without a source offset. It also rejects any declaration with an
+  offset past the end of its file, whose length the supervisor gives from the
+  request's sources, so the span before the name lies in the file too.
 - **Sparse in the snapshot.** A documented declaration is a subclass of the
   snapshot's declaration with two ints (`AnalysisDocumentedDeclaration`), as a
   flagged declaration is a subclass with none. The existing conservative

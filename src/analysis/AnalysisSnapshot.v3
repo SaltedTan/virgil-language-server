@@ -729,15 +729,20 @@ class AnalysisSnapshotFiles {
 		files = Array<AnalysisSnapshotFile>.new(paths.length);
 	}
 	def [path: string] -> AnalysisSnapshotFile {
-		if (path == null) return null;
+		var i = indexOf(path);
+		return if(i >= 0, files[i]);
+	}
+	// The index of {path} in {paths}, or -1.
+	def indexOf(path: string) -> int {
+		if (path == null) return -1;
 		var low = 0, high = sorted.length;
 		while (low < high) {
 			var mid = low + (high - low) / 2;
 			if (AnalysisTables.compareBytes(paths[sorted[mid]], path) < 0) low = mid + 1;
 			else high = mid;
 		}
-		if (low < sorted.length && AnalysisTables.compareBytes(paths[sorted[low]], path) == 0) return files[sorted[low]];
-		return null;
+		if (low < sorted.length && AnalysisTables.compareBytes(paths[sorted[low]], path) == 0) return sorted[low];
+		return -1;
 	}
 	// The path of the {k}th file in byte order of path.
 	def pathAt(k: int) -> string {

@@ -724,10 +724,30 @@ component AnalysisWire {
 		putCallArguments(w, c, from, null);
 		w.put_sleb32(if(call.target != null, 1 + decls.find(call.target)));
 	}
+	// The length of each of {files}, which the request's {paths} name, that
+	// its declarations' offsets may reach: the longest of its sources in
+	// {lengths}, since a request that repeats a path analyzes each copy, or
+	// int.max for each without {lengths}. Its work is a lookup for each of
+	// the request's paths, which the files' table has already sorted.
+	private def fileLengths(files: AnalysisSnapshotFiles, paths: Array<string>, lengths: Array<int>) -> Array<int> {
+		var result = Array<int>.new(files.paths.length);
+		if (lengths == null) {
+			for (k < result.length) result[k] = int.max;
+			return result;
+		}
+		for (i < paths.length) {
+			var k = files.indexOf(paths[i]);
+			if (k >= 0 && lengths[i] > result[k]) result[k] = lengths[i];
+		}
+		return result;
+	}
 	// Decodes a RESULT into the worker's state and a snapshot with
 	// {generation} for a request with {paths}. Budget exhaustion stops decoding
 	// before allocating; it is distinct from a malformed payload. The remainder
 	// of an over-budget payload is not validated, so its worker is not reused.
+	// Without the sources' lengths, which a test's hand-made result has no
+	// sources for, no declaration's offsets are bounded by its file's; the
+	// supervisor decodes with them ({decodeResultWithin}).
 	def decodeResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisResultDecode {
 		return decodeResultWithQuery(payload, generation, paths, 0);
 	}
@@ -736,11 +756,15 @@ component AnalysisWire {
 	// query, a call answer to a CALL query, and a scope answer to another. An
 	// answer to a request that did not ask for its kind is malformed.
 	def decodeResultWithQuery(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int) -> AnalysisResultDecode {
-		return decodeResultWithin(payload, generation, paths, kinds, MAX_RESULT_ALLOCATION);
+		return decodeResultWithin(payload, generation, paths, null, kinds, MAX_RESULT_ALLOCATION);
 	}
 	// Decodes a RESULT as {decodeResultWithQuery} does, within an allocation
 	// budget of {budget} bytes: a result that would allocate more is TooLarge.
-	def decodeResultWithin(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int, budget: int) -> AnalysisResultDecode {
+	// {lengths} holds the byte length of each of the request's sources, in
+	// the order of {paths}, or is null to bound no offset: a declaration whose
+	// offsets lie past the end of its file is malformed (see fileLengths).
+	def decodeResultWithin(payload: Array<byte>, generation: int, paths: Array<string>, lengths: Array<int>,
+			kinds: int, budget: int) -> AnalysisResultDecode {
 		var r = AnalysisWireReader.new(payload, RESULT);
 		r.limit(budget);
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
@@ -781,6 +805,7 @@ component AnalysisWire {
 			// server sent, so the result has no path table and no path is
 			// looked up by text.
 			files = AnalysisSnapshotFiles.new(paths);
+			var fileLengths = fileLengths(files, paths, lengths);
 			// Each string is charged as an index string, and its slot.
 			strings = Array<string>.new(r.readCount(1, 8));
 			for (i < strings.length) strings[i] = r.readString(1);
@@ -793,8 +818,8 @@ component AnalysisWire {
 			// table.
 			declarations = Array<AnalysisDeclaration>.new(r.readCount(12, 128));
 			for (i < declarations.length) {
-				var kind = r.readDeclarationKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
-				var range = r.readRange(path);
+				var kind = r.readDeclarationKind(), name = r.readStringIndex(strings), file = r.readPathIndex(files.paths.length);
+				var range = r.readRange(if(file >= 0, files.paths[file]), if(file >= 0, fileLengths[file]));
 				var d: AnalysisDeclaration;
 				if (kind.2) d = if(kind.1, AnalysisFlaggedDocumentedDeclaration.new(kind.0, name, range), AnalysisDocumentedDeclaration.new(kind.0, name, range));
 				else d = if(kind.1, AnalysisFlaggedDeclaration.new(kind.0, name, range), AnalysisDeclaration.new(kind.0, name, range));
@@ -1143,13 +1168,14 @@ class AnalysisWireReader {
 		remaining -= bytes;
 		return true;
 	}
-	def readPath(table: Array<string>) -> string {
+	// An index into a table of {count} paths, or -1 for an invalid one.
+	def readPathIndex(count: int) -> int {
 		var i = r.read_sleb32();
-		if (u32.view(i) >= u32.view(table.length)) {
+		if (u32.view(i) >= u32.view(count)) {
 			r.fail("invalid path index");
-			return null;
+			return -1;
 		}
-		return table[i];
+		return i;
 	}
 	// A write is the complement of its declaration index on the wire. The
 	// snapshot packs the flag in the sign bit of the existing target int:
@@ -1645,7 +1671,8 @@ class AnalysisWireReader {
 	}
 	// The span of {d}'s comment: the bytes from its end to the start of
 	// {d}'s name, which must have a source offset, and its length, which is
-	// not zero, so that the comment lies in the file before the name.
+	// not zero, so that the comment lies in the file before the name. The
+	// name lies in the file ({readRange}), so the comment does too.
 	def readComment(d: AnalysisDocumentedDeclaration) {
 		var gap = r.read_sleb32(), length = r.read_sleb32(), name = d.range.beginOffset;
 		if (name < 0 || gap < 0 || gap > name || length <= 0 || length > name - gap) {
@@ -1665,9 +1692,13 @@ class AnalysisWireReader {
 		}
 		return AnalysisWire.DECL_KINDS[tag];
 	}
-	def readRange(path: string) -> AnalysisRange {
-		return AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32(),
+	// A declaration's range in {path}, whose offsets, unless -1 for none,
+	// must be at most {length}, its file's.
+	def readRange(path: string, length: int) -> AnalysisRange {
+		var range = AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32(),
 			r.read_sleb32(), r.read_sleb32());
+		if (range.beginOffset > length || range.endOffset > length) r.fail("declaration offset past the end of its file");
+		return range;
 	}
 }
 
