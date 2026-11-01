@@ -1,0 +1,90 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisParseBudget:count", count),
+	T("AnalysisParseBudget:parser_tokens", parser_tokens),
+	T("AnalysisParseBudget:admits", admits),
+	T("AnalysisParseBudget:adapter", adapter),
+	()
+];
+def count(t: Tester) {
+	var cases: Array<(string, int)> = [
+		("", 0),
+		(" \t\r\n", 0),
+		("var a,a,a;", 7),
+		("component C {\n\tdef f() {}\n}\n", 10),
+		// Comments and whitespace separate tokens; an unterminated block
+		// comment runs to the end.
+		("a// b c\nb/* d\ne */c /* f", 3),
+		("a / b", 3),
+		// A literal is one token, escapes and all; an unterminated one ends at
+		// its line.
+		("\"a b \\\" c\" 'x' '\\'' x", 4),
+		("\"open\nx 'y", 3),
+		// An identifier run covers keywords and numbers; each other byte counts.
+		("x0_y 12 0x1F 1.5", 6),
+		("a==b->c=>d", 10),
+		// Bytes outside printable ASCII separate tokens, as the parser
+		// reports them as invalid characters.
+		("a\xC3\xA9b\x01c", 3)
+	];
+	for (c in cases) {
+		var got = AnalysisParseBudget.count(c.0, int.max);
+		if (got != c.1) t.fail3("%s: %d tokens, not %d", c.0, got, c.1);
+	}
+	// Counting stops at the first token past the limit.
+	t.asserti(3, AnalysisParseBudget.count("a b c d e", 2));
+	t.asserti(5, AnalysisParseBudget.count("a b c d e", 5));
+}
+// The count is never less than the tokens that the parser consumes, as its
+// syntax index records them.
+def parser_tokens(t: Tester) {
+	for (text in [
+		"component C {\n\tdef f(x: int) -> int { return x == 0 || x >= 1; }\n\tvar s = \"a // b\", c = '\\'';\n}\n",
+		"/* note */ class K<T>(x: T) extends B<T> {\n\tdef m() => x;\n\tdef g(a: Array<T>, i: int) -> (T, T) { return (a[i], a[i + 1]); }\n\tnew(x, y: T) super(y) { }\n}\n",
+		"type V {\n\tcase A(x: int);\n\tcase B;\n}\ndef f(v: V) {\n\tmatch (v) {\n\t\tA(x) => ;\n\t\t_ => ;\n\t}\n\tvar r = a[0 ... 2], s = a[1 ..+ 2], u = -1.5e3, w = 0xFFu;\n}\n"
+	]) {
+		var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
+		AnalysisSingleFileParser.parse("budget.v3", text, errors, syntax, TypeCache.new(), null);
+		t.asserti(0, errors.numErrors);
+		var counted = AnalysisParseBudget.count(text, int.max);
+		if (counted < syntax.count) t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+	}
+}
+def admits(t: Tester) {
+	var text = "component C {\n\tdef f() {}\n}\n";
+	t.asserti(10, AnalysisParseBudget.count(text, int.max));
+	AnalysisParseBudget.maxTokens = 10;
+	t.assert(AnalysisParseBudget.admits(text), "ten tokens are admitted");
+	t.assert_string("the document has more than 10 tokens", AnalysisParseBudget.refusal());
+	AnalysisParseBudget.maxTokens = 9;
+	t.assert(!AnalysisParseBudget.admits(text), "ten tokens are refused");
+	// A text no longer than the bound is admitted without counting: each
+	// token takes a byte.
+	AnalysisParseBudget.maxTokens = 3;
+	t.assert(AnalysisParseBudget.admits("a,b"), "three bytes");
+	t.assert(!AnalysisParseBudget.admits("a,b,"), "four tokens");
+	t.assert(AnalysisParseBudget.admits("a  b"), "four bytes, two tokens");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+// Each of the adapter's single-file parses for outlines, folding ranges, and
+// selection ranges refuses a text past the bound with null, before parsing,
+// and answers as before within it; documentSymbols gives no symbols.
+def adapter(t: Tester) {
+	var text = "component C {\n\tdef f() {}\n}\n";
+	AnalysisParseBudget.maxTokens = 10;
+	t.asserti(2, AeneasAdapter.outline("budget.v3", text, [])[0].children.length + 1);
+	t.asserti(1, AeneasAdapter.documentSymbols("budget.v3", text, []).length);
+	t.asserti(1, AeneasAdapter.foldingRanges("budget.v3", text, []).length);
+	t.asserti(1, AeneasAdapter.selectionRanges("budget.v3", text, [], [17]).length);
+	AnalysisParseBudget.maxTokens = 9;
+	t.assert(AeneasAdapter.outline("budget.v3", text, []) == null, "outline refused");
+	// Other files' outlines, as hierarchies and workspace symbols take them,
+	// are empty, as for a text that fails to parse.
+	t.asserti(0, AeneasAdapter.documentSymbols("budget.v3", text, []).length);
+	t.assert(AeneasAdapter.foldingRanges("budget.v3", text, []) == null, "folding refused");
+	t.assert(AeneasAdapter.selectionRanges("budget.v3", text, [], [17]) == null, "selection refused");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}

@@ -31,6 +31,7 @@ class LspSelectionRanges(store: DocumentStore, projects: WorkspaceProjects) {
 		}
 		var owner = projects.forDocument(overlay.uri);
 		var chains = AeneasAdapter.selectionRanges(overlay.uri, overlay.text, owner.compilerArgs(), offsets);
+		if (chains == null) return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, AnalysisParseBudget.refusal()));
 		var result = Array<JsonValue>.new(chains.length);
 		for (i < chains.length) {
 			var a = chains[i], parent: JsonValue;

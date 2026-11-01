@@ -72,6 +72,8 @@ class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 			}
 			outlines++;
 			outlineBytes += file.text.length;
+			// A text with too many tokens to parse has no outline, as one that
+			// fails to parse has none, so its matches have no container.
 			var symbols = AeneasAdapter.documentSymbols(file.path, file.text, file.options);
 			for (k = i; k < end; k++) {
 				var m = byFile[k];

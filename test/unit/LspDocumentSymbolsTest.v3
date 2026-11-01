@@ -26,6 +26,7 @@ def X = [
 	T("LspDocumentSymbols:details_outside_project", test_symbol_details_outside_project),
 	T("LspDocumentSymbols:details_byte_bound", test_symbol_details_byte_bound),
 	T("LspDocumentSymbols:version_only_change", test_symbol_version_only),
+	T("LspDocumentSymbols:parse_budget", test_parse_budget),
 	()
 ];
 
@@ -452,6 +453,24 @@ def flatRunning(t: Tester) -> LspServer {
 	return s;
 }
 def NESTED = "component C {\n\tdef a() {}\n\tdef b() {}\n}\nclass K {\n\tvar x: int;\n}\n";
+
+// A document with more tokens than the parse's bound gets RequestFailed in
+// either shape, before any outline is built, and one within it the same
+// outline as before.
+def test_parse_budget(t: Tester) {
+	// NESTED has 25 tokens.
+	t.asserti(25, AnalysisParseBudget.count(NESTED, int.max));
+	for (s in [running(t), flatRunning(t)]) {
+		s.documents.open(URI, "virgil", 1, NESTED);
+		var reply = s.handle(REQUEST);
+		resultOf(t, reply);
+		AnalysisParseBudget.maxTokens = 25;
+		t.assert_string(reply, s.handle(REQUEST));
+		AnalysisParseBudget.maxTokens = 24;
+		t.assert_string(failed("the document has more than 24 tokens"), s.handle(REQUEST));
+		AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+	}
+}
 
 // Nested symbols count against the one bound of the whole reply, in both
 // shapes: five symbols, two at the root.
