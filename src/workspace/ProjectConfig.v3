@@ -6,7 +6,7 @@
 // format, and docs/decisions/0005-project-file-format.md records why.
 // Nothing here reads the file system: callers pass the file's bytes.
 
-// The rule that a configuration diagnostic reports. {code} is its stable name,
+// The rule that a configuration diagnostic reports. {code} is its name,
 // shown to users and sent as the LSP diagnostic code.
 enum ProjectConfigCode(code: string) {
 	INVALID_JSON("InvalidJson"),
