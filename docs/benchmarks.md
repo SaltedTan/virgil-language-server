@@ -305,9 +305,9 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file parsed by a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
 | worker `parse_unvisited_files`, `parse_classify_us` | Files the parse didn't reach because of the error limit, and the time to hash the paths and bytes and classify them, which runs before `parse_us` starts, within `adapter_us`. |
 | server `substitution_us`, `substituted_files` | Method-body fallback and current-text repair for a project submission, after `capture_us`, and how many files they substituted. |
-| server `prepare_us` | Capture through substitution and snapshot admission, to the worker request, for an automatic or explicit project analysis. |
+| server `prepare_us` | Capture through any substitution and snapshot admission, to the worker request, for automatic and explicit analyses, including explicit URI lists. |
 | server `complete_us` | An automatic analysis's completion after `roundtrip_us`: recording document versions, updating the last-parseable text cache, and publishing diagnostics. |
-| server `parser_diagnostics_us` | An accepted edit's own parse for its syntax diagnostics, before any analysis. |
+| server `parser_diagnostics_us` | An open document's parse for its syntax diagnostics, on opening, an accepted text edit, or a change to its project's language options, before any whole-program analysis. |
 
 Phase times include GC that occurs within the phase; do not add `adapter_us` to
 parse/verify, or `roundtrip_us` to its constituent phases. Probe syscalls add some
