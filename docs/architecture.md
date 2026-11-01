@@ -626,7 +626,7 @@ A result computed from document version *n* is never published after a full-text
 
 A snapshot also holds the [display text](#display-text): its files, indexed by the request's paths in byte order (`AnalysisSnapshotFiles`), one table of the result's distinct strings, a signature for each declaration, each file's use-site types as pairs of occurrence and string indexes, its builtin uses, and its declaration sites as a run of the declaration array. For hover, `declarationAtOffset(path, offset)` binary-searches the sites and `useTypeAtOffset(path, offset)` finds an occurrence's use-site type or a builtin use's type, without allocating; `occurrenceAtOffset`, `builtinUseAtOffset`, `builtinUses`, and `declarationSites` allocate their results. For [workspace symbols](#workspace-symbols), `declarationSiteRun(path)` gives the bounds of a file's sites in the declaration array without allocating. *(present)*
 
-A snapshot holds no compiler object, so nothing in it can seed the next analysis's parse, and the worker keeps no syntax tree between requests. See [parsed-tree ownership](#parsed-tree-ownership) for the reparsing contract and the constraints on reuse. *(present)*
+A snapshot holds no compiler object, so nothing in it can seed the next analysis's parse, and the worker keeps no syntax tree between requests. Each analysis parses again every file it reaches before the error limit, and verifies the program again when parsing succeeds; [parsed-tree ownership](#parsed-tree-ownership) explains why a tree can't be kept, what a kept tree would depend on, and what keeping one could save. *(present)*
 
 ### Method-body fallback
 
