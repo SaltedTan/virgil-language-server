@@ -93,12 +93,12 @@ Durable technical decisions are recorded as short ADRs in [docs/decisions/](docs
 
 Server 1.x keeps the version 1 project file's format and project selection ([ADR-0012](docs/decisions/0012-project-configuration-stability.md)). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, or to the Virgil pin with these questions:
 
-- Does it change how a version 1 file is parsed or validated: a field, type, default, or reserved value, the handling of unknown or repeated fields, the version literal, or a diagnostic code?
+- Does it change how a version 1 file is parsed or validated: a field, type, default, or reserved value, the handling of unknown or repeated fields, or the version literal?
 - Does it change which files a project selects or owns: pattern syntax or matching, ordering, exclusion, symbolic links, or the Virgil root?
 - Does it change the governing project file, workspace folders, the active project, or how unsaved and on-disk configuration changes are picked up?
-- Does it lower a capacity limit?
+- Does it change a capacity limit?
 
-If it does, find the change in the [table of what each change needs](docs/configuration.md#what-a-change-needs). A fix that makes the server match the documentation needs only a changelog entry. A new field or value needs a new format version, and any other change to version 1 needs a new server major version. Update the matching row of the [inventory](docs/configuration.md#inventory) and its tests.
+If it does, find the change in the [table of what each change needs](docs/configuration.md#what-a-change-needs). A fix that makes the server match the documentation needs only a changelog entry. A new field, a new accepted value, a meaning for reserved pattern characters, or comments need a new format version. These changes to version 1 need a new server major version: removing or renaming a field, giving it another type or default, tightening validation, changing how patterns select, order, own, or exclude files, following symbolic links, changing the Virgil root's precedence or the choice of governing file or active project, and no longer reading version 1. Changes to when the server reads and refreshes configuration (*Behavior* rows), changes to capacity limits, and language option changes from a compiler pin need only a changelog entry. Update the matching row of the [inventory](docs/configuration.md#inventory) and its tests.
 
 For a Virgil pin update, compare the language options (`CLOptions.langOpt` in `vendor/virgil/aeneas/src/main/CLOptions.v3`) at the old and new revisions: their names, their defaults, and whether they need an unstable build. Update the [compiler flags table](docs/configuration.md#compiler-flags). For each option that was removed, renamed, or changed, add a changelog entry that names it and says how to migrate.
 

@@ -18,18 +18,18 @@ Three version numbers are involved: the project file's `version`, the server's v
 
 1. **Server 1.x keeps the version 1 format and project selection.** That covers the fields, their types and defaults, the reserved `target` value, strict handling of unknown and repeated fields, the pattern, ownership, exclusion, and symbolic-link rules, and the precedence of the Virgil root, the governing project file, and the active project. Changing any of these for version 1 needs a new server major version.
 2. **Language options follow each release's pinned compiler.** Which `-lang:` options exist, their defaults, and what they change belong to the pin, not to the format.
-3. **A pin that removes or changes a language option is announced, not versioned.** The release notes say so, and the configuration diagnostic for a file that still lists a removed option names it. That alone doesn't change the format version. An option whose default or meaning changes under the same name produces no configuration diagnostic. The release notes are how users learn of it.
+3. **A pin that removes or changes a language option is announced, not versioned.** The release notes say so, and the configuration diagnostic for a file that still lists a removed option names it. That alone doesn't change the format version. The server can't tell when an option keeps its name but changes its default or meaning, so it reports nothing. That is a limitation, and the release notes are the only notice.
 4. **New fields and new accepted values need a new format version.** A server may read that version alongside version 1. Version 1 itself doesn't grow, because a strict server rejects fields that it doesn't know.
-5. **Capacity limits may rise in a 1.x release but not fall.**
-6. **The strict parser and `target: null` stay.** Relaxing either needs its own approved issue. Per-target analysis and importing target-aware build manifests are outside this contract.
+5. **Capacity limits may change in any release, with a changelog entry.** A file is kept working only while its programs stay within the documented limits.
+6. **The strict parser and `target: null` stay.** Relaxing either needs its own approved issue. Per-target analysis and importing target-aware build manifests are outside this contract, and how a later version would add them is undecided.
 
-[Stability and evolution](../configuration.md#stability-and-evolution) states the promise for users. It lists each rule with the code that implements it and the tests that check it, and names the rules that have no test yet.
+[Stability and evolution](../configuration.md#stability-and-evolution) states the promise for users. Its inventory records each rule's code and existing test coverage, and names the gaps.
 
 This builds on ADR-0005 and doesn't supersede it.
 
 ## Consequences
 
-- A version 1 file that a 1.x release accepts keeps working in later 1.x releases, unless a pin removes a language option that it lists or one of its programs needs more than a documented limit.
+- A version 1 file that a 1.x release accepts keeps working in later 1.x releases, unless a pin removes a language option that it lists or one of its programs exceeds a documented limit.
 - Every change to `src/workspace/` and every Virgil pin update needs a compatibility review. [CONTRIBUTING](../../CONTRIBUTING.md#project-file-compatibility-review) gives the checklist.
 - Users find the pin behind each release in the [Virgil revision table](../compatibility.md#virgil-revision) and in `virgil-lsp --version`. They find option changes in the release notes.
 - Semantic results, such as type errors, aren't part of the promise. A file that stays valid can still analyze differently under a new pin.
