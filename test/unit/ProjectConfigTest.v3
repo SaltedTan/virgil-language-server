@@ -234,7 +234,7 @@ def test_nesting_limit(t: Tester) {
 // bytes each, 50,000 exclude patterns fit within the size limit.
 def test_value_limit(t: Tester) {
 	t.asserti(50000, JsonRpcJson.MAX_VALUES);
-	// Two objects, two arrays, five keys, and the values 1, "p", and "a.v3".
+	// Two objects, three arrays, five keys, and the values 1, "p", and "a.v3".
 	var fixed = 13, count = JsonRpcJson.MAX_VALUES - fixed;
 	for (extra < 2) {
 		var buf = StringBuilder.new().puts("{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"a.v3\"],\"exclude\":[");
