@@ -55,13 +55,18 @@ class PositionMap {
 	// by line index, built on first use and kept, so that repeated
 	// conversions of one long non-ASCII line stay linear in its length.
 	// Null until a non-ASCII line is asked for, so an ASCII text never
-	// allocates it.
+	// allocates it. Every table together holds at most an int per byte of
+	// text, as the whole-file table did, plus a header for each table and a
+	// reference for each line: a text of many short non-ASCII lines, all
+	// converted, keeps more than the old table did, though still linear.
 	private var columns: Array<Array<int>>;
 
 	new(text, encoding) {
 		var max = text.length;
-		// Each line vector holds its exact final length, so that growing it
-		// by doubling leaves no discarded array behind. Counting the line
+		// Each line vector is reserved at the number of LSP lines, so that
+		// growing it by doubling leaves no discarded array behind. That is
+		// the exact final length of every vector but the compiler's, which a
+		// lone CR leaves shorter. Counting the line
 		// ends costs one more pass over the text and saves more than it takes:
 		// on Verifier.v3, one map allocated 36,048 bytes in 0.30 ms this way
 		// and 132,160 bytes in 0.35 ms growing the vectors.
