@@ -49,7 +49,12 @@ class LspSignatureHelp extends LspQueryRequests {
 		var line = intMember(position, "line"), character = intMember(position, "character");
 		var overlay = if(uri != null && line >= 0 && character >= 0, store.overlay(uri));
 		var project = if(overlay != null, projects.forDocument(overlay.uri).active);
-		if (project == null || documentParses(overlay, project.definition.compilerArgs)) return snapshots.handle(request);
+		// A document over the parse budget (AnalysisParseBudget) counts as
+		// parsing, as its parser diagnostics count it, so it is answered from
+		// its project's analysis and never repaired: a repair can take a text
+		// back under the budget.
+		if (project == null || !AnalysisParseBudget.admits(overlay.text)
+			|| documentParses(overlay, project.definition.compilerArgs)) return snapshots.handle(request);
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
 		var r = LspSignatureRequest.new(this, request.id), calls = ctx.calls();

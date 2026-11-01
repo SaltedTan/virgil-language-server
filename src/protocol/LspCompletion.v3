@@ -393,6 +393,10 @@ class LspCompletion extends LspQueryRequests {
 		// inserts nothing before the cursor, so the identifier's start, where the
 		// scope is queried, is the same offset in both (as LspRepairMapping keeps
 		// offsets before the cursor).
+		// A document over the parse budget (AnalysisParseBudget) isn't parsed,
+		// and isn't repaired either: a repair can take a text back under the
+		// budget, as the sentinel does when it joins the digits after the cursor.
+		if (!AnalysisParseBudget.admits(overlay.text)) return finish(r, keywordList(r, false));
 		var text = overlay.text, options = project.definition.compilerArgs;
 		if (!parses(path, text, options)) {
 			text = LspCompletionRepair.repair(ctx);

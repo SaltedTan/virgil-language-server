@@ -23,7 +23,8 @@ HeapOverflow at rest; now the file is analyzed as it is. Parser diagnostics of a
 with two Aeneas-sized analysis snapshots retained; now the document has none.
 Each case is followed by a small document's outline, a ping, shutdown, and
 exit with status 0. The pressure case copies the pinned Aeneas sources, as
-evicted_snapshot.py does, and takes about 15 seconds.
+evicted_snapshot.py does, checks that both projects' analyses completed and
+are retained before it opens the dense text, and takes about 15 seconds.
 """
 import json
 import shutil
@@ -182,9 +183,8 @@ def run_repair(exe, name, tail):
 
 def run_pressure(exe):
     """With the compiler and demangle projects of evicted_snapshot.py
-    analyzed and their documents closed, so that both snapshots stay
-    retained, opens and changes a dense document; then a small document's
-    outline."""
+    analyzed, and each project's snapshot retained, opens and changes a dense
+    document; then a small document's outline."""
     ev = evicted_snapshot
     work = Path(tempfile.mkdtemp(prefix='parse-budget-'))
     s = ev.Client(exe)
@@ -196,15 +196,29 @@ def run_pressure(exe):
             'rootUri': work.as_uri(), 'workspaceFolders': [{'uri': work.as_uri(), 'name': 'p'}],
             'initializationOptions': {'virgilRoot': str(ev.VIRGIL.resolve())}, 'capabilities': {}}), 10)
         s.send('initialized', {}, request=False)
-        paths = (work / 'aeneas/src/vst/Verifier.v3', work / 'apps/Demangle/Demangle.v3')
-        for path in paths:
+        # Small documents, so that the dense one fits beside them in the
+        # overlay budget: each one's opening schedules its project's analysis.
+        opened = [(work / 'aeneas/src/main/Version.v3', 'component Version'),
+                  (work / 'apps/Demangle/Demangle.v3', 'def doStdin')]
+        for path, _ in opened:
             s.send('textDocument/didOpen', {'textDocument': {
                 'uri': path.as_uri(), 'languageId': 'virgil', 'version': 1, 'text': path.read_text()}}, request=False)
         ev.settle(s)
-        for path in paths:
-            s.send('textDocument/didClose', {'textDocument': {'uri': path.as_uri()}}, request=False)
-        ev.settle(s)
-        text = fill('var x=(', 'a,', 'a);', SIZE)
+        # Hover answers from the project's retained snapshot, and at once with
+        # null after a failed analysis. Nothing is analyzed once the analyses
+        # have settled, so neither snapshot is evicted before the dense text.
+        for path, needle in opened:
+            text = path.read_text()
+            at = text.index(needle) + len(needle) - 2
+            line = text.count('\n', 0, at)
+            hover = s.result(s.send('textDocument/hover', {'textDocument': {'uri': path.as_uri()}, 'position': {
+                'line': line, 'character': at - text.rfind('\n', 0, at) - 1}}), 60)
+            assert hover is not None, 'no retained analysis of %s: the pressure is missing' % path.name
+        assert ev.generation(s) == ev.settle(s), 'an analysis ran after the hovers'
+        uris = [p.as_uri() for p, _ in opened] + [DENSE_URI, SMALL_URI]
+        size = 1024 * 1024 - 4 * 256 - sum(len(p.read_text()) for p, _ in opened) - len(SMALL) \
+            - sum(len(u) for u in uris) - 4 * len('virgil')
+        text = fill('var x=(', 'a,', 'a);', size)
         s.send('textDocument/didOpen', {'textDocument': {
             'uri': DENSE_URI, 'languageId': 'virgil', 'version': 1, 'text': text}}, request=False)
         s.ping()
