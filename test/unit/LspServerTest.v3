@@ -62,6 +62,7 @@ class PendingRecorder {
 	def onComplete(reply: JsonRpcReply) {
 		match (reply) {
 			Result(v) => replies.put("result");
+			ResultJson(_) => replies.put("result");
 			Error(e) => replies.put(Strings.format2("%d %s", e.code, e.message));
 		}
 	}

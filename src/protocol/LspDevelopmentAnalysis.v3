@@ -120,6 +120,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		pendingProject = null;
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
+			ResultJson(r) => send(JsonRpcMessage.RawResponse(id, r).encode());
 			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
 		}
 	}

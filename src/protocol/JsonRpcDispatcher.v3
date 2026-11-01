@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The result or the error of a response: what a request handler returns, and
-// what completes a request the server sent.
+// what completes a request the server sent. ResultJson is a result already
+// rendered as JSON, which only a handler returns.
 type JsonRpcReply {
 	case Result(v: JsonValue);
+	case ResultJson(result: Range<byte>);
 	case Error(error: JsonRpcError);
 }
 
@@ -87,6 +89,7 @@ class JsonRpcDispatcher {
 		}
 		match (handler(request)) {
 			Result(v) => return JsonRpcMessage.Response(request.id, v).encode();
+			ResultJson(r) => return JsonRpcMessage.RawResponse(request.id, r).encode();
 			Error(e) => return JsonRpcMessage.ErrorResponse(request.id, e).encode();
 		}
 	}

@@ -7,6 +7,7 @@
 // workers.
 def X = [
 	UnitTests.register("LspSemanticTokens:classify", classify),
+	UnitTests.register("LspSemanticTokens:data_matches_tree", data_matches_tree),
 	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
 	UnitTests.register("LspSemanticTokens:limit", limit),
 	UnitTests.register("LspSemanticTokens:named_this", named_this),
@@ -153,6 +154,36 @@ def classify(t: Tester) {
 	if (s == null) return;
 	t.assert(s.verified, "the fixture verifies");
 	check(t, EXPECTED, tokens(t, s, SOURCE, 100000));
+}
+// A reply's result is rendered token by token, not as a JsonValue tree. For
+// no tokens, one, and many, with more than and fewer than the writer
+// expects, the result and the whole response must be the tree's bytes.
+def data_matches_tree(t: Tester) {
+	checkData(t, [], 0);
+	checkData(t, [], 5);
+	checkData(t, [0, 20, 4, 0, 1], 1);
+	checkData(t, [0, 20, 4, 0, 1], 0);
+	var large = Array<int>.new(5 * 8000);
+	for (i < large.length) large[i] = (i * 7919) % 100000;
+	checkData(t, large, 8000);
+	checkData(t, large, 100);
+	var big = [2147483647, 0, 1000000000, 11, 3];
+	checkData(t, big, 1);
+}
+// Writes {ints}, five per token, to a writer that expects {expected} tokens,
+// and compares the result and its response with the tree's.
+def checkData(t: Tester, ints: Array<int>, expected: int) {
+	var data = LspTokenData.new(expected);
+	for (i < ints.length / 5) data.put(ints[i * 5], ints[i * 5 + 1], ints[i * 5 + 2], ints[i * 5 + 3], ints[i * 5 + 4]);
+	var direct = data.finish();
+	var values = Array<JsonValue>.new(ints.length);
+	for (i < ints.length) values[i] = JsonValue.Int(ints[i]);
+	var map = Strings.newMap<JsonValue>();
+	map["data"] = JsonValue.JArray(values);
+	var tree = JsonValue.JObject(map);
+	t.assert_string(JsonRpcJson.render(StringBuilder.new(), tree).extract(), StringBuilder.new().putr(direct).extract());
+	var id = JsonRpcId.Int(7);
+	t.assert_string(JsonRpcMessage.Response(id, tree).encode(), JsonRpcMessage.RawResponse(id, direct).encode());
 }
 // The same source with LF line endings has the same tokens.
 def lf_matches_crlf(t: Tester) {

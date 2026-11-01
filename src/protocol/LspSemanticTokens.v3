@@ -22,8 +22,6 @@ component LspSemanticLegend {
 	def MODIFIERS = ["declaration", "readonly"];
 	def DECLARATION = 1;
 	def READONLY = 2;
-	// Most of a reply's integers are small, so their values are shared.
-	def SMALL = smallInts(1024);
 
 	// The token type of {d}'s name, or -1 for a declaration that gets no
 	// token: a constructor, which the keyword "new" spells, and an index
@@ -53,9 +51,6 @@ component LspSemanticLegend {
 			_ => return 0;
 		}
 	}
-	def integer(v: int) -> JsonValue {
-		return if(u32.view(v) < u32.view(SMALL.length), SMALL[v], JsonValue.Int(v));
-	}
 	def provider() -> JsonValue {
 		var legend = Strings.newMap<JsonValue>();
 		legend["tokenTypes"] = strings(TYPES);
@@ -70,10 +65,32 @@ component LspSemanticLegend {
 		for (i < list.length) values[i] = JsonValue.String(list[i]);
 		return JsonValue.JArray(values);
 	}
-	private def smallInts(n: int) -> Array<JsonValue> {
-		var values = Array<JsonValue>.new(n);
-		for (i < n) values[i] = JsonValue.Int(i);
-		return values;
+}
+
+// Renders a reply's result, {"data":[...]}, one token at a time, with the
+// bytes that rendering it as a JsonValue tree gives. A tree of 40,000
+// integers and its intermediate strings allocate several times the reply's
+// size, so the reply's result is rendered here instead.
+class LspTokenData {
+	private def buf = StringBuilder.new();
+	private var count: int;
+
+	// Reserves room for {tokens} tokens, so that the buffer, which would
+	// otherwise triple each time it fills, usually never grows.
+	new(tokens: int) {
+		buf.grow(DATA_OPEN.length + tokens * TOKEN_BYTES + 2).puts(DATA_OPEN);
+	}
+	// Appends one token's five values.
+	def put(deltaLine: int, deltaStart: int, length: int, tokenType: int, modifiers: int) -> this {
+		if (count++ > 0) buf.putc(',');
+		buf.putd(deltaLine).putc(',').putd(deltaStart).putc(',').putd(length)
+			.putc(',').putd(tokenType).putc(',').putd(modifiers);
+	}
+	// The rendered result, without copying it out of the buffer. The writer
+	// must not be used again.
+	def finish() -> Range<byte> {
+		buf.putc(']').putc('}');
+		return buf.buf[0 ... buf.length];
 	}
 }
 
@@ -82,8 +99,8 @@ component LspSemanticLegend {
 // option is fixed at initialization, like the inlay hints'.
 class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore, projects: WorkspaceProjects) {
 	// A reply has at most this many tokens, the first in source order; later
-	// names keep the grammar's colors. Each takes five slots of 8 bytes in
-	// the reply's array and at most about 60 bytes encoded.
+	// names keep the grammar's colors. Each takes at most about 60 bytes
+	// encoded.
 	var maxTokens = MAX_TOKENS;
 	var enabled = true;
 	var refreshSupport: bool;
@@ -109,19 +126,18 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 	// edits, rather than clear them until the next analysis.
 	private def failure(uri: string, identity: DocumentVersionIdentity, reason: string) -> JsonRpcReply {
 		record(uri, identity, if(reason == LspSnapshotReasons.UNOWNED, EMPTY, UNAVAILABLE));
-		if (reason == LspSnapshotReasons.UNOWNED) return reply(Vector<JsonValue>.new());
+		if (reason == LspSnapshotReasons.UNOWNED) return JsonRpcReply.ResultJson(LspTokenData.new(0).finish());
 		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.CONTENT_MODIFIED, reason));
 	}
 	private def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
-		var data = Vector<JsonValue>.new(), file = at.snapshot.fileIndex(at.path()), hash = SEED;
-		if (file != null) {
+		var file = at.snapshot.fileIndex(at.path()), hash = SEED, data: LspTokenData;
+		if (file == null) {
+			data = LspTokenData.new(0);
+		} else {
 			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens), line = 0, character = 0;
+			data = LspTokenData.new(c.bound());
 			while (c.next()) {
-				data.put(LspSemanticLegend.integer(c.line - line));
-				data.put(LspSemanticLegend.integer(if(c.line == line, c.character - character, c.character)));
-				data.put(LspSemanticLegend.integer(c.length));
-				data.put(LspSemanticLegend.integer(c.tokenType));
-				data.put(LspSemanticLegend.integer(c.modifiers));
+				data.put(c.line - line, if(c.line == line, c.character - character, c.character), c.length, c.tokenType, c.modifiers);
 				if (refreshSupport) {
 					hash = hashInt(hashInt(hashInt(hash, c.line), c.character), c.length);
 					hash = hashInt(hashInt(hash, c.tokenType), c.modifiers);
@@ -132,7 +148,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		}
 		var version = at.snapshot.documentVersions[at.index];
 		record(version.uri, version.identity, hash);
-		return (true, reply(data));
+		return (true, JsonRpcReply.ResultJson(data.finish()));
 	}
 	private def record(uri: string, identity: DocumentVersionIdentity, hash: u64) {
 		if (!refreshSupport) return;
@@ -140,11 +156,6 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (doc == null || doc.identity != identity) return;
 		if (hash == UNAVAILABLE && previous != null && previous.identity == identity && (previous.served || previous.covered)) return;
 		baselines[uri] = LspTokenFingerprint.new(identity, hash, hash != UNAVAILABLE, false);
-	}
-	private def reply(data: Vector<JsonValue>) -> JsonRpcReply {
-		var result = Strings.newMap<JsonValue>();
-		result["data"] = JsonValue.JArray(data.extract());
-		return JsonRpcReply.Result(JsonValue.JObject(result));
 	}
 
 	// Refresh. Each open document keeps a fingerprint for its text from a
@@ -263,6 +274,10 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 }
 
 def MAX_TOKENS = 100000;
+def DATA_OPEN = "{\"data\":[";
+// The room a reply reserves for each token. A token takes 10 to 11 bytes on
+// average in the Aeneas and lib/util sources.
+def TOKEN_BYTES = 12;
 // FNV-1a's offset basis seeds a fingerprint; the tokens of a document in no
 // project hash to it. No token sequence's hash is the sentinel for a
 // document the server can't analyze, but for a collision with 2^-64 odds.
@@ -305,6 +320,11 @@ class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnaps
 
 	new() {
 		site = file.firstSite;
+	}
+	// At most this many tokens: one for each declaration site and use, up to
+	// the limit.
+	def bound() -> int {
+		return if(file.siteCount + file.targets.length < limit, file.siteCount + file.targets.length, limit);
 	}
 	def next() -> bool {
 		var sites = file.firstSite + file.siteCount, uses = file.targets.length;
