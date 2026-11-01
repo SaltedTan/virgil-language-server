@@ -50,7 +50,7 @@ again, so no answer comes from a cached version of the body being typed.
 
 **What stays the same.**
 
-- Automatic and development analyses keep substituting every open file.
+- Automatic and project-context development analyses keep substituting every open file.
 - Each request still runs one temporary analysis, with the single stale-generation
   rerun that [Names](../architecture.md#names) describes.
 - A query result publishes no diagnostics and replaces no snapshot.

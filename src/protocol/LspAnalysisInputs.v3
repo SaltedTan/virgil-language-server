@@ -26,8 +26,8 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 		return substituteOthers(store, context, cache, parser, -1);
 	}
 	// {substitute} for every open source but source {excluded}, whose text a
-	// completion or a signature help has already repaired at its cursor
-	// (LspQueryRequests, ADR-0013); -1 excludes none. The excluded source is
+	// completion or a signature help supplies as typed or repaired at its
+	// cursor (LspQueryRequests, ADR-0013); -1 excludes none. The excluded source is
 	// never substituted from the cache nor repaired again, but its bytes count
 	// toward the size budget.
 	def substituteOthers(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
