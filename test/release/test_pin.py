@@ -57,6 +57,21 @@ def init_repo(root, gitlink):
                        capture_output=True, text=True)
 
 
+def stage_bump(root, gitlink):
+    """Stage a different gitlink in the index without committing it."""
+    subprocess.run(['git', '-C', str(root), 'update-index', '--add',
+                    '--cacheinfo', f'160000,{gitlink},vendor/virgil'],
+                   check=True, capture_output=True, text=True)
+
+
+def unmerged_gitlink(root):
+    info = (f'160000 {FULL} 1\tvendor/virgil\n'
+            f'160000 {OTHER} 2\tvendor/virgil\n'
+            f'160000 {OTHER} 3\tvendor/virgil\n')
+    subprocess.run(['git', '-C', str(root), 'update-index', '--index-info'],
+                   input=info, check=True, capture_output=True, text=True)
+
+
 def sources(notices=FULL, abbrev=ABBREV, full=FULL, corpus=FULL):
     return {
         'THIRD_PARTY_NOTICES.md': notices,
@@ -167,19 +182,28 @@ class RepositoryTest(unittest.TestCase):
 
     def test_staged_bump_records_updated(self):
         write_tree(self.root, notices=OTHER, abbrev=OTHER_ABBREV, full=OTHER, corpus=OTHER)
-        init_repo(self.root, OTHER)
+        init_repo(self.root, FULL)
+        stage_bump(self.root, OTHER)
         self.assertEqual(pin.read_gitlink(self.root), OTHER)
         self.assertEqual(pin.check(OTHER, sources(notices=OTHER, abbrev=OTHER_ABBREV,
                                                   full=OTHER, corpus=OTHER)), [])
 
     def test_staged_bump_stale_records(self):
-        write_tree(self.root)  # records still name FULL
-        init_repo(self.root, OTHER)  # staged gitlink is OTHER
+        write_tree(self.root)  # records still name FULL, which equals HEAD
+        init_repo(self.root, FULL)
+        stage_bump(self.root, OTHER)  # staged gitlink is OTHER
         self.assertEqual(pin.read_gitlink(self.root), OTHER)
         problems = pin.check(OTHER, sources())
         self.assertEqual(len(problems), 4)
         for name in ('THIRD_PARTY_NOTICES.md', 'link text', 'URL', 'corpus.json'):
             self.assertTrue(any(name in p for p in problems), problems)
+
+    def test_unmerged_gitlink_fails(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        unmerged_gitlink(self.root)
+        with self.assertRaises(pin.PinError):
+            pin.read_gitlink(self.root)
 
     def test_stale_link_text(self):
         write_tree(self.root, abbrev=OTHER_ABBREV, full=FULL)
@@ -225,6 +249,39 @@ class CommandLineTest(unittest.TestCase):
         result = run_cli(self.root)
         self.assertEqual(result.returncode, 0)
         self.assertIn('skipped: no Git metadata', result.stdout)
+
+    def test_staged_bump_updated_records(self):
+        write_tree(self.root, notices=OTHER, abbrev=OTHER_ABBREV, full=OTHER, corpus=OTHER)
+        init_repo(self.root, FULL)
+        stage_bump(self.root, OTHER)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(f'Virgil pin agrees everywhere: {OTHER}', result.stdout)
+
+    def test_staged_bump_stale_records(self):
+        write_tree(self.root)  # records name FULL, which equals HEAD
+        init_repo(self.root, FULL)
+        stage_bump(self.root, OTHER)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 1)
+        for name in ('THIRD_PARTY_NOTICES.md', 'link text', 'URL', 'corpus.json'):
+            self.assertIn(name, result.stdout)
+
+    def test_stale_link_text_alone(self):
+        write_tree(self.root, abbrev=OTHER_ABBREV, full=FULL)
+        init_repo(self.root, FULL)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('link text', result.stdout)
+        self.assertNotIn('URL', result.stdout)
+
+    def test_unmerged_gitlink_fails(self):
+        write_tree(self.root)
+        init_repo(self.root, FULL)
+        unmerged_gitlink(self.root)
+        result = run_cli(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('unmerged', result.stdout)
 
 
 if __name__ == '__main__':

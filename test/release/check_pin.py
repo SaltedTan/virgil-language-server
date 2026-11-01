@@ -39,6 +39,10 @@ CORPUS = ROOT / 'test' / 'benchmarks' / 'corpus.json'
 HEX = r'[0-9a-f]'
 
 
+class PinError(Exception):
+    """A hard failure reading the pin, reported as a failure rather than a skip."""
+
+
 def extract_notices(text):
     """The pinned revision from `THIRD_PARTY_NOTICES.md`, a full SHA in backticks."""
     match = re.search(r'Pinned revision\s*\|\s*`(' + HEX + r'{7,40})`', text)
@@ -108,13 +112,15 @@ def _git(root, *args):
 
 
 def read_gitlink(root):
-    """The `vendor/virgil` gitlink from the index, or `None` to skip.
+    """The `vendor/virgil` gitlink from the index, `None` to skip, or a `PinError`.
 
     Reads the gitlink from the index, not `HEAD`, so a staged pin bump can be
     validated before it is committed; falls back to `HEAD` only where there is
-    no index entry. Returns `None` when `root` is not itself the top of a
+    no index entry at all. Returns `None` when `root` is not itself the top of a
     repository (a standalone export, or a tree inside another repository), so
-    the caller skips rather than reading a parent repository's pin.
+    the caller skips rather than reading a parent repository's pin. Raises
+    `PinError` for an unmerged or malformed gitlink, which is a failure, not an
+    agreement.
     """
     root = Path(root).resolve()
     toplevel = _git(root, 'rev-parse', '--show-toplevel')
@@ -123,20 +129,32 @@ def read_gitlink(root):
     if Path(toplevel.stdout.strip()).resolve() != root:
         return None
     tree = _git(root, 'ls-files', '-s', 'vendor/virgil')
-    if tree.returncode == 0:
-        match = re.fullmatch(r'160000 (' + HEX + r'{40}) 0\tvendor/virgil', tree.stdout.strip())
-        if match:
-            return match.group(1)
-    head = _git(root, 'rev-parse', 'HEAD:vendor/virgil')
-    if head.returncode == 0 and re.fullmatch(HEX + r'{40}', head.stdout.strip()):
-        return head.stdout.strip()
-    return None
+    if tree.returncode != 0:
+        raise PinError(f'cannot read the vendor/virgil index: {tree.stderr.strip()}')
+    lines = [line for line in tree.stdout.splitlines() if line.strip()]
+    if not lines:
+        head = _git(root, 'rev-parse', 'HEAD:vendor/virgil')
+        if head.returncode == 0 and re.fullmatch(HEX + r'{40}', head.stdout.strip()):
+            return head.stdout.strip()
+        return None
+    if len(lines) > 1:
+        raise PinError('vendor/virgil has more than one index entry (unmerged)')
+    match = re.fullmatch(r'160000 (' + HEX + r'{40}) (0|[1-9])\tvendor/virgil', lines[0])
+    if not match:
+        raise PinError(f'malformed vendor/virgil index entry: {lines[0]!r}')
+    if match.group(2) != '0':
+        raise PinError(f'vendor/virgil index entry is not stage 0 (unmerged, stage {match.group(2)})')
+    return match.group(1)
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     root = Path(argv[0]) if argv else ROOT
-    gitlink = read_gitlink(root)
+    try:
+        gitlink = read_gitlink(root)
+    except PinError as error:
+        print(f'Virgil pin check failed: {error}')
+        return 1
     if gitlink is None:
         print(f'skipped: no Git metadata for {root}')
         return 0
