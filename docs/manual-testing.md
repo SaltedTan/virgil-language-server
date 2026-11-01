@@ -56,7 +56,7 @@ For optional manual checks, try each selected setup with each feature: diagnosti
 | Neovim, plain configuration | Linux x86-64, locally or over SSH | `x86-64-linux` | Headless Neovim test |
 | Neovim, plain configuration | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Headless Neovim test |
 | Neovim, plain configuration | WSL 2 | `x86-64-linux` | None |
-| LazyVim | Linux x86-64 or macOS | As for Neovim | Scripted LazyVim test: in CI on Linux with Neovim 0.11.6, not yet required; weekly and for each release, on Linux with Neovim 0.11.6 and 0.12.6 and on macOS with Homebrew Neovim |
+| LazyVim | Linux x86-64 or macOS | As for Neovim | Scripted LazyVim test: in CI on Linux with Neovim 0.11.6; weekly and for each release, on Linux with Neovim 0.11.6 and 0.12.6 and on macOS with Homebrew Neovim |
 | LazyVim | WSL 2 | `x86-64-linux` | None |
 
 [Where the server runs](compatibility.md#where-the-server-runs) explains the remote setups.
