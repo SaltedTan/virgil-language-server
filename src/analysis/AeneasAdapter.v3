@@ -119,6 +119,21 @@ class AnalysisFlaggedDeclaration extends AnalysisDeclaration {
 	def flagged() -> bool { return true; }
 }
 
+// A snapshot's declaration that has a leading comment, whose lines are the
+// bytes {commentBegin} to {commentEnd} of its file's text as the analysis
+// read it (AnalysisDeclarationComments). Only such a declaration takes the
+// two ints. See docs/architecture.md#hover.
+class AnalysisDocumentedDeclaration extends AnalysisDeclaration {
+	var commentBegin: int;
+	var commentEnd: int;
+	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange) super(kind, name, range) { }
+}
+// A documented declaration with the flag set.
+class AnalysisFlaggedDocumentedDeclaration extends AnalysisDocumentedDeclaration {
+	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange) super(kind, name, range) { }
+	def flagged() -> bool { return true; }
+}
+
 // A source use that verification resolved to a declaration in the program.
 // {range} is a token span; see docs/architecture.md#compiler-adapter.
 // {useType} is the text of the use's type where it differs from the
@@ -221,6 +236,9 @@ class ProgramAnalysis {
 	private def buffers = AnalysisCollectorBuffers.new();
 	// The names that the program's files declare, for each file's collector.
 	private var names: AnalysisDeclaredNames;
+	// The leading comments of the declarations, which the parse recorded, or
+	// null if the analysis did not record them.
+	var comments: AnalysisDeclarationComments;
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
@@ -512,7 +530,7 @@ component AeneasAdapter {
 		var syntax = SymbolSyntaxIndex.new();
 		var result = parseWith(path, input, options, syntax);
 		if (result.repairAt >= 0 && result.diagnostics.length > 0) {
-			var walk = AnalysisStatementStart.new(input, syntax.tokens);
+			var walk = AnalysisStatementStart.new(input, syntax);
 			result.statementStart = walk.find(result.repairAt, result.diagnostics[0].beginOffset);
 			result.alternativeAt = walk.alternative;
 		}
@@ -562,23 +580,6 @@ component AeneasAdapter {
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
-	// The leading comment of the declaration of {kind} whose name is the
-	// bytes {begin} to {end} of {input}, as DocumentCommentCollector finds it
-	// in the outline, or null if it has none or the outline cannot place it
-	// unambiguously. A file over DeclarationComments.MAX_INPUT bytes, or one
-	// that does not parse, has none. The parse is released on return.
-	def declarationComment(path: string, input: Array<byte>, options: Array<string>,
-			kind: AnalysisDeclKind, begin: int, end: int) -> string {
-		if (!DeclarationComments.documents(kind) || begin < 0 || input.length > DeclarationComments.MAX_INPUT) return null;
-		var normalized = normalizeLineTerminators(input);
-		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
-		setLanguageOptions(options);
-		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
-		resetLanguageOptions();
-		if (errors.numErrors > 0) return null;
-		var symbols = DocumentSymbolCollector.new(file, syntax).collect();
-		return DocumentCommentCollector.new(normalized, syntax.tokens).find(symbols, kind, begin, end);
-	}
 	// Foldable brace blocks and comments from the current text, without
 	// verification. A failed parse keeps only what ends before its first
 	// error; an error whose position the parser could not resolve drops
@@ -594,7 +595,7 @@ component AeneasAdapter {
 			if (errors.offsets.length == 0 || errors.offsets[0].0 < 0) return [];
 			cutoff = errors.offsets[0].0;
 		}
-		return DocumentFoldingCollector.new(normalized, syntax.tokens, cutoff).collect();
+		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
 	// All positions share one current-text parse and one syntax index. Only
 	// token recovery after the first error uses a conservative lexer.
@@ -609,13 +610,19 @@ component AeneasAdapter {
 		var symbols = DocumentSymbolCollector.new(file, syntax);
 		symbols.partial = cutoff >= 0;
 		if (cutoff >= 0) symbols.cutoff = cutoff;
-		return DocumentSelectionCollector.new(input, syntax.tokens, cutoff, symbols.collect()).collect(positions);
+		return DocumentSelectionCollector.new(input, syntax, cutoff, symbols.collect()).collect(positions);
 	}
 	// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
 	// line terminators the compiler understands; never mutate the overlay.
 	private def normalizeLineTerminators(input: Array<byte>) -> Array<byte> {
-		var normalized = Array<byte>.new(input.length);
-		for (i < input.length) normalized[i] = if(input[i] == '\r',
+		return normalizedRange(input, 0, input.length);
+	}
+	// The bytes {begin} to {end} of {input}, normalized as a parse of all of
+	// {input} reads them: a CR before an LF becomes a space, and any other CR
+	// an LF.
+	def normalizedRange(input: Array<byte>, begin: int, end: int) -> Array<byte> {
+		var normalized = Array<byte>.new(end - begin);
+		for (i = begin; i < end; i++) normalized[i - begin] = if(input[i] == '\r',
 			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
 		return normalized;
 	}
@@ -752,7 +759,9 @@ component AeneasAdapter {
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
 		var syntax = if(scoped, OrderedStringMap<SymbolSyntaxIndex>.new());
-		var parseErrors = parseProgram(prog, coordinates, syntax);
+		var comments = AnalysisDeclarationComments.new();
+		var parseErrors = parseProgram(prog, coordinates, syntax, comments);
+		comments.release();
 		var parsed = prog.ERROR.noErrors;
 		var t1 = System.ticksUs();
 		// Compilation.compile() skips verification after a parse error, and so
@@ -776,20 +785,34 @@ component AeneasAdapter {
 		diagnostics = capDiagnostics(diagnostics);
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
-		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax);
-		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
+		var analysis: ProgramAnalysis = if(scoped, AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax),
+			ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog));
+		analysis.comments = comments;
+		return analysis;
 	}
-	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: OrderedStringMap<SymbolSyntaxIndex>) -> AnalysisParseErrors {
+	// Parses each file, and records the leading comments of the declarations
+	// of each that parses (AnalysisDeclarationComments) until one does not:
+	// after a parse error, no declaration is sent. An analysis with a scope
+	// query keeps each file's index in {syntax}; another records each file's
+	// spans in the one index that {comments} reuses, and none for a file
+	// whose comments it does not record.
+	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: OrderedStringMap<SymbolSyntaxIndex>,
+			comments: AnalysisDeclarationComments) -> AnalysisParseErrors {
 		var errors = AnalysisParseErrors.new(prog.ERROR.maxErrors);
 		prog.vst = VstModule.new();
 		var files = Vector<VstFile>.new().grow(prog.files.length);
+		if (syntax == null) comments.reserve(prog.inputs);
 		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
-			var index = if(syntax != null, SymbolSyntaxIndex.new());
+			var input = prog.inputs[i];
+			var record = errors.numErrors == 0 && input.length <= DeclarationComments.MAX_INPUT;
+			var index = if(syntax != null, SymbolSyntaxIndex.new(), if(record, comments.reuse()));
 			if (syntax != null) syntax.add(prog.files[i], index);
 			var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
-			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, index,
-				prog.typeCache, coordinates.capture(prog.files[i])));
-			if (BenchProbe.enabled) BenchProbe.parsedFile(i, prog.inputs[i].length, BenchProbe.now() - start);
+			var file = AnalysisSingleFileParser.parse(prog.files[i], input, errors, index,
+				prog.typeCache, coordinates.capture(prog.files[i]));
+			files.put(file);
+			if (BenchProbe.enabled) BenchProbe.parsedFile(i, input.length, BenchProbe.now() - start);
+			if (record && errors.numErrors == 0) comments.add(prog.files[i], input, file, index);
 		}
 		prog.vst.files = files.extract();
 		prog.ERROR.copy(errors);

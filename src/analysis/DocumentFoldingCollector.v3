@@ -20,7 +20,7 @@ component AnalysisFoldingKind {
 // character literals, and comments are never tokens. {cutoff} is the byte
 // offset of the parser's first error, or -1 if it parsed; nothing at or after
 // it is folded. See docs/architecture.md#folding-ranges.
-class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>, cutoff: int) {
+class DocumentFoldingCollector(input: Array<byte>, syntax: SymbolSyntaxIndex, cutoff: int) {
 	// The ranges in byte order of their starts.
 	def collect() -> Array<AnalysisFoldingRange> {
 		var result = Vector<AnalysisFoldingRange>.new();
@@ -29,10 +29,10 @@ class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 		if (cutoff >= 0 && cutoff < max) max = cutoff;
 		var i = 0, ti = 0, line = 0, lineStart = 0;
 		while (i < max) {
-			while (ti < tokens.length && tokens[ti].end <= i) ti++;
-			if (ti < tokens.length && i >= tokens[ti].begin) {
-				if (i == tokens[ti].begin) brace(result, open, ti, lineStart);
-				var end = if(tokens[ti].end < max, tokens[ti].end, max);
+			while (ti < syntax.count && syntax.end(ti) <= i) ti++;
+			if (ti < syntax.count && i >= syntax.begin(ti)) {
+				if (i == syntax.begin(ti)) brace(result, open, ti, lineStart);
+				var end = if(syntax.end(ti) < max, syntax.end(ti), max);
 				while (i < end) {
 					if (input[i] == '\n') {
 						line++;
@@ -70,7 +70,7 @@ class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 	}
 	// Comments may inspect only the gap before the next consumed span.
 	private def gapEnd(ti: int, max: int) -> int {
-		return if(ti < tokens.length && tokens[ti].begin < max, tokens[ti].begin, max);
+		return if(ti < syntax.count && syntax.begin(ti) < max, syntax.begin(ti), max);
 	}
 	// Pairs consumed single-byte braces. A pair starts on the line of its '{'
 	// and ends on the line before its '}', so that the '}' stays visible and
@@ -82,12 +82,12 @@ class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 		} else if (c == '}' && open.length > 0) {
 			var o = open[open.length - 1];
 			open.length--;
-			var startLine = tokens[o].line - 1, endLine = tokens[i].line - 2;
+			var startLine = syntax.line(o) - 1, endLine = syntax.line(i) - 2;
 			if (endLine <= startLine) return;
 			// The end is the line terminator before this line, whose offset
 			// maps to the last character of the range's end line.
 			result.put(AnalysisFoldingRange.new(AnalysisFoldingKind.CODE, startLine, endLine,
-				tokens[o].begin + 1, lineStart - 1));
+				syntax.begin(o) + 1, lineStart - 1));
 		}
 	}
 	// Consumes the line comment at {start} and the lines after it that each
@@ -144,8 +144,7 @@ class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 		return true;
 	}
 	private def ch(i: int) -> byte {
-		var t = tokens[i];
-		return if(t.end - t.begin == 1, input[t.begin], 0);
+		return syntax.single(input, i);
 	}
 	private def sorted(v: Vector<AnalysisFoldingRange>) -> Array<AnalysisFoldingRange> {
 		var a = v.extract();

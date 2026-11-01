@@ -33,15 +33,15 @@ enum AnalysisBraceKind {
 // only statement end that takes a value, so before the `if` come only control
 // headers, and after it only suffixes and operators. If a ";" before that
 // token also proves, the caller can't tell which ";" is missing.
-class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
+class AnalysisStatementStart(input: Array<byte>, tokens: SymbolSyntaxIndex) {
 	// After {find}, the offset of the token where a ";" could also end the
 	// statement, or -1.
 	var alternative = -1;
 	// The start offset of the statement that a ";" at {end} would end, or -1.
 	// {error} is the offset of the parser's first error.
 	def find(end: int, error: int) -> int {
-		var last = tokens.length;
-		while (last > 0 && tokens[last - 1].end > end) last--;
+		var last = tokens.count;
+		while (last > 0 && tokens.end(last - 1) > end) last--;
 		var i = last, boundary = -1, conditional = -1;
 		while (i > 0) {
 			var c = single(--i);
@@ -73,16 +73,16 @@ class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToke
 			}
 		}
 		var start = boundary + 1;
-		if (start >= last || !canStart(tokens[start])) return -1;
-		var t = tokens[last - 1];
-		if (last - 1 > start && step(t) && !lineBreak(t.end, error)) alternative = t.begin;
-		else if (conditional > start) alternative = tokens[conditional].begin;
-		return tokens[start].begin;
+		if (start >= last || !canStart(start)) return -1;
+		var t = last - 1;
+		if (t > start && step(t) && !lineBreak(tokens.end(t), error)) alternative = tokens.begin(t);
+		else if (conditional > start) alternative = tokens.begin(conditional);
+		return tokens.begin(start);
 	}
 	// Whether the token is "++" or "--".
-	private def step(t: SymbolSyntaxToken) -> bool {
-		var c = input[t.begin];
-		return t.end - t.begin == 2 && (c == '+' || c == '-') && input[t.begin + 1] == c;
+	private def step(i: int) -> bool {
+		var b = tokens.begin(i), c = input[b];
+		return tokens.end(i) - b == 2 && (c == '+' || c == '-') && input[b + 1] == c;
 	}
 	// Whether a line ends between {from} and {to}.
 	private def lineBreak(from: int, to: int) -> bool {
@@ -164,31 +164,30 @@ class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToke
 	// Whether the token can begin a statement, a declaration, or a match arm:
 	// a name or keyword, "_", a literal, "(", "[", or a prefix "!", "~", "++",
 	// or "--". A layout field's "+" is not one of them.
-	private def canStart(t: SymbolSyntaxToken) -> bool {
-		var c = input[t.begin], n = t.end - t.begin;
+	private def canStart(i: int) -> bool {
+		var b = tokens.begin(i), c = input[b], n = tokens.end(i) - b;
 		if (Char.isIdentStart(c) || Char.isDecimal(c) || c == '_' || c == '\'' || c == '\"') return true;
 		if (n == 1) return c == '(' || c == '[' || c == '!' || c == '~';
-		var d = input[t.begin + 1];
+		var d = input[b + 1];
 		if (n == 2 && (c == '+' || c == '-') && d == c) return true;
 		return c == '-' && Char.isDecimal(d);
 	}
 	// The token's byte if it is one byte long, or 0.
 	private def single(i: int) -> byte {
 		if (i < 0) return 0;
-		var t = tokens[i];
-		return if(t.end - t.begin == 1, input[t.begin]);
+		return tokens.single(input, i);
 	}
 	private def arrow(i: int) -> bool {
-		var t = tokens[i];
-		return t.end - t.begin == 2 && input[t.begin] == '=' && input[t.begin + 1] == '>';
+		var b = tokens.begin(i);
+		return tokens.end(i) - b == 2 && input[b] == '=' && input[b + 1] == '>';
 	}
 	// Whether the token at {i} is the keyword {kw}. After ".", a keyword
 	// spelling is a member name, as in `C.new`.
 	private def keyword(i: int, kw: string) -> bool {
 		if (i < 0) return false;
-		var t = tokens[i];
-		if (t.end - t.begin != kw.length) return false;
-		for (n < kw.length) if (input[t.begin + n] != kw[n]) return false;
+		var b = tokens.begin(i);
+		if (tokens.end(i) - b != kw.length) return false;
+		for (n < kw.length) if (input[b + n] != kw[n]) return false;
 		return single(i - 1) != '.';
 	}
 }

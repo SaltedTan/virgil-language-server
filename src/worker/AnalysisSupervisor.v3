@@ -48,6 +48,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private var deadline: int;
 	private var request: Range<byte>;
 	private var paths: Array<string>;
+	// The byte length of each of the request's sources, which bounds its
+	// declarations' offsets in the result.
+	private var lengths: Array<int>;
 	private var activeId: int;
 	private var pending: bool;
 	// The pending analysis's snapshot is not kept as {snapshot}.
@@ -101,7 +104,12 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		}
 		activeId = id;
 		paths = Array<string>.new(sources.length);
-		for (i < paths.length) paths[i] = sources[i].path;
+		lengths = Array<int>.new(sources.length);
+		for (i < paths.length) {
+			paths[i] = sources[i].path;
+			// A missing capture is empty source, as in analyzeProgram.
+			lengths[i] = if(sources[i].input != null, sources[i].input.length);
+		}
 		var encodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
 		if (BenchProbe.enabled) {
@@ -167,7 +175,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 				}
 				var result: AnalysisWorkerResult;
 				var decodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
-				match (AnalysisWire.decodeResultWithin(payload, generation + 1, paths, queryKinds, budget())) {
+				match (AnalysisWire.decodeResultWithin(payload, generation + 1, paths, lengths, queryKinds, budget())) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {
 						if (id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
@@ -233,6 +241,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		queryOnly = false;
 		request = null;
 		paths = null;
+		lengths = null;
 	}
 	private def sendRequest() {
 		deadline = System.ticksMs() + limits.timeoutMs;
