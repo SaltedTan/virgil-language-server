@@ -508,6 +508,93 @@ need a compiler change to copy or reset trees, whose cost could consume much of
 that ceiling, for at most 8% of an Aeneas edit. Those other phases are the
 better targets.
 
+### Source capture's read and hash (2026-11-01)
+
+Measured on 2026-11-01 for [#413](https://github.com/SaltedTan/virgil-language-server/issues/413),
+a follow-up to the [unchanged-file parse work](#unchanged-file-parse-work-2026-11-01)
+above, which found source capture to be most of the server's `prepare_us`.
+Capture rereads and rehashes every closed project file before each analysis.
+The `capture_read_us` and `capture_hash_us` probes [above](#phases-allocation-and-output)
+split it into reading each source and hashing the closed files' text. The
+"before" build is main `f3cf0707` with only those probes added (`28a99d07`);
+the "after" build is `30c11dff`, which also changes how a closed file is read.
+Both were built in this physical checkout, in equal-length `build/b413b` and
+`build/a413b` directories, with `BENCH=1 all bench-metadata` and byte-identical
+generated BuildInfo text (revision `p413-f3cf07078000`). SHA-256 hashes: before
+server `ff584a7190a95c211aa1614308b7cc94c4593ad7a4dcdd5bf708dd43a6a40741`, after
+server `c2de4625c6e6922e0266ef836a7a97aac6c4bfb45dd5188cbcbb1541b8d03e9a`, and
+the same worker in both,
+`f076af16fca072907c5e773de36d1ff29d74be57f046eb4a86612f2840e183e5`. The run held
+the shared benchmark lock and ran on hardware thread 12, with every semantic
+check passing and no samples removed:
+
+```sh
+python3 scripts/bench-lsp.py --exe build/b413b/virgil-lsp --exe build/a413b/virgil-lsp --parse-work \
+  --blocks 6 --operations 5 --warmups 2 --cpu 12 --require-probes \
+  --output build/bench-results/source-capture.json
+```
+
+**Hashing.** Before the change, hashing was 2.388 ms of Aeneas's 12.755 ms
+capture (p50), 19%, and 0.131 of util's 1.093 ms, 12%. That is less than a
+third of capture, so the hash, a byte-at-a-time 64-bit FNV-1a, is unchanged.
+
+**Reading.** Reading was 9.059 ms of the 12.755 ms. A closed file was read in
+4,096-byte chunks, each appended to a `StringBuilder` one byte at a time, and
+the result was then copied out of the builder. A scratch program that reads the
+same 205 Aeneas files (3,064,615 bytes) as `ProjectFiles.load` does, pinned to
+the same hardware thread, took 11.0 ms per pass over them that way. Of that,
+1.6 ms opened each file one path component at a time and closed it again,
+which the change keeps for its symlink policy. Opening, `fstat`, and reads into
+an array of the length `fstat` reported took 1.9 ms. Copying, not the system
+calls, dominated. `ProjectFiles.load` now reads into an array of `fstat`'s
+length, so a file whose length holds costs one read, one end-of-file read, and
+no copy; the same program took 2.5 ms per pass through the new `load`. A file
+that shrinks between `fstat` and the read yields the bytes that remain, and one
+that grows is read to its end in chunks within the same budget, as before.
+
+Each cell is **p50 / p95, in milliseconds**, over all 210 measured samples of
+the seven scenarios for each project and build, with the percentile definition
+[above](#phases-allocation-and-output):
+
+| Project | Build | `capture_read_us` | `capture_hash_us` | `capture_us` | `prepare_us` |
+| --- | --- | ---: | ---: | ---: | ---: |
+| small | before | 0.015 / 0.044 | 0.001 / 0.005 | 0.028 / 0.067 | 0.053 / 0.089 |
+| small | after | 0.014 / 0.045 | 0.001 / 0.005 | 0.028 / 0.067 | 0.051 / 0.090 |
+| util | before | 0.737 / 0.817 | 0.131 / 0.144 | 1.093 / 1.199 | 1.212 / 1.403 |
+| util | after | 0.331 / 0.390 | 0.132 / 0.147 | 0.693 / 0.798 | 0.813 / 0.952 |
+| Aeneas | before | 9.059 / 14.864 | 2.388 / 3.799 | 12.755 / 20.385 | 13.309 / 21.091 |
+| Aeneas | after | 2.272 / 20.477 | 2.412 / 2.724 | 6.080 / 24.386 | 6.612 / 24.866 |
+
+Each Aeneas scenario's p50 agrees with the pooled one within 0.6 ms, except
+the after build's `body_edit` at 8.019 ms, explained next. The higher Aeneas p95
+after the change is the server's garbage collection, which now sometimes falls
+within capture. Capture allocates each file's bytes once, rather than into a
+builder that grows by doubling and is then copied out, so the server collects
+less often, but the 3 MB it still allocates can use up its heap's room. In the
+before build, the server collected after
+submitting the request in 102 of the 210 Aeneas samples. In the after build it
+did in 30, and in 30 others capture took about 20 ms instead of 6, 12 of
+them among the 30 `body_edit` samples. A scratch
+build that also counted collections during capture, run for one Aeneas block,
+found exactly one in each such sample and none in any other. Mean Aeneas
+capture fell from 13.524 to 8.779 ms, and mean `prepare_us` from 14.058 to
+9.303 ms. Round trips, at about 330 and 530 ms, moved by no more than this
+run's spread.
+
+After the change, hashing is 2.412 ms of Aeneas's 6.080 ms capture, 40%.
+Reusing a closed file's bytes and hash across analyses would avoid both, but
+it isn't done: keyed on the disk stamp, it would analyze stale text for a
+client that doesn't report file changes.
+
+**Observer cost.** A separate run under the same lock alternated main
+`f3cf0707` with the probed build. Their `capture_us` p50s agreed within 0.24 ms
+for every Aeneas scenario, which is within the noise of either direction,
+within 0.03 ms for util, and within 2 µs for small. Ordinary builds of
+`f3cf0707` and `30c11dff`, in `build/b413n` and `build/a413n`, contain no
+capture probe name and have byte-identical workers; the workers' RESULT frames,
+compared as for [#380](#worker-heap-room-2026-10-31), were identical for all 22
+corpus requests.
+
 ## Compare builds
 
 Use the same host, CPU affinity, corpus, compiler, flags, and heap sizes. Use
