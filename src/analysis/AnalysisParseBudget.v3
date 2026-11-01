@@ -3,12 +3,13 @@
 
 // Bounds the server's own parse of one document's text, behind its outline,
 // folding ranges, and selection ranges (AeneasAdapter.outline, which
-// documentSymbols wraps, foldingRanges, and selectionRanges). That parse runs
-// in the server, not the analysis worker, and its syntax tree and index grow
+// documentSymbols wraps, foldingRanges, and selectionRanges), and the semicolon
+// quick fix (LspCodeActions). That parse runs in the server, not the analysis
+// worker, and its syntax tree and index grow
 // with the tokens it reads, whatever their bytes: a 1 MiB document of
 // "var a,a,a,..." exhausted the server's heap. So, before parsing, a pass
-// that allocates nothing counts the tokens as the parser's lexer separates
-// them, and a document with more than {maxTokens} is not parsed. See
+// that allocates nothing conservatively counts the parser's tokens, and a
+// document with more than {maxTokens} is not parsed. See
 // docs/architecture.md#document-symbols.
 component AnalysisParseBudget {
 	// The densest text, lists such as "(a,a,a,...)" with a token in each byte,
