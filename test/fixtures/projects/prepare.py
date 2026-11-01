@@ -428,13 +428,15 @@ for _ in range(65):
     deep /= "d"
 deep.mkdir(parents=True, exist_ok=True)
 (deep / "Deep.v3").write_text("def deep = 1;\n", encoding="utf-8")
-# ProjectExpansionTest's path_budget walks a chain of 16 directories with
-# 200-byte names, and its discovery_depth discovers a project file 64
+# ProjectExpansionTest's path_budget walks 95 empty directories with 255-byte
+# names below a 200-byte one, so that each path stays far below macOS's
+# 1,024-byte limit, and its discovery_depth discovers a project file 64
 # directories down but not the one 65 down.
 path_budget = root / "path-budget"
-for _ in range(16):
-    path_budget /= "d" * 200
-path_budget.mkdir(parents=True, exist_ok=True)
+if path_budget.exists():
+    shutil.rmtree(path_budget)
+for index in range(95):
+    (path_budget / ("d" * 200) / (f"{index:02d}" + "d" * 253)).mkdir(parents=True)
 discovery_depth = root / "discovery-depth"
 for depth in range(1, 66):
     discovery_depth /= "d"

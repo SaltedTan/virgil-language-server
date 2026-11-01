@@ -467,42 +467,74 @@ def test_invalid_compiler_flags(t: Tester) {
 		"UnsupportedCompilerFlag:\"-O2\" | UnsupportedCompilerFlag:\"-lang:descriptors=false\"");
 }
 
-// The table under "### Compiler flags" in docs/configuration.md, as one
-// "<name>=<default>" entry per row, in the table's order.
-def documentedFlags(t: Tester) -> Array<string> {
-	var path = ProjectTestFiles.repository("docs/configuration.md"), text = System.fileLoad(path);
-	if (text == null) {
-		t.fail1("cannot read %s", path);
-		return [];
-	}
-	var rows = Vector<string>.new(), inSection = false;
-	for (line in Strings.split(text, "\n", -1)) {
-		if (Strings.startsWith(line, "#")) inSection = Strings.equal(line, "### Compiler flags");
-		if (!inSection || !Strings.startsWith(line, "| `-lang:")) continue;
-		// | `-lang:<name>` | `<default>` | <notes> |
-		var cells = Strings.split(line, "|", -1);
-		var name = code(t, cells[1]), value = code(t, cells[2]);
-		if (name == null || value == null) continue;
-		rows.put(Strings.format2("%s=%s", Arrays.range(name, 6, name.length), value));
-	}
-	return rows.extract();
+// {text} without its leading and trailing spaces and tabs.
+def trim(text: string) -> string {
+	var begin = 0, end = text.length;
+	while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) begin++;
+	while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) end--;
+	return Arrays.range(text, begin, end);
 }
-// The text of {cell}, a table cell holding one code span: " `text` ".
-def code(t: Tester, cell: string) -> string {
-	if (cell.length < 4 || cell[0] != ' ' || cell[1] != '`' || cell[cell.length - 2] != '`' || cell[cell.length - 1] != ' ') {
+// Whether {cell}, trimmed, is part of a table's alignment row, such as ":---".
+def alignment(cell: string) -> bool {
+	if (cell.length == 0) return false;
+	for (c in cell) { if(c != '-' && c != ':') return false; }
+	return true;
+}
+// The text of {cell}, a trimmed table cell holding one code span, or null.
+def codeSpan(t: Tester, cell: string) -> string {
+	if (cell.length < 2 || cell[0] != '`' || cell[cell.length - 1] != '`') {
 		t.fail1("expected a code span in the compiler flags table, got %q", Strings.puts(cell));
 		return null;
 	}
-	return Arrays.range(cell, 2, cell.length - 2);
+	return trim(Arrays.range(cell, 1, cell.length - 1));
+}
+// The table under "### Compiler flags" in the Markdown {text}, with one
+// "<name>=<default>\n" line for each of its rows, in order. Spacing around
+// cells and rows, the header, and the alignment row don't matter.
+def flagTable(t: Tester, text: string) -> string {
+	var rows = StringBuilder.new(), inSection = false, header = true;
+	for (raw in Strings.split(text, "\n", -1)) {
+		var line = trim(raw);
+		if (Strings.startsWith(line, "#")) {
+			inSection = Strings.equal(line, "### Compiler flags");
+			header = true;
+		}
+		if (!inSection || !Strings.startsWith(line, "|")) continue;
+		// | `-lang:<name>` | `<default>` | <notes> |
+		var cells = Strings.split(line, "|", -1);
+		for (i < cells.length) cells[i] = trim(cells[i]);
+		if (header || cells.length < 3 || alignment(cells[1])) {
+			header = false;
+			continue;
+		}
+		var name = codeSpan(t, cells[1]), value = codeSpan(t, cells[2]);
+		if (name == null || value == null) continue;
+		if (!Strings.startsWith(name, "-lang:")) {
+			t.fail1("expected a -lang: flag in the compiler flags table, got %q", Strings.puts(name));
+			continue;
+		}
+		rows.put2("%s=%s\n", Arrays.range(name, 6, name.length), value);
+	}
+	return rows.extract();
 }
 // The compiler flags table in docs/configuration.md lists exactly the pinned
 // compiler's language options, in declaration order, with their defaults, so
 // that a pin update that changes them must update the table too.
 def test_compiler_flags_table(t: Tester) {
-	var options = AeneasAdapter.languageOptions(), expected = StringBuilder.new(), documented = StringBuilder.new();
-	for (o in options) expected.put2("%s=%z\n", o.0, o.1);
-	for (row in documentedFlags(t)) documented.put1("%s\n", row);
-	t.assert_string(expected.extract(), documented.extract());
+	// Spacing that renders the same table doesn't matter.
+	t.assert_string("a=true\nb=false\n", flagTable(t, cat([
+		"### Compiler flags\n\n",
+		"|  Flag | Default |  Notes |\n",
+		"|:---|---:|  --- |\n",
+		"|  `-lang:a`   |  `true`|x|\n",
+		"   | `-lang:b`\t| ` false ` |  \n",
+		"\n### Target  \n",
+		"| Flag | Default |\n| --- | --- |\n| `-lang:c` | `true` |\n"])));
+	var path = ProjectTestFiles.repository("docs/configuration.md"), text = System.fileLoad(path);
+	if (text == null) return t.fail1("cannot read %s", path);
+	var expected = StringBuilder.new();
+	for (o in AeneasAdapter.languageOptions()) expected.put2("%s=%z\n", o.0, o.1);
+	t.assert_string(expected.extract(), flagTable(t, text));
 }
 
 // The file is data: it names files to read and language options from a fixed
