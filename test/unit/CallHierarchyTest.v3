@@ -821,8 +821,8 @@ def outlines_per_reply(t: Tester) {
 def parse_budget(t: Tester) {
 	var p = program(t, [GEOMETRY, CALLER], [], true);
 	var use = method(1, "Caller", "use", "def use", 4, "; }", "def use() -> int");
-	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(CALLER, int.max);
-	t.assert(AnalysisParseBudget.count(GEOMETRY, int.max) > AnalysisParseBudget.maxTokens, "a.v3 is refused");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(CALLER, int.max, false);
+	t.assert(AnalysisParseBudget.count(GEOMETRY, int.max, false) > AnalysisParseBudget.maxTokens, "a.v3 is refused");
 	p.checkCalls("incoming of sum", p.expand(p.item(0, "def sum", 4), true), true, 0, "sum", [call(use, [("Geometry.sum(8", 9)])]);
 	p.checkCalls("outgoing of use", p.expand(p.item(1, "def use", 4), false), false, 1, null,
 		[call(method(0, "", "sum", "sum(x: int", 0, "sum", "def sum(x: int, y: int) -> int"), [("Geometry.sum(8", 9)])]);

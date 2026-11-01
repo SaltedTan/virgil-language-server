@@ -459,7 +459,7 @@ def NESTED = "component C {\n\tdef a() {}\n\tdef b() {}\n}\nclass K {\n\tvar x: 
 // outline as before.
 def test_parse_budget(t: Tester) {
 	// NESTED has 25 tokens.
-	t.asserti(25, AnalysisParseBudget.count(NESTED, int.max));
+	t.asserti(25, AnalysisParseBudget.count(NESTED, int.max, false));
 	for (s in [running(t), flatRunning(t)]) {
 		s.documents.open(URI, "virgil", 1, NESTED);
 		var reply = s.handle(REQUEST);

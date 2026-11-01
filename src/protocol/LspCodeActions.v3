@@ -88,9 +88,9 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 		// in the request, there is nothing to check and no parse to make.
 		if (hasDiagnostics && !hasSemicolonDiagnostic(clientDiagnostics)) return empty();
 		// The parse keeps a syntax index, as an outline's does, so a document
-		// with too many tokens for that parse gets no action
-		// (docs/architecture.md#document-symbols).
-		if (!AnalysisParseBudget.admits(overlay.text)) return empty();
+		// with too many tokens for that parse, which reads the text raw, gets
+		// no action (docs/architecture.md#document-symbols).
+		if (!AnalysisParseBudget.admits(overlay.text, true)) return empty();
 		var options = projects.forDocument(overlay.uri).compilerArgs();
 		var path = DocumentUri.filePath(overlay.uri);
 		var parsed = AeneasAdapter.parseStatement(if(path != null, path, overlay.uri), overlay.text, options);

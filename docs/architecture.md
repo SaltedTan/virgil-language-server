@@ -292,7 +292,8 @@ Otherwise it parses the current text with `AeneasAdapter.parseStatement`, the sa
 driver and active project's [language options](configuration.md#compiler-flags)
 as [parser diagnostics](#parser-diagnostics). That parse keeps a syntax index,
 so a document over the outline's [parse budget](#document-symbols) gets no
-action, `[]`, without it. Only the first error is eligible,
+action, `[]`, without it. The parse reads the text as it is, where a carriage
+return doesn't end a line comment, so the budget counts it the same way. Only the first error is eligible,
 with one of those exact messages and a range intersecting the requested range.
 When client diagnostics are supplied, one must match that error's current
 UTF-16 range, message, and source. That diagnostic is attached unchanged,

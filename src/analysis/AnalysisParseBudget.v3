@@ -23,10 +23,11 @@ component AnalysisParseBudget {
 	// The bound that {admits} applies; tests may lower it.
 	var maxTokens = MAX_TOKENS;
 
-	// Whether {input} has at most {maxTokens} tokens. Each token takes at
-	// least one byte, so a shorter input is not counted.
-	def admits(input: Array<byte>) -> bool {
-		return input.length <= maxTokens || count(input, maxTokens) <= maxTokens;
+	// Whether {input} has at most {maxTokens} tokens, for a parser that reads
+	// it {raw}, or with its line terminators normalized (see {count}). Each
+	// token takes at least one byte, so a shorter input is not counted.
+	def admits(input: Array<byte>, raw: bool) -> bool {
+		return input.length <= maxTokens || count(input, maxTokens, raw) <= maxTokens;
 	}
 	// The message of a request refused because its document's text has more
 	// than {maxTokens} tokens.
@@ -41,9 +42,13 @@ component AnalysisParseBudget {
 	// printable byte, so an operator of two or three bytes counts as two or
 	// three. Whitespace, comments, and the bytes that the parser reports as
 	// invalid characters separate tokens, as Parser.skipToNextToken skips them.
-	// A carriage return ends a line comment or an open literal, as the parser
-	// reads normalized text, where it is a line end.
-	def count(input: Array<byte>, limit: int) -> int {
+	// A carriage return ends an open literal, as the parser's literal readers
+	// reject it either way. It ends a line comment only if not {raw}: a parser
+	// that reads normalized text (AeneasAdapter.normalizedRange) sees it as a
+	// line end, but one that reads the text raw, as the semicolon quick fix's
+	// does, sees an invalid character inside the comment, which runs to the
+	// next line feed.
+	def count(input: Array<byte>, limit: int, raw: bool) -> int {
 		var tokens = 0, i = 0, max = input.length;
 		while (i < max) {
 			var ch = input[i];
@@ -55,7 +60,7 @@ component AnalysisParseBudget {
 				var next = input[i + 1];
 				if (next == '/') {
 					i += 2;
-					while (i < max && !lineEnd(input[i])) i++;
+					while (i < max && input[i] != '\n' && (raw || input[i] != '\r')) i++;
 					continue;
 				}
 				if (next == '*') {
@@ -96,8 +101,8 @@ component AnalysisParseBudget {
 		}
 		return max;
 	}
-	// Whether {ch} ends a line in the text that the parser reads, where a
-	// carriage return is a line feed or, before one, a space.
+	// Whether {ch} ends an open literal: a line feed, or a carriage return,
+	// which the parser's literal readers reject, raw or normalized.
 	private def lineEnd(ch: byte) -> bool {
 		return ch == '\n' || ch == '\r';
 	}

@@ -9,8 +9,10 @@ server process. Before #372, a document just under the 1 MiB overlay limit of
 HeapOverflow. Each method now gets one response for the densest texts with the
 default heap: a reply, or RequestFailed for a document of more than 350,000
 tokens, also when a carriage return ends a line comment that hides the rest.
-The semicolon quick fix, whose parse keeps the same syntax index, offers no
-action for such a document instead of ending the server. Each case is followed
+The semicolon quick fix, whose parse keeps the same syntax index but reads the
+text without normalizing its line terminators, offers no action for such a
+document instead of ending the server, also when a carriage return ends a line
+comment only in normalized text. Each case is followed
 by the same request on a small document, a ping, shutdown, and exit with
 status 0.
 """
@@ -139,8 +141,12 @@ def main():
         for method in METHODS:
             run(exe, name, text, method, refused)
     dense_fix = 'def f(){var x=(' + 'a,' * 523980 + 'a)\n}'
-    assert len(dense_fix) + len(SMALL_FIX) - len(SMALL) <= SIZE
-    run_code_action(exe, dense_fix)
+    # Its parse reads the text raw, where a carriage return doesn't end a line
+    # comment, so the comment hides "/*" from it, but not from normalized text.
+    mixed_fix = '//\r/*\n' + dense_fix
+    for text in (dense_fix, mixed_fix):
+        assert len(text) + len(SMALL_FIX) - len(SMALL) <= SIZE
+        run_code_action(exe, text)
     print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, and a quick fix '
           'refused; then a small document, a ping, shutdown, and exit)' % (len(cases), len(METHODS)))
 

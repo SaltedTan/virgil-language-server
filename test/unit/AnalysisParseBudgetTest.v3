@@ -40,16 +40,33 @@ def count(t: Tester) {
 		("a\xC3\xA9b\x01c", 3)
 	];
 	for (c in cases) {
-		var got = AnalysisParseBudget.count(c.0, int.max);
+		var got = AnalysisParseBudget.count(c.0, int.max, false);
 		if (got != c.1) t.fail3("%s: %d tokens, not %d", c.0, got, c.1);
 	}
+	// Read raw, a carriage return ends no line comment: the comment runs to
+	// the next line feed, or the end.
+	var raw: Array<(string, int, int)> = [
+		// The text, its count normalized, and raw.
+		("//\rvar x;", 3, 0),
+		("// c\r\nvar x;", 3, 3),
+		("//\r/*\nvar x;", 0, 3),
+		("/*\r*/x;//\r\ny;", 4, 4),
+		("//a\r\rb;\nc;", 4, 2),
+		("\"ab\rc\"", 3, 3)
+	];
+	for (c in raw) {
+		var normalized = AnalysisParseBudget.count(c.0, int.max, false), got = AnalysisParseBudget.count(c.0, int.max, true);
+		if (normalized != c.1) t.fail3("%s: %d tokens normalized, not %d", c.0, normalized, c.1);
+		if (got != c.2) t.fail3("%s: %d tokens raw, not %d", c.0, got, c.2);
+	}
 	// Counting stops at the first token past the limit.
-	t.asserti(3, AnalysisParseBudget.count("a b c d e", 2));
-	t.asserti(5, AnalysisParseBudget.count("a b c d e", 5));
+	t.asserti(3, AnalysisParseBudget.count("a b c d e", 2, false));
+	t.asserti(5, AnalysisParseBudget.count("a b c d e", 5, false));
 }
 // The count is never less than the tokens that the parser consumes, as its
-// syntax index records them, from text normalized as the adapter normalizes
-// it, whether the text parses or not.
+// syntax index records them, whether the text parses or not, both from text
+// normalized as the adapter normalizes it and from raw text, as the semicolon
+// quick fix's AeneasAdapter.parseStatement reads it.
 def parser_tokens(t: Tester) {
 	for (text in [
 		"component C {\n\tdef f(x: int) -> int { return x == 0 || x >= 1; }\n\tvar s = \"a // b\", c = '\\'';\n}\n",
@@ -65,35 +82,47 @@ def parser_tokens(t: Tester) {
 		"def f(){var s = \"abc\n}\n", "def f(){var s = \"abc\\", "def f(){var c = 'a\n}\n", "def f(){var c = '",
 		"def f(){var x\xC3\xA9y = 1;}", "def f(){\xFF\x01;}", "def \x80f() {}",
 		"component C {\r\tdef f() {\r\t\tvar s = \"a\r\t}\r}\r", "//\rvar x=(a,a,a);", "var x = 1;\r// c\r\nvar y = 2;\r",
-		"def f(){_a; a_; __; _1;}", "def f(){var x = 1_000 + 0b101 + 0xFFu + 1.5f + 2L;}"
+		"def f(){_a; a_; __; _1;}", "def f(){var x = 1_000 + 0b101 + 0xFFu + 1.5f + 2L;}",
+		// Mixed line endings, where a comment ends differently in each reading.
+		"//\r/*\ndef f(){var x=(a,a,a);}", "//\r/*\ndef f(){var x=(a,a,a)\n}", "/*\r*/def f(){x;}//\r\ndef g(){y;}",
+		"//a\r\rdef f(){b;}\ndef g(){c;}", "// c\r/* d\n*/ def f(){e;}", "def f(){var s = \"a\r\";}\r\n// x\rdef g(){}",
+		"/* a\r\n*/\rdef f(){}\r//\n/*\r*/def g(){}"
 	]) {
 		parsed(t, text);
 	}
 }
-// Parses {text} normalized, as the adapter does, checks that the count is no
-// less than the tokens consumed, and returns the parse's errors.
+// Parses {text} normalized, as the adapter does, and raw, as parseStatement
+// does, checks that each reading's count is no less than the tokens that its
+// parse consumes, and returns the normalized parse's errors.
 def parsed(t: Tester, text: string) -> (int, int) {
-	var normalized = AeneasAdapter.normalizedRange(text, 0, text.length);
+	var result = parsedAs(t, AeneasAdapter.normalizedRange(text, 0, text.length), text, false);
+	parsedAs(t, text, text, true);
+	return result;
+}
+def parsedAs(t: Tester, input: Array<byte>, text: string, raw: bool) -> (int, int) {
 	var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
-	AnalysisSingleFileParser.parse("budget.v3", normalized, errors, syntax, TypeCache.new(), null);
-	var counted = AnalysisParseBudget.count(text, int.max);
-	if (counted < syntax.count) t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+	AnalysisSingleFileParser.parse("budget.v3", input, errors, syntax, TypeCache.new(), null);
+	var counted = AnalysisParseBudget.count(text, int.max, raw);
+	if (counted < syntax.count) {
+		t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+		t.fail1("(read %s)", if(raw, "raw", "normalized"));
+	}
 	return (errors.numErrors, syntax.count);
 }
 def admits(t: Tester) {
 	var text = "component C {\n\tdef f() {}\n}\n";
-	t.asserti(10, AnalysisParseBudget.count(text, int.max));
+	t.asserti(10, AnalysisParseBudget.count(text, int.max, false));
 	AnalysisParseBudget.maxTokens = 10;
-	t.assert(AnalysisParseBudget.admits(text), "ten tokens are admitted");
+	t.assert(AnalysisParseBudget.admits(text, false), "ten tokens are admitted");
 	t.assert_string("the document has more than 10 tokens", AnalysisParseBudget.refusal());
 	AnalysisParseBudget.maxTokens = 9;
-	t.assert(!AnalysisParseBudget.admits(text), "ten tokens are refused");
+	t.assert(!AnalysisParseBudget.admits(text, false), "ten tokens are refused");
 	// A text no longer than the bound is admitted without counting: each
 	// token takes a byte.
 	AnalysisParseBudget.maxTokens = 3;
-	t.assert(AnalysisParseBudget.admits("a,b"), "three bytes");
-	t.assert(!AnalysisParseBudget.admits("a,b,"), "four tokens");
-	t.assert(AnalysisParseBudget.admits("a  b"), "four bytes, two tokens");
+	t.assert(AnalysisParseBudget.admits("a,b", false), "three bytes");
+	t.assert(!AnalysisParseBudget.admits("a,b,", false), "four tokens");
+	t.assert(AnalysisParseBudget.admits("a  b", false), "four bytes, two tokens");
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }
 // Each of the adapter's single-file parses for outlines, folding ranges, and
