@@ -13,12 +13,12 @@
 component AnalysisParseBudget {
 	// The densest text, lists such as "(a,a,a,...)" with a token in each byte,
 	// peaked at about 113 bytes of live heap per token in this parse, and the
-	// largest file in the pinned Virgil checkout has 58,590 tokens. With the
+	// largest file in the pinned Virgil checkout has 75,539 tokens. With the
 	// default 200 MiB heap, whose copying collector leaves 100 MiB for live
 	// data, 1,007,265 tokens of such a list answered, but only 693,906 with
-	// two snapshots of the Aeneas sources retained and the overlay budget
-	// full. This bound is half that, and a parse of this many tokens peaks
-	// below 40 MB.
+	// two analysis snapshots of the Aeneas sources retained and about 107 KB
+	// of other open documents. This bound is half that, and a parse of this
+	// many tokens peaks below 40 MB.
 	def MAX_TOKENS = 350000;
 	// The bound that {admits} applies; tests may lower it.
 	var maxTokens = MAX_TOKENS;
@@ -33,12 +33,16 @@ component AnalysisParseBudget {
 	def refusal() -> string {
 		return Strings.format1("the document has more than %d tokens", maxTokens);
 	}
-	// The tokens of {input}, or the first count past {limit}. A token is a run
-	// of identifier characters, which also covers keywords and most numbers, a
-	// character or string literal, or any other printable byte, so an operator
-	// of two or three bytes counts as two or three. Whitespace, comments, and
-	// the bytes that the parser reports as invalid characters separate tokens,
-	// as Parser.skipToNextToken skips them.
+	// The tokens of {input}, or the first count past {limit}, never fewer than
+	// the parser consumes. A token is a run of identifier characters that
+	// starts with a letter, which covers keywords and names, each byte of a run
+	// that starts with a digit or underscore, as numbers and their malformed
+	// neighbors split there, a character or string literal, or any other
+	// printable byte, so an operator of two or three bytes counts as two or
+	// three. Whitespace, comments, and the bytes that the parser reports as
+	// invalid characters separate tokens, as Parser.skipToNextToken skips them.
+	// A carriage return ends a line comment or an open literal, as the parser
+	// reads normalized text, where it is a line end.
 	def count(input: Array<byte>, limit: int) -> int {
 		var tokens = 0, i = 0, max = input.length;
 		while (i < max) {
@@ -51,7 +55,7 @@ component AnalysisParseBudget {
 				var next = input[i + 1];
 				if (next == '/') {
 					i += 2;
-					while (i < max && input[i] != '\n') i++;
+					while (i < max && !lineEnd(input[i])) i++;
 					continue;
 				}
 				if (next == '*') {
@@ -62,9 +66,15 @@ component AnalysisParseBudget {
 				}
 			}
 			if (++tokens > limit) return tokens;
-			if (Char.isIdentMiddle(ch)) {
+			if (Char.isIdentStart(ch)) {
 				i++;
 				while (i < max && Char.isIdentMiddle(input[i])) i++;
+			} else if (Char.isIdentMiddle(ch)) {
+				i++;
+				while (i < max && Char.isIdentMiddle(input[i])) {
+					if (++tokens > limit) return tokens;
+					i++;
+				}
 			} else if (ch == '\"' || ch == '\'') {
 				i = afterLiteral(input, i);
 			} else {
@@ -81,9 +91,14 @@ component AnalysisParseBudget {
 			var ch = input[i];
 			if (ch == '\\') i += 2;
 			else if (ch == quote) return i + 1;
-			else if (ch == '\n') return i;
+			else if (lineEnd(ch)) return i;
 			else i++;
 		}
 		return max;
+	}
+	// Whether {ch} ends a line in the text that the parser reads, where a
+	// carriage return is a line feed or, before one, a space.
+	private def lineEnd(ch: byte) -> bool {
+		return ch == '\n' || ch == '\r';
 	}
 }

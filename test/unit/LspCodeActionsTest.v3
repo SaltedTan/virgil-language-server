@@ -11,6 +11,7 @@ def X = [
 	T("LspCodeActions:params_lifecycle", test_params_lifecycle),
 	T("LspCodeActions:language_options", test_language_options),
 	T("LspCodeActions:canonical_utf16", test_canonical_utf16),
+	T("LspCodeActions:parse_budget", test_parse_budget),
 	()
 ];
 def URI = "untitled:semicolon.v3";
@@ -274,4 +275,19 @@ def test_canonical_utf16(t: Tester) {
 	var change = JsonValue.JObject.!(JsonValue.JArray.!(edit["documentChanges"]).v[0]).v;
 	t.assert_string("{\"uri\":\"file:///semicolon.v3\",\"version\":4}", render(change["textDocument"]));
 	t.assert_string(render(json("[{\"range\":{\"start\":{\"line\":0,\"character\":17},\"end\":{\"line\":0,\"character\":17}},\"newText\":\";\"}]")), render(change["edits"]));
+}
+// A document with more tokens than the outline parse's bound gets no action,
+// before the parse, and one within it the same action as before.
+def test_parse_budget(t: Tester) {
+	var s = running(CAPS);
+	s.documents.open(URI, "virgil", 1, SOURCE);
+	var count = AnalysisParseBudget.count(SOURCE, int.max), d = diagnostic(SOURCE);
+	var before = render(actions(s, withDiagnostic(d)));
+	t.asserti(1, JsonValue.JArray.!(json(before)).v.length);
+	AnalysisParseBudget.maxTokens = count;
+	t.assert_string(before, render(actions(s, withDiagnostic(d))));
+	AnalysisParseBudget.maxTokens = count - 1;
+	empty(t, s, withDiagnostic(d));
+	empty(t, s, params(null));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }

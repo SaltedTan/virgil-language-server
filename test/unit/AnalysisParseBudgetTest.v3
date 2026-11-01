@@ -23,8 +23,17 @@ def count(t: Tester) {
 		// its line.
 		("\"a b \\\" c\" 'x' '\\'' x", 4),
 		("\"open\nx 'y", 3),
-		// An identifier run covers keywords and numbers; each other byte counts.
-		("x0_y 12 0x1F 1.5", 6),
+		// A carriage return ends a line comment or an open literal, alone or
+		// before a line feed, as it ends the line that the parser reads.
+		("//\rvar x;", 3),
+		("// c\r\nvar x;", 3),
+		("\"ab\rc\"", 3),
+		("'a\r'", 2),
+		// A run that starts with a letter is one token; each byte of one that
+		// starts with a digit or an underscore counts, as the parser can split
+		// it. Each other byte counts too.
+		("x0_y 12 0x1F 1.5", 10),
+		("1a _a", 4),
 		("a==b->c=>d", 10),
 		// Bytes outside printable ASCII separate tokens, as the parser
 		// reports them as invalid characters.
@@ -39,19 +48,37 @@ def count(t: Tester) {
 	t.asserti(5, AnalysisParseBudget.count("a b c d e", 5));
 }
 // The count is never less than the tokens that the parser consumes, as its
-// syntax index records them.
+// syntax index records them, from text normalized as the adapter normalizes
+// it, whether the text parses or not.
 def parser_tokens(t: Tester) {
 	for (text in [
 		"component C {\n\tdef f(x: int) -> int { return x == 0 || x >= 1; }\n\tvar s = \"a // b\", c = '\\'';\n}\n",
 		"/* note */ class K<T>(x: T) extends B<T> {\n\tdef m() => x;\n\tdef g(a: Array<T>, i: int) -> (T, T) { return (a[i], a[i + 1]); }\n\tnew(x, y: T) super(y) { }\n}\n",
 		"type V {\n\tcase A(x: int);\n\tcase B;\n}\ndef f(v: V) {\n\tmatch (v) {\n\t\tA(x) => ;\n\t\t_ => ;\n\t}\n\tvar r = a[0 ... 2], s = a[1 ..+ 2], u = -1.5e3, w = 0xFFu;\n}\n"
 	]) {
-		var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
-		AnalysisSingleFileParser.parse("budget.v3", text, errors, syntax, TypeCache.new(), null);
-		t.asserti(0, errors.numErrors);
-		var counted = AnalysisParseBudget.count(text, int.max);
-		if (counted < syntax.count) t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+		t.asserti(0, parsed(t, text).0);
 	}
+	// Malformed text, where the parser's reading of each byte matters most.
+	for (text in [
+		"def f(){1a;}", "def f(){0x;}", "def f(){0x1G;}", "def f(){var x = 1.2.3;}", "def f(){var x = 1e;}",
+		"def f(){var c = 'ab';}", "def f(){var c = '';}", "def f(){var c = '\\q';}",
+		"def f(){var s = \"abc\n}\n", "def f(){var s = \"abc\\", "def f(){var c = 'a\n}\n", "def f(){var c = '",
+		"def f(){var x\xC3\xA9y = 1;}", "def f(){\xFF\x01;}", "def \x80f() {}",
+		"component C {\r\tdef f() {\r\t\tvar s = \"a\r\t}\r}\r", "//\rvar x=(a,a,a);", "var x = 1;\r// c\r\nvar y = 2;\r",
+		"def f(){_a; a_; __; _1;}", "def f(){var x = 1_000 + 0b101 + 0xFFu + 1.5f + 2L;}"
+	]) {
+		parsed(t, text);
+	}
+}
+// Parses {text} normalized, as the adapter does, checks that the count is no
+// less than the tokens consumed, and returns the parse's errors.
+def parsed(t: Tester, text: string) -> (int, int) {
+	var normalized = AeneasAdapter.normalizedRange(text, 0, text.length);
+	var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
+	AnalysisSingleFileParser.parse("budget.v3", normalized, errors, syntax, TypeCache.new(), null);
+	var counted = AnalysisParseBudget.count(text, int.max);
+	if (counted < syntax.count) t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+	return (errors.numErrors, syntax.count);
 }
 def admits(t: Tester) {
 	var text = "component C {\n\tdef f() {}\n}\n";

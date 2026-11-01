@@ -8,8 +8,11 @@ server process. Before #372, a document just under the 1 MiB overlay limit of
 "var a,a,a,...;" made selectionRange and documentSymbol end the server with
 HeapOverflow. Each method now gets one response for the densest texts with the
 default heap: a reply, or RequestFailed for a document of more than 350,000
-tokens. Each case is followed by the same request on a small document, a ping,
-shutdown, and exit with status 0.
+tokens, also when a carriage return ends a line comment that hides the rest.
+The semicolon quick fix, whose parse keeps the same syntax index, offers no
+action for such a document instead of ending the server. Each case is followed
+by the same request on a small document, a ping, shutdown, and exit with
+status 0.
 """
 import sys
 from pathlib import Path
@@ -17,13 +20,18 @@ from pathlib import Path
 from worker import Session
 
 DENSE_URI = 'untitled:dense.v3'
-SMALL_URI = 'untitled:small.v3'
+SMALL_URI = 'untitled:s'
 SMALL = 'component C {\n\tdef f() {}\n}\n'
 MAX_TOKENS = 350000
 REFUSED = 'the document has more than %d tokens' % MAX_TOKENS
 # Just under the 1 MiB overlay limit, beside the small document: each is
 # charged its text, URI, and language ID, and 256 bytes for its record.
 SIZE = 1024 * 1024 - 2 * 256 - len(SMALL) - len(SMALL_URI) - len(DENSE_URI) - 2 * len('virgil')
+# A small document missing a semicolon, which has one quick fix.
+SMALL_FIX = 'component C { def f() { return 1\n} }'
+CODE_ACTIONS = {'workspace': {'workspaceEdit': {'documentChanges': True}},
+                'textDocument': {'codeAction': {'codeActionLiteralSupport': {
+                    'codeActionKind': {'valueSet': ['quickfix']}}}}}
 METHODS = ('textDocument/documentSymbol', 'textDocument/foldingRange', 'textDocument/selectionRange')
 
 
@@ -74,6 +82,38 @@ def run(exe, name, text, method, refused):
         s.close()
 
 
+def diagnostic(s, uri):
+    """The first diagnostic published for {uri}."""
+    published = [m['params'] for d, m in s.transcript
+                 if d == 'recv' and m.get('method') == 'textDocument/publishDiagnostics' and m['params']['uri'] == uri]
+    return published[-1]['diagnostics'][0]
+
+
+def run_code_action(exe, text):
+    """Opens {text}, whose parse error is a missing semicolon, and asks for its
+    quick fix: no action, as for a document with none."""
+    s = Session(exe)
+    try:
+        s.result(s.send('initialize', {'capabilities': CODE_ACTIONS}), 5)
+        for uri, t in ((DENSE_URI, text), (SMALL_URI, SMALL_FIX)):
+            s.send('textDocument/didOpen', {'textDocument': {
+                'uri': uri, 'languageId': 'virgil', 'version': 1, 'text': t}}, request=False)
+        s.ping()
+        for uri, count in ((DENSE_URI, 0), (SMALL_URI, 1)):
+            d = diagnostic(s, uri)
+            actions = s.result(s.send('textDocument/codeAction', {
+                'textDocument': {'uri': uri}, 'range': d['range'], 'context': {'diagnostics': [d]}}), 20)
+            assert len(actions) == count, (uri, str(actions)[:200])
+        s.ping()
+        s.shutdown()
+    except BaseException:
+        print('code action:', file=sys.stderr)
+        print(s.logs(), file=sys.stderr)
+        raise
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     lists = fill('var x=(', 'a,', 'a);', SIZE)
@@ -85,6 +125,10 @@ def main():
         # Nesting as deep as the parser's stack limit allows, repeated, which
         # gives the longest selection chains.
         ('nested parentheses', nested(400, SIZE), True),
+        # A line comment that a lone carriage return ends, as it ends the
+        # line that the parser reads, and one that CRLF ends.
+        ('comment ended by CR', '//\rvar x=(' + 'a,' * 523990 + 'a);', True),
+        ('comment ended by CRLF', '//\r\nvar x=(' + 'a,' * 523990 + 'a);', True),
         # The most tokens the bound admits, and one more: "var", "x", "=",
         # "(", "-", two for each "a,", and "a", ")", ";", or "-", "a", ")", ";".
         ('350,000 tokens', 'var x=(-' + 'a,' * 174996 + 'a);', False),
@@ -94,8 +138,11 @@ def main():
         assert len(text.encode()) <= SIZE, name
         for method in METHODS:
             run(exe, name, text, method, refused)
-    print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, then a small '
-          'document, a ping, shutdown, and exit)' % (len(cases), len(METHODS)))
+    dense_fix = 'def f(){var x=(' + 'a,' * 523980 + 'a)\n}'
+    assert len(dense_fix) + len(SMALL_FIX) - len(SMALL) <= SIZE
+    run_code_action(exe, dense_fix)
+    print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, and a quick fix '
+          'refused; then a small document, a ping, shutdown, and exit)' % (len(cases), len(METHODS)))
 
 
 if __name__ == '__main__':
