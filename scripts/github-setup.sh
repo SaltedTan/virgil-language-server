@@ -15,6 +15,7 @@ CREATE_ISSUES=0
 CI_CHECK="Build and test (pinned Virgil, linux x86-64)"
 CI_CHECK_MACOS="Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)"
 CI_CHECK_VSCODE="VS Code client (type-check and test, linux)"
+CI_CHECK_LAZYVIM="LazyVim test (built server, linux)"
 
 echo "== Repository settings: $REPO"
 gh repo edit "$REPO" \
@@ -124,7 +125,7 @@ echo "== Branch protection: main"
 if gh api "repos/$REPO/branches/main" > /dev/null 2>&1; then
     gh api -X PUT "repos/$REPO/branches/main/protection" --input - > /dev/null <<JSON
 {
-  "required_status_checks": { "strict": true, "contexts": ["$CI_CHECK", "$CI_CHECK_MACOS", "$CI_CHECK_VSCODE"] },
+  "required_status_checks": { "strict": true, "contexts": ["$CI_CHECK", "$CI_CHECK_MACOS", "$CI_CHECK_VSCODE", "$CI_CHECK_LAZYVIM"] },
   "enforce_admins": false,
   "required_pull_request_reviews": { "required_approving_review_count": 0 },
   "required_conversation_resolution": true,
