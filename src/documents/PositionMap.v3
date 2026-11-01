@@ -51,12 +51,12 @@ class PositionMap {
 	// the text, 425,680 of the 547,592 bytes that one map of Verifier.v3
 	// allocated (#414).
 	private def nonAscii = Vector<byte>.new();
-	// The per-byte UTF-16 columns of the non-ASCII lines that were converted,
-	// by line index, built on first use and kept, so that repeated
+	// The per-byte columns in this map's encoding of the non-ASCII lines that
+	// were converted, by line index, built on first use and kept, so repeated
 	// conversions of one long non-ASCII line stay linear in its length.
 	// Null until a non-ASCII line is asked for, so an ASCII text never
-	// allocates it. Every table together holds at most an int per byte of
-	// text, as the whole-file table did, plus a header for each table and a
+	// allocates it. Together, the tables hold at most an int per byte of
+	// text, plus an end-of-line int and a header for each table and a
 	// reference for each line: a text of many short non-ASCII lines, all
 	// converted, keeps more than the old table did, though still linear.
 	private var columns: Array<Array<int>>;

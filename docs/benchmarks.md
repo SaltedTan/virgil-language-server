@@ -941,7 +941,7 @@ Measured on 2026-11-01 for [#324](https://github.com/SaltedTan/virgil-language-s
 
 On main, the walk put the 40,820 integers in a vector of `JsonValue`s, which grew by doubling, and wrapped it in an object; encoding rendered that tree into a buffer that tripled as it filled, then copied the result out of it. The change writes the result's bytes as it walks, into a buffer with room for 12 bytes for each declaration site and use in the file, which never grew on `Verifier.v3`, and hands that buffer to the response without copying it. The response reserves exactly its own size, so encoding copies the result once, and framing copies it once more, as before. Across the 201 files of the small, `lib/util`, and Aeneas projects, a token took 10.0 to 11.0 bytes on average per file, and every reply was byte for byte the same in both builds.
 
-The position map, which an earlier split of this allocation didn't place, holds 4 bytes for each byte of the document's 106,419-byte current text, and line tables. The snapshot request path builds it for every request, hover included; the token walk uses only its text.
+In both builds measured here, the position map, which an earlier split of this allocation didn't place, held 4 bytes for each byte of the document's 106,419-byte current text, and line tables. The snapshot request path builds it for every request, hover included; the token walk uses only its text.
 
 **Times.** Normal builds, from writing a request to reading the last byte of its reply, **median (p10–p90, maximum), milliseconds**:
 
