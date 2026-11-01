@@ -121,6 +121,8 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    - the staged gitlink, `git rev-parse :vendor/virgil`, and the pin tables in `THIRD_PARTY_NOTICES.md` and in the `main` row of the [Virgil revision table](docs/compatibility.md#virgil-revision);
    - the `virgil_source_revision` of the regenerated, reviewed corpus in `test/benchmarks/corpus.json`;
    - after committing, the packaged bundle and manifest: `scripts/package-release.sh build/release` refuses a Virgil checkout other than the gitlink, `scripts/check-release.sh --archive <archive>` checks the archive's `virgil/REVISION` and its manifest's `virgilRevision` and `library.revision` against the gitlink, and `scripts/smoke-test-release.sh <archive>` checks `--version` against the manifest.
+
+   `make test` checks the gitlink against the other three records on its own: the `THIRD_PARTY_NOTICES.md` row, the `main` row of the [Virgil revision table](docs/compatibility.md#virgil-revision), and the corpus's `virgil_source_revision`. It does not check `build/virgil-lsp --version`, so confirm that one by hand as well.
 7. In `CHANGELOG.md` under `## [Unreleased]`, name the old and new revisions and each language option that changed.
 
 The pin update is a dependency change, so it needs the maintainer's own merge, as do workflow changes and suite-wide test settings ([pull requests](#pull-requests)).
