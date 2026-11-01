@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The sources of one stdio submission, captured together with their
-// provenance, which the completed snapshot keeps. Disk inputs' stamps also
-// record their length and a 64-bit FNV-1a hash, so that text read again to
+// provenance, which a project snapshot or a temporary query keeps. Disk inputs'
+// stamps also record their length and a 64-bit FNV-1a hash, so text read again to
 // convert ranges can be checked against what the worker analyzed (see
-// {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
-// completed analysis has updated the last-parseable text cache.
+// {LspAnalysisCapture.analyzedText}). Submitters drop {sources} after handling
+// the result; only project analyses update the last-parseable text cache.
 class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
 	// The current text's parse, if its parser diagnostics' parse is stale,
 	// fallback's parse of the last parseable text, and current-text repair's

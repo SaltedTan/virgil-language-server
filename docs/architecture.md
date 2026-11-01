@@ -1453,7 +1453,7 @@ Dropping the collector's record of the last call that it walked, so that each ca
 - Shutdown, exit, and the end of the input, a worker that crashes or runs past the time limit, a malformed or over-budget result, an analysis that the snapshot budget can't admit, and a document changed before the job starts all leave `null` as the reply.
 - A completion never replaces a signature help, nor the reverse. Their jobs take turns with renames and the projects' analyses, and none of them becomes a context's snapshot or publishes diagnostics.
 
-**Limitations.** An incomplete call gets its signature only where the repair at the cursor mends the program:
+**Limitations.** An incomplete call gets its signature only where the repair at the cursor makes the requesting file parse and the project's other files parse as typed or substituted:
 
 - A second syntax error elsewhere in the file, a syntax error in another file of the project that neither fallback nor repair recovers, as in a closed file or a declaration header, or a block whose `}` is missing, as in a lambda body still being typed, leaves `null`, as it leaves completion the keywords alone. Another open file whose error lies in a method or constructor body that fallback or repair accepts is substituted, and the call gets its signature, even one declared in that file.
 - The innermost open call is the scanner's, which reads tokens, not a parse. After `>`, as in `a > (b`, it takes a group for a call's arguments, and it takes a constructor's `super(` clause for a call, though the syntax tree has no application there. Both get `null`, not the call around them.
