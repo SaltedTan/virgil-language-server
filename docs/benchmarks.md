@@ -923,6 +923,39 @@ Times are **median (p10–p90), milliseconds**, over 30 measured operations per 
 
 The fresh analysis median is 3.504 ms (1.0%) higher and the reused one 1.917 ms (0.6%) higher, and the intervals overlap. Every measured worker transaction collected zero times in both builds, and the server collected in the same operations in each. The `RESULT` payload, 4,379,198 bytes, and the worker's allocation, 197,739,184 bytes, are the same in both ([ADR-0004](decisions/0004-analysis-worker-process.md#supported-program-size)). The first version of the change read the flag from the syntax as it encoded each declaration, which the encoder otherwise doesn't touch: encoding took 59.745 ms against main's 55.458 ms, medians of 10 `analyze --stats --bindings` runs of each, and a copy of it that never read the flag took 55.479 ms. A field for the flag restored the time but made every worker declaration 8 bytes larger, 344,568 bytes in all. The worker now chooses a subclass with no fields when it makes a flagged declaration, while its syntax is in the cache, as the snapshot does when it decodes one: 55.576 ms against main's 56.150 ms, with the same allocation.
 
+### Cost of a reply (2026-11-01)
+
+Measured on 2026-11-01 for [#324](https://github.com/SaltedTan/virgil-language-server/issues/324) on the same host, pinned Virgil, and worker heap, holding the shared benchmark lock, with the client, server, and worker on hardware thread 12 unless noted. Main `bc63ae7f` and the change were built in separate checkouts with the same generated BuildInfo. A client that follows the method above ran six process blocks that alternated the two builds, with the same token and hover rounds. Other work on the machine kept its one-minute load average between 2 and 4, so the times compare the two builds with each other, not with the table above.
+
+**Allocation.** Copies of both builds with allocation probes at the same points of the request path gave the same bytes for every full reply on `Verifier.v3`:
+
+| Phase | Main | Change |
+| --- | ---: | ---: |
+| Decode the request | 2,072 | 2,072 |
+| Find the project, snapshot, and document | 28,496 | 28,496 |
+| Position map of the document's current text | 549,424 | 549,424 |
+| Walk the tokens and build the result | 983,120 | 101,784 |
+| Encode the response | 265,336 | 86,984 |
+| Frame the response | 87,032 | 87,032 |
+| Total | 1,915,480 | 855,792 |
+
+On main, the walk put the 40,820 integers in a vector of `JsonValue`s, which grew by doubling, and wrapped it in an object; encoding rendered that tree into a buffer that tripled as it filled, then copied the result out of it. The change writes the result's bytes as it walks, into a buffer with room for 12 bytes for each declaration site and use in the file, which never grew on `Verifier.v3`, and hands that buffer to the response without copying it. The response reserves exactly its own size, so encoding copies the result once, and framing copies it once more, as before. Across the 201 files of the small, `lib/util`, and Aeneas projects, a token took 10.0 to 11.0 bytes on average per file, and every reply was byte for byte the same in both builds.
+
+The position map, which an earlier split of this allocation didn't place, holds 4 bytes for each byte of the document's 106,419-byte current text, and line tables. The snapshot request path builds it for every request, hover included; the token walk uses only its text.
+
+**Times.** Normal builds, from writing a request to reading the last byte of its reply, **median (p10–p90, maximum), milliseconds**:
+
+| `textDocument/semanticTokens/full` | Main | Change |
+| --- | ---: | ---: |
+| First on a snapshot (30) | 3.099 (2.643–18.163, 18.633) | 2.295 (2.037–3.720, 4.916) |
+| Later (150) | 2.619 (2.470–3.020, 3.201) | 2.102 (1.962–2.272, 3.570) |
+
+Later hover requests, at `verify` on line 24, took 2.960 ms on main and 2.931 ms with the change, and each allocated 5,853,200 bytes in both builds; this measurement doesn't show why hover costs more than in the table above.
+
+**The tail.** The instrumented copies also counted the server's collections during each request. Each of the 24 measured requests that took 10 ms or more had one collection and took 17.5 to 27.6 ms; no request without a collection took more than 9.0 ms. The collections fell at the same points in every process, since each process allocates the same sequence: on main, during the first request of the fourth token round and the sixth request of the second hover round, counting the warmup rounds; with the change, only during `virgil-lsp/analyze` requests, which aren't timed. The change doesn't remove the tail: a token request still meets a collection whenever the server's heap fills during it, only less often, as each reply allocates less than half as much. These runs didn't measure what a collection copies.
+
+**The first request.** The first token request on a snapshot allocated the same bytes as the later ones, so it does no work they don't. In the instrumented copies, among requests without a collection, its median was 4.238 ms on main and 3.947 ms with the change, against 2.624 and 2.096 ms for later requests. By the mean of each phase, about four fifths of the extra time was in writing the reply to the client, which on one CPU also waits for the client to read it, and the rest in the walk. With the worker's executable wrapped to run on CPU 14, the first request took 2.720 and 2.203 ms, about 0.1 ms more than the later ones' 2.604 and 2.094 ms. The slower first request is therefore the worker sharing the server's CPU just after an analysis. That fits the collection the worker runs after sending a result ([prepareRename on one CPU](#preparerename-on-one-cpu-2026-10-31)), but these runs didn't time the worker.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
