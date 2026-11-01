@@ -1,6 +1,6 @@
 # Configuration
 
-A `.virgil-lsp.json` project file says which source files form each program in a repository. This page specifies version 1 of its format. [ADR-0005](decisions/0005-project-file-format.md) records why the format looks like this.
+A `.virgil-lsp.json` project file says which source files form each program in a repository. This page specifies version 1 of its format. [ADR-0005](decisions/0005-project-file-format.md) records why the format looks like this. [Stability and evolution](#stability-and-evolution) says what later servers keep the same.
 
 The parser, bounded source expansion, workspace-folder discovery, and project contexts are implemented (`src/workspace/`). Configuration errors are published on the project file. Configured projects get automatic [semantic diagnostics](architecture.md#semantic-diagnostics), and whole-program analysis is also available through an [unadvertised development request](development.md#development-stdio-requests). Rules not yet implemented are marked *(planned)*.
 
@@ -96,7 +96,7 @@ A pattern is a relative path whose segments are separated by `/`. Its segments m
 | `?` | Exactly one character within one segment |
 | `**` | Zero or more whole segments. It must be a whole segment by itself, as in `src/**/*.v3`. |
 
-- A wildcard never matches a name that starts with `.`. Write the dot to match one, as in `.github/*.v3`. `**` therefore doesn't enter directories such as `.git`.
+- A name that starts with `.` matches only a pattern segment that itself starts with `.`, as in `.*.v3` or `.github/*.v3`. `**` therefore doesn't enter directories such as `.git`, but `**/.hidden/*.v3` explicitly selects a hidden directory.
 - Matching is case-sensitive. A character is one UTF-8 encoded code point.
 - Patterns in `sources`, `dependencies`, and `virgilDependencies` must end in `.v3`. `exclude` patterns may match any file, so `build/**` excludes everything under `build/`.
 - These are errors: an empty pattern, an absolute path (`/x.v3`), a backslash, an empty segment (`a//b.v3`, or a trailing `/`), a `.` or `..` segment, `**` inside a segment (`a**b`), and ASCII control characters (U+0000–U+001F and U+007F). `[`, `]`, `{`, and `}` are reserved for later syntax.
@@ -209,7 +209,7 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
 
-The server publishes them with `textDocument/publishDiagnostics` for the project file's URI, with `source: "virgil-lsp"`, the code, error severity, and UTF-16 LSP ranges converted from the byte ranges. It replaces them when it observes a change, and clears them when the file is fixed or deleted. The file needn't be open in the editor, so the server also sends one `window/showMessage` warning each time a project file becomes invalid, because its projects' semantic features stop working. Unchanged diagnostic lists are not republished.
+The server publishes them with `textDocument/publishDiagnostics` for the project file's URI, with `source: "virgil-lsp"`, the code, error severity, and UTF-16 LSP ranges converted from the byte ranges. It replaces them when it observes a change, and clears them when the file is fixed or deleted. The file needn't be open in the editor, so the server also sends one `window/showMessage` warning each time a project file becomes invalid, because its projects' semantic features stop working. Within one configuration revision, unchanged diagnostic lists are not republished; each new revision publishes its list, even if it is unchanged or empty.
 
 ## Workspace folders and active projects
 
@@ -256,3 +256,101 @@ The file does decide which files the server reads. Open editor buffers override 
 ## Without a project file
 
 The server falls back to single-file mode: parsing, syntax diagnostics, document symbols, [folding ranges](architecture.md#folding-ranges), [selection ranges](architecture.md#selection-ranges), and [keyword completion](architecture.md#completion). Once per session, when a document has no active project, it logs that semantic features are limited. Configuration discovery itself does not start an analysis worker.
+
+## Stability and evolution
+
+Three version numbers apply to a project file, and each changes on its own:
+
+- The **project-file format version** is the file's `version` field. This page specifies version 1, the only one. It changes only when what a file can say changes.
+- The **server version**, such as `0.1.0-alpha.5`, is what `virgil-lsp --version` prints first. It follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the [changelog](../CHANGELOG.md) section for each release is its release notes.
+- The **pinned compiler revision** is the Virgil commit that the server is built with. `virgil-lsp --version` prints it as `virgil revision`, and the [Virgil revision table](compatibility.md#virgil-revision) lists it for each release. It decides which language options `compilerArgs` accepts and what they do.
+
+[ADR-0012](decisions/0012-project-configuration-stability.md) records this boundary and why.
+
+### What server 1.x keeps
+
+From server 1.0 on, every 1.x release reads version 1 files as this page specifies:
+
+- the fields, their types and defaults, the reserved `target` value, and the exact version literal `1`;
+- strict parsing: unknown and repeated fields are errors, and a file with any error defines no projects;
+- the pattern syntax, and how patterns select, order, own, and exclude files, with no symbolic links followed;
+- the Virgil root's precedence, the governing project file, and the choice of each file's active project.
+
+So a version 1 file that one 1.x release accepts, every later 1.x release accepts too, and it selects the same files with the same active projects, as long as each `compilerArgs` entry is still a language option of the later release's pinned compiler and each program stays within the documented limits. Before 1.0, a prerelease may still change these rules, and its release notes say so when it does.
+
+This doesn't promise the configuration diagnostic codes, the wording of diagnostic messages and log lines, the capacity limits, when the server refreshes after a change, or anything about the analysis itself. Type errors and the other semantic results follow the pinned compiler.
+
+### Language options follow the compiler pin
+
+`compilerArgs` accepts the language options of the pinned compiler, read from `CLOptions.langOpt` through [`AeneasAdapter.languageOptions()`](../src/analysis/AeneasAdapter.v3). Which names exist, their defaults, and what they change in parsing and type checking belong to that compiler, not to the format. For example, `-lang:read-only-arrays`, `-lang:covariant-arrays`, `-lang:open-types`, and `-lang:descriptors` exist only because the pinned Aeneas is an unstable build ([Compiler flags](#compiler-flags)).
+
+When a new pin removes or renames a language option, the release's notes say so, and a file that still lists it gets an error on that entry, currently with the code `UnsupportedCompilerFlag`. The error's message names the flag and lists the options that remain, as in `unknown language option '-lang:x'; the language options are -lang:read-only-arrays, …`. To migrate, remove the entry or replace it with the option that took its place. Alternatively, keep using the last release whose pin had it ([Virgil revision table](compatibility.md#virgil-revision)). The format version stays 1.
+
+When a new pin changes an option's default or meaning but keeps its name, the server can't tell, so the file stays valid and gets no configuration diagnostic. This is a limitation: the release's notes are the only notice, and the change shows only in the analysis.
+
+### What a change needs
+
+| Change | What it needs |
+| --- | --- |
+| The server disagrees with this page | A fix in any release, with a changelog entry |
+| A capacity limit changes | Any release, with a changelog entry |
+| A field is added, a new value is accepted (such as a target name), reserved pattern characters get a meaning, or comments are allowed | A new format version, which a 1.x server may read alongside version 1 |
+| A version 1 field is removed, renamed, or given another type or default; or validation is tightened; or patterns, ownership, exclusion, symbolic links, root precedence, or active-project choice change for version 1 | A new server major version |
+| A server stops reading version 1 | A new server major version |
+| A pin adds, removes, or changes a language option | A note in the release's changelog; no new format version |
+
+A new field isn't forward-compatible. A server rejects a field that it doesn't know, currently as `UnknownField`, so every earlier server would reject a version 1 file that used it, and that file would define no projects there. A new format version makes that failure explicit: an earlier server reports the unsupported version, currently as `UnsupportedVersion`, and checks nothing else.
+
+### What stays as it is
+
+- Parsing stays strict. Making unknown fields warnings, or accepting a file with errors in part, needs its own approved issue.
+- Version 1 accepts only `null` for `target`, and analyzes every project without a target ([Target](#target)). Programs that need a native target aren't promised to analyze cleanly.
+- Per-target analysis, and reading `DEPS`, `TARGETS`, or other target-aware build manifests in place of a project file, are outside this contract, and how a later version would add them is undecided.
+
+### Inventory
+
+Each rule that the promise covers, the code that implements it, and the existing tests that cover it, with the gaps in that coverage. *Format* rows are fixed for version 1. *Selection* rows are kept by every 1.x server. *Pin* rows follow each release's pinned compiler. *Limit* rows may change in any release, with a changelog entry, and a file is kept working only within the current limits. *Behavior* rows describe when the server reads and refreshes, which may change in 1.x as long as the result for a saved file stays the same. A row marked *gap* has no test of its own.
+
+| Behavior | Production code | Existing tests | Scope |
+| --- | --- | --- | --- |
+| `version` must be the integer `1`: a missing one is `MissingField`, a value that isn't a number, such as a string or `null`, is `WrongType`, and any other number, including `1.0`, is `UnsupportedVersion`; after any of these, nothing else is checked | [`ProjectConfigValidator.version`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.file`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:version` | Format |
+| The top level has `version` and `projects`; any other field is `UnknownField` | [`ProjectConfigValidator.file`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.unknown`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:unknown_fields`, `ProjectConfig:no_code_execution`, `ProjectConfig:no_projects` | Format |
+| Project fields, their types, and their defaults (`[]`, and `null` for `target`); unknown project fields are `UnknownField` | [`ProjectConfigValidator.project`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:minimal`, `ProjectConfig:all_fields`, `ProjectConfig:unknown_fields`, `ProjectConfig:fixtures` | Format |
+| A missing `version`, `projects`, `name`, or `sources` is `MissingField` at the object's opening brace | [`ProjectConfigValidator.missing`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:missing_fields`, `ProjectConfig:version` | Format |
+| Wrong JSON types, including `null` for an optional array, are `WrongType` | [`ProjectConfigValidator.strings`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.projectList`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.projectName`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:wrong_types`, `ProjectConfig:root_not_object` | Format |
+| A repeated field is `DuplicateField`, even when spelled with escapes | [`ProjectConfigValidator.firstMember`](../src/workspace/ProjectConfig.v3), [`ProjectJsonParser.parseFile`](../src/workspace/ProjectJson.v3) | `ProjectConfig:duplicate_fields`, `ProjectConfigMaps:project_keys`, `ProjectConfigMaps:file_keys` | Format |
+| Project names: ASCII letters, digits, `.`, `_`, `-`; case-sensitive; unique in the file | [`ProjectConfigValidator.projectName`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:project_names`, `ProjectConfigMaps:project_names` | Format |
+| `sources` lists at least one pattern | [`ProjectConfigValidator.project`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:empty_sources` | Format |
+| `target` must be `null` or absent | [`ProjectConfigValidator.target`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:target` | Format |
+| Strict JSON: no comments, trailing commas, or byte order mark | [`ProjectJsonParser.parseFile`](../src/workspace/ProjectJson.v3) | `ProjectConfig:invalid_json`, `ProjectConfig:byte_order_mark` | Format |
+| A file with any diagnostic defines no projects; diagnostics come in file order, at most 100 | [`ProjectConfigValidator.result`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.error`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:diagnostic_order`, `ProjectConfig:diagnostic_limit`, `WorkspaceProjects:active_precedence` | Format; diagnostic cap: Limit |
+| Configuration diagnostics are published on the project file with `source: "virgil-lsp"` and their code, plus one warning when it becomes invalid; an unchanged list isn't sent again while the configuration's revision is unchanged, but each new revision sends its list, even an unchanged empty one | [`LspProjectDiagnostics.update`](../src/protocol/LspProjectDiagnostics.v3), [`WorkspaceProjects.publish`](../src/workspace/WorkspaceProjects.v3) | `LspProjectAnalysis:configuration_diagnostics`, [`watched-project-file.jsonl`](../test/diagnostics/watched-project-file.jsonl), [`compiler-flags.jsonl`](../test/diagnostics/compiler-flags.jsonl) | Behavior |
+| Pattern syntax: relative, `/`-separated, no `.` or `..`, `\`, empty segments, or control characters; `**` a whole segment; `[`, `]`, `{`, `}` reserved; source patterns end in `.v3` | [`ProjectPatterns.check`](../src/workspace/ProjectPatterns.v3) | `ProjectConfig:pattern_syntax`, `ProjectConfig:invalid_patterns` | Format |
+| `*`, `?`, and `**` match by code point and case-sensitively. A name that starts with `.` matches only a pattern segment that itself starts with `.`, such as `.*.v3`, or an explicitly named hidden directory, as in `**/.hidden/*.v3` | [`ProjectGlobMatcher.segment`](../src/workspace/ProjectGlob.v3), [`ProjectGlobMatcher.matches`](../src/workspace/ProjectGlob.v3) | `ProjectExpansion:glob`, `ProjectExpansion:glob_selects`; *gap*: case-sensitive matching | Format |
+| Files come from `sources`, then `dependencies`, then `virgilDependencies`, each pattern's matches in byte order; a repeated file keeps its first place; a file in `sources` is a member; a pattern matching nothing isn't an error | [`ProjectExpansion.expand`](../src/workspace/ProjectExpansion.v3), [`ProjectExpansion.add`](../src/workspace/ProjectExpansion.v3) | `ProjectExpansion:order_exclude_deduplicate`, `ProjectExpansion:fixtures` | Selection |
+| `exclude` prunes `sources` and `dependencies` before inspecting them, but not `virgilDependencies` | [`ProjectExpansion.excluded`](../src/workspace/ProjectExpansion.v3), [`ProjectExpansion.walk`](../src/workspace/ProjectExpansion.v3) | `ProjectExpansion:fixtures`, `ProjectExpansion:unrelated_and_excluded_entries` | Selection |
+| No symbolic link is followed; links and special files aren't sources; a symlinked project file is `SourceIO` | [`ProjectFiles.open`](../src/workspace/ProjectFiles.v3), [`ProjectFiles.configMarker`](../src/workspace/ProjectFiles.v3) | `ProjectExpansion:symlinks_and_special_files` | Selection |
+| A selected source that can't be read is `SourceIO`, which disables the whole file | [`ProjectExpansion.walk`](../src/workspace/ProjectExpansion.v3), [`WorkspaceProjects.update`](../src/workspace/WorkspaceProjects.v3) | `ProjectExpansion:unreadable_matches` | Selection |
+| `virgilDependencies` without a Virgil root is `MissingVirgilRoot` | [`ProjectExpansion.expand`](../src/workspace/ProjectExpansion.v3) | `ProjectExpansion:fixtures`, `LspProjectAnalysis:configuration_diagnostics`, [`lifecycle-initialize-without-virgil-root`](../test/protocol/lifecycle-initialize-without-virgil-root/) | Selection |
+| Virgil root precedence: the client's `virgilRoot`, else the bundle with a matching `REVISION`; an invalid client value blocks the fallback | [`WorkspaceProjects.initialize`](../src/workspace/WorkspaceProjects.v3) | [`bundled_library.py`](../test/protocol/bundled_library.py), [`lifecycle-initialize-null-virgil-root`](../test/protocol/lifecycle-initialize-null-virgil-root/), [`lifecycle-initialize-relative-virgil-root`](../test/protocol/lifecycle-initialize-relative-virgil-root/), [`lifecycle-initialize-non-string-virgil-root`](../test/protocol/lifecycle-initialize-non-string-virgil-root/) | Selection |
+| Workspace folders, or `rootUri` without them, are normalized, deduplicated, and sorted; an empty array means no folders | [`WorkspaceProjects.initialize`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.addFolder`](../src/workspace/WorkspaceProjects.v3) | `LspProjectAnalysis:initialize_folders`, `WorkspaceProjects:workspace_roots`; *gap*: an empty array | Selection |
+| Folder changes apply removals first, discover added folders, and forget configurations that only removed folders held | [`WorkspaceProjects.changeFolders`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:folder_changes`, [`watched-new-project.jsonl`](../test/diagnostics/watched-new-project.jsonl) | Selection |
+| The nearest project file governs, searching up to the deepest containing folder; an empty or invalid nearer file doesn't fall through to a parent's | [`WorkspaceProjects.nearest`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.select`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:workspace_roots`, `WorkspaceProjects:active_precedence` | Selection |
+| Discovery skips hidden directories and symbolic links; a project file reported by a file event loads only where discovery would find it | [`WorkspaceProjects.discover`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.watched`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:watched_configurations`, `WorkspaceProjects:discovery_overflow` | Selection |
+| Active project: membership in the nearest file's project, then membership in another, then dependency; ties by configuration URI, then declaration order | [`WorkspaceProjects.select`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.rank`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.contextBefore`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:active_precedence`, `WorkspaceProjects:shared_contexts`, `LspProjectAnalysis:compiler_args_per_project`; *gap*: membership in another file's project over a dependency alone, and the tie between two files' URIs | Selection |
+| A file in several projects has a context for each; its semantic diagnostics come from its active project | [`WorkspaceProjects.owners`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.select`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:shared_contexts`, [`two-projects.jsonl`](../test/diagnostics/two-projects.jsonl) | Selection |
+| An open project-file buffer takes precedence over disk; each change gets a new revision, and restoring old text doesn't revive old results | [`WorkspaceProjects.update`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:configuration_revision`, `LspProjectAnalysis:configuration_diagnostics`, `LspProjectAnalysis:contexts_and_revisions` | Behavior |
+| An unsaved change to a project's `compilerArgs` parses its open documents again | [`LspParserDiagnostics.reparse`](../src/protocol/LspParserDiagnostics.v3) | `LspProjectAnalysis:compiler_args_change_reparses`, [`compiler-flags.jsonl`](../test/diagnostics/compiler-flags.jsonl) | Behavior |
+| Source lists are reused until the configuration changes, a file event creates or deletes a source, or a project analysis request expands them again | [`WorkspaceProjects.update`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.reexpand`](../src/workspace/WorkspaceProjects.v3) | `LspProjectAnalysis:routine_events_reuse_expansion`, `WorkspaceProjects:cached_expansion_preflight` | Behavior |
+| File events for project files and sources refresh configurations and the projects they affect | [`LspWorkspaceEvents.didChangeWatchedFiles`](../src/protocol/LspWorkspaceEvents.v3), [`WorkspaceProjects.affected`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:affected_contexts`, [`watched-project-file.jsonl`](../test/diagnostics/watched-project-file.jsonl), [`watched-sources.jsonl`](../test/diagnostics/watched-sources.jsonl) | Behavior |
+| `compilerArgs` accepts exactly the pinned compiler's language options | [`ProjectCompilerFlags.isLanguageOption`](../src/workspace/ProjectCompilerFlags.v3), [`AeneasAdapter.languageOptions`](../src/analysis/AeneasAdapter.v3) | `ProjectConfig:compiler_flags` | Pin |
+| Flag syntax: `-lang:<name>`, `=true`, or `=false`, each option once, applied in order | [`ProjectCompilerFlags.check`](../src/workspace/ProjectCompilerFlags.v3) | `ProjectConfig:compiler_flags`, `ProjectConfig:invalid_compiler_flags` | Format |
+| Other flags, such as `-O2`, `-run`, or `-target`, are `UnsupportedCompilerFlag` | [`ProjectCompilerFlags.check`](../src/workspace/ProjectCompilerFlags.v3) | `ProjectConfig:invalid_compiler_flags`, `ProjectConfig:no_code_execution` | Format |
+| An unknown or removed language option is `UnsupportedCompilerFlag` on its entry, and the message names it | [`ProjectCompilerFlags.check`](../src/workspace/ProjectCompilerFlags.v3), [`ProjectConfigValidator.compilerArgs`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:invalid_compiler_flags` | Format |
+| Each analysis and parse applies its project's options, then restores the defaults | [`AeneasAdapter.setLanguageOptions`](../src/analysis/AeneasAdapter.v3), [`AeneasAdapter.resetLanguageOptions`](../src/analysis/AeneasAdapter.v3) | `LspProjectAnalysis:compiler_args_per_project`, [`compiler-flags.jsonl`](../test/diagnostics/compiler-flags.jsonl) | Pin |
+| A project file holds at most 256 KiB, 256 levels of nesting, and 50,000 values | [`ProjectConfigParser.parse`](../src/workspace/ProjectConfig.v3), [`ProjectJsonParser.parseFile`](../src/workspace/ProjectJson.v3) | `ProjectConfig:size_limit`, `ProjectConfig:nesting_limit`, `JsonRpcJson:parse_default_value_limit`; *gap*: the value limit in a project file | Limit |
+| A program selects at most 1,024 files within 4 MiB, checked before any source is read | [`ProjectExpansion.add`](../src/workspace/ProjectExpansion.v3) | `ProjectExpansion:limits_before_reads` | Limit |
+| Expansion stops at 10,000 entries, depth 64, or 4 MiB of path bytes, and discovery at 10,000 entries or depth 64 | [`ProjectExpansion.walk`](../src/workspace/ProjectExpansion.v3), [`WorkspaceProjects.discover`](../src/workspace/WorkspaceProjects.v3) | `ProjectExpansion:symlinks_and_special_files`, `WorkspaceProjects:discovery_overflow`; *gap*: the path-byte budget, and discovery's depth limit | Limit |
+| A workspace keeps at most 128 project files, 128 projects, 8,192 source references, 4 MiB of configuration text, and 4 MiB of source paths | [`WorkspaceProjects.load`](../src/workspace/WorkspaceProjects.v3), [`WorkspaceProjects.update`](../src/workspace/WorkspaceProjects.v3) | `WorkspaceProjects:configuration_capacity_recovery`, `WorkspaceProjects:project_capacity_recovery`, `WorkspaceProjects:aggregate_preflight_transfer`; *gap*: the configuration-text limit | Limit |
+
+`make test` runs all of these. Names such as `ProjectConfig:version` are unit tests, run on their own with `make test-unit ARGS='ProjectConfig:*'`. Files under `test/diagnostics/` are transcripts that `test/diagnostics/run.py` replays, and those under `test/protocol/` run in `test/protocol/run.sh` and `test/protocol/bundled_library.py` ([Tests](development.md#tests)).

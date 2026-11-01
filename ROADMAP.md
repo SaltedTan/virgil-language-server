@@ -1,8 +1,8 @@
 # Virgil Language Server: Roadmap
 
-_Revised 2026-10-29. This document is the project's roadmap: the milestones delivered through `0.1.0-alpha.5`, the remaining path to v1.0, and the original August 2026 plan, kept at the end for its reasoning._
+_Revised 2026-11-01. This document is the project's roadmap: the milestones delivered through `0.1.0-alpha.5`, the remaining path to v1.0, and the original August 2026 plan, kept at the end for its reasoning._
 
-## Current state (2026-10-29)
+## Current state (2026-11-01)
 
 | Milestone | State |
 | --- | --- |
@@ -17,7 +17,7 @@ _Revised 2026-10-29. This document is the project's roadmap: the milestones deli
 | M6 — full incrementality | Evidence-driven, and no incremental analysis has shipped: every analysis checks the whole program again. Incremental parsing, invalidation, and scheduling wait for measurements that identify a bottleneck ([M6](#m6--error-tolerance-and-incrementality)). |
 | M7 — distribution and ecosystem integration | Packages, testing, and docs delivered; Marketplace publishing ([#192](https://github.com/SaltedTan/virgil-language-server/issues/192)), native Apple Silicon ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)), and the Mac Remote-SSH check ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)) are tracked separately. |
 
-What remains is the path to the [v1.0 gates](#v10-is-ready-when): a stable configuration format and compatibility policy, completion and rename suitable for everyday use, error recovery that doesn't routinely lose all language intelligence, performance budgets based on published benchmarks, release artifacts and clean-install tests for the documented platforms, and a release cycle that has tested upgrades, rollback, and newer Virgil revisions. The [v1.0 milestone](https://github.com/SaltedTan/virgil-language-server/milestone/6) tracks that work, for example the configuration contract ([#339](https://github.com/SaltedTan/virgil-language-server/issues/339)), the compatibility policy ([#340](https://github.com/SaltedTan/virgil-language-server/issues/340)), measurements toward performance budgets ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)), an upgrade and rollback rehearsal ([#344](https://github.com/SaltedTan/virgil-language-server/issues/344)), and an evidence-based release checklist ([#337](https://github.com/SaltedTan/virgil-language-server/issues/337)).
+The [configuration contract](docs/configuration.md#stability-and-evolution) now defines the version 1 stability boundary ([#339](https://github.com/SaltedTan/virgil-language-server/issues/339)). What remains is the path to the [v1.0 gates](#v10-is-ready-when): a compatibility policy, completion and rename suitable for everyday use, error recovery that doesn't routinely lose all language intelligence, performance budgets based on published benchmarks, release artifacts and clean-install tests for the documented platforms, and a release cycle that has tested upgrades, rollback, and newer Virgil revisions. The [v1.0 milestone](https://github.com/SaltedTan/virgil-language-server/milestone/6) tracks that work, for example the compatibility policy ([#340](https://github.com/SaltedTan/virgil-language-server/issues/340)), measurements toward performance budgets ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)), an upgrade and rollback rehearsal ([#344](https://github.com/SaltedTan/virgil-language-server/issues/344)), and an evidence-based release checklist ([#337](https://github.com/SaltedTan/virgil-language-server/issues/337)).
 
 ## Executive recommendation
 
