@@ -91,9 +91,9 @@ jobs:
   lazyvim-linux:
     # Runs the LazyVim test against the server that test built and tested,
     # rather than building Virgil again. It is a separate job, not a step of
-    # test, so that it is not a required check: it installs the pinned starter
-    # and plugins from GitHub. A failure still shows in the pull request. See
-    # docs/compatibility.md for CI policy and test/e2e/lazyvim/README.md#ci.
+    # test, so that it reports as its own required check: it installs the
+    # pinned starter and plugins from GitHub. See docs/compatibility.md for CI
+    # policy and test/e2e/lazyvim/README.md#ci.
     name: LazyVim test (built server, linux)
     needs: test
     # Explicit, because the skipped tested job would otherwise skip this one.
