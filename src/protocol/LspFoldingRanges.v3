@@ -65,6 +65,7 @@ class LspFoldingRanges(store: DocumentStore, projects: WorkspaceProjects) {
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		var owner = projects.forDocument(overlay.uri);
 		var ranges = AeneasAdapter.foldingRanges(overlay.uri, overlay.text, owner.compilerArgs());
+		if (ranges == null) return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, AnalysisParseBudget.refusal()));
 		var limit = MAX_RANGES;
 		if (rangeLimit >= 0 && rangeLimit < limit) limit = rangeLimit;
 		return JsonRpcReply.Result(encode(FoldingRangeLimits.keepOutermost(ranges, limit), map));

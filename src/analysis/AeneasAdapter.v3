@@ -568,10 +568,18 @@ component AeneasAdapter {
 		if (errors.numErrors > 0) return (null, errors.firstTokenEnd);
 		return (AnalysisMethodBodies.new(file, syntax).collect(), -1);
 	}
+	// The outline of {input}, as {outline} gives it, but with no symbols for a
+	// text with too many tokens to parse, as for one that fails to parse.
+	def documentSymbols(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
+		var symbols = outline(path, input, options);
+		return if(symbols != null, symbols, []);
+	}
 	// Parse current document bytes without verification, through the same
 	// driver and recovery as {parseFile}. A failed parse yields no symbols:
-	// the compiler stops early and its partial VST is not an outline.
-	def documentSymbols(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
+	// the compiler stops early and its partial VST is not an outline. Null if
+	// the text has too many tokens to parse (AnalysisParseBudget).
+	def outline(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
@@ -583,8 +591,10 @@ component AeneasAdapter {
 	// Foldable brace blocks and comments from the current text, without
 	// verification. A failed parse keeps only what ends before its first
 	// error; an error whose position the parser could not resolve drops
-	// everything. See docs/architecture.md#folding-ranges.
+	// everything. Null if the text has too many tokens to parse
+	// (AnalysisParseBudget). See docs/architecture.md#folding-ranges.
 	def foldingRanges(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisFoldingRange> {
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
@@ -598,8 +608,10 @@ component AeneasAdapter {
 		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
 	// All positions share one current-text parse and one syntax index. Only
-	// token recovery after the first error uses a conservative lexer.
+	// token recovery after the first error uses a conservative lexer. Null if
+	// the text has too many tokens to parse (AnalysisParseBudget).
 	def selectionRanges(path: string, input: Array<byte>, options: Array<string>, positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
+		if (!AnalysisParseBudget.admits(input)) return null;
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);

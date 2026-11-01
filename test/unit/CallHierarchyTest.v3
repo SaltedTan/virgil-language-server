@@ -33,6 +33,7 @@ def X = [
 	T("CallHierarchy:reply_bounds", reply_bounds),
 	T("CallHierarchy:single_group_bounds", single_group_bounds),
 	T("CallHierarchy:outlines_per_reply", outlines_per_reply),
+	T("CallHierarchy:parse_budget", parse_budget),
 	()
 ];
 def NOTE = "/* é𝄞\t */ ";
@@ -812,4 +813,27 @@ def outlines_per_reply(t: Tester) {
 		call(method(0, "A", "b", "def b", 4, "; }", "def b()"), [("a(); }", 0)]),
 		call(method(1, "", "z", "def z", 4, "; }", "def z()"), [("A.a", 2)])]);
 	t.asserti(2, p.hierarchy.outlines - before);
+}
+// A file with more tokens than the outline parse's bound has no outline, as
+// one that fails to parse has none: its items' ranges are their names', with
+// no container, and since its outline finds the caller of each call, its
+// calls have no callers. Another file's items and calls are unchanged.
+def parse_budget(t: Tester) {
+	var p = program(t, [GEOMETRY, CALLER], [], true);
+	var use = method(1, "Caller", "use", "def use", 4, "; }", "def use() -> int");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(CALLER, int.max);
+	t.assert(AnalysisParseBudget.count(GEOMETRY, int.max) > AnalysisParseBudget.maxTokens, "a.v3 is refused");
+	p.checkCalls("incoming of sum", p.expand(p.item(0, "def sum", 4), true), true, 0, "sum", [call(use, [("Geometry.sum(8", 9)])]);
+	p.checkCalls("outgoing of use", p.expand(p.item(1, "def use", 4), false), false, 1, null,
+		[call(method(0, "", "sum", "sum(x: int", 0, "sum", "def sum(x: int, y: int) -> int"), [("Geometry.sum(8", 9)])]);
+	p.checkCalls("outgoing of twice", p.expand(p.item(0, "def twice", 4), false), false, 0, null, []);
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+	p.checkCalls("incoming of sum", p.expand(p.item(0, "def sum", 4), true), true, 0, "sum", [
+		call(TOTAL, [("sum(1, 2)", 0)]),
+		call(FIRST, [("sum(3, 4)", 0)]),
+		call(TWICE, [("sum(x, 0)", 0), ("sum(0, x)", 0)]),
+		call(RUN, [("sum(twice(1)", 0)]),
+		call(TOP, [("Geometry.sum(6", 9)]),
+		call(use, [("Geometry.sum(8", 9)])]);
+	p.checkCalls("outgoing of use", p.expand(p.item(1, "def use", 4), false), false, 1, null, [call(SUM, [("Geometry.sum(8", 9)])]);
 }

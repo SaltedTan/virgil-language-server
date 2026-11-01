@@ -10,6 +10,7 @@ def X = [
 	T("FoldingRanges:parse_failure", parse_failure),
 	T("FoldingRanges:params_lifecycle_overlay", lifecycle),
 	T("FoldingRanges:server_bound", server_bound),
+	T("FoldingRanges:parse_budget", parse_budget),
 	()
 ];
 def URI = "untitled:folding.v3";
@@ -138,6 +139,20 @@ def server_bound(t: Tester) {
 		t.asserti(3 * i, JsonValue.Int.!(r["startLine"]).v);
 		t.asserti(3 * i + 1, JsonValue.Int.!(r["endLine"]).v);
 	}
+}
+
+// A document with more tokens than the parse's bound gets RequestFailed, and
+// one within it the same ranges as before.
+def parse_budget(t: Tester) {
+	var s = running("{\"lineFoldingOnly\":true}");
+	open(t, s, "component C {\n def f() {}\n}");
+	AnalysisParseBudget.maxTokens = 10;
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1}]");
+	AnalysisParseBudget.maxTokens = 9;
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32803,\"message\":\"the document has more than 9 tokens\"}}",
+		s.handle(REQUEST));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1}]");
 }
 
 def error(t: Tester, reply: string, code: int) {

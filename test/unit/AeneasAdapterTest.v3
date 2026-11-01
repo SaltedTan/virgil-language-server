@@ -214,7 +214,11 @@ def test_parse_deep_nesting(t: Tester) {
 			t.assert_string("nesting too deep; parsing stopped here", d.message);
 			t.assert(d.beginOffset > 0 && d.beginOffset < text.length, "expected the stop inside the input");
 			t.asserti(d.beginOffset, d.endOffset);
+			// The outline's parse stops too. Raise the parse budget, which would
+			// refuse this text before parsing it, so that the parse runs.
+			AnalysisParseBudget.maxTokens = int.max;
 			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text, []).length);
+			AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 		}
 	}
 }
@@ -257,7 +261,11 @@ def test_parse_long_chains(t: Tester) {
 			t.assert(d.beginOffset > 0 && d.beginOffset <= c.0.length + repetitions * c.2.length,
 				"expected the stop before the limit");
 			t.asserti(d.beginOffset, d.endOffset);
+			// The outline's parse stops too. Raise the parse budget, which would
+			// refuse this text before parsing it, so that the parse runs.
+			AnalysisParseBudget.maxTokens = int.max;
 			t.asserti(0, AeneasAdapter.documentSymbols("chain.v3", text, c.5).length);
+			AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 		}
 	}
 	// The method's parenthesis counts too, so a statement may hold one link

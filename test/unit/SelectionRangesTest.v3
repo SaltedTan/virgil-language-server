@@ -27,6 +27,7 @@ def X = [
 	T("SelectionRanges:recovery_ranges", recovery_ranges),
 	T("SelectionRanges:protocol", protocol),
 	T("SelectionRanges:limits", limits),
+	T("SelectionRanges:parse_budget", parse_budget),
 	()
 ];
 
@@ -401,4 +402,20 @@ def limits(t: Tester) {
 	positions.putc(']');
 	var reply = request(s, Strings.format1("{\"textDocument\":{\"uri\":\"untitled:selection.v3\"},\"positions\":%s}", positions.toString()));
 	t.asserti(-32602, JsonValue.Int.!(JsonValue.JObject.!(JsonValue.JObject.!(reply).v["error"]).v["code"]).v);
+}
+// A document with more tokens than the parse's bound gets RequestFailed, and
+// one within it the same chains as before.
+def parse_budget(t: Tester) {
+	var s = running();
+	s.documents.open("untitled:selection.v3", "virgil", 1, "component C {\n\tdef f() {}\n}\n");
+	var params = "{\"textDocument\":{\"uri\":\"untitled:selection.v3\"},\"positions\":[{\"line\":1,\"character\":6}]}";
+	var reply = s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/selectionRange\",\"params\":%s}", params));
+	t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":[{"), "a chain");
+	AnalysisParseBudget.maxTokens = 10;
+	t.assert_string(reply, s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/selectionRange\",\"params\":%s}", params)));
+	AnalysisParseBudget.maxTokens = 9;
+	var obj = JsonValue.JObject.!(request(s, params)).v, error = JsonValue.JObject.!(obj["error"]).v;
+	t.asserti(-32803, JsonValue.Int.!(error["code"]).v);
+	t.assert_string("the document has more than 9 tokens", JsonValue.String.!(error["message"]).v);
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }

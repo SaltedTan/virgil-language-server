@@ -1,0 +1,140 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisParseBudget:count", count),
+	T("AnalysisParseBudget:parser_tokens", parser_tokens),
+	T("AnalysisParseBudget:hint_budget", hint_budget),
+	T("AnalysisParseBudget:admits", admits),
+	T("AnalysisParseBudget:adapter", adapter),
+	()
+];
+def count(t: Tester) {
+	var cases: Array<(string, int)> = [
+		("", 0),
+		(" \t\r\n\x0C\x0B", 0),
+		("var a,a,a;", 7),
+		("component C {\n\tdef f() {}\n}\n", 10),
+		("a// b c\nb/* d\ne */c /* f", 16),
+		("a / b", 3),
+		("\"a b \\\" c\" 'x' '\\'' x", 15),
+		("\"open\nx 'y", 5),
+		("//\rvar x;", 5),
+		("// c\r\nvar x;", 6),
+		("\"ab\rc\"", 4),
+		("'a\r'", 3),
+		("x0_y 12 0x1F 1.5", 8),
+		("1a _a", 4),
+		("a==b->c=>d", 10),
+		("a\xC3\xA9b\x01c", 6),
+		("//\r/*\nvar x;", 7),
+		("/*\r*/x;//\r\ny;", 10),
+		("//a\r\rb;\nc;", 7),
+		("class C #//* */ {var x=(a,a);}", 19),
+		("class C #\" {var x=(a,a);}", 15)
+	];
+	for (c in cases) {
+		var got = AnalysisParseBudget.count(c.0, int.max);
+		if (got != c.1) t.fail3("%s: %d tokens, not %d", c.0, got, c.1);
+	}
+	// Counting stops at the first token past the limit.
+	t.asserti(3, AnalysisParseBudget.count("a b c d e", 2));
+	t.asserti(5, AnalysisParseBudget.count("a b c d e", 5));
+}
+
+// The count is never less than the tokens that the parser consumes, as its
+// syntax index records them, whether the text parses or not, both from text
+// normalized as the adapter normalizes it and from raw text, as the semicolon
+// quick fix's AeneasAdapter.parseStatement reads it.
+def parser_tokens(t: Tester) {
+	for (text in [
+		"component C {\n\tdef f(x: int) -> int { return x == 0 || x >= 1; }\n\tvar s = \"a // b\", c = '\\'';\n}\n",
+		"/* note */ class K<T>(x: T) extends B<T> {\n\tdef m() => x;\n\tdef g(a: Array<T>, i: int) -> (T, T) { return (a[i], a[i + 1]); }\n\tnew(x, y: T) super(y) { }\n}\n",
+		"type V {\n\tcase A(x: int);\n\tcase B;\n}\ndef f(v: V) {\n\tmatch (v) {\n\t\tA(x) => ;\n\t\t_ => ;\n\t}\n\tvar r = a[0 ... 2], s = a[1 ..+ 2], u = -1.5e3, w = 0xFFu;\n}\n"
+	]) {
+		t.asserti(0, parsed(t, text).0);
+	}
+	// Malformed text, where the parser's reading of each byte matters most.
+	for (text in [
+		"def f(){1a;}", "def f(){0x;}", "def f(){0x1G;}", "def f(){var x = 1.2.3;}", "def f(){var x = 1e;}",
+		"def f(){var c = 'ab';}", "def f(){var c = '';}", "def f(){var c = '\\q';}",
+		"def f(){var s = \"abc\n}\n", "def f(){var s = \"abc\\", "def f(){var c = 'a\n}\n", "def f(){var c = '",
+		"def f(){var x\xC3\xA9y = 1;}", "def f(){\xFF\x01;}", "def \x80f() {}",
+		"component C {\r\tdef f() {\r\t\tvar s = \"a\r\t}\r}\r", "//\rvar x=(a,a,a);", "var x = 1;\r// c\r\nvar y = 2;\r",
+		"def f(){_a; a_; __; _1;}", "def f(){var x = 1_000 + 0b101 + 0xFFu + 1.5f + 2L;}",
+		// Mixed line endings, where a comment ends differently in each reading.
+		"//\r/*\ndef f(){var x=(a,a,a);}", "//\r/*\ndef f(){var x=(a,a,a)\n}", "/*\r*/def f(){x;}//\r\ndef g(){y;}",
+		"//a\r\rdef f(){b;}\ndef g(){c;}", "// c\r/* d\n*/ def f(){e;}", "def f(){var s = \"a\r\";}\r\n// x\rdef g(){}",
+		"/* a\r\n*/\rdef f(){}\r//\n/*\r*/def g(){}",
+		"class C #//* */ {var x=(a,a);}", "class C #\" {var x=(a,a);}"
+	]) {
+		parsed(t, text);
+	}
+}
+// Parses {text} normalized, as the adapter does, and raw, as parseStatement
+// does, checks that the count is no less than the tokens that either
+// parse consumes, and returns the normalized parse's errors.
+def parsed(t: Tester, text: string) -> (int, int) {
+	var result = parsedAs(t, AeneasAdapter.normalizedRange(text, 0, text.length), text);
+	parsedAs(t, text, text);
+	return result;
+}
+def parsedAs(t: Tester, input: Array<byte>, text: string) -> (int, int) {
+	var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
+	AnalysisSingleFileParser.parse("budget.v3", input, errors, syntax, TypeCache.new(), null);
+	var counted = AnalysisParseBudget.count(text, int.max);
+	if (counted < syntax.count) {
+		t.fail3("%s: counted %d tokens, parsed %d", text, counted, syntax.count);
+	}
+	return (errors.numErrors, syntax.count);
+}
+def admits(t: Tester) {
+	var text = "component C {\n\tdef f() {}\n}\n";
+	t.asserti(10, AnalysisParseBudget.count(text, int.max));
+	AnalysisParseBudget.maxTokens = 10;
+	t.assert(AnalysisParseBudget.admits(text), "ten tokens are admitted");
+	t.assert_string("the document has more than 10 tokens", AnalysisParseBudget.refusal());
+	AnalysisParseBudget.maxTokens = 9;
+	t.assert(!AnalysisParseBudget.admits(text), "ten tokens are refused");
+	// A text no longer than the bound is admitted without counting: each
+	// token takes a byte.
+	AnalysisParseBudget.maxTokens = 3;
+	t.assert(AnalysisParseBudget.admits("a,b"), "three bytes");
+	t.assert(!AnalysisParseBudget.admits("a,b,"), "four tokens");
+	t.assert(AnalysisParseBudget.admits("a  b"), "four bytes, two tokens");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+// Each of the adapter's single-file parses for outlines, folding ranges, and
+// selection ranges refuses a text past the bound with null, before parsing,
+// and answers as before within it; documentSymbols gives no symbols.
+def adapter(t: Tester) {
+	var text = "component C {\n\tdef f() {}\n}\n";
+	AnalysisParseBudget.maxTokens = 10;
+	t.asserti(2, AeneasAdapter.outline("budget.v3", text, [])[0].children.length + 1);
+	t.asserti(1, AeneasAdapter.documentSymbols("budget.v3", text, []).length);
+	t.asserti(1, AeneasAdapter.foldingRanges("budget.v3", text, []).length);
+	t.asserti(1, AeneasAdapter.selectionRanges("budget.v3", text, [], [17]).length);
+	AnalysisParseBudget.maxTokens = 9;
+	t.assert(AeneasAdapter.outline("budget.v3", text, []) == null, "outline refused");
+	// Other files' outlines, as hierarchies and workspace symbols take them,
+	// are empty, as for a text that fails to parse.
+	t.asserti(0, AeneasAdapter.documentSymbols("budget.v3", text, []).length);
+	t.assert(AeneasAdapter.foldingRanges("budget.v3", text, []) == null, "folding refused");
+	t.assert(AeneasAdapter.selectionRanges("budget.v3", text, [], [17]) == null, "selection refused");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+
+def hint_budget(t: Tester) {
+	for (prefix in ["class C #//* */ {var x=(", "class C #\" {var x=("]) {
+		var b = StringBuilder.new().puts(prefix);
+		for (i < 520000) b.puts("a,");
+		var text = b.puts("a);}").extract();
+		t.assert(AnalysisParseBudget.count(text, int.max) > AnalysisParseBudget.MAX_TOKENS, "dense hint body counts");
+		t.assert(!AnalysisParseBudget.admits(text), "dense hint body refused");
+		t.assert(AeneasAdapter.outline("budget.v3", text, []) == null, "outline refused");
+		t.asserti(0, AeneasAdapter.documentSymbols("budget.v3", text, []).length);
+		t.assert(AeneasAdapter.foldingRanges("budget.v3", text, []) == null, "folding refused");
+		t.assert(AeneasAdapter.selectionRanges("budget.v3", text, [], [0]) == null, "selection refused");
+	}
+}
