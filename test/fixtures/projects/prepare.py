@@ -428,6 +428,19 @@ for _ in range(65):
     deep /= "d"
 deep.mkdir(parents=True, exist_ok=True)
 (deep / "Deep.v3").write_text("def deep = 1;\n", encoding="utf-8")
+# ProjectExpansionTest's path_budget walks a chain of 16 directories with
+# 200-byte names, and its discovery_depth discovers a project file 64
+# directories down but not the one 65 down.
+path_budget = root / "path-budget"
+for _ in range(16):
+    path_budget /= "d" * 200
+path_budget.mkdir(parents=True, exist_ok=True)
+discovery_depth = root / "discovery-depth"
+for depth in range(1, 66):
+    discovery_depth /= "d"
+    if depth >= 64:
+        discovery_depth.mkdir(parents=True, exist_ok=True)
+        (discovery_depth / ".virgil-lsp.json").write_text('{"version":1,"projects":[]}', encoding="utf-8")
 
 wide = root / "scan-a"
 wide.mkdir(exist_ok=True)

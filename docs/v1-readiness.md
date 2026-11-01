@@ -79,7 +79,7 @@ The candidate needs:
 - `npm test` in `clients/vscode` passing, for the client's server selection, broken-bundle, and mismatched-host tests.
 - The compatibility review of [Making a release](releasing.md#making-a-release): the candidate's row in the Virgil revision table agrees with `virgil-lsp --version`, the gitlink, `THIRD_PARTY_NOTICES.md`, the corpus's `virgil_source_revision`, the dry run's manifests, the bundled `virgil/REVISION`, and the release notes; and `CHANGELOG.md` announces every change that the policy names.
 
-Open facts that the gate decision should weigh: the inventory marks several behaviors as gaps with no test of their own, such as case-sensitive pattern matching and the configuration-text limit; and no test sends a worker handshake with another protocol version, server version, or source revision.
+Open facts that the gate decision should weigh: no test sends a worker handshake with another protocol version, server version, or source revision.
 
 ### 2. Everyday use
 
