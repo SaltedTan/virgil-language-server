@@ -24,17 +24,17 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## CI
 
-- **Pull requests.** The CI job `lazyvim-linux`, "LazyVim test (built server, linux)" in [`ci.yml`](../../../.github/workflows/ci.yml), runs `run.sh` after the `test` job succeeds, with the server that `test` built, Neovim 0.11.6, and tmux from the runner's packages. See the [CI policy](../../../docs/compatibility.md#host-platforms) for when jobs run, its advisory status, and promotion criteria.
+- **Pull requests.** The CI job `lazyvim-linux`, "LazyVim test (built server, linux)" in [`ci.yml`](../../../.github/workflows/ci.yml), runs `run.sh` after the `test` job succeeds, with the server that `test` built, Neovim 0.11.6, and tmux from the runner's packages. It is a required check, so its failure blocks the merge. See the [CI policy](../../../docs/compatibility.md#host-platforms) for when jobs run and how the job became required.
 - **Weekly and for each release.** The jobs of [`editor-test-suites.yml`](../../../.github/workflows/editor-test-suites.yml) run `run.sh --archive` on the release archives of the run: every Monday in the [editor tests workflow](../../../.github/workflows/editor-tests.yml), which builds them from source, and in the [release workflow](../../../docs/releasing.md#how-the-workflow-works), on each release's own archives, for every tag and dry run, including the pull requests that change this test ([Dry runs](../../../docs/releasing.md#dry-runs)). A release publishes only if they pass. They run on Linux with Neovim 0.11.6 and 0.12.6, each checked against its pinned SHA-256, and on macOS (Apple Silicon, with the server under Rosetta 2) with Homebrew's Neovim and tmux. See [automated editor coverage](../../../docs/manual-testing.md#what-the-automated-tests-cover) for the workflows' other editor tests, and the [CI policy](../../../docs/compatibility.md#host-platforms) for required-check status.
 - **Artifacts.** Each job uploads the [output directory](#outputs) as `results/` and the script's own output as `run.log`, also when the test fails: `lazyvim-linux` from CI, and `lazyvim-linux-nvim-<version>` and `lazyvim-macos` from the weekly and release workflows. `gh run download <run-id> --name lazyvim-linux` fetches one.
-- **Run history.** To count the CI job's runs in a row, list its results, newest first. Cancelled and skipped runs don't count either way.
+- **Run history.** To count the CI job's pull-request runs in a row, list the first attempt of each run, newest first. A rerun, a skipped job, or a cancelled job earns no credit either way, and the latest attempt alone can hide a failed first attempt.
 
   ```sh
-  gh run list --workflow ci.yml --limit 50 --json databaseId --jq '.[].databaseId' |
+  gh run list --workflow ci.yml --event pull_request --limit 50 --json databaseId --jq '.[].databaseId' |
     while read -r id; do
-      gh run view "$id" --json jobs,event,headBranch --jq '.event as $e | .headBranch as $b | .jobs[]
+      gh api "repos/{owner}/{repo}/actions/runs/$id/attempts/1/jobs" --jq '.jobs[]
         | select(.name == "LazyVim test (built server, linux)")
-        | "\(.completedAt) \(.conclusion) \($e) \($b) \(.url)"'
+        | "\(.completed_at) \(.conclusion) \(.html_url)"'
     done
   ```
 
