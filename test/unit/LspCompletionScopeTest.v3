@@ -42,6 +42,7 @@ def X = [
 	T("LspCompletionScope:ref_layouts", test_ref_layouts),
 	T("LspCompletionScope:unreached", test_unreached),
 	T("LspCompletionScope:other_file_unparsed", test_other_file_unparsed),
+	T("LspCompletionScope:broken_sibling", test_broken_sibling),
 	T("LspCompletionMembers:as_typed", test_members_as_typed),
 	T("LspCompletionMembers:items", test_members_items),
 	T("LspCompletionMembers:insert_replace", test_members_insert_replace),
@@ -885,6 +886,49 @@ def test_other_file_unparsed(t: Tester) {
 	s.change("Other.v3", 3, OTHER);
 	s.settle();
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tto$")), "|"), "the names once Other.v3 parses");
+	s.server.close();
+}
+
+// Other.v3 with a syntax error inside helper's body, which method-body
+// fallback and current-text repair both accept.
+def BROKEN_BODY = "component Other {\n\tdef helper() -> int { var unfinished = ; return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n";
+// The names and the members at the cursors that the sibling tests use.
+def SIBLING_NAMES = "\t\tOth$";
+def SIBLING_MEMBERS = "\t\tOther.$";
+// The hover over the first {needle} in Main.v3, whose text must be {text}.
+def hoverIn(t: Tester, s: RenameTestSession, text: string, needle: string) -> JsonValue {
+	t.assert_string(text, s.text("Main.v3"));
+	var p = PositionMap.new(text, PositionEncoding.UTF16).offsetToPosition(offsetOf(text, needle));
+	var id = s.send(t, "textDocument/hover", s.params("Main.v3", p.line, p.character));
+	s.settle();
+	return s.result(t, id);
+}
+// The offset of the first {needle} in {text}, or -1.
+def offsetOf(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return i;
+	}
+	return -1;
+}
+
+// Another open file whose method body has an eligible syntax error doesn't
+// take the names or the members from Main.v3 (#346): hover outside the
+// damaged body is available from the project's analysis, and completion's
+// analysis recovers the other file as that analysis does, so both replies
+// are the ones the intact program gets.
+def test_broken_sibling(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	var names = complete(t, s, inScale(SIBLING_NAMES)), members = complete(t, s, inScale(SIBLING_MEMBERS));
+	t.assert(!Strings.startsWith(names, "|"), "names with the intact file");
+	t.assert_string("helper | 0", members);
+	s.change("Main.v3", s.file("Main.v3").version + 1, MAIN);
+	s.change("Other.v3", 2, BROKEN_BODY);
+	s.settle();
+	t.assert(JsonValue.JObject.?(hoverIn(t, s, MAIN, "area * factor")), "hover outside the damaged body");
+	t.assert_string(names, complete(t, s, inScale(SIBLING_NAMES)));
+	t.assert_string(members, complete(t, s, inScale(SIBLING_MEMBERS)));
 	s.server.close();
 }
 

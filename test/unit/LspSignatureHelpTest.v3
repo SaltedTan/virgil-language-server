@@ -27,6 +27,7 @@ def X = [
 	T("LspSignatureHelp:stale_waits_for_analysis", test_stale_waits_for_analysis),
 	T("LspSignatureHelp:stale_without_analysis", test_stale_without_analysis),
 	T("LspSignatureHelp:parse_failure", test_parse_failure),
+	T("LspSignatureHelp:broken_sibling", test_broken_sibling),
 	T("LspSignatureHelp:shared_waiting_bound", test_shared_waiting_bound),
 	T("LspSignatureHelp:no_project", test_no_project),
 	T("LspSignatureHelp:context_ignored", test_context_ignored),
@@ -558,6 +559,38 @@ def test_parse_failure(t: Tester) {
 	t.assert(s.reply(id) == null, "the reply waits");
 	s.settle();
 	t.assert_string(strings(ADD, ADD_PARAMS, 1), render(s.result(t, id)));
+	s.server.close();
+}
+// Decl.v3 with a syntax error inside pick's body, which method-body fallback
+// and current-text repair both accept.
+def DECL_BROKEN_BODY = "component Decl {\n\tdef pick(x: int, y: int) -> int { var unfinished = ; return x; }\n}\n";
+def PICK = "def pick(x: int, y: int) -> int";
+def PICK_PARAMS = ["x: int", "y: int"];
+// Sig.v3 with an incomplete call to {callee} in a component after SOURCE,
+// which the repair at the cursor mends.
+def incompleteCall(callee: string) -> string {
+	return Strings.format2("%s\ncomponent Broken { def f() { %s(1, } }\n", SOURCE, callee);
+}
+// Requests the signature help just past "{callee}(1, " in Sig.v3, which
+// becomes Sig.v3's text {text} at {version}, and returns its rendered reply.
+def incompleteHelp(t: Tester, s: SignatureHelpTestSession, version: int, text: string, callee: string) -> string {
+	s.change(version, text);
+	var id = s.request("textDocument/signatureHelp", at(text, Strings.format1("%s(1, }", callee), callee.length + 4));
+	s.settle();
+	return render(s.result(t, id));
+}
+
+// An incomplete call gets its signature while another open file of the
+// project has a method body with an eligible syntax error (#346): the call
+// query's analysis recovers that file as the project's analysis does, and
+// Sig.v3 keeps its repair at the cursor. Decl.pick is declared in the
+// damaged file, outside its damaged body.
+def test_broken_sibling(t: Tester) {
+	var s = session(t);
+	s.openUri(s.fileUri("Decl.v3"), 1, DECL_BROKEN_BODY);
+	s.settle();
+	t.assert_string(strings(ADD, ADD_PARAMS, 1), incompleteHelp(t, s, 2, incompleteCall("M.add"), "M.add"));
+	t.assert_string(strings(PICK, PICK_PARAMS, 1), incompleteHelp(t, s, 3, incompleteCall("Decl.pick"), "Decl.pick"));
 	s.server.close();
 }
 // Signature help and hover requests wait together, within one bound: one
