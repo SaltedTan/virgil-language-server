@@ -302,7 +302,7 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | worker `force_gc_us`, `live_after_gc_bytes` | Explicit pre-send collection duration and the existing retirement-policy live-byte count, excluding the result byte-array length. It runs once per transaction, before the collection after sending. |
 | worker `heap_after_handle_bytes`, server `heap_after_decode_bytes` | Space used at those boundaries, not peak live memory. |
 | worker `result_bytes`, server `worker_heap_bytes` | Encoded RESULT frame bytes and the worker's actual reserved heap from HELLO. |
-| worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file of a fresh worker's first analysis is changed. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
+| worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file of a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
 | worker `parse_unvisited_files`, `parse_classify_us` | Files the parse didn't reach because of the error limit, and the time to hash the paths and bytes and classify them, which runs before `parse_us` starts, within `adapter_us`. |
 | server `substitution_us`, `substituted_files` | Method-body fallback and current-text repair for a project submission, after `capture_us`, and how many files they substituted. |
 | server `prepare_us` | Capture through substitution and snapshot admission, to the worker request, for an automatic or explicit project analysis. |
@@ -399,7 +399,13 @@ Every sample's classification was as designed: an edit changed one file and
 left the rest unchanged (Aeneas: 205 files, 3,064,615 bytes, unchanged; the
 edited file's 8,394 or 8,397 bytes changed), adding `Math.v3` changed only it, removing it
 changed none, and an option change changed every file. No parse stopped at the
-error limit. The Aeneas phases, from the same samples, p50 / p95 in milliseconds:
+error limit. The probed build's classifier compared each file with every file of
+the previous analysis, even one that analysis had skipped at the error limit
+and so never parsed, and counted it unchanged if its bytes matched. It now
+compares only with files the previous analysis parsed. Since no parse in these
+runs skipped a file, the fix changes no classification here; its
+allocation is given with the observer cost below. The Aeneas phases, from the same
+samples, p50 / p95 in milliseconds:
 
 | Phase | `body_edit` | `unchanged_reanalysis` | `membership_add` | `options_set` |
 | --- | ---: | ---: | ---: | ---: |
@@ -470,7 +476,11 @@ adds 1.25 ms outside `parse_us`. With the control's whole-loop parse, 42.385 ms,
 and the edited file's 0.117 ms, the Aeneas ceiling is 42.3 ms rather than 43.0.
 Allocation grows by the classifier's arrays: 3,528 bytes per Aeneas analysis,
 552 for util, and 64 for small, and the worker keeps that much more live
-between analyses, 180,872 bytes against 177,344 for Aeneas. Peak RSS was
+between analyses, 180,872 bytes against 177,344 for Aeneas. The fixed
+classifier, which also records which files each parse reached, allocates 216,
+40, and 16 bytes more than that, and keeps 328, 152, and 128 more live, 181,200
+bytes for Aeneas; a one-block run of both probed builds under the lock, with
+otherwise the same options, classified every sample identically. Peak RSS was
 unchanged: the Aeneas worker's high-water mark was 196,012,032 bytes against
 196,001,792 (p50 of 6 sessions), and the server's 210,608,128 in both.
 

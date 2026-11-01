@@ -1,0 +1,47 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [T("BenchParseWork:error_limit_skips", test_skipped),
+	T("BenchParseWork:membership_and_options", test_membership), ()];
+// Classifies a program of {paths} and {texts}, then parses its first {reached} files.
+def parse(work: BenchParseWork, paths: Array<string>, texts: Array<string>, options: u64, reached: int) {
+	var inputs = Array<Array<byte>>.new(texts.length);
+	for (i < texts.length) inputs[i] = texts[i];
+	work.classify(paths, inputs, options);
+	for (i < reached) work.parsed(i, texts[i].length, 10);
+}
+def assertCounts(t: Tester, work: BenchParseWork, same: int, changed: int, unvisited: int) {
+	t.assertl(same, work.sameFiles);
+	t.assertl(changed, work.changedFiles);
+	t.asserti(unvisited, work.unvisited());
+	t.assertl(10L * same, work.sameUs);
+	t.assertl(10L * changed, work.changedUs);
+}
+def test_skipped(t: Tester) {
+	var work = BenchParseWork.new(), paths = ["a.v3", "b.v3", "c.v3"];
+	// The first program reaches its error limit in b.v3, so c.v3 is never parsed.
+	parse(work, paths, ["def a = ;", "def b = ;", "def c = 0;"], 0, 2);
+	assertCounts(t, work, 0, 2, 1);
+	// c.v3's bytes match the first program's, but its first parse is a changed file's.
+	parse(work, paths, ["def a = 0;", "def b = 0;", "def c = 0;"], 0, 3);
+	assertCounts(t, work, 0, 3, 0);
+	t.assertl(30, work.changedBytes);
+	parse(work, paths, ["def a = 0;", "def b = 0;", "def c = 0;"], 0, 3);
+	assertCounts(t, work, 3, 0, 0);
+	t.assertl(30, work.sameBytes);
+}
+def test_membership(t: Tester) {
+	var work = BenchParseWork.new();
+	parse(work, ["a.v3", "b.v3", "c.v3"], ["def a = 0;", "def b = 0;", "def c = 0;"], 0, 3);
+	assertCounts(t, work, 0, 3, 0);
+	// Removing a file shifts the rest, which still match by path.
+	parse(work, ["b.v3", "c.v3"], ["def b = 0;", "def c = 0;"], 0, 2);
+	assertCounts(t, work, 2, 0, 0);
+	// Adding one changes only it; an edited file changes too.
+	parse(work, ["b.v3", "c.v3", "d.v3"], ["def b = 1;", "def c = 0;", "def d = 0;"], 0, 3);
+	assertCounts(t, work, 1, 2, 0);
+	// Other language options change every file.
+	parse(work, ["b.v3", "c.v3", "d.v3"], ["def b = 1;", "def c = 0;", "def d = 0;"], 4, 3);
+	assertCounts(t, work, 0, 3, 0);
+}
