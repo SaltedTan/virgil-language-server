@@ -259,8 +259,8 @@ FIRST_SEMANTIC_ORDERS = ("config_first", "source_first")
 
 # --parse-work (#359): one unique anchor in each project's query file and two
 # replacements that iterations alternate, so that every edit changes the text
-# the previous analysis parsed. Each keeps the program's meaning and its line
-# count, so the appended semantic edit's diagnostic is the oracle throughout.
+# the previous analysis parsed. Each keeps the line count and the appended
+# semantic edit's diagnostic, which is the oracle throughout.
 PARSE_WORK_EDITS = {
     "small": {
         "body_edit": ("Shapes.square(3)", ("Shapes.square(4)", "Shapes.square(5)")),

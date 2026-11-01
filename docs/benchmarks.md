@@ -263,7 +263,7 @@ edit's parser publication is empty, and a configuration change clears the
 project's semantic diagnostics before the replacement analysis, so only that
 analysis can end an interval. An untimed snapshot then must hold exactly the
 oracle, with the current version and, after a membership change, the new
-document list. Configuration changes aren't debounced. The edits, both
+document list. Configuration changes aren't debounced. The edits, all three
 configurations, and the hashes of every text are recorded in each block's
 `parse_work`.
 
@@ -302,7 +302,7 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | worker `force_gc_us`, `live_after_gc_bytes` | Explicit pre-send collection duration and the existing retirement-policy live-byte count, excluding the result byte-array length. It runs once per transaction, before the collection after sending. |
 | worker `heap_after_handle_bytes`, server `heap_after_decode_bytes` | Space used at those boundaries, not peak live memory. |
 | worker `result_bytes`, server `worker_heap_bytes` | Encoded RESULT frame bytes and the worker's actual reserved heap from HELLO. |
-| worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file of a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
+| worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file parsed by a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
 | worker `parse_unvisited_files`, `parse_classify_us` | Files the parse didn't reach because of the error limit, and the time to hash the paths and bytes and classify them, which runs before `parse_us` starts, within `adapter_us`. |
 | server `substitution_us`, `substituted_files` | Method-body fallback and current-text repair for a project submission, after `capture_us`, and how many files they substituted. |
 | server `prepare_us` | Capture through substitution and snapshot admission, to the worker request, for an automatic or explicit project analysis. |
