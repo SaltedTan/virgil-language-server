@@ -30,7 +30,8 @@ class LspRange(start: LspPosition, end: LspPosition) { }
 // compiler coordinates are plain ints.
 //
 // {text} must be non-null and remain unchanged while the map is in use:
-// line boundaries and byte-to-LSP character counts are cached; inverse and
+// line boundaries are cached, and a line's byte-to-LSP character counts are
+// built from it the first time one of its offsets is converted; inverse and
 // compiler conversions read the original byte array.
 // See docs/architecture.md#coordinates for the conversion contract and
 // {nextColumn} for the compiler's comment-column exceptions.
@@ -43,19 +44,44 @@ class PositionMap {
 	private def lspEnds = Vector<int>.new();
 	// Compiler line {i + 1} starts at byte {compilerStarts[i]}.
 	private def compilerStarts = Vector<int>.new();
-	private var lspCharacters: Array<int>;
+	// 0 if every byte of LSP line {i}'s extent is ASCII, so that each one is
+	// one LSP character and its column is its distance from the line start;
+	// 1 otherwise. This is a byte per line rather than a character per byte,
+	// since a whole-file table of the latter was 4 bytes for every byte of
+	// the text, 425,680 of the 547,592 bytes that one map of Verifier.v3
+	// allocated (#414).
+	private def nonAscii = Vector<byte>.new();
+	// The per-byte UTF-16 columns of the non-ASCII lines that were converted,
+	// by line index, built on first use and kept, so that repeated
+	// conversions of one long non-ASCII line stay linear in its length.
+	// Null until a non-ASCII line is asked for, so an ASCII text never
+	// allocates it.
+	private var columns: Array<Array<int>>;
 
 	new(text, encoding) {
 		var max = text.length;
+		// Each line vector holds its exact final length, so that growing it
+		// by doubling leaves no discarded array behind. Counting the line
+		// ends costs one more pass over the text and saves more than it takes:
+		// on Verifier.v3, one map allocated 36,048 bytes in 0.30 ms this way
+		// and 132,160 bytes in 0.35 ms growing the vectors.
+		var lines = countLines(text, max);
+		lspStarts.grow(lines);
+		lspEnds.grow(lines);
+		compilerStarts.grow(lines);
+		nonAscii.grow(lines);
 		lspStarts.put(0);
 		compilerStarts.put(0);
-		var i = 0;
+		var i = 0, nonAsciiLine: byte = 0;
 		while (i < max) {
 			var b = text[i];
+			if (b >= 0x80) nonAsciiLine = 1;
 			if (b == '\n') {
 				lspEnds.put(i);
 				lspStarts.put(i + 1);
 				compilerStarts.put(i + 1);
+				nonAscii.put(nonAsciiLine);
+				nonAsciiLine = 0;
 			} else if (b == '\r') {
 				lspEnds.put(i);
 				if (i + 1 < max && text[i + 1] == '\n') {
@@ -63,22 +89,28 @@ class PositionMap {
 					compilerStarts.put(i + 1);
 				}
 				lspStarts.put(i + 1);
+				nonAscii.put(nonAsciiLine);
+				nonAsciiLine = 0;
 			}
 			i++;
 		}
 		lspEnds.put(max);
-		lspCharacters = Array<int>.new(max + 1);
-		for (line < lspStarts.length) {
-			var i = lspStarts[line], end = lspEnds[line], character = 0;
-			while (i < end) {
-				var len = PositionUtf8.sequenceLength(text, i);
-				for (j < len) lspCharacters[i + j] = character;
-				character += units(i, len);
-				i += len;
+		nonAscii.put(nonAsciiLine);
+	}
+	// The number of LSP lines of the {max} bytes of {bytes}, counting "\r\n"
+	// as one terminator.
+	private def countLines(bytes: Array<byte>, max: int) -> int {
+		var count = 1, i = 0;
+		while (i < max) {
+			var b = bytes[i];
+			if (b == '\n') count++;
+			else if (b == '\r') {
+				count++;
+				if (i + 1 < max && bytes[i + 1] == '\n') i++;
 			}
-			var next = if(line + 1 < lspStarts.length, lspStarts[line + 1], max + 1);
-			for (i = end; i < next; i++) lspCharacters[i] = character;
+			i++;
 		}
+		return count;
 	}
 
 	// The number of LSP lines. A document that ends with a line terminator
@@ -95,11 +127,16 @@ class PositionMap {
 		return text.length;
 	}
 
-	// Converts byte {offset} to an LSP position.
+	// Converts byte {offset} to an LSP position. A byte inside a UTF-8
+	// sequence maps to the column of the sequence's first byte, and a byte of
+	// a line terminator, or an offset past the end, to the end of the line.
 	def offsetToPosition(offset: int) -> LspPosition {
 		offset = clampOffset(offset);
 		var line = findLine(lspStarts, offset);
-		return LspPosition.new(line, lspCharacters[offset]);
+		var start = lspStarts[line], end = lspEnds[line];
+		var at = if(offset > end, end, offset) - start;
+		if (nonAscii[line] == 0) return LspPosition.new(line, at);
+		return LspPosition.new(line, columnsOf(line, start, end)[at]);
 	}
 	// Converts the LSP position {line}:{character} to a byte offset.
 	def positionToOffset(line: int, character: int) -> int {
@@ -191,6 +228,26 @@ class PositionMap {
 			UTF8 => return if(len == PositionUtf8.expectedLength(text[i]), len, 3);
 			UTF32 => return 1;
 		}
+	}
+	// The LSP character of each byte of line {line}, which holds the bytes
+	// from {start} to {end}, indexed by the byte's distance from {start}. The
+	// line's table is built the first time it is asked for and then kept.
+	private def columnsOf(line: int, start: int, end: int) -> Array<int> {
+		var tables = columns;
+		if (tables == null) tables = columns = Array<Array<int>>.new(lspStarts.length);
+		var table = tables[line];
+		if (table != null) return table;
+		table = Array<int>.new(end - start + 1);
+		var i = start, character = 0;
+		while (i < end) {
+			var len = PositionUtf8.sequenceLength(text, i);
+			for (j < len) table[i - start + j] = character;
+			character += units(i, len);
+			i += len;
+		}
+		table[end - start] = character;
+		tables[line] = table;
+		return table;
 	}
 }
 
