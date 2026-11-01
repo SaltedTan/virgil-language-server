@@ -267,6 +267,8 @@ Three version numbers apply to a project file, and each changes on its own:
 
 [ADR-0012](decisions/0012-project-configuration-stability.md) records this boundary and why.
 
+Which Virgil revision, library, and editors a release supports, how long it gets fixes, and how a new pin is announced are in the [support policy](compatibility.md#support-policy) ([ADR-0014](decisions/0014-compatibility-and-support-policy.md)). It adds nothing to this contract.
+
 ### What server 1.x keeps
 
 From server 1.0 on, every 1.x release reads version 1 files as this page specifies:
