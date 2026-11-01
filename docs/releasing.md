@@ -118,6 +118,8 @@ The rehearsal covers only Linux x86-64, the archive's symlink layout, and VSIX f
 
 ## Making a release
 
+The [v1.0 readiness ledger](v1-readiness.md) lists, for each of the roadmap's v1.0 clauses, the evidence that a v1.0 candidate would need to record, such as its tolerance scorecard, release workflow run, and upgrade and rollback rehearsal; it isn't a release gate yet, so prereleases follow the steps below without needing it.
+
 1. Choose the version. Before v1.0 it is a prerelease such as `0.1.0-alpha.1`; raise `N` for each further alpha of the same version.
 2. On a branch, prepare the release in one pull request:
    - Set `VERSION` to the version.
