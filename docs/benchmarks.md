@@ -547,8 +547,9 @@ the same hardware thread, took 11.0 ms per pass over them that way. Of that,
 which the change keeps for its symlink policy. Opening, `fstat`, and reads into
 an array of the length `fstat` reported took 1.9 ms. Copying, not the system
 calls, dominated. `ProjectFiles.load` now reads into an array of `fstat`'s
-length, so a file whose length holds costs one read, one end-of-file read, and
-no copy; the same program took 2.5 ms per pass through the new `load`. A file
+length, so a nonempty file whose length holds normally costs one read, one
+end-of-file read, and no copy; short or interrupted reads are retried. The same
+program took 2.5 ms per pass through the new `load`. A file
 that shrinks between `fstat` and the read yields the bytes that remain, and one
 that grows is read to its end in chunks within the same budget, as before.
 
@@ -584,7 +585,8 @@ run's spread.
 After the change, hashing is 2.412 ms of Aeneas's 6.080 ms capture, 40%.
 Reusing a closed file's bytes and hash across analyses would avoid both, but
 it isn't done: keyed on the disk stamp, it would analyze stale text for a
-client that doesn't report file changes.
+client that doesn't report file changes. Caching closed files across analyses
+is out of scope for this change and remains a maintainer decision.
 
 **Observer cost.** A separate run under the same lock alternated main
 `f3cf0707` with the probed build. Their `capture_us` p50s agreed within 0.24 ms

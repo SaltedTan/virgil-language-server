@@ -77,8 +77,7 @@ component ProjectFiles {
 		return text;
 	}
 	// Reads {fd} to its end, expecting the {expected} bytes that fstat
-	// reported: into an array of that length, so a file whose length holds
-	// costs one read, one end-of-file read, and no copy. A file that shrank
+	// reported, avoiding a growable buffer in the common case. A file that shrank
 	// since fstat yields the bytes that remain. One that grew is never cut
 	// short: the read continues in chunks, and the whole is still subject to
 	// {budget}, as before this sized read (#413). Exceeding it fails, as at
