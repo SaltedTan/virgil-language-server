@@ -3704,8 +3704,8 @@ The 2026-11-01 re-measurement of the [budget proposal](performance-budgets.md)
 at `bf9e70a8` found the fourth measured Aeneas `completion_hit` of every block
 at 29.6 to 35.3 ms, in both the full-scenario and the error-result captures,
 while the 2026-10-31 capture at `85baf49d` had no such tail. The cause is a
-collection in the server process. No change made a completion allocate more or
-the server retain more. [#418](https://github.com/SaltedTan/virgil-language-server/issues/418)
+collection in the server process. No change made a cache hit allocate more, and
+the bytes surviving each collection stayed broadly similar. [#418](https://github.com/SaltedTan/virgil-language-server/issues/418)
 cut the server's allocation over the request loop by about 38%, so fewer
 collections run, and one of them now falls in that hit.
 
@@ -3724,15 +3724,20 @@ bytes that survived them, and the bytes allocated. A completion reply leaves
 from a deferred handler before that wrapper returns, so the client copy that
 read these probes waited 5 ms after each validated reply, outside the timed
 interval, and skipped them in the cache-hit check of `--require-probes`.
-Nine builds carried the probe: `85baf49d` and the merge of each change since
-then that touched `src/`. They were built in equal-length worktrees with
+Nine builds carried the probe: `85baf49d` and the merge of each runtime change
+since then, leaving out #423, which changed only a comment in `src/`. They were built in equal-length worktrees with
 `BENCH=1 all bench-metadata` and byte-identical generated BuildInfo text, and
 ran as one comparison: Aeneas only, six alternating process blocks, two
 warmups and five measured operations per block, pinned to hardware thread 12
 under the shared benchmark lock, with every semantic check passing and no
 samples removed. Other agents' work on the machine put the one-minute load
-average at 8 to 12 when the runs started, which widens every time below but
-not the allocation or the collections.
+average at 8 to 12 when the runs started, which may widen the spread of the
+times below. The allocation and where each collection fell were the same in
+every block of a build. The raw data, the temporary probe and client, and the
+scripts are in the lead's scratch directory
+`/home/sean-tan/.t3/scratch-virgil/tail-433/`: `README.md` indexes them, and
+`runs/probe-main.json` and `runs/ablation.json` are the reproduction and the
+ablation.
 
 Allocation and collections are the same in every block of a build. The loop
 is the seven iterations, two warmups and five measured, of definition through
@@ -3753,8 +3758,10 @@ build. Times are milliseconds:
 | `f8b1a37e` (#425) | 3,056.6 | 13,021.2 | 466.0 | 5 | 19.1–24.0 | fourth measured, 6 of 6 | 7.3 |
 | `aebe48eb` (#427) | 3,056.6 | 13,021.2 | 466.0 | 5 | 19.1–24.0 | fourth measured, 6 of 6 | 7.5 |
 
-The surviving bytes are those of each collection in the measured samples, so
-the server's retained data didn't grow. A hit's own allocation, about 3 MB,
+The surviving bytes are those of each collection in the measured samples. They
+were broadly similar in every build, though the largest rose from 22.8 MB to
+24.0 MB; collections at different points don't measure retained data exactly.
+A miss allocated 375 KB more after [#425](https://github.com/SaltedTan/virgil-language-server/issues/425). A hit's own allocation, about 3 MB,
 fell by 37 KB with [#417](https://github.com/SaltedTan/virgil-language-server/issues/417).
 #418 reads a closed project file into one array of its length. In the Aeneas
 project, that took 8 MB from each completion miss and each prepareRename,
