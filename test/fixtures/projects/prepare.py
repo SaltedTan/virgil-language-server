@@ -428,6 +428,21 @@ for _ in range(65):
     deep /= "d"
 deep.mkdir(parents=True, exist_ok=True)
 (deep / "Deep.v3").write_text("def deep = 1;\n", encoding="utf-8")
+# ProjectExpansionTest's path_budget walks 95 empty directories with 255-byte
+# names below a 200-byte one, so that each path stays far below macOS's
+# 1,024-byte limit, and its discovery_depth discovers a project file 64
+# directories down but not the one 65 down.
+path_budget = root / "path-budget"
+if path_budget.exists():
+    shutil.rmtree(path_budget)
+for index in range(95):
+    (path_budget / ("d" * 200) / (f"{index:02d}" + "d" * 253)).mkdir(parents=True)
+discovery_depth = root / "discovery-depth"
+for depth in range(1, 66):
+    discovery_depth /= "d"
+    if depth >= 64:
+        discovery_depth.mkdir(parents=True, exist_ok=True)
+        (discovery_depth / ".virgil-lsp.json").write_text('{"version":1,"projects":[]}', encoding="utf-8")
 
 wide = root / "scan-a"
 wide.mkdir(exist_ok=True)

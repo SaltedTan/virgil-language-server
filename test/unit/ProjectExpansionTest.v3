@@ -6,6 +6,7 @@ def X = [
 	T("ProjectExpansion:host_directory", test_host_directory),
 	T("ProjectExpansion:glob", test_glob),
 	T("ProjectExpansion:glob_selects", test_glob_selects),
+	T("ProjectExpansion:glob_case", test_glob_case),
 	T("ProjectExpansion:glob_budget", test_glob_budget),
 	T("ProjectExpansion:glob_exhausted_work", test_glob_exhausted_work),
 	T("WorkspaceProjects:ownership_exhausted_work", test_ownership_exhausted_work),
@@ -13,6 +14,7 @@ def X = [
 	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
 	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
+	T("ProjectExpansion:path_budget", test_path_budget),
 	T("ProjectFiles:load", test_load),
 	T("ProjectFiles:load_changed_length", test_load_changed_length),
 	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
@@ -21,14 +23,19 @@ def X = [
 	T("ProjectExpansion:source_uris", test_source_uris),
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
+	T("WorkspaceProjects:empty_workspace_folders", test_empty_workspace_folders),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
 	T("WorkspaceProjects:cached_expansion_preflight", test_cached_expansion_preflight),
 	T("WorkspaceProjects:aggregate_preflight_transfer", test_aggregate_preflight_transfer),
 	T("WorkspaceProjects:active_precedence", test_active_precedence),
+	T("WorkspaceProjects:membership_over_dependency", test_membership_over_dependency),
+	T("WorkspaceProjects:configuration_uri_tie", test_configuration_uri_tie),
 	T("WorkspaceProjects:single_file_once", test_single_file_once),
 	T("WorkspaceProjects:configuration_capacity_recovery", test_configuration_capacity_recovery),
 	T("WorkspaceProjects:project_capacity_recovery", test_project_capacity_recovery),
+	T("WorkspaceProjects:configuration_text_capacity", test_configuration_text_capacity),
 	T("WorkspaceProjects:discovery_overflow", test_discovery_overflow),
+	T("WorkspaceProjects:discovery_depth", test_discovery_depth),
 	T("WorkspaceProjects:snapshot_budget", test_snapshot_budget),
 	T("WorkspaceProjects:rename_snapshot_budget", test_rename_snapshot_budget),
 	T("WorkspaceProjects:snapshot_admission_order", test_snapshot_admission_order),
@@ -117,6 +124,28 @@ def test_glob_selects(t: Tester) {
 				t.assertz(listed, m.selects(split.sources, split.exclude, m.split(path)));
 			}
 		}
+	}
+}
+// Matching is case-sensitive, and the server matches names itself, so a
+// pattern that differs from a file's name only in case selects nothing, even
+// on a case-insensitive file system.
+def test_glob_case(t: Tester) {
+	for (c in [("A.v3", "a.v3"), ("a.v3", "A.v3"), ("*.v3", "A.V3"), ("A?.v3", "aB.v3"),
+			("src/*.v3", "SRC/A.v3"), ("**/main.v3", "x/Main.v3"), ("\xC3\xA9.v3", "\xC3\x89.v3")]) {
+		t.assertz(false, ProjectGlob.matches(c.0, c.1));
+		t.assertz(true, ProjectGlob.matches(c.1, c.1));
+	}
+	var base = ProjectFiles.join(FIXTURES, "two-programs");
+	for (c in [
+		("{\"name\":\"p\",\"sources\":[\"shared/Greeting.v3\"]}", 1),
+		("{\"name\":\"p\",\"sources\":[\"shared/greeting.v3\"]}", 0),
+		("{\"name\":\"p\",\"sources\":[\"Shared/*.v3\"]}", 0),
+		("{\"name\":\"p\",\"sources\":[\"shared/G*.v3\"],\"exclude\":[\"SHARED\"]}", 1),
+		("{\"name\":\"p\",\"sources\":[\"shared/G*.v3\"],\"exclude\":[\"shared/greeting.v3\"]}", 1),
+		("{\"name\":\"p\",\"sources\":[\"shared/G*.v3\"],\"exclude\":[\"shared/Greeting.v3\"]}", 0)]) {
+		var r = expand(base, null, definition(c.0));
+		t.asserti(0, r.diagnostics.length);
+		t.asserti(c.1, r.sources.length);
 	}
 }
 // {pattern}, and {exclude} unless empty, matched against {path} by a matcher
@@ -330,6 +359,45 @@ def test_symlinks(t: Tester) {
 	t.asserti(1, r.diagnostics.length);
 	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "deep real trees are bounded too");
 }
+// A source pattern of "*", then {count} "**" segments, then Z.v3.
+def recursivePattern(count: int) -> string {
+	var b = StringBuilder.new().puts("*/");
+	for (i < count) b.puts("**/");
+	return b.puts("Z.v3").extract();
+}
+// Expansion counts each new (segment, directory) state of a walk against the
+// 4 MiB path budget, with the state's whole path and "<segment>:", and each
+// walk and each listed entry against the 10,000 visits. So only paths of more
+// than 419 bytes on average can reach the budget first. Below the 200-byte
+// directory of project-fixtures/path-budget are 95 empty directories with
+// 255-byte names. The pattern's "*" lists the 200-byte one once, and each
+// "**" visits every child again without a listing, so with {k} "**"
+// segments each child costs k + 2 visits and counts its path k + 1 times.
+def test_path_budget(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/path-budget");
+	base = ProjectFiles.join(base, Array<byte>.new(200));
+	for (i < base.length) { if(base[i] == 0) base[i] = 'd'; }
+	t.asserti(4 * 1024 * 1024, ProjectLimits.MAX_PATH_BYTES);
+	var listing = ProjectFiles.list(base, 1000);
+	if (listing.names == null) return t.fail1("cannot list %s", base);
+	var n = listing.names.length, child = base.length + 1 + 255;
+	t.asserti(95, n);
+	var budget = long.view(ProjectLimits.MAX_PATH_BYTES);
+	// 40 "**" segments stay within the budget, and 100 cross it well before
+	// the visit limit, given this build directory's path length.
+	t.assert(long.view(n) * 41 * (child + 3) + base.length + 2 <= budget, "40 segments fit the budget");
+	t.assert(long.view(n) * 101 * (child + 2) > budget, "100 segments exceed the budget");
+	t.assert(1 + n * 102 <= ProjectLimits.MAX_VISITS, "100 segments stay within the visits");
+	var r = expand(base, null, definition(Strings.format1("{\"name\":\"p\",\"sources\":[\"%s\"]}", recursivePattern(40))));
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(0, r.sources.length);
+	r = expand(base, null, definition(Strings.format1("{\"name\":\"p\",\"sources\":[\"%s\"]}", recursivePattern(100))));
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length != 1) return;
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "the path budget is an expansion limit");
+	t.assert_string("project traversal path budget exceeded", r.diagnostics[0].message);
+}
 // Bytes that differ from their neighbors, so a misplaced or lost chunk shows.
 def pattern(length: int) -> Array<byte> {
 	var text = Array<byte>.new(length);
@@ -441,6 +509,28 @@ def test_workspace_roots(t: Tester) {
 	var nested = ProjectFiles.join(root, "two-programs/shared/.virgil-lsp.json");
 	store.open(ProjectFiles.uri(nested), "json", 1, "{\"version\":1,\"projects\":[]}");
 	t.assert_string(nested, w.nearest(ProjectFiles.join(root, "two-programs/shared/Greeting.v3")));
+}
+// An empty workspaceFolders array means no folders, so rootUri is not used
+// and discovery finds nothing; a document still finds its nearest project
+// file, searching up to the filesystem root. JSON null falls back to rootUri.
+def test_empty_workspace_folders(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES)), configs = ProjectConfigRecorder.new();
+	w.onConfig = configs.update;
+	var params = workspaceParams(base);
+	params["workspaceFolders"] = JsonValue.JArray(Array<JsonValue>.new(0));
+	w.initialize(params);
+	t.asserti(0, w.folders.length);
+	w.refresh();
+	t.asserti(0, configs.calls);
+	var doc = w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3")));
+	t.assert_string(ProjectFiles.join(base, ".virgil-lsp.json"), doc.configPath);
+	t.asserti(1, configs.calls);
+	w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	params["workspaceFolders"] = JsonValue.Null;
+	w.initialize(params);
+	t.asserti(1, w.folders.length);
+	if (w.folders.length == 1) t.assert_string(base, w.folders[0]);
 }
 def test_configuration_revision(t: Tester) {
 	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
@@ -557,6 +647,55 @@ def test_active_precedence(t: Tester) {
 	store.change(ProjectFiles.uri(inner), 3, "invalid");
 	t.assert(w.forDocument(uri).active == null, "invalid nearest config does not fall through");
 }
+// A file that is only a dependency in its nearest project file's projects,
+// and a member of another file's project, is active in the member project,
+// whether that file's URI comes before the nearest file's or after it.
+def test_membership_over_dependency(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var nearest = ProjectFiles.join(base, ".virgil-lsp.json");
+	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	// '-' sorts before the nearest file's '.', and 'm' after it.
+	for (c in [("-member.json", "member"), ("member.json", "dep")]) {
+		var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+		var other = ProjectFiles.join(base, c.0);
+		store.open(ProjectFiles.uri(nearest), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"dep\",\"sources\":[\"server/*.v3\"],\"dependencies\":[\"shared/*.v3\"]}]}");
+		store.open(ProjectFiles.uri(other), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"member\",\"sources\":[\"shared/*.v3\"]}]}");
+		w.load(other);
+		var doc = w.forDocument(uri);
+		t.assert_string(nearest, doc.configPath);
+		t.asserti(2, doc.contexts.length);
+		if (doc.contexts.length == 2) t.assert_string(c.1, doc.contexts[0].definition.name); // configuration URI order
+		t.assert(doc.active != null, "a project is active");
+		if (doc.active != null) t.assert_string("member", doc.active.definition.name);
+	}
+}
+// A file that is a member of projects in two project files, neither its
+// nearest, is active in the project of the file whose URI comes first in
+// byte order, whatever order the files load in and wherever each project is
+// declared. "Bzz.json" comes before "a.json" in byte order, though not in
+// case-insensitive or length order, and declares its member project second.
+def test_configuration_uri_tie(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var nearest = ProjectFiles.join(base, ".virgil-lsp.json");
+	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var texts = [
+		("Bzz.json", "{\"version\":1,\"projects\":[{\"name\":\"b0\",\"sources\":[\"server/*.v3\"]},{\"name\":\"b1\",\"sources\":[\"shared/*.v3\"]}]}"),
+		("a.json", "{\"version\":1,\"projects\":[{\"name\":\"a0\",\"sources\":[\"shared/*.v3\"]}]}")
+	];
+	for (order in [[0, 1], [1, 0]]) {
+		var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+		store.open(ProjectFiles.uri(nearest), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"server\",\"sources\":[\"server/*.v3\"]}]}");
+		for (i in order) {
+			var path = ProjectFiles.join(base, texts[i].0);
+			store.open(ProjectFiles.uri(path), "json", 1, texts[i].1);
+			w.load(path);
+		}
+		var doc = w.forDocument(uri);
+		t.asserti(2, doc.contexts.length);
+		t.assert(doc.active != null, "a project is active");
+		if (doc.active != null) t.assert_string("b1", doc.active.definition.name);
+	}
+}
 class ProjectWarningRecorder {
 	var count: int;
 	def warn(text: string) { count++; }
@@ -627,6 +766,43 @@ def test_project_capacity_recovery(t: Tester) {
 	w.refresh();
 	t.assert(rejected.revision == revision, "successful retry keeps stable context on subsequent refresh");
 }
+// {text}, padded with spaces to {length} bytes.
+def padded(text: string, length: int) -> Array<byte> {
+	var result = Array<byte>.new(length);
+	for (i < length) result[i] = if(i < text.length, text[i], ' ');
+	return result;
+}
+// A workspace keeps at most 4 MiB of configuration text. Sixteen 256 KiB
+// project files fill it exactly and are all kept; the text of the next is
+// not, so it defines no projects and, being a file on disk, reports
+// SourceIO. Shrinking a kept file makes room for it at the next refresh.
+def test_configuration_text_capacity(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, 2 * ProjectLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	t.asserti(4 * 1024 * 1024, w.MAX_RETAINED_BYTES);
+	var size = ProjectConfigParser.MAX_BYTES, count = w.MAX_RETAINED_BYTES / size;
+	t.asserti(16, count);
+	var text = padded("{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"shared/*.v3\"]}]}", size);
+	var kept = Array<WorkspaceConfig>.new(count);
+	for (i < count) {
+		var path = ProjectFiles.join(base, Strings.format1("text-%d.json", i));
+		t.assert(store.open(ProjectFiles.uri(path), "json", 1, text) == null, "configuration overlay admitted");
+		kept[i] = w.load(path);
+	}
+	for (c in kept) {
+		t.asserti(0, c.diagnostics.length);
+		t.asserti(1, c.contexts.length);
+	}
+	var full = w.load(ProjectFiles.join(base, ".virgil-lsp.json"));
+	t.asserti(0, full.contexts.length);
+	t.asserti(1, full.diagnostics.length);
+	if (full.diagnostics.length == 1) t.assert(full.diagnostics[0].code == ProjectConfigCode.SOURCE_IO, "text over the capacity is not read");
+	store.change(ProjectFiles.uri(kept[0].path), 2, "{\"version\":1,\"projects\":[]}");
+	w.refresh();
+	t.asserti(0, kept[0].contexts.length);
+	t.asserti(0, full.diagnostics.length);
+	t.asserti(2, full.contexts.length);
+}
 class ProjectConfigRecorder {
 	var calls: int;
 	def update(c: WorkspaceConfig) { calls++; }
@@ -659,6 +835,31 @@ def test_discovery_overflow(t: Tester) {
 	var mapping = w.forDocument(ProjectFiles.uri(ProjectFiles.join(other, "B.v3")));
 	t.assert(mapping.active != null, "nearest project remains discoverable after shared scan budget is exhausted");
 	t.asserti(1, configs.calls);
+}
+class ProjectConfigPaths {
+	def paths = Vector<string>.new();
+	def update(c: WorkspaceConfig) { paths.put(c.path); }
+}
+// project-fixtures/discovery-depth is a chain of 65 directories named d, with
+// a project file in the last two. Discovery loads the one 64 directories
+// down and stops before the one below it, with a warning; a file event for
+// that one doesn't load it either. A document beside it still finds it.
+def test_discovery_depth(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/discovery-depth");
+	var deepest = base;
+	for (i < ProjectLimits.MAX_DEPTH) deepest = ProjectFiles.join(deepest, "d");
+	var within = ProjectFiles.join(deepest, ".virgil-lsp.json"), below = ProjectFiles.join(deepest, "d/.virgil-lsp.json");
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var warnings = ProjectWarningRecorder.new(), configs = ProjectConfigPaths.new();
+	w.warn = warnings.warn; w.onConfig = configs.update;
+	w.initialize(workspaceParams(base));
+	w.refresh();
+	t.asserti(1, configs.paths.length);
+	if (configs.paths.length == 1) t.assert_string(within, configs.paths[0]);
+	t.asserti(1, warnings.count);
+	w.watched(below);
+	t.asserti(1, configs.paths.length);
+	t.assert_string(below, w.nearest(ProjectFiles.join(deepest, "d/A.v3")));
 }
 def foldersParams(roots: Array<string>) -> HashMap<string, JsonValue> {
 	var params = Strings.newMap<JsonValue>(), folders = Array<JsonValue>.new(roots.length);

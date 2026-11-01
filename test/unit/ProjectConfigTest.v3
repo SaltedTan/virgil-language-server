@@ -11,6 +11,7 @@ def X = [
 	T("ProjectConfig:invalid_json", test_invalid_json),
 	T("ProjectConfig:size_limit", test_size_limit),
 	T("ProjectConfig:nesting_limit", test_nesting_limit),
+	T("ProjectConfig:value_limit", test_value_limit),
 	T("ProjectConfig:root_not_object", test_root_not_object),
 	T("ProjectConfig:version", test_version),
 	T("ProjectConfig:unknown_fields", test_unknown_fields),
@@ -24,6 +25,7 @@ def X = [
 	T("ProjectConfig:invalid_patterns", test_invalid_patterns),
 	T("ProjectConfig:compiler_flags", test_compiler_flags),
 	T("ProjectConfig:invalid_compiler_flags", test_invalid_compiler_flags),
+	T("ProjectConfig:compiler_flags_table", test_compiler_flags_table),
 	T("ProjectConfig:no_code_execution", test_no_code_execution),
 	T("ProjectConfig:diagnostic_order", test_diagnostic_order),
 	T("ProjectConfig:diagnostic_limit", test_diagnostic_limit),
@@ -225,6 +227,28 @@ def test_nesting_limit(t: Tester) {
 	t.assert(r.config == null, "expected no model for deep nesting");
 	t.assert_string("InvalidJson@0", render(text, r.diagnostics));
 	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "nest deeper than 256 levels");
+}
+
+// A project file may hold 50,000 values, counting object keys. A valid file
+// at the limit is accepted, and one more value makes it InvalidJson. At four
+// bytes each, 50,000 exclude patterns fit within the size limit.
+def test_value_limit(t: Tester) {
+	t.asserti(50000, JsonRpcJson.MAX_VALUES);
+	// Two objects, three arrays, five keys, and the values 1, "p", and "a.v3".
+	var fixed = 13, count = JsonRpcJson.MAX_VALUES - fixed;
+	for (extra < 2) {
+		var buf = StringBuilder.new().puts("{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"a.v3\"],\"exclude\":[");
+		for (i < count + extra) buf.puts(if(i == 0, "\"a\"", ",\"a\""));
+		var text = buf.puts("]}]}").extract();
+		t.assert(text.length <= ProjectConfigParser.MAX_BYTES, "within the size limit");
+		if (extra == 0) {
+			var config = valid(t, text);
+			if (config.projects.length == 1) t.asserti(count, config.projects[0].exclude.length);
+		} else {
+			var d = invalid(t, text, "InvalidJson@0");
+			if (d.length == 1) assertContains(t, d[0].message, "more than 50000 values");
+		}
+	}
 }
 
 def test_root_not_object(t: Tester) {
@@ -441,6 +465,76 @@ def test_invalid_compiler_flags(t: Tester) {
 	invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], ",
 		"\"compilerArgs\": [\"-lang:descriptors\", \"-O2\", \"-lang:descriptors=false\", \"-lang:open-types\"]"])),
 		"UnsupportedCompilerFlag:\"-O2\" | UnsupportedCompilerFlag:\"-lang:descriptors=false\"");
+}
+
+// {text} without its leading and trailing spaces and tabs.
+def trim(text: string) -> string {
+	var begin = 0, end = text.length;
+	while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) begin++;
+	while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) end--;
+	return Arrays.range(text, begin, end);
+}
+// Whether {cell}, trimmed, is part of a table's alignment row, such as ":---".
+def alignment(cell: string) -> bool {
+	if (cell.length == 0) return false;
+	for (c in cell) { if(c != '-' && c != ':') return false; }
+	return true;
+}
+// The text of {cell}, a trimmed table cell holding one code span, or null.
+def codeSpan(t: Tester, cell: string) -> string {
+	if (cell.length < 2 || cell[0] != '`' || cell[cell.length - 1] != '`') {
+		t.fail1("expected a code span in the compiler flags table, got %q", Strings.puts(cell));
+		return null;
+	}
+	return trim(Arrays.range(cell, 1, cell.length - 1));
+}
+// The table under "### Compiler flags" in the Markdown {text}, with one
+// "<name>=<default>\n" line for each of its rows, in order. Spacing around
+// cells and rows, the header, and the alignment row don't matter.
+def flagTable(t: Tester, text: string) -> string {
+	var rows = StringBuilder.new(), inSection = false, header = true;
+	for (raw in Strings.split(text, "\n", -1)) {
+		var line = trim(raw);
+		if (Strings.startsWith(line, "#")) {
+			inSection = Strings.equal(line, "### Compiler flags");
+			header = true;
+		}
+		if (!inSection || !Strings.startsWith(line, "|")) continue;
+		// | `-lang:<name>` | `<default>` | <notes> |
+		var cells = Strings.split(line, "|", -1);
+		for (i < cells.length) cells[i] = trim(cells[i]);
+		if (header || cells.length < 3 || alignment(cells[1])) {
+			header = false;
+			continue;
+		}
+		var name = codeSpan(t, cells[1]), value = codeSpan(t, cells[2]);
+		if (name == null || value == null) continue;
+		if (!Strings.startsWith(name, "-lang:")) {
+			t.fail1("expected a -lang: flag in the compiler flags table, got %q", Strings.puts(name));
+			continue;
+		}
+		rows.put2("%s=%s\n", Arrays.range(name, 6, name.length), value);
+	}
+	return rows.extract();
+}
+// The compiler flags table in docs/configuration.md lists exactly the pinned
+// compiler's language options, in declaration order, with their defaults, so
+// that a pin update that changes them must update the table too.
+def test_compiler_flags_table(t: Tester) {
+	// Spacing that renders the same table doesn't matter.
+	t.assert_string("a=true\nb=false\n", flagTable(t, cat([
+		"### Compiler flags\n\n",
+		"|  Flag | Default |  Notes |\n",
+		"|:---|---:|  --- |\n",
+		"|  `-lang:a`   |  `true`|x|\n",
+		"   | `-lang:b`\t| ` false ` |  \n",
+		"\n### Target  \n",
+		"| Flag | Default |\n| --- | --- |\n| `-lang:c` | `true` |\n"])));
+	var path = ProjectTestFiles.repository("docs/configuration.md"), text = System.fileLoad(path);
+	if (text == null) return t.fail1("cannot read %s", path);
+	var expected = StringBuilder.new();
+	for (o in AeneasAdapter.languageOptions()) expected.put2("%s=%z\n", o.0, o.1);
+	t.assert_string(expected.extract(), flagTable(t, text));
 }
 
 // The file is data: it names files to read and language options from a fixed
