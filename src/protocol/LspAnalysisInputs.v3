@@ -21,6 +21,7 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 	// file at most PARSES_PER_FILE times, besides brace rule 3's places.
 	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
 			parser: LspParserDiagnostics) -> string {
+		var start = if(BenchProbe.enabled, BenchProbe.now(), 0), substituted = 0;
 		var bytes = 32L, options = context.definition.compilerArgs;
 		for (s in sources) bytes += 16L + s.path.length + s.input.length;
 		for (i < sources.length) {
@@ -50,6 +51,11 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 			versions[i].substitution = sub;
 			snapshotBytes += sub.bytes;
 			sources[i] = AnalysisSource.new(sources[i].path, effective);
+			substituted++;
+		}
+		if (BenchProbe.enabled) {
+			BenchProbe.server(0, "substitution_us", long.view(BenchProbe.now() - start));
+			BenchProbe.server(0, "substituted_files", substituted);
 		}
 		return null;
 	}

@@ -256,6 +256,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			keys[i] = ctx.sources[i].uri;
 			if (keys[i] == null) return failed(ctx, Strings.format1("cannot form a document URI for %s", ctx.sources[i].path));
 		}
+		var prepareStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var captured = LspAnalysisCapture.capture(store, keys, true);
 		if (captured.1 != null) return failed(ctx, captured.1);
 		var inputs = captured.0;
@@ -266,6 +267,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
+		if (BenchProbe.enabled) BenchProbe.server(0, "prepare_us", long.view(BenchProbe.now() - prepareStart));
 		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => failed(ctx, reason);
@@ -290,6 +292,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		running = null;
 		match (outcome) {
 			Completed(snapshot) => {
+				var completeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 				snapshot.recordDocumentVersions(run.inputs.versions);
 				// Notice a configuration replaced on disk before trusting the result.
 				projects.refresh();
@@ -299,6 +302,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				if (BenchProbe.enabled) BenchProbe.server(snapshot.generation, "snapshot_bytes", snapshot.retainedBytes);
 				failureReported = false;
 				publish(run, snapshot);
+				if (BenchProbe.enabled) BenchProbe.server(0, "complete_us", long.view(BenchProbe.now() - completeStart));
 			}
 			Failed(failure, reason) => failed(ctx, reason);
 			Pending => ;

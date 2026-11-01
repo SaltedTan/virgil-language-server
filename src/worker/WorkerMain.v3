@@ -123,6 +123,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			BenchProbe.worker(analyses, "adapter_us", long.view(t2 - t1));
 			BenchProbe.worker(analyses, "parse_us", long.view(analysis.stats.parseUs));
 			BenchProbe.worker(analyses, "verify_us", long.view(analysis.stats.verifyUs));
+			BenchProbe.reportParse(analyses);
 			BenchProbe.worker(analyses, "collect_us", long.view(t3 - t2));
 			BenchProbe.worker(analyses, "query_us", long.view(t4 - t3));
 			BenchProbe.worker(analyses, "result_encode_us", long.view(t5 - t4));

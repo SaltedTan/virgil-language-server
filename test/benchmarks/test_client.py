@@ -26,6 +26,10 @@ bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 
 
+# An appended semantic edit that repeats each project's body-edit anchor.
+PARSE_WORK_DUPLICATE = {name: "\n// " + edits["body_edit"][0] + "\n" for name, edits in bench.PARSE_WORK_EDITS.items()}
+
+
 class ValidationTest(unittest.TestCase):
     def setUp(self):
         self.project = json.loads(bench.corpus.MANIFEST.read_text())["projects"]["small"]
@@ -145,6 +149,37 @@ class ValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "unexpected pending request"):
             self.block.first_publication(0, 0)
 
+    def test_parse_work_publication_needs_the_current_versions_nonempty_list(self):
+        expected = self.project["edits"]["semantic"]["expected"]
+        self.block.version = 3
+        good = {"uri": self.block.uri, "version": 3, "diagnostics": [expected]}
+        # The parser's empty list and a configuration change's clearing come first.
+        earlier = ({**good, "diagnostics": []}, {**good, "version": 2}, {**good, "uri": self.block.uris[1]})
+        queue = [{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": p} for p in (*earlier, good)]
+        self.block.s = mock.Mock(receive=lambda deadline: queue.pop(0))
+        self.assertEqual(self.block.publication(), good)
+        with self.assertRaises(AssertionError):
+            self.block.validate_diagnostic("semantic", {**good, "diagnostics": [self.project["edits"]["syntax"]["expected"]]})
+        self.block.s = mock.Mock(receive=lambda deadline: {"jsonrpc": "2.0", "id": 1, "method": "workspace/configuration"})
+        with self.assertRaisesRegex(AssertionError, "unexpected pending request"):
+            self.block.publication()
+
+    def test_parse_work_edits_change_the_text_and_keep_every_line(self):
+        projects = json.loads(bench.corpus.MANIFEST.read_text())["projects"]
+        self.assertEqual(set(bench.PARSE_WORK_EDITS), set(projects))
+        for name, project in projects.items():
+            with self.subTest(project=name):
+                if not (ROOT / project["query"]["path"]).exists() or not (ROOT / "vendor/virgil" / bench.PARSE_WORK_MEMBER).exists():
+                    self.skipTest("vendor/virgil is not initialized")
+                inputs = bench.parse_work_inputs(name, project)
+                self.assertEqual(set(inputs["edits"]), {"body_edit", "signature_edit"})
+                for edit in inputs["edits"].values():
+                    # Alternating replacements: each edit differs from the text before it.
+                    self.assertEqual(len(set(edit["sha256"])), 2)
+                    self.assertNotEqual(edit["sha256"][0], inputs["oracle_sha256"])
+                with self.assertRaisesRegex(AssertionError, "must occur once"):
+                    bench.parse_work_inputs(name, {**project, "edits": {"semantic": {"append": PARSE_WORK_DUPLICATE[name]}}})
+
 
 class SummaryTest(unittest.TestCase):
     def test_quantiles_interpolate_raw_samples_without_trimming(self):
@@ -187,11 +222,18 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual([row["metric"] for row in bench.summaries(blocks)], ["latency_ms"])
 
     def test_first_semantic_cannot_be_combined_with_other_workloads(self):
-        for flag in ("--error-result", "--typing-burst", "--inlay-refresh"):
+        for flag in ("--error-result", "--typing-burst", "--inlay-refresh", "--parse-work"):
             result = subprocess.run([sys.executable, ROOT / "scripts/bench-lsp.py", "--first-semantic", flag,
                                      "--output", "/dev/null"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("--first-semantic runs alone", result.stderr)
+
+    def test_parse_work_cannot_be_combined_with_other_workloads(self):
+        for flag in ("--error-result", "--typing-burst", "--inlay-refresh"):
+            result = subprocess.run([sys.executable, ROOT / "scripts/bench-lsp.py", "--parse-work", flag,
+                                     "--output", "/dev/null"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("--parse-work runs alone", result.stderr)
 
 
 class ResourceTest(unittest.TestCase):

@@ -237,6 +237,41 @@ observed, and every one had a high-water mark. The Aeneas worker's high-water
 mark was 206,307,328 bytes (p50) config first and 200,235,008 source first; the
 server's was 67,807,232 and 35,872,768.
 
+### Parse work
+
+With `--parse-work`, each block runs one session per project of fixed edits and
+controls instead of the scenarios above; like `--first-semantic`, it can't be
+combined with another workload option. It measures how much of an edit's
+latency goes to parsing files that didn't change, for
+[#359](https://github.com/SaltedTan/virgil-language-server/issues/359). After
+the unsaved project configuration is open, the query file gets the pinned
+unresolved-name edit, whose exact diagnostic is the semantic oracle for every
+sample, then:
+
+| JSON scenario | Timed interval |
+| --- | --- |
+| `unchanged_reanalysis` | `virgil-lsp/analyze` for the query document's project, with no change since the last analysis, to its reply. |
+| `body_edit` | A full-text `didChange` that changes one expression in a method body, to the query file's semantic publication at that version, including the 200 ms debounce. |
+| `signature_edit` | The same for a method signature, written with an equivalent type (`i32` for `int`, `Array<byte>` for `string`). |
+| `membership_add`, `membership_remove` | A configuration `didChange` that adds `lib/math/Math.v3` to the program through `virgilDependencies`, or removes it again, to the query file's next nonempty publication. |
+| `options_set`, `options_reset` | The same for adding `-lang:open-types`, a language option that the parser reads and the corpus doesn't need, to `compilerArgs`, or removing it. |
+
+The edits are fixed anchors in the query file, each of which must occur once, and
+iterations alternate two replacements, so every edit changes the text the
+previous analysis parsed; neither moves a line, so the oracle's range holds. An
+edit's parser publication is empty, and a configuration change clears the
+project's semantic diagnostics before the replacement analysis, so only that
+analysis can end an interval. An untimed snapshot then must hold exactly the
+oracle, with the current version and, after a membership change, the new
+document list. Configuration changes aren't debounced. The edits, all three
+configurations, and the hashes of every text are recorded in each block's
+`parse_work`.
+
+With `--require-probes`, every sample must have exactly one worker transaction
+and source capture, and no worker start. A build either has the parse-work
+probes below in every transaction or in none, so an older build can be the
+control; at least one build must have them.
+
 ## Phases, allocation, and output
 
 `BENCH=1` sets `BenchProbe.enabled` and `RiGc.stats` with one `-redef-field` option.
@@ -267,11 +302,17 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | worker `force_gc_us`, `live_after_gc_bytes` | Explicit pre-send collection duration and the existing retirement-policy live-byte count, excluding the result byte-array length. It runs once per transaction, before the collection after sending. |
 | worker `heap_after_handle_bytes`, server `heap_after_decode_bytes` | Space used at those boundaries, not peak live memory. |
 | worker `result_bytes`, server `worker_heap_bytes` | Encoded RESULT frame bytes and the worker's actual reserved heap from HELLO. |
+| worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file parsed by a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
+| worker `parse_unvisited_files`, `parse_classify_us` | Files the parse didn't reach because of the error limit, and the time to hash the paths and bytes and classify them, which runs before `parse_us` starts, within `adapter_us`. |
+| server `substitution_us`, `substituted_files` | Method-body fallback and current-text repair for a project submission, after `capture_us`, and how many files they substituted. |
+| server `prepare_us` | Capture through any substitution and snapshot admission, to the worker request, for automatic and explicit analyses, including explicit URI lists. |
+| server `complete_us` | An automatic analysis's completion after `roundtrip_us`: recording document versions, updating the last-parseable text cache, and publishing diagnostics. |
+| server `parser_diagnostics_us` | An open document's parse for its syntax diagnostics, on opening, an accepted text edit, or a change to its project's language options, before any whole-program analysis. |
 
 Phase times include GC that occurs within the phase; do not add `adapter_us` to
 parse/verify, or `roundtrip_us` to its constituent phases. Probe syscalls add some
-end-to-end overhead despite allocating nothing. Prefer normal builds for the
-most precise external latency comparison and instrumented builds for attribution.
+end-to-end overhead. Prefer normal builds for the most precise external latency
+comparison and instrumented builds for attribution.
 
 JSON includes raw samples grouped by build, project, and process block; summaries
 report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
@@ -284,8 +325,8 @@ Process records include current RSS, and Linux adds process peak RSS when
 readable; macOS uses `ps` and leaves peak RSS null.
 
 [First-semantic](#first-semantic-diagnostics) sessions and every session of an
-`--error-result` run also keep a `resource_summary`; the default run isn't
-sampled. A sampler thread reads the server and its child processes every 50 ms,
+`--error-result` or [`--parse-work`](#parse-work) run also keep a
+`resource_summary`; the default run isn't sampled. A sampler thread reads the server and its child processes every 50 ms,
 when the session starts and stops, when the scenario changes, and again at once
 when it sees the set of processes change. On Linux it reads `/proc` without
 starting a process, about 33 µs per pass on the reference host, and that time
@@ -314,6 +355,155 @@ BuildInfo, compiler and binary hashes, compilation commands/source hashes, heap
 settings, host CPU, logical cores, kernel, Python, load, affinity, governors when
 readable, and all server command lines. Missing build metadata fails with a request
 to rebuild using `make bench-metadata` with the executable's `BUILD` directory.
+
+### Unchanged-file parse work (2026-11-01)
+
+Measured on 2026-11-01 for [#359](https://github.com/SaltedTan/virgil-language-server/issues/359)
+on the i7-14700KF host of the [reference baseline](#reference-baseline), with
+pinned Virgil `57318d37` and the default 384 MiB worker heap (402,653,184 bytes
+reserved, as each worker's HELLO reported). The control is main `e705e44e`,
+which has no parse-work probes; the probed build is `242c3407`. Both were built
+in this physical checkout, in equal-length `build/c359b` and `build/p359b`
+directories, with `BENCH=1 all bench-metadata` and byte-identical generated
+BuildInfo text (revision `p359-e705e44e8000`). SHA-256 hashes: control server
+`818364973ba07a65cb5f5fa431ab236af1ccf6070a8f00e004c694041b030370` and worker
+`a7f99ff8d5033e93ebcbe2f213d7d0938533376f4e735a6d441fbd4d3f26f348`; probed
+server `2b5c640f1d965dfaf45e70b57472b0faae22df1be454dff83d61fe7e36aa55e4` and
+worker `6b6bdca886e70f4c752f69eb80f89ba99c41d8b7fdb43a818cf549673bf606bd`;
+corpus manifest `79ff4b89d9b18251202dadefd53cef96f2089c7949c59d52400495113e001c15`.
+The run held the shared benchmark lock and ran on hardware thread 12 (governor
+`powersave`), with every semantic check passing and no samples removed:
+
+```sh
+python3 scripts/bench-lsp.py --exe build/c359b/virgil-lsp --exe build/p359b/virgil-lsp --parse-work \
+  --blocks 6 --operations 5 --warmups 2 --cpu 12 --require-probes \
+  --output build/bench-results/parse-work.json
+```
+
+Each cell is **p50 / p95, in milliseconds**, of the probed build over 30
+measured operations, with the percentile definition [above](#phases-allocation-and-output).
+The edits include the 200 ms debounce. Every control p50 is within 3.1 ms of the
+probed build's, and within 2.3 ms (0.5%) for Aeneas:
+
+| Scenario | small | util | Aeneas |
+| --- | ---: | ---: | ---: |
+| `unchanged_reanalysis` | 0.293 / 1.344 | 14.349 / 15.697 | 318.543 / 344.969 |
+| `body_edit` | 200.842 / 201.992 | 219.097 / 226.878 | 521.325 / 554.350 |
+| `signature_edit` | 201.670 / 202.301 | 218.833 / 221.113 | 519.699 / 551.415 |
+| `membership_add` | 0.887 / 0.988 | 14.918 / 15.584 | 297.746 / 305.461 |
+| `membership_remove` | 0.426 / 0.481 | 14.368 / 15.022 | 321.848 / 329.651 |
+| `options_set` | 0.400 / 0.434 | 14.692 / 15.268 | 299.126 / 310.286 |
+| `options_reset` | 0.385 / 0.439 | 14.669 / 15.648 | 322.652 / 332.905 |
+
+Every sample's classification was as designed: an edit changed one file and
+left the rest unchanged (Aeneas: 205 files, 3,064,615 bytes, unchanged; the
+edited file's 8,394 or 8,397 bytes changed), adding `Math.v3` changed only it, removing it
+changed none, and an option change changed every file. No parse stopped at the
+error limit. The probed build's classifier compared each file with every file of
+the previous analysis, even one that analysis had skipped at the error limit
+and so never parsed, and counted it unchanged if its bytes matched. It now
+compares only with files the previous analysis parsed. Since no parse in these
+runs skipped a file, the fix changes no classification here; its
+allocation is given with the observer cost below. The Aeneas phases, from the same
+samples, p50 / p95 in milliseconds:
+
+| Phase | `body_edit` | `unchanged_reanalysis` | `membership_add` | `options_set` |
+| --- | ---: | ---: | ---: | ---: |
+| server `prepare_us` | 17.397 / 24.631 | 12.440 / 15.660 | 12.306 / 12.803 | 12.466 / 13.041 |
+| of which `capture_us` | 17.049 / 24.227 | 12.013 / 15.136 | 11.881 / 12.383 | 11.882 / 12.484 |
+| of which `substitution_us` | 0.392 / 0.471 | 0.425 / 0.512 | 0.391 / 0.465 | 0.545 / 0.658 |
+| server `parser_diagnostics_us` | 0.134 / 0.141 | — | — | 0.119 / 0.143 |
+| request encode + decode | 6.230 | 6.219 | 6.164 | 6.175 |
+| worker `parse_us` | 43.209 / 44.810 | 42.855 / 44.501 | 43.072 / 45.017 | 43.034 / 44.690 |
+| of which unchanged files | 43.028 / 44.624 | 42.781 / 44.416 | 42.882 / 44.816 | 0 |
+| of which changed files | 0.117 / 0.123 | 0 | 0.103 / 0.116 | 42.968 / 44.620 |
+| worker `parse_classify_us` | 1.234 / 1.312 | 1.246 / 1.390 | 1.246 / 1.373 | 1.250 / 1.351 |
+| worker `verify_us` | 48.309 / 49.864 | 38.113 / 44.425 | 36.794 / 41.998 | 37.084 / 42.600 |
+| worker `collect_us` | 106.665 / 114.442 | 102.083 / 111.872 | 102.768 / 107.627 | 103.395 / 109.247 |
+| worker `result_encode_us` | 55.300 / 63.384 | 52.027 / 58.676 | 51.688 / 54.352 | 52.431 / 55.740 |
+| server `result_decode_us` | 29.919 / 58.855 | 46.305 / 55.661 | 26.168 / 27.333 | 26.474 / 29.961 |
+| server `roundtrip_us` | 295.916 / 329.908 | 293.680 / 318.389 | 274.491 / 282.457 | 277.348 / 288.007 |
+| server `complete_us` | 4.303 / 7.568 | — | 4.866 / 8.484 | 4.768 / 7.886 |
+| worker `force_gc_after_send_us` | 43.156 / 52.202 | 38.072 / 50.011 | 37.280 / 40.725 | 37.752 / 40.729 |
+
+Request encode + decode is the sum of the two p50s. The worker collected zero
+times while handling every sample of every project, in both builds; the server
+collected at most once, in Aeneas's result decoding, whose p50 and p95 differ by
+that collection. The collection after sending overlaps the server's decoding
+and publication, so it isn't in these latencies; it delays only a request that
+reaches the worker sooner. Capture, which reads and hashes the 205 closed
+Aeneas files again for every analysis, is most of `prepare_us`.
+
+Small and util follow the same pattern at their scale. A util edit spends
+3.486 ms preparing, of which 3.260 ms is capture, then 2.466 ms parsing, 2.393 ms
+of it in the 30 unchanged files, 1.533 ms verifying, 4.107 ms collecting, and
+1.967 and 0.718 ms encoding and decoding the result, in a 13.854 ms round trip.
+Small's whole round trip is 0.217 ms, its parse 0.026 ms.
+
+**The best-case saving.** If unchanged files cost nothing to parse, an edit
+would save their parse time and nothing else, since verification, collection,
+encoding, and decoding still cover every file (see [parsed-tree ownership](architecture.md#parsed-tree-ownership)):
+
+| Project | Unchanged-file parse, `body_edit` | Share of the edit's latency | Share without the debounce |
+| --- | ---: | ---: | ---: |
+| small | 0.008 ms | 0.004% | 1.1% |
+| util | 2.393 ms | 1.1% | 15.8% |
+| Aeneas | 43.028 ms | 8.3% | 13.5% |
+
+Shares are the p50 of each sample's own ratio. The signature edit's are the
+same within 0.1 points; the membership changes save the same 42.9 ms of Aeneas's
+297.7 to 321.8 ms, 14.5% and 13.3%, and an option change saves nothing. The
+unchanged reanalysis saves 13.5% of 318.5 ms. Small's absolute saving is a
+few microseconds per edit.
+
+That ceiling omits costs that a cache would add and that weren't measured,
+because no prototype was authorized: a clean copy of each reused file's tree
+before every verification (or the reset it would replace), rebinding its type
+parameters to the new program's type cache, and the cache's own memory, which
+for Aeneas would hold the parse of 3 MB of source in a worker that ends an
+edit's analysis with about 13.6 MB of room under its collection boundary. Finding each
+file's entry would cost at least what `parse_classify_us` measures: 1.25 ms for
+Aeneas to hash every path and byte. Server-side time not covered by any probe,
+such as the remainder of the debounce wait, frame transfer within `roundtrip_us`,
+and JSON writing after `complete_us`, isn't separately measurable here.
+
+**Observer cost.** The probed build's whole-loop `parse_us` is 0.63 to 0.94 ms
+higher than the control's for Aeneas (about 2%: 412 `gettimeofday` system calls),
+0.05 to 0.14 ms for util, and within 7 µs for small, where many files take a
+few microseconds and their per-file times, in whole microseconds, are coarse.
+The per-file sums leave 0.06 ms of Aeneas's loop unattributed. Classification
+adds 1.25 ms outside `parse_us`. With the control's whole-loop parse, 42.385 ms,
+and the edited file's 0.117 ms, the Aeneas ceiling is 42.3 ms rather than 43.0.
+Allocation grows by the classifier's arrays: 3,528 bytes per Aeneas analysis,
+552 for util, and 64 for small, and the worker keeps that much more live
+between analyses, 180,872 bytes against 177,344 for Aeneas. The fixed
+classifier, which also records which files each parse reached, allocates 216,
+40, and 16 bytes more than that, and keeps 328, 152, and 128 more live, 181,200
+bytes for Aeneas; a one-block run of both probed builds under the lock, with
+otherwise the same options, classified every sample identically. Peak RSS was
+unchanged: the Aeneas worker's high-water mark was 196,012,032 bytes against
+196,001,792 (p50 of 6 sessions), and the server's 210,608,128 in both.
+
+Ordinary builds were compared separately. Their workers' RESULT frames,
+compared byte for byte as for [#380](#worker-heap-room-2026-10-31) with the
+elapsed-time fields zeroed, were identical for all 22 corpus requests, and so
+were their live bytes; neither build contains a parse-work probe name. The same
+`--parse-work` command without `--require-probes`, on ordinary builds of
+`e705e44e` and `242c3407` in `build/c359n` and `build/p359n`, recorded no
+`BENCH` line, and every scenario's p50 matched within 3.8 ms for Aeneas and
+0.8 ms for util. The [tolerance release scorecard](#release-scorecard), captured
+with the probed build, passed every floor: 180/185 primary and 44/94 held-out in
+both modes, with zero wrong answers, zero expectation mismatches, and no
+publication at a stale version.
+
+**Conclusion.** Reusing unchanged files' parses could save at most about 43 ms
+of a 520 ms Aeneas edit, and 2.4 ms of a 219 ms util edit, before the copying
+it would need. Collection alone takes 2.5 times as long as the whole parse, and
+result encoding, decoding, and source capture together take 2.4 times as long,
+with no compiler change. A parse-reuse experiment isn't justified now: it would
+need a compiler change to copy or reset trees, whose cost could consume much of
+that ceiling, for at most 8% of an Aeneas edit. Those other phases are the
+better targets.
 
 ## Compare builds
 
