@@ -831,7 +831,8 @@ def main():
         if args.require_probes:
             worker_metrics = {"parse_us", "verify_us", "collect_us", "query_us", "request_decode_us",
                               "result_encode_us", "gc_count", "allocated_bytes", "heap_after_handle_bytes",
-                              "live_after_gc_bytes", "force_gc_us", "result_bytes"}
+                              "live_after_gc_bytes", "force_gc_us", "force_gc_cpu_us",
+                              "force_gc_nvcsw", "force_gc_nivcsw", "result_bytes"}
             server_metrics = {"request_encode_us", "result_decode_us", "roundtrip_us", "gc_count", "allocated_bytes"}
             # A build either has the parse-work probes in every transaction or in none.
             parse_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
