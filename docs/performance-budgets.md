@@ -123,7 +123,10 @@ collection spends about 20 ms of CPU zeroing the roughly 190 MB the analysis
 filled, its wall time is about twice that because the benchmark pins the
 worker and server to one CPU, and the zeroing loop's speed depends on where
 the compiler places it in each build, which moved at #421. Nothing more is
-retained; see [Worker collection after sending](benchmarks.md#worker-collection-after-sending-2026-11-02).
+retained; see [Worker collection after sending](benchmarks.md#worker-collection-after-sending-2026-11-02). Since
+[ADR-0015](decisions/0015-gc-global-register-allocation.md), the collector is
+compiled with the global register allocator, and that collection took 20.1 ms
+of wall time at p50 in both of its comparison runs.
 
 Eleven proposed latency targets changed, each by the unchanged rule:
 

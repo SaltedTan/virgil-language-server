@@ -318,8 +318,10 @@ parse/verify, or `roundtrip_us` to its constituent phases. Probe syscalls add so
 end-to-end overhead. Prefer normal builds for the most precise external latency
 comparison and instrumented builds for attribution. A capture that compares
 commits must build every variant with the same probes: the probe calls change the
-code laid out before the runtime's memory-clearing loop, and that layout alone
-moves the loop's speed by about 25% ([worker collection after sending](#worker-collection-after-sending-2026-11-02)).
+layout of the code after them. Before the GC was compiled with the global
+register allocator, that layout alone moved the runtime's memory-clearing loop's
+speed by about 25%
+([worker collection after sending](#worker-collection-after-sending-2026-11-02)).
 
 JSON includes raw samples grouped by build, project, and process block; summaries
 report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
@@ -3632,6 +3634,44 @@ In these pinned captures, `force_gc_after_send_us` was about twice the zeroing's
 time. That time can move by about 25% with any change to the code laid out
 before `memClear`, and against the captures' 38 to 55 ms the zeroing itself
 is 20 to 26 ms of CPU.
+
+**With the global register allocator.** Since
+[ADR-0015](decisions/0015-gc-global-register-allocation.md), every executable
+is compiled with `-global-regalloc=RiGc.*`, which the pinned Aeneas otherwise
+enables only at `-O2`. In the worker, `memClear` becomes a five-instruction
+loop that keeps its pointer in a register (`cmp %rdx,%rax; jae; movq
+$0x0,(%rax); add $0x8,%rax; jmp`), and `memCopy` no longer uses the stack
+either. The release worker shrank from 909,256 to 908,920 bytes. Two runs
+compared `3921c3e1` with the same commit plus the flag, both `BENCH=1` with
+identical BuildInfo, six alternating process blocks of two warmups and five
+measured operations, for the Aeneas project with `--error-result
+--require-probes --cpu 12`, under the shared benchmark lock and `taskset -c
+12`, with every semantic check passing. The first began at a load average of
+6.2 and the second at 1.4. Median (p10–p90), milliseconds, of the
+collection after the previous transaction's send:
+
+| Run | Scenario | Wall, without | Wall, with | CPU, without | CPU, with |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | `reused_analysis` | 34.2 (30.0–43.6) | 20.1 (18.7–23.8) | 17.5 (15.2–21.5) | 10.2 (9.7–12.2) |
+| 1 | `error_analysis` | 38.2 (31.6–44.0) | 20.1 (17.4–23.2) | 18.6 (16.5–21.6) | 10.3 (10.1–11.0) |
+| 2 | `reused_analysis` | 42.7 (28.0–44.2) | 20.1 (17.8–22.1) | 21.4 (15.1–21.6) | 10.1 (10.1–10.3) |
+| 2 | `error_analysis` | 42.0 (28.9–44.5) | 20.1 (19.0–22.4) | 21.5 (15.2–21.7) | 10.2 (10.1–10.3) |
+
+In the second run the build without the flag fell into two groups by
+process: its CPU block medians were 15.1 to 15.4 ms in five blocks and 21.4
+to 21.6 ms in seven, across the two scenarios, for one binary. With the flag
+every block median was 10.1 to 10.3 ms. The same collection reported with
+`completion_miss`, `rename`, and `semantic_diagnostic` fell from 30.2, 24.7,
+and 37.0 ms to 20.1, 14.9, and 20.1 ms of wall time in the second run.
+The collection overlaps the server's decoding, so request latencies moved
+less: in the second run `reused_analysis` went from 316.8 to 306.8 ms and
+`error_analysis` from 321.8 to 312.0 ms, within their spread (p10–p90 about
+290 to 340 ms for both builds). A local prototype that turns the allocator on
+for `RiGc` inside Aeneas, which gives the same `memClear` loop, took 20.6 ms
+for this collection and 20.8 ms when 48 bytes of never-run padding moved the
+loop, where the build without it moved from 46.6 to 39.4 ms. That prototype
+is one of the two in
+[titzer/virgil#826](https://github.com/titzer/virgil/issues/826).
 
 ## Memory soak
 
