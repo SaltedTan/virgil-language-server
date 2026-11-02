@@ -3542,12 +3542,12 @@ time roughly equaled the CPU time, 20.9 to 24.5 ms at the median, with a
 median of zero involuntary switches; 37 of the 180 measured samples had
 some.
 
-**What moved it.** Compiled by the pinned Aeneas, `memClear` keeps its pointer
-in stack slots. Each 8-byte store therefore makes two store-and-reload round
-trips through the stack, about four cycles per word, so the loop is limited
-by the core rather than by memory bandwidth. Its machine code is the same 77
-bytes in all 24 workers built here, but its address moves whenever code laid
-out before it changes size. The tables give the loop's first
+**What moved it.** Compiled by the pinned Aeneas without the GC flag below,
+`memClear` keeps its pointer in stack slots. Each 8-byte store therefore makes
+two store-and-reload round trips through the stack, about four cycles per
+word, so the loop is limited by the core rather than by memory bandwidth.
+Its machine code is the same 77 bytes in all 24 workers built here, but its
+address moves whenever code laid out before it changes size. The tables give the loop's first
 instruction's offset within a 64-byte line in each worker.
 
 Every run below had six alternating process blocks of two warmups and five
@@ -3624,16 +3624,16 @@ layout differs. Built with the same BuildInfo, its loop is at offset 7 at
 `85baf49d`, 15 from #411 to #418, and 63 from #421. #412 didn't move it, and
 the release worker stayed 888,984 bytes. #421 moved the loop to an offset that
 is slower both in the benchmark builds with the probe and in the copied loop.
-A release build from #421 on therefore likely spends about 2 to 5 ms more CPU
+These release builds from #421 therefore likely spent about 2 to 5 ms more CPU
 per Aeneas collection after sending. Release builds have no probes, so this
 wasn't measured in place. Unpinned, as under an editor, the server and the
 worker usually run on separate cores, as in the CPU 14 runs, so the doubling
 doesn't apply, and the reply has already been sent either way.
 
 In these pinned captures, `force_gc_after_send_us` was about twice the zeroing's CPU
-time. That time can move by about 25% with any change to the code laid out
-before `memClear`, and against the captures' 38 to 55 ms the zeroing itself
-is 20 to 26 ms of CPU.
+time. Without the GC flag below, that time could move by about 25% with any
+change to the code laid out before `memClear`, and against the captures' 38 to
+55 ms the zeroing itself is 20 to 26 ms of CPU.
 
 **With the global register allocator.** Since
 [ADR-0015](decisions/0015-gc-global-register-allocation.md), every executable
