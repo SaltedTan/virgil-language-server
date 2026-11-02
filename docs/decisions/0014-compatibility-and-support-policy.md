@@ -36,7 +36,7 @@ This builds on ADR-0002, ADR-0007, and ADR-0012, and doesn't supersede them.
 - A user can find a release's exact pin in `virgil-lsp --version`, the [Virgil revision table](../compatibility.md#virgil-revision), the release's manifest (`virgilRevision` and `library.revision`), and its release notes.
 - Upstream fixes and language changes reach users only through a release with a new pin. A user who needs an older dialect keeps an older release, without fixes.
 - An explicit root at another revision can give results that disagree with the embedded compiler, such as a library declaration that the pinned compiler doesn't accept. The server doesn't detect this.
-- The handshake's mismatch rejection has no test that sends a handshake from another build, and the handshake can't detect every mismatched pair. The [support policy](../compatibility.md#support-policy) lists the tests that do cover this policy's paths.
+- The handshake can't detect every mismatched pair. The [support policy](../compatibility.md#evidence) lists the tests that cover this policy's paths.
 - Raising an editor minimum, such as for a newer `vscode-languageclient` ([#211](https://github.com/SaltedTan/virgil-language-server/issues/211)), may come in a minor release, with a `CHANGELOG.md` notice.
 
 ## Alternatives considered

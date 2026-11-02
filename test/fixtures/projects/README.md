@@ -2,6 +2,8 @@
 
 Small repositories with `.virgil-lsp.json` project files ([format](../../../docs/configuration.md)). Each directory is one repository root.
 
+Before restricting permissions, `prepare.py <build-directory> --restrict` and `--run` capture the built worker's HELLO frame and regenerate three fake workers under `<build-directory>/worker-fakes/` for `AnalysisSupervisorTest.v3`, each with only one build-identity field changed. Plain fixture generation never captures the handshake, so it can run before the worker is built; the next `--restrict` or `--run` picks up a rebuilt worker's identity. A missing worker skips fake generation, so run the unit tests through `make test` or `make test-unit`, which build the worker before preparing the fakes.
+
 | Directory | Projects | What it exercises |
 | --- | --- | --- |
 | `two-programs/` | `server`, `client` | Two programs that share `shared/Greeting.v3` and both declare a top-level `Program`. Each program verifies alone, but analyzing all three files as one program reports `TypeRedefined`. |

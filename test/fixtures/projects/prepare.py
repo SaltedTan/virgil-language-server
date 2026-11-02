@@ -193,6 +193,11 @@ def _generate_worker_fakes(build):
     Called from the --run and --restrict paths, which run after the worker is
     built. The plain project-fixtures path must not call this: it runs before
     the worker exists, so a clean build would capture nothing.
+
+    Capture here rather than inside each fake: a fake killed mid-startup
+    could leave an inner worker alive, since SIGKILL cannot run a finally
+    block. This process kills and reaps the real worker before writing fakes
+    that never spawn children of their own.
     """
     worker = build / "virgil-lsp-worker"
     if not worker.exists():
@@ -754,22 +759,3 @@ for name in ["A.v3", "README.md"]:
         path.chmod(0o600)
     path.write_text("def value = 1;\n", encoding="utf-8")
 (unrelated_files / "README.md").chmod(0)
-
-# AnalysisSupervisorTest spawns fake workers whose handshake reports a build
-# identity that differs from the server's in one field. The supervisor must
-# refuse each one, and each refusal test must fail when its comparison is
-# removed. We generate three fakes, each of which sends the real worker's
-# handshake with exactly one field changed.
-#
-# The real worker's handshake is captured once here, at fixture-generation
-# time, so each fake matches the build under test and no fake ever spawns a
-# child of its own: a fake that captured its handshake at run time would leave
-# its inner worker alive if the fake were killed mid-startup, and a finally
-# block cannot run after SIGKILL. prepare.py is a normal short-lived process,
-# so it can run the real worker, read its handshake, and kill it safely.
-#
-# The capture runs in --run and --restrict, which the unit-test runner calls
-# after make has built the worker, never in plain generation, which make runs
-# before the worker is built or rebuilt. See _generate_worker_fakes.
-
-
