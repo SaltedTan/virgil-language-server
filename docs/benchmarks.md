@@ -3514,8 +3514,10 @@ with it.
 both times it copies about the same live data. The collection before sending
 also copies the 4.4 MB result, into a semispace that the previous
 transaction's collection after sending already cleared, and it takes 0.8 ms.
-The collection after sending copies the 181,200 live bytes back
-into the semispace the analysis just filled. The pinned runtime then zeroes
+The collection after sending copies the live data back into the semispace
+the analysis just filled; the worker's reported `live_after_gc_bytes`, which
+the collection before sending measures less the result array's length, was
+181,200 bytes, result-object overhead included. The pinned runtime then zeroes
 the rest of that semispace, `RiGc.memClear` in
 `vendor/virgil/rt/gc/SemiSpace.v3`, about 190 MB for a full Aeneas analysis.
 Almost all of that collection's work is the zeroing. A scratch probe, not
@@ -3527,10 +3529,12 @@ involuntary context switches, because the benchmark pins every process to
 hardware thread 12. While the worker zeroes, the server decodes the result
 and prepares the next request and the client reads the reply, and the worker
 gets about half of that thread.
-With each build's worker wrapped to run on CPU 14, as in
+With the workers of three builds, 85baf49d, 1d296d55, and f8b1a37e, wrapped
+to run on CPU 14, as in
 [prepareRename on one CPU](#preparerename-on-one-cpu-2026-10-31), the wall
-time equaled the CPU time, 20.9 to 24.5 ms at the median, with no involuntary
-switches.
+time roughly equaled the CPU time, 20.9 to 24.5 ms at the median, with a
+median of zero involuntary switches; 37 of the 180 measured samples had
+some.
 
 **What moved it.** Compiled by the pinned Aeneas, `memClear` keeps its pointer
 in stack slots. Each 8-byte store therefore makes two store-and-reload round
@@ -3572,8 +3576,8 @@ for #421 and couldn't attribute to recording the comments: its ablation copy
 without them took about as long as the change, as a layout effect would.
 Those builds weren't kept either.
 
-The same commits with the probe, which adds two system calls around each
-forced collection and changes the layout before the loop, ranked the other way
+The same commits with the probe, which adds two system calls before each
+forced collection and two after it and changes the layout before the loop, ranked the other way
 in a separate run of the same form:
 
 | Build with the probe | Loop offset | `reused_analysis` | CPU | `error_analysis` | CPU |
