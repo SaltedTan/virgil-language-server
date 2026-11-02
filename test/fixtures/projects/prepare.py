@@ -18,6 +18,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 
 build = Path(sys.argv[1])
 root = build / "project-fixtures"
@@ -122,11 +123,14 @@ def _capture_handshake(worker, timeout):
     os.close(request_write)
     os.close(result_write)
     os.close(devnull)
+    # One deadline for the whole handshake, so a worker that writes slowly
+    # can't stretch the timeout by sending a byte at a time.
+    deadline = time.monotonic() + timeout
     try:
         def _read_exact(n):
             data = b""
             while len(data) < n:
-                ready, _, _ = select.select([result_read], [], [], timeout)
+                ready, _, _ = select.select([result_read], [], [], max(0.0, deadline - time.monotonic()))
                 if not ready:
                     raise SystemExit(f"the worker sent no handshake within {timeout:.0f}s")
                 chunk = os.read(result_read, n - len(data))
@@ -238,6 +242,13 @@ if mode == "--cleanup":
     restore()
     sys.exit(0)
 if mode == "--restrict":
+    # Raise on a termination signal, so the capture's cleanup kills and reaps
+    # the worker it started.
+    def stop_restrict(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(signum, stop_restrict)
     _generate_worker_fakes(build)
     restrict()
     sys.exit(0)
@@ -757,8 +768,8 @@ for name in ["A.v3", "README.md"]:
 # block cannot run after SIGKILL. prepare.py is a normal short-lived process,
 # so it can run the real worker, read its handshake, and kill it safely.
 #
-# The worker binary is built before the fixtures are prepared, so it is
-# present here; the runner's scratch slots do not build it, so they skip this
-# section: those slots run a stand-in executable that never spawns a worker.
+# The capture runs in --run and --restrict, which the unit-test runner calls
+# after make has built the worker, never in plain generation, which make runs
+# before the worker is built or rebuilt. See _generate_worker_fakes.
 
 
