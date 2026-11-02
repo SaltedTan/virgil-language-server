@@ -172,4 +172,3 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		return 1;
 	}
 }
-

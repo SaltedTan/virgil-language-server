@@ -172,16 +172,13 @@ component HostOs {
 	// thread-level equivalent, so the worker omits the collection's CPU and
 	// context-switch fields.
 	def threadMetricsSupported = false;
-	// The current thread's CPU time in microseconds, from
-	// clock_gettime(CLOCK_THREAD_CPUTIME_ID), or -1 if the call fails.
-	// macOS has no thread-level equivalent that is simple to make from the
-	// available calls, so this reports unsupported.
+	// CPU time is deliberately unavailable alongside the unsupported
+	// context-switch readings on this target; returns -1.
 	def threadCpuTimeUs() -> long {
 		return -1;
 	}
-	// The current thread's voluntary and involuntary context switches, from
-	// getrusage(RUSAGE_THREAD), or (-1, -1) if the call fails. macOS has no
-	// RUSAGE_THREAD, so this reports unsupported.
+	// macOS has no RUSAGE_THREAD for the current thread's voluntary and
+	// involuntary context switches; returns (-1, -1) for unsupported.
 	def threadContextSwitches() -> (long, long) {
 		return (-1, -1);
 	}
