@@ -287,6 +287,16 @@ PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_uncha
                       "parse_changed_files", "parse_changed_bytes", "parse_changed_us", "parse_unvisited_files")
 # Capture's source reads and its hash, which split capture_us (#413).
 CAPTURE_SPLIT_METRICS = ("capture_read_us", "capture_hash_us")
+# The worker collection's thread CPU time and context switches, reported beside
+# each collection's wall-time probe in benchmark builds (#441). A probed build
+# emits each field once per matching wall probe, however many collections a
+# sample holds (a typing burst or a first-semantic open can hold several);
+# an older build, and a darwin build, emits none.
+GC_CPU_TRIPLES = (
+    ("force_gc_us", ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw")),
+    ("force_gc_after_send_us", ("force_gc_after_send_cpu_us", "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw")),
+)
+GC_CPU_METRICS = tuple(metric for _, fields in GC_CPU_TRIPLES for metric in fields)
 
 
 def capture_split_problem(split_build, server_metrics):
@@ -303,6 +313,26 @@ def capture_split_problem(split_build, server_metrics):
             return ("capture-split probes don't match the captures", captures, counts)
     elif any(counts.values()):
         return ("unexpected capture-split probes", counts)
+    return None
+
+
+def gc_cpu_problem(gc_cpu_build, worker_metrics):
+    """Why a sample's collection CPU/switch probes are inconsistent, or None.
+
+    A build with the probes emits each of the three fields once for every
+    matching wall-time probe (force_gc_us and force_gc_after_send_us), however
+    many collections a sample holds (a typing burst or a first-semantic open
+    can hold several); an older build, the control, emits none. A darwin build
+    has none, as its HostOs reports the readings unsupported.
+    """
+    for wall, fields in GC_CPU_TRIPLES:
+        counts = {metric: worker_metrics.count(metric) for metric in fields}
+        if gc_cpu_build:
+            expected = worker_metrics.count(wall)
+            if any(count != expected for count in counts.values()):
+                return ("collection CPU/switch probes don't match " + wall, expected, counts)
+        elif any(counts.values()):
+            return ("unexpected collection CPU/switch probes beside " + wall, counts)
     return None
 
 
@@ -840,6 +870,11 @@ def main():
             # capture or in none, so an older build can be the control.
             split_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
                             for probe in sample["probes"] if probe["metric"] in CAPTURE_SPLIT_METRICS}
+            # A build either reports the collection's CPU and context switches
+            # in every worker transaction that has force_gc_us or in none, so an
+            # older build, and a darwin build, can be the control.
+            gc_cpu_builds = {block["build"] for block in result["blocks"] for sample in block["samples"]
+                             for probe in sample["probes"] if probe["metric"] in GC_CPU_METRICS}
             check(not args.parse_work or parse_builds, "no build has the parse-work probes")
             for block in result["blocks"]:
                 for sample in block["samples"]:
@@ -886,6 +921,8 @@ def main():
                         measured["server"] = [m for m in measured["server"] if m != "parser_diagnostics_us"]
                         check(not any(measured.values()), (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
                     problem = capture_split_problem(block["build"] in split_builds, measured["server"])
+                    check(problem is None, (scenario, block["build"], problem))
+                    problem = gc_cpu_problem(block["build"] in gc_cpu_builds, measured["worker"])
                     check(problem is None, (scenario, block["build"], problem))
 
         for row in result["summary"]:

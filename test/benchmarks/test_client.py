@@ -358,6 +358,50 @@ class ResourceTest(unittest.TestCase):
         self.assertTrue(summary["hwm_available"])
 
 
+class GcCpuProbeTest(unittest.TestCase):
+    # The worker's forced-collection CPU time and context-switch probes (#441),
+    # reported beside force_gc_us and force_gc_after_send_us in benchmark
+    # builds. `make bench` checks the emitted fields through --require-probes,
+    # as it checks force_gc_us. test/protocol/worker.py checks that a release
+    # build writes no BENCH line. Here the all-or-none rule is tested on
+    # synthetic samples.
+
+    def test_gc_cpu_probes_are_all_or_none_per_build(self):
+        # A probed build emits each of the three fields once per matching wall
+        # probe, however many collections a sample holds; an older control
+        # build, and a darwin build, emits none.
+        # One collection, both triplets.
+        one = ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+               "force_gc_after_send_us", "force_gc_after_send_cpu_us",
+               "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"]
+        self.assertIsNone(bench.gc_cpu_problem(True, one))
+        # Several collections, as a typing burst or first-semantic open holds.
+        many = (["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"] * 3
+                + ["force_gc_after_send_us", "force_gc_after_send_cpu_us",
+                   "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"] * 3)
+        self.assertIsNone(bench.gc_cpu_problem(True, many))
+        # A sample with no worker collection, and a control build.
+        self.assertIsNone(bench.gc_cpu_problem(True, []))
+        self.assertIsNone(bench.gc_cpu_problem(False, ["force_gc_us", "force_gc_after_send_us"]))
+        self.assertIsNone(bench.gc_cpu_problem(False, []))
+        # A probed build missing a field, or with a duplicate, is inconsistent.
+        for bad in (
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw"],  # missing nivcsw
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"],  # duplicate
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+             "force_gc_after_send_us", "force_gc_after_send_cpu_us"],  # after-send missing two
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+             "force_gc_after_send_us", "force_gc_after_send_cpu_us", "force_gc_after_send_cpu_us",
+             "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"],  # after-send duplicate
+        ):
+            self.assertIsNotNone(bench.gc_cpu_problem(True, bad), bad)
+        # A control build with any of the fields is inconsistent.
+        for bad in (["force_gc_us", "force_gc_cpu_us"],
+                    ["force_gc_after_send_us", "force_gc_after_send_nivcsw"],
+                    ["force_gc_nvcsw"]):
+            self.assertIsNotNone(bench.gc_cpu_problem(False, bad), bad)
+
+
 class CorpusPinTest(unittest.TestCase):
     def setUp(self):
         self.pinned = json.loads(bench.corpus.MANIFEST.read_text())

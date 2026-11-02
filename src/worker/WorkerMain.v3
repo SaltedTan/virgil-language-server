@@ -35,6 +35,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		// The collection after the previous send, reported against the next
 		// request; negative until there is one.
 		var gcAfterSendUs = -1L;
+		var gcCpu = if(BenchProbe.enabled, BenchGcCpu.new(), null);
 		while (true) {
 			var payload = receive();
 			if (payload == null) {
@@ -44,6 +45,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			}
 			if (BenchProbe.enabled && gcAfterSendUs >= 0) {
 				BenchProbe.worker(analyses + 1, "force_gc_after_send_us", gcAfterSendUs);
+				gcCpu.report(analyses + 1, true);
 				gcAfterSendUs = -1;
 			}
 			var result = handle(payload);
@@ -52,9 +54,12 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			// Report the heap that stays live between analyses, which is what
 			// a retention leak would grow. Exclude the result being sent.
 			var gcStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
+			if (BenchProbe.enabled) gcCpu.start();
 			RiGc.forceGC();
 			if (BenchProbe.enabled) {
+				gcCpu.stop();
 				BenchProbe.worker(analyses, "force_gc_us", long.view(BenchProbe.now() - gcStart));
+				gcCpu.report(analyses, false);
 			}
 			var liveBytes = Semispace.fromSpaceUsed() - result.data.length;
 			if (BenchProbe.enabled) {
@@ -67,8 +72,10 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			// than those plus the previous result.
 			result = null;
 			var gcAfterSendStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
+			if (BenchProbe.enabled) gcCpu.start();
 			RiGc.forceGC();
 			if (BenchProbe.enabled) {
+				gcCpu.stop();
 				gcAfterSendUs = BenchProbe.now() - gcAfterSendStart;
 			}
 		}

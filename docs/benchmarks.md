@@ -303,6 +303,7 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | server `gc_count`, `allocated_bytes` | Corresponding deltas from supervisor admission through result decoding; exclude capture and later LSP response rendering. |
 | worker `force_gc_after_send_us` | Collection after dropping the sent result; emitted with the next request so the probe falls within that request's sample window. Absent on a fresh worker's first request; the last collection is unreported if there is no next request. |
 | worker `force_gc_us`, `live_after_gc_bytes` | Explicit pre-send collection duration and the existing retirement-policy live-byte count, excluding the result byte-array length. It runs once per transaction, before the collection after sending. |
+| worker `force_gc_cpu_us`, `force_gc_nvcsw`, `force_gc_nivcsw`, and the same with `_after_send_` | The worker thread's CPU time (microseconds) and its voluntary and involuntary context switches across each forced collection, beside the matching `force_gc_us` or `force_gc_after_send_us`. CPU time is `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` and the switch counts are `getrusage(RUSAGE_THREAD)`, read before and after each collection, so a pinned capture can tell collection work from waiting for the CPU: on one shared thread the collection after sending takes about half as much CPU time as wall time. The three fields of a collection are reported together or omitted together, wherever a reading is unsupported or fails: macOS has no `RUSAGE_THREAD` and no simple thread-level equivalent, so the darwin build omits them. `--require-probes` infers support per build from any of these six emitted fields, then requires each field's count to equal its matching wall probe's count in every sample, including samples with multiple collections. A build emitting none remains a valid control, including older and darwin builds. |
 | worker `heap_after_handle_bytes`, server `heap_after_decode_bytes` | Space used at those boundaries, not peak live memory. |
 | worker `result_bytes`, server `worker_heap_bytes` | Encoded RESULT frame bytes and the worker's actual reserved heap from HELLO. |
 | worker `parse_unchanged_files`, `_bytes`, `_us`; `parse_changed_files`, `_bytes`, `_us` | A whole-program parse's files, their bytes, and the sum of their parse times, split by whether the previous analysis in the same worker parsed the same path and bytes with the same language options. Every file parsed by a fresh worker's first analysis is changed, and so is a file the previous analysis skipped at the error limit. Each file's time is the difference of two `System.ticksUs` calls around its parse, within `parse_us`. |
@@ -315,7 +316,10 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 Phase times include GC that occurs within the phase; do not add `adapter_us` to
 parse/verify, or `roundtrip_us` to its constituent phases. Probe syscalls add some
 end-to-end overhead. Prefer normal builds for the most precise external latency
-comparison and instrumented builds for attribution.
+comparison and instrumented builds for attribution. A capture that compares
+commits must build every variant with the same probes: the probe calls change the
+code laid out before the runtime's memory-clearing loop, and that layout alone
+moves the loop's speed by about 25% ([worker collection after sending](#worker-collection-after-sending-2026-11-02)).
 
 JSON includes raw samples grouped by build, project, and process block; summaries
 report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
@@ -3624,7 +3628,7 @@ wasn't measured in place. Unpinned, as under an editor, the server and the
 worker usually run on separate cores, as in the CPU 14 runs, so the doubling
 doesn't apply, and the reply has already been sent either way.
 
-Read `force_gc_after_send_us` in a pinned capture as twice the zeroing's CPU
+In these pinned captures, `force_gc_after_send_us` was about twice the zeroing's CPU
 time. That time can move by about 25% with any change to the code laid out
 before `memClear`, and against the captures' 38 to 55 ms the zeroing itself
 is 20 to 26 ms of CPU.

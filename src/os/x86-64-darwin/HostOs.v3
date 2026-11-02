@@ -167,6 +167,21 @@ component HostOs {
 		if (sys(SYS_getentropy, (Pointer.atContents(words), 16)) == 0) return (u64.view(words[0]), u64.view(words[1]));
 		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
+	// False on this target: the thread CPU time and context-switch readings
+	// below report unsupported. macOS has no RUSAGE_THREAD and no simple
+	// thread-level equivalent, so the worker omits the collection's CPU and
+	// context-switch fields.
+	def threadMetricsSupported = false;
+	// CPU time is deliberately unavailable alongside the unsupported
+	// context-switch readings on this target; returns -1.
+	def threadCpuTimeUs() -> long {
+		return -1;
+	}
+	// macOS has no RUSAGE_THREAD for the current thread's voluntary and
+	// involuntary context switches; returns (-1, -1) for unsupported.
+	def threadContextSwitches() -> (long, long) {
+		return (-1, -1);
+	}
 	// The absolute path of this process's executable, or null. This is
 	// libproc's proc_pidpath(): the kernel returns the executable vnode's
 	// physical path, resolving symlinks, NUL-terminated.

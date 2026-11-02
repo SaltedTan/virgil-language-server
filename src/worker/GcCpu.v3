@@ -1,0 +1,55 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Benchmark-only: the worker thread's CPU time and its voluntary and
+// involuntary context switches across one forced collection, so that wall
+// time spent waiting for the CPU can be told from collection work. Created
+// and read only in a benchmark build, where BenchProbe.enabled is true; a
+// release build never calls it. report() emits the fields only when every
+// reading since start() succeeded; on a target whose HostOs reports them
+// unsupported (see the darwin HostOs), or if a reading fails, it emits none.
+class BenchGcCpu {
+	var startCpu: long, startNvcsw: long, startNivcsw: long;
+	var cpu: long, nvcsw: long, nivcsw: long;
+	// True only if every reading since start() was valid (not negative).
+	var valid: bool;
+	// The CPU time and context-switch deltas across one collection, from the
+	// start and stop readings, and whether every reading was valid (non-negative).
+	// A negative reading makes the result invalid, so the caller omits the
+	// fields; the deltas are still computed so the caller can report them when
+	// valid.
+	def deltas(startCpu: long, startNvcsw: long, startNivcsw: long,
+	           stopCpu: long, stopNvcsw: long, stopNivcsw: long) -> (long, long, long, bool) {
+		var valid = startCpu >= 0 && startNvcsw >= 0 && startNivcsw >= 0
+		            && stopCpu >= 0 && stopNvcsw >= 0 && stopNivcsw >= 0;
+		return (stopCpu - startCpu, stopNvcsw - startNvcsw, stopNivcsw - startNivcsw, valid);
+	}
+	def start() {
+		var c = HostOs.threadCpuTimeUs();
+		var s = HostOs.threadContextSwitches();
+		startCpu = c;
+		startNvcsw = s.0;
+		startNivcsw = s.1;
+	}
+	def stop() {
+		var c = HostOs.threadCpuTimeUs();
+		var s = HostOs.threadContextSwitches();
+		var d = deltas(startCpu, startNvcsw, startNivcsw, c, s.0, s.1);
+		cpu = d.0;
+		nvcsw = d.1;
+		nivcsw = d.2;
+		valid = d.3;
+	}
+	def report(id: int, after: bool) {
+		if (!valid) return;
+		if (after) {
+			BenchProbe.worker(id, "force_gc_after_send_cpu_us", cpu);
+			BenchProbe.worker(id, "force_gc_after_send_nvcsw", nvcsw);
+			BenchProbe.worker(id, "force_gc_after_send_nivcsw", nivcsw);
+		} else {
+			BenchProbe.worker(id, "force_gc_cpu_us", cpu);
+			BenchProbe.worker(id, "force_gc_nvcsw", nvcsw);
+			BenchProbe.worker(id, "force_gc_nivcsw", nivcsw);
+		}
+	}
+}
