@@ -7,6 +7,7 @@
 # scripts/release-notes.py on the release assets. The check-release.sh cases
 # write VERSION and CHANGELOG.md to a temporary repository root; the others
 # construct VSIX files, build manifests, and archives in a temporary directory.
+# It also checks the checkout's pin agreement; see check_pin.py.
 # Usage: test/release/run.sh [--archive <archive>]
 # Backticks in single-quoted patterns are Markdown, not command substitutions.
 # shellcheck disable=SC2016
@@ -832,6 +833,9 @@ links "a repository link at the release's tag" 0 \
 expect_run "VSIX payload integrity and provenance" 0 - - python3 "$ROOT/test/release/test_vsix_payload.py"
 expect_run "release asset selection" 0 - - python3 "$ROOT/test/release/test_release_assets.py"
 expect_run "bundled library integrity and reproducibility" 0 - - python3 "$ROOT/test/release/test_library.py"
+expect_run "pin agreement check: unit tests" 0 - - python3 "$ROOT/test/release/test_pin.py"
+expect_run "pin agreement check: the pin agrees in this tree" 0 \
+    '^(Virgil pin agrees everywhere: [0-9a-f]{40}|skipped: no Git metadata for .*)$' - python3 "$ROOT/test/release/check_pin.py"
 if [ "${1:-}" = --archive ]; then
     expect_run "archive installation (moved, spaces, symlink, read-only library)" 0 \
         '0 failed$' - "$ROOT/scripts/smoke-test-release.sh" "${2:?missing archive}"
