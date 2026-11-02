@@ -8,13 +8,16 @@ from pathlib import Path
 import subprocess
 import sys
 
-build, heap, bench, target, *sources = sys.argv[1:]
+# Usage: build heap bench target [v3c flags...] -- sources...
+build, heap, bench, target, *rest = sys.argv[1:]
+split = rest.index("--")
+v3c_flags, sources = rest[:split], rest[split + 1:]
 compiler = subprocess.check_output(["scripts/v3c.sh", "-print-compiler"], text=True).strip()
 flags = ["-redef-field=BenchProbe.enabled=true,RiGc.stats=true"] if bench == "1" else []
 commands = {}
 for exe, entry, extra in (("virgil-lsp", "src/main.v3", []),
                            ("virgil-lsp-worker", "src/worker/WorkerMain.v3", ["-heap-size=" + heap])):
-    commands[exe] = ["scripts/v3c.sh", *flags, *extra, "-output=" + build, "-program-name=" + exe, entry, *sources]
+    commands[exe] = ["scripts/v3c.sh", *v3c_flags, *flags, *extra, "-output=" + build, "-program-name=" + exe, entry, *sources]
 info = {"schema": 1,
         "server_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True).strip(), "benchmark_probes": bench == "1", "target": target, "worker_heap": heap,

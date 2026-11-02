@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The server, the worker, and the test executables are compiled with the global register allocator for the runtime's garbage collector, `-global-regalloc=RiGc.*` ([ADR-0015](docs/decisions/0015-gc-global-register-allocation.md)). The worker's collection after sending an Aeneas analysis took about 10 ms of CPU instead of 15 to 21 ms in the measured runs, and in the quieter run every process took 10.1 to 10.3 ms.
+
 - The Linux [LazyVim test](test/e2e/lazyvim/README.md#ci), CI job `lazyvim-linux`, is now a required pull-request check in the [repository setup script](scripts/github-setup.sh), after it passed on the first attempt of 103 pull-request runs since its last failure. Reruns, skipped jobs, and cancelled jobs earned no credit ([CI policy](docs/compatibility.md#host-platforms), [#348](https://github.com/SaltedTan/virgil-language-server/issues/348)).
 
 ### Fixed

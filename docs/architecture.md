@@ -40,7 +40,7 @@ Virgil is a whole-program compiler. Every source file is passed to the compiler 
 
 Aeneas has its own `main`, but it comes later on the command line, so it isn't selected. Because all names share one namespace, server types must not reuse Aeneas top-level names ([ADR-0002](decisions/0002-pinned-virgil-adapter-boundary.md)).
 
-`virgil-lsp-worker` is compiled from the same list with `src/worker/WorkerMain.v3` first instead of `src/main.v3`, and with its own heap size (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements)). The `Makefile` asks `scripts/v3c.sh -print-target` for the host target and adds `src/os/<target>/`. Virgil compiles only the code reachable from the entry point, so the server executable doesn't contain the verifier.
+`virgil-lsp-worker` is compiled from the same list with `src/worker/WorkerMain.v3` first instead of `src/main.v3`, and with its own heap size (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements)). The `Makefile` asks `scripts/v3c.sh -print-target` for the host target and adds `src/os/<target>/`. Every executable is compiled with `-global-regalloc=RiGc.*`, so the runtime's collector keeps its loops in registers at the default optimization level ([ADR-0015](decisions/0015-gc-global-register-allocation.md)). Virgil compiles only the code reachable from the entry point, so the server executable doesn't contain the verifier.
 
 ## Compiler adapter
 
