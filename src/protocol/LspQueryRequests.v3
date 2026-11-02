@@ -255,8 +255,9 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		}
 	}
 	// Whether {text} parses on its own, at {path}, with language options
-	// {options}.
+	// {options}. A text with more conservatively counted tokens than the
+	// server's parse budget (AnalysisParseBudget) isn't parsed, and doesn't.
 	def parses(path: string, text: Array<byte>, options: Array<string>) -> bool {
-		return AeneasAdapter.parseFile(path, text, options).diagnostics.length == 0;
+		return AnalysisParseBudget.admits(text) && AeneasAdapter.parseFile(path, text, options).diagnostics.length == 0;
 	}
 }

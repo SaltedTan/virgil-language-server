@@ -28,6 +28,11 @@ component LspCurrentRepair {
 	// at most {parses} blanked texts, and never more than MAX_BODIES.
 	def repair(path: string, current: Array<byte>, anchor: int, error: int, options: Array<string>,
 			parses: int) -> (Array<byte>, LspBodyFallback, string) {
+		// Each parse keeps a syntax index, as an outline's does, so a document
+		// with too many conservatively counted tokens isn't repaired. A blanked
+		// text has no more tokens than {current}, and one with a "}" inserted
+		// has at most one more.
+		if (!AnalysisParseBudget.admits(current)) return (null, null, AnalysisParseBudget.refusal());
 		var scan = LspCursorScanner.new(current);
 		scan.braceFrom = 0;
 		scan.scan(current.length);

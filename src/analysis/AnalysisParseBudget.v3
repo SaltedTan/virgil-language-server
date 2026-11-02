@@ -1,12 +1,15 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Bounds the server's own parse of one document's text, behind its outline,
+// Bounds the server's own parses of one document's text: behind its outline,
 // folding ranges, and selection ranges (AeneasAdapter.outline, which
-// documentSymbols wraps, foldingRanges, and selectionRanges), and the semicolon
-// quick fix (LspCodeActions). That parse runs in the server, not the analysis
-// worker, and its syntax tree and index grow
-// with the tokens it reads, whatever their bytes: a 1 MiB document of
+// documentSymbols wraps, foldingRanges, and selectionRanges), the semicolon
+// quick fix (LspCodeActions), parser diagnostics (LspParserDiagnostics),
+// method-body fallback's parse of a cached text (LspAnalysisInputs),
+// current-text repair (LspCurrentRepair), and completion's and signature
+// help's parse checks (LspQueryRequests.parses). Those parses run in the
+// server, not the analysis worker, and their syntax trees and indexes grow
+// with the tokens they read, whatever their bytes: a 1 MiB document of
 // "var a,a,a,..." exhausted the server's heap. So, before parsing, a pass
 // that allocates nothing conservatively counts the parser's tokens, and a
 // document with more than {maxTokens} is not parsed. See
