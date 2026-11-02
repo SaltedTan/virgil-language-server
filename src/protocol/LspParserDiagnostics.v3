@@ -7,7 +7,7 @@
 // implemented. {LspDiagnosticLists} merges them with the URI's
 // current semantic diagnostics and publishes the complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
-	// The last parse of each open document, by URI in byte order; see
+	// The last parse outcome of each open document, by URI in byte order; see
 	// OrderedStringMap.
 	private def parsedWith = OrderedStringMap<LspParsedDocument>.new();
 
@@ -22,14 +22,14 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 			result.errorAt());
 		lists.parsed(doc, diagnostics);
 	}
-	// Whether {doc}'s text parses with language options {options}: as its
-	// last parse found, if that parsed this version with these options, and
-	// otherwise by parsing it again, without publishing anything.
+	// Whether {doc}'s text counts as parsing with language options {options}:
+	// reuse its last outcome for this version and these options, or run the
+	// budgeted check in {parse}, without publishing anything.
 	def parses(doc: DocumentOverlay, options: Array<string>) -> bool {
 		return outcome(doc, options).0.clean;
 	}
 	// {doc}'s parse outcome with language options {options}, as for {parses},
-	// and whether that took another parse.
+	// and whether that required another budgeted check rather than cache reuse.
 	def outcome(doc: DocumentOverlay, options: Array<string>) -> (LspParsedDocument, bool) {
 		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return (last, false);
@@ -62,7 +62,7 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		parsedWith.remove(doc.uri);
 		lists.closed(doc);
 	}
-	// After a configuration change, parses again each open document whose
+	// After a configuration change, checks again each open document whose
 	// active project now has different language options, and republishes its
 	// diagnostics in URI order. Documents without a file path are always in
 	// single-file mode.
@@ -87,9 +87,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	}
 }
 
-// The last parse of an open document for its diagnostics: the overlay it
-// parsed, the language options it parsed with, whether it parsed, and where
-// current-text repair starts if it did not (FileParseResult.repairAt) and
+// The last parse outcome of an open document for its diagnostics: its overlay
+// identity, language options, and whether it counts as parsing (see
+// LspParserDiagnostics.parses). For a failed parse, it also records where
+// current-text repair starts (FileParseResult.repairAt) and
 // where its first error begins (FileParseResult.errorAt).
 class LspParsedDocument(identity: DocumentVersionIdentity, options: Array<string>, clean: bool, repairAt: int,
 		errorAt: int) { }
