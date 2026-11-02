@@ -167,6 +167,11 @@ component HostOs {
 		if (sys(SYS_getentropy, (Pointer.atContents(words), 16)) == 0) return (u64.view(words[0]), u64.view(words[1]));
 		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
+	// False on this target: the thread CPU time and context-switch readings
+	// below report unsupported. macOS has no RUSAGE_THREAD and no simple
+	// thread-level equivalent, so the worker omits the collection's CPU and
+	// context-switch fields.
+	def threadMetricsSupported = false;
 	// The current thread's CPU time in microseconds, from
 	// clock_gettime(CLOCK_THREAD_CPUTIME_ID), or -1 if the call fails.
 	// macOS has no thread-level equivalent that is simple to make from the

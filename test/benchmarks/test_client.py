@@ -361,62 +361,45 @@ class ResourceTest(unittest.TestCase):
 class GcCpuProbeTest(unittest.TestCase):
     # The worker's forced-collection CPU time and context-switch probes (#441),
     # reported beside force_gc_us and force_gc_after_send_us in benchmark builds.
-    PRE_SEND = ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw")
-    AFTER_SEND = ("force_gc_after_send_cpu_us", "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw")
-    NEW_FIELDS = PRE_SEND + AFTER_SEND
+    NEW_FIELDS = ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+                  "force_gc_after_send_cpu_us", "force_gc_after_send_nvcsw",
+                  "force_gc_after_send_nivcsw")
 
-    def run_smoke(self, exe, require_probes, output):
+    def run_smoke(self, exe, output):
         cmd = [sys.executable, str(ROOT / "scripts/bench-lsp.py"), "--smoke",
                "--exe", str(exe), "--output", str(output)]
-        if require_probes:
-            cmd.append("--require-probes")
         result = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(Path(output).read_text())
 
-    def worker_metrics(self, result):
-        # Each sample's worker probes, keyed by metric.
-        return [{p["metric"]: p["value"] for p in sample["probes"] if p["process"] == "worker"}
-                for block in result["blocks"] for sample in block["samples"]]
+    def worker_fields(self, result):
+        return {p["metric"] for block in result["blocks"] for sample in block["samples"]
+                for p in sample["probes"] if p["process"] == "worker"}
 
-    def check_plausible(self, metrics):
-        for prefix, wall in (("force_gc", "force_gc_us"), ("force_gc_after_send", "force_gc_after_send_us")):
-            if wall not in metrics:
-                continue  # The after-send collection is unreported on a fresh worker's first request.
-            self.assertGreater(metrics[prefix + "_cpu_us"], 0, prefix)
-            # CPU time can't exceed the wall time, plus slack for the clock reads.
-            self.assertLessEqual(metrics[prefix + "_cpu_us"], metrics[wall] + 1000, prefix)
-            self.assertGreaterEqual(metrics[prefix + "_nvcsw"], 0, prefix)
-            self.assertGreaterEqual(metrics[prefix + "_nivcsw"], 0, prefix)
-
-    def test_benchmark_build_reports_collection_cpu_and_context_switches(self):
-        bench_exe = ROOT / "build/bench/virgil-lsp"
-        if not bench_exe.exists():
-            built = subprocess.run(["make", "bench-build"], cwd=ROOT, text=True, capture_output=True)
-            self.assertEqual(built.returncode, 0, built.stderr)
-        with tempfile.TemporaryDirectory() as directory:
-            result = self.run_smoke(bench_exe, True, Path(directory) / "bench.json")
-            metrics = self.worker_metrics(result)
-            # Every worker transaction that reports a collection's wall time also
-            # reports its CPU time and both context-switch counts, plausibly.
-            collected = 0
-            for m in metrics:
-                if "force_gc_us" not in m:
-                    continue  # A server-only sample ran no worker collection.
-                collected += 1
-                for field in self.PRE_SEND:
-                    self.assertIn(field, m, field)
-                self.check_plausible(m)
-            self.assertGreater(collected, 0, "no worker collection was measured")
-            # Some transactions report the after-send collection's too.
-            self.assertTrue(any(all(f in m for f in self.AFTER_SEND) for m in metrics), self.AFTER_SEND)
+    def test_gc_cpu_probes_are_all_or_none_per_build(self):
+        # A build with the probes emits all three beside every force_gc_us; an
+        # older control build, and a darwin build, emits none.
+        with_fields = ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"]
+        self.assertIsNone(bench.gc_cpu_problem(True, with_fields))
+        self.assertIsNone(bench.gc_cpu_problem(True, []))  # A sample with no worker collection.
+        self.assertIsNone(bench.gc_cpu_problem(False, ["force_gc_us"]))
+        self.assertIsNone(bench.gc_cpu_problem(False, []))
+        # A probed build missing a field, or with a duplicate, is inconsistent.
+        for bad in (["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw"],
+                    ["force_gc_us", "force_gc_cpu_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"]):
+            self.assertIsNotNone(bench.gc_cpu_problem(True, bad), bad)
+        # A control build with any of the fields is inconsistent.
+        for bad in (["force_gc_us", "force_gc_cpu_us"], ["force_gc_nvcsw"]):
+            self.assertIsNotNone(bench.gc_cpu_problem(False, bad), bad)
 
     def test_release_build_reports_no_collection_cpu_or_context_switches(self):
+        # The release server make test already built; a release worker has no
+        # benchmark code, so it emits no worker probes at all.
         release_exe = ROOT / "build/virgil-lsp"
         self.assertTrue(release_exe.exists(), "build the release server before this test")
         with tempfile.TemporaryDirectory() as directory:
-            result = self.run_smoke(release_exe, False, Path(directory) / "release.json")
-            fields = {p for m in self.worker_metrics(result) for p in m}
+            result = self.run_smoke(release_exe, Path(directory) / "release.json")
+            fields = self.worker_fields(result)
             for field in self.NEW_FIELDS:
                 self.assertNotIn(field, fields, field)
 

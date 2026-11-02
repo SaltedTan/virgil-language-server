@@ -1,0 +1,36 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The thread CPU time and context-switch readings the worker's collection
+// probes use, one per target (see src/os/<target>/HostOs.v3).
+def T = UnitTests.register;
+def X = [
+	T("HostOs:thread_metrics", test_thread_metrics),
+	()
+];
+
+def test_thread_metrics(t: Tester) {
+	if (!HostOs.threadMetricsSupported) {
+		// macOS has no RUSAGE_THREAD and no simple thread-level equivalent, so
+		// the readings report unsupported and the worker omits the fields.
+		t.assertl(-1, HostOs.threadCpuTimeUs());
+		var s = HostOs.threadContextSwitches();
+		t.assertl(-1, s.0);
+		t.assertl(-1, s.1);
+		return;
+	}
+	var before = HostOs.threadCpuTimeUs();
+	var s0 = HostOs.threadContextSwitches();
+	t.assert(before >= 0, "CPU time is valid");
+	t.assert(s0.0 >= 0 && s0.1 >= 0, "switch counts are nonnegative");
+	// A few milliseconds of work the compiler can't fold away, so the thread's
+	// CPU time advances.
+	var start = System.ticksNs();
+	var x = 0;
+	while (System.ticksNs() - start < 5000000) x += 1;
+	t.assert(x > 0, "the busy loop ran");
+	var after = HostOs.threadCpuTimeUs();
+	var s1 = HostOs.threadContextSwitches();
+	t.assert(after > before, "CPU time grows across a busy loop");
+	t.assert(s1.0 >= s0.0 && s1.1 >= s0.1, "switch counts don't decrease");
+}

@@ -161,6 +161,10 @@ component HostOs {
 		if (sys(SYS_getrandom, (Pointer.atContents(words), 16, 0)) == 16) return (u64.view(words[0]), u64.view(words[1]));
 		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
+	// True on this target: the thread CPU time and context-switch readings
+	// below succeed. The darwin HostOs reports false, as macOS has no
+	// RUSAGE_THREAD and no simple thread-level equivalent.
+	def threadMetricsSupported = true;
 	// The current thread's CPU time in microseconds, from
 	// clock_gettime(CLOCK_THREAD_CPUTIME_ID), or -1 if the call fails.
 	def threadCpuTimeUs() -> long {
