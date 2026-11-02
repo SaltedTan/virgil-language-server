@@ -28,6 +28,7 @@ def X = [
 	T("LspCompletionScope:cancel", test_cancel),
 	T("LspCompletionScope:time_limit", test_time_limit),
 	T("LspCompletionScope:worker_crash", test_worker_crash),
+	T("LspCompletionScope:parse_budget", test_parse_budget),
 	T("LspCompletionScope:malformed_scope", test_malformed_scope),
 	T("LspCompletionScope:answer_too_large", test_answer_too_large),
 	T("LspCompletionScope:shutdown", test_shutdown),
@@ -1335,5 +1336,64 @@ def test_members_malformed(t: Tester) {
 	s.settle();
 	t.assert_string("| 0 +", render(t, s.result(t, id)));
 	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tthis.$")));
+	s.server.close();
+}
+
+// {marked} with a line comment of punctuation after it, so that its text has
+// exactly {tokens} conservatively counted tokens.
+def padded(marked: string, tokens: int) -> string {
+	var text = Arrays.concat(marked, "\n//\n"), count = AnalysisParseBudget.count(unmark(text).0, int.max);
+	var buf = StringBuilder.new().puts(marked).puts("\n//");
+	for (i < tokens - count) buf.putc('!');
+	return buf.puts("\n").toString();
+}
+// The completion repair of {marked}'s text at its "$".
+def repairOf(marked: string) -> Array<byte> {
+	var u = unmark(marked);
+	return LspCompletionRepair.repair(LspCursorScanner.new(u.0).scan(u.1));
+}
+// A document with more conservatively counted tokens than the server's parse
+// budget (AnalysisParseBudget) isn't parsed for a completion, nor repaired,
+// even where its repair would be within the budget: it gets the keywords
+// alone, at once. A document within the budget whose repair isn't gets them
+// too, as one whose repair doesn't parse does, and one whose repair is at the
+// budget gets the names, as without it.
+def test_parse_budget(t: Tester) {
+	var s = session(t);
+	var names = Strings.format1("total unsaved factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins());
+	var analyses = s.server.completion.analyses;
+	// The sentinel joins the digits after the cursor into one name, so the
+	// repair has 8 fewer tokens than the document.
+	var max = AnalysisParseBudget.MAX_TOKENS;
+	var marked = padded(inScale("\t\treturn $123456789;"), max + 5);
+	t.asserti(max + 5, AnalysisParseBudget.count(unmark(marked).0, int.max));
+	t.asserti(max - 3, AnalysisParseBudget.count(repairOf(marked), int.max));
+	var id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once for a document over the budget");
+	t.asserti(analyses, s.server.completion.analyses);
+	// As typed, over a lowered budget.
+	marked = inScale("\t\tvar unsaved = 1;\n\t\tre$turn total;");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(unmark(marked).0, int.max) - 1;
+	id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once");
+	t.asserti(analyses, s.server.completion.analyses);
+	// A broken document at the budget whose repair has more tokens.
+	marked = inScale("\t\ttotal = $");
+	var count = AnalysisParseBudget.count(unmark(marked).0, int.max), repaired = AnalysisParseBudget.count(repairOf(marked), int.max);
+	t.assert(repaired > count, "the repair adds tokens");
+	AnalysisParseBudget.maxTokens = count;
+	id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once for a repair over the budget");
+	t.asserti(analyses, s.server.completion.analyses);
+	// Its repair at the budget, and the document as typed at the budget, get
+	// the names as without it.
+	AnalysisParseBudget.maxTokens = repaired;
+	t.assert_string(Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 5", builtins()),
+		complete(t, s, inScale("\t\ttotal =$")));
+	marked = inScale("\t\tvar unsaved = 1;\n\t\tre$turn total;");
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.count(unmark(marked).0, int.max);
+	t.assert_string(names, complete(t, s, marked));
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 	s.server.close();
 }

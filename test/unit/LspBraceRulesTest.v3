@@ -16,6 +16,7 @@ def X = [
 	T("LspBraceRules:local_functions", test_local_functions),
 	T("LspBraceRules:two_bodies", test_two_bodies),
 	T("LspBraceRules:parse_budget", test_parse_budget),
+	T("LspBraceRules:token_budget", test_token_budget),
 	T("LspBraceRules:analysis", test_analysis),
 	()
 ];
@@ -411,6 +412,25 @@ def test_parse_budget(t: Tester) {
 		var parsed = AeneasAdapter.parseFile("A.v3", current, []);
 		t.assertb("repair exceeds the parse budget", LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 0).2);
 		t.assert(LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 1).1 != null, "one body needs one parse");
+	}
+}
+
+// Rule 2's and rule 3's texts are refused before any parse when the
+// document has more conservatively counted tokens than the outline parse's
+// budget (AnalysisParseBudget), and repaired as without it at the budget.
+// Rule 3 parses texts with a "}" inserted, one token more than the document.
+def test_token_budget(t: Tester) {
+	for (body in [["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"],
+			["\t\tmatch (a) {", "\t\t\ttrue => {", "\t\t\t\tg();", "\t\t\t", "\t\t\tfalse => ;", "\t\t}", "\t}"]]) {
+		var current = method("\tdef f(a: bool) {", body), count = AnalysisParseBudget.count(current, int.max);
+		var before = repair(current);
+		t.assert(before.0 != null, "the text is repaired");
+		AnalysisParseBudget.maxTokens = count;
+		var r = repair(current);
+		t.assert(r.0 != null && Strings.equal(before.0, r.0), "the same repair at the budget");
+		AnalysisParseBudget.maxTokens = count - 1;
+		refuse(t, current, AnalysisParseBudget.refusal());
+		AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 	}
 }
 

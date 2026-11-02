@@ -7,13 +7,13 @@
 // implemented. {LspDiagnosticLists} merges them with the URI's
 // current semantic diagnostics and publishes the complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
-	// The last parse of each open document, by URI in byte order; see
+	// The last parse outcome of each open document, by URI in byte order; see
 	// OrderedStringMap.
 	private def parsedWith = OrderedStringMap<LspParsedDocument>.new();
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
 		var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
-		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+		var result = parse(doc, options);
 		if (BenchProbe.enabled) BenchProbe.server(0, "parser_diagnostics_us", long.view(BenchProbe.now() - start));
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
@@ -22,18 +22,18 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 			result.errorAt());
 		lists.parsed(doc, diagnostics);
 	}
-	// Whether {doc}'s text parses with language options {options}: as its
-	// last parse found, if that parsed this version with these options, and
-	// otherwise by parsing it again, without publishing anything.
+	// Whether {doc}'s text counts as parsing with language options {options}:
+	// reuse its last outcome for this version and these options, or run the
+	// budgeted check in {parse}, without publishing anything.
 	def parses(doc: DocumentOverlay, options: Array<string>) -> bool {
 		return outcome(doc, options).0.clean;
 	}
 	// {doc}'s parse outcome with language options {options}, as for {parses},
-	// and whether that took another parse.
+	// and whether that required another budgeted check rather than cache reuse.
 	def outcome(doc: DocumentOverlay, options: Array<string>) -> (LspParsedDocument, bool) {
 		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return (last, false);
-		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+		var result = parse(doc, options);
 		return (LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt,
 			result.errorAt()), true);
 	}
@@ -44,6 +44,15 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	def versioned(doc: DocumentOverlay, owner: ProjectContext) -> bool {
 		return lists.versioned(doc, owner);
 	}
+	// The parse of {doc}'s text with language options {options}. A text with
+	// more conservatively counted tokens than the server's parse budget
+	// (AnalysisParseBudget) isn't parsed: it has no parser diagnostics and
+	// counts as parsing, so that the analysis worker, which contains its own
+	// failures, analyzes it as it is, without fallback or repair.
+	private def parse(doc: DocumentOverlay, options: Array<string>) -> FileParseResult {
+		if (!AnalysisParseBudget.admits(doc.text)) return FileParseResult.new(pathOf(doc), [], 0);
+		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
+	}
 	// The path that names {doc} in its diagnostics: its file's, or its URI.
 	private def pathOf(doc: DocumentOverlay) -> string {
 		var path = DocumentUri.filePath(doc.uri);
@@ -53,7 +62,7 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		parsedWith.remove(doc.uri);
 		lists.closed(doc);
 	}
-	// After a configuration change, parses again each open document whose
+	// After a configuration change, checks again each open document whose
 	// active project now has different language options, and republishes its
 	// diagnostics in URI order. Documents without a file path are always in
 	// single-file mode.
@@ -78,9 +87,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	}
 }
 
-// The last parse of an open document for its diagnostics: the overlay it
-// parsed, the language options it parsed with, whether it parsed, and where
-// current-text repair starts if it did not (FileParseResult.repairAt) and
+// The last parse outcome of an open document for its diagnostics: its overlay
+// identity, language options, and whether it counts as parsing (see
+// LspParserDiagnostics.parses). For a failed parse, it also records where
+// current-text repair starts (FileParseResult.repairAt) and
 // where its first error begins (FileParseResult.errorAt).
 class LspParsedDocument(identity: DocumentVersionIdentity, options: Array<string>, clean: bool, repairAt: int,
 		errorAt: int) { }

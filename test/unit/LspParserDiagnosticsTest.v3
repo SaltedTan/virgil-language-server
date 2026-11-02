@@ -13,6 +13,7 @@ def X = [
 	T("LspParserDiagnostics:range_bounds_recovery", test_diagnostics_range_recovery),
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
+	T("LspParserDiagnostics:parse_budget", test_diagnostics_parse_budget),
 	()
 ];
 
@@ -234,4 +235,25 @@ def test_diagnostics_write_failure(t: Tester) {
 	t.assertz(false, transport.receive(framed(open)));
 	t.assert_string("cannot write a notification", transport.failure);
 	t.assertz(false, transport.close());
+}
+// A document with more conservatively counted tokens than the server's parse
+// budget (AnalysisParseBudget) isn't parsed: it has no parser diagnostics,
+// and its parse outcome counts it as parsing. One at the budget has the same
+// diagnostics as without it.
+def test_diagnostics_parse_budget(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	var text = "component C { def x = ; }", count = AnalysisParseBudget.count(text, int.max);
+	AnalysisParseBudget.maxTokens = count;
+	open(t, server, URI, 1, text);
+	assertRange(t, publication(t, rec, 0, URI, 1), 0, 22, 22);
+	AnalysisParseBudget.maxTokens = count - 1;
+	replace(t, server, 2, text);
+	t.asserti(0, publication(t, rec, 1, URI, 2).length);
+	var doc = server.documents.overlay(URI), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(server.documents, null));
+	t.assert(parser.parses(doc, []), "a refused text counts as parsing");
+	AnalysisParseBudget.maxTokens = count;
+	replace(t, server, 3, text);
+	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 22);
+	t.assertz(false, parser.parses(server.documents.overlay(URI), []));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }

@@ -15,10 +15,24 @@ document instead of ending the server, including malformed representation
 hints and mixed line endings. Each case is followed
 by the same request on a small document, a ping, shutdown, and exit with
 status 0.
+
+The same budget bounds the server's other single-file parses (#428).
+Repairing the current text of a dense project file whose method body is
+broken, or whose braces are one closer short, ended the server with
+HeapOverflow at rest; now the file is analyzed as it is. Parser diagnostics of a dense document ended it
+with two Aeneas-sized analysis snapshots retained; now the document has none.
+Each case is followed by a small document's outline, a ping, shutdown, and
+exit with status 0. The pressure case copies the pinned Aeneas sources, as
+evicted_snapshot.py does, checks that both projects' analyses completed and
+are retained before it opens the dense text, and takes about 15 seconds.
 """
+import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
+import evicted_snapshot
 from worker import Session
 
 DENSE_URI = 'untitled:dense.v3'
@@ -119,6 +133,120 @@ def run_code_action(exe, text):
         s.close()
 
 
+def outline_small(s, uri):
+    """The small document's flat outline: C and f."""
+    s.send('textDocument/didOpen', {'textDocument': {
+        'uri': uri, 'languageId': 'virgil', 'version': 1, 'text': SMALL}}, request=False)
+    small = s.result(s.send('textDocument/documentSymbol', {'textDocument': {'uri': uri}}), 5)
+    assert len(small) == 2, small
+
+
+# A method whose body is broken, and one whose if lost its "}", after a dense
+# expression list: repair parses the whole text with a syntax index.
+BROKEN = '\ndef g(a: int, b: int) -> int {\n\tvar y = g(a, ;\n\treturn a;\n}\n'
+CLOSER = '\ndef g(a: int, b: int) -> int {\n\tif (a > 0) {\n\t\ta = 1;\n\tvar y = ;\n\treturn a;\n}\n'
+
+
+def run_repair(exe, name, tail):
+    """Opens a dense project file that fails to parse, which an analysis
+    would repair, and waits for that analysis with a hover; then a small
+    document's outline."""
+    # Project discovery rejects symlink ancestors, including macOS's /var.
+    work = Path(tempfile.mkdtemp(prefix='parse-budget-')).resolve()
+    s = Session(exe)
+    try:
+        (work / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [{'name': 'p', 'sources': ['*.v3']}]}))
+        path, small = work / 'd.v3', work / 's.v3'
+        uris = path.as_uri(), small.as_uri()
+        size = 1024 * 1024 - 2 * 256 - len(SMALL) - sum(len(u) for u in uris) - 2 * len('virgil')
+        text = fill('var x=(', 'a,', 'a);', size - len(tail)) + tail
+        assert len(text) <= size
+        path.write_text(text)
+        small.write_text(SMALL)
+        s.result(s.send('initialize', {'rootUri': work.as_uri(), 'capabilities': {}}), 10)
+        s.send('initialized', {}, request=False)
+        s.send('textDocument/didOpen', {'textDocument': {
+            'uri': uris[0], 'languageId': 'virgil', 'version': 1, 'text': text}}, request=False)
+        line = text.count('\n', 0, text.index('def g('))
+        s.reply(s.send('textDocument/hover', {'textDocument': {'uri': uris[0]},
+                                              'position': {'line': line, 'character': 5}}), 60)
+        outline_small(s, uris[1])
+        s.ping()
+        s.shutdown()
+    except BaseException:
+        print('%s:' % name, file=sys.stderr)
+        print(s.logs(), file=sys.stderr)
+        raise
+    finally:
+        s.close()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run_pressure(exe):
+    """With the compiler and demangle projects of evicted_snapshot.py
+    analyzed, and each project's snapshot retained, opens and changes a dense
+    document; then a small document's outline."""
+    ev = evicted_snapshot
+    # Project discovery rejects symlink ancestors, including macOS's /var.
+    work = Path(tempfile.mkdtemp(prefix='parse-budget-')).resolve()
+    s = ev.Client(exe)
+    try:
+        for rel in ('aeneas/src', 'apps/Demangle'):
+            shutil.copytree(ev.VIRGIL / rel, work / rel)
+        (work / '.virgil-lsp.json').write_text(json.dumps(ev.CONFIG))
+        s.result(s.send('initialize', {
+            'rootUri': work.as_uri(), 'workspaceFolders': [{'uri': work.as_uri(), 'name': 'p'}],
+            'initializationOptions': {'virgilRoot': str(ev.VIRGIL.resolve())}, 'capabilities': {}}), 10)
+        s.send('initialized', {}, request=False)
+        # Small documents, so that the dense one fits beside them in the
+        # overlay budget: each one's opening schedules its project's analysis.
+        opened = [(work / 'aeneas/src/main/Version.v3', 'component Version'),
+                  (work / 'apps/Demangle/Demangle.v3', 'def doStdin')]
+        for path, _ in opened:
+            s.send('textDocument/didOpen', {'textDocument': {
+                'uri': path.as_uri(), 'languageId': 'virgil', 'version': 1, 'text': path.read_text()}}, request=False)
+        ev.settle(s)
+        # Hover answers from the project's retained snapshot, and at once with
+        # null after a failed analysis. Nothing is analyzed once the analyses
+        # have settled, so neither snapshot is evicted before the dense text.
+        for path, needle in opened:
+            text = path.read_text()
+            at = text.index(needle) + len(needle) - 2
+            line = text.count('\n', 0, at)
+            hover = s.result(s.send('textDocument/hover', {'textDocument': {'uri': path.as_uri()}, 'position': {
+                'line': line, 'character': at - text.rfind('\n', 0, at) - 1}}), 60)
+            assert hover is not None, 'no retained analysis of %s: the pressure is missing' % path.name
+        assert ev.generation(s) == ev.settle(s), 'an analysis ran after the hovers'
+        uris = [p.as_uri() for p, _ in opened] + [DENSE_URI, SMALL_URI]
+        size = 1024 * 1024 - 4 * 256 - sum(len(p.read_text()) for p, _ in opened) - len(SMALL) \
+            - sum(len(u) for u in uris) - 4 * len('virgil')
+        text = fill('var x=(', 'a,', 'a);', size)
+        s.send('textDocument/didOpen', {'textDocument': {
+            'uri': DENSE_URI, 'languageId': 'virgil', 'version': 1, 'text': text}}, request=False)
+        s.ping()
+        s.send('textDocument/didChange', {'textDocument': {'uri': DENSE_URI, 'version': 2},
+                                          'contentChanges': [{'text': text[:-1] + ' '}]}, request=False)
+        s.ping()
+        assert diagnostics(s, DENSE_URI) == [], 'a dense document has no parser diagnostics'
+        outline_small(s, SMALL_URI)
+        s.ping()
+        s.shutdown()
+    except BaseException:
+        print('parser diagnostics under pressure:', file=sys.stderr)
+        print(s.logs(), file=sys.stderr)
+        raise
+    finally:
+        s.close()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def diagnostics(s, uri):
+    """The diagnostics last published for {uri}."""
+    published = [m['params'] for d, m in s.transcript
+                 if d == 'recv' and m.get('method') == 'textDocument/publishDiagnostics' and m['params']['uri'] == uri]
+    return published[-1]['diagnostics']
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     lists = fill('var x=(', 'a,', 'a);', SIZE)
@@ -152,8 +280,12 @@ def main():
     for text in (dense_fix, mixed_fix, *(text for _, text in hints)):
         assert len(text) + len(SMALL_FIX) - len(SMALL) <= SIZE
         run_code_action(exe, text)
+    for name, tail in (('repair of a broken body', BROKEN), ('repair of a lost closer', CLOSER)):
+        run_repair(exe, name, tail)
+    run_pressure(exe)
     print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, and a quick fix '
-          'refused; then a small document, a ping, shutdown, and exit)' % (len(cases), len(METHODS)))
+          'refused; dense repairs and parser diagnostics under pressure; then a small document, a ping, shutdown, '
+          'and exit)' % (len(cases), len(METHODS)))
 
 
 if __name__ == '__main__':

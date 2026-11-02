@@ -32,6 +32,7 @@ def X = [
 	T("LspSignatureRepair:admission", test_admission),
 	T("LspSignatureRepair:less_recent_large_project", test_less_recent_large_project),
 	T("LspSignatureRepair:takes_turns_with_completion", test_takes_turns_with_completion),
+	T("LspSignatureRepair:parse_budget", test_parse_budget),
 	()
 ];
 
@@ -697,4 +698,54 @@ def stringAt(v: JsonValue, key: string) -> string {
 }
 def member(v: JsonValue, key: string) -> JsonValue {
 	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+
+// {marked} with a line comment of punctuation after it, so that its text has
+// exactly {tokens} conservatively counted tokens.
+def padded(marked: string, tokens: int) -> string {
+	var text = Arrays.concat(marked, "\n//\n"), count = AnalysisParseBudget.count(unmark(text).0, int.max);
+	var buf = StringBuilder.new().puts(marked).puts("\n//");
+	for (i < tokens - count) buf.putc('!');
+	return buf.puts("\n").toString();
+}
+// The signature help repair of {marked}'s text at its "$".
+def repairOf(marked: string) -> Array<byte> {
+	var u = unmark(marked);
+	return LspCompletionRepair.repair(LspCursorScanner.new(u.0).scan(u.1));
+}
+// A document with more conservatively counted tokens than the server's parse
+// budget (AnalysisParseBudget) isn't parsed, so its parser diagnostics count
+// it as parsing: signature help answers from the project's snapshot, and
+// never repairs it, even where its repair would be within the budget. That
+// analysis of the broken text has no call. A broken document within the
+// budget whose repair isn't gets null at once, with no analysis, as one
+// whose repair doesn't parse does; one whose repair is at the budget is
+// repaired, as without it.
+def test_parse_budget(t: Tester) {
+	var s = session(t);
+	// The sentinel joins the digits after the cursor into one name, so the
+	// repair has 8 fewer tokens than the document.
+	var max = AnalysisParseBudget.MAX_TOKENS;
+	var marked = padded(inRun("\t\tUtil.add(1, $123456789"), max + 5);
+	t.asserti(max + 5, AnalysisParseBudget.count(unmark(marked).0, int.max));
+	t.assert(AnalysisParseBudget.count(repairOf(marked), int.max) <= max, "the repair is within the budget");
+	t.assert_string("null", help(t, s, marked));
+	t.asserti(0, analyses(s));
+	// Over a lowered budget.
+	marked = inRun("\t\tUtil.add(1, $");
+	var count = AnalysisParseBudget.count(unmark(marked).0, int.max), repaired = AnalysisParseBudget.count(repairOf(marked), int.max);
+	t.assert(repaired > count, "the repair adds tokens");
+	AnalysisParseBudget.maxTokens = count - 1;
+	t.assert_string("null", help(t, s, marked));
+	t.asserti(0, analyses(s));
+	// At the budget, with a repair over it: no repaired analysis.
+	AnalysisParseBudget.maxTokens = count;
+	t.assert_string("null", help(t, s, inRun("\t\tUtil.add(1,$")));
+	t.asserti(0, analyses(s));
+	// A repair at the budget.
+	AnalysisParseBudget.maxTokens = repaired;
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1,  $")));
+	t.asserti(1, analyses(s));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+	s.server.close();
 }
