@@ -347,6 +347,10 @@ def exercise(exe, work):
         log = s.logs()
         assert "NullCheckException" in log and "snapshot 2 is kept" in log, log
         assert "time limit of 5000 ms" in log and "snapshot 3 is kept" in log, log
+        # A release build has no benchmark probes: neither the server nor its
+        # workers, whose standard error is the server's, write a BENCH line
+        # after these analyses (#441).
+        assert not any(line.startswith("BENCH ") for line in log.splitlines()), log
     except BaseException:
         print(json.dumps(s.transcript, indent=2), file=sys.stderr)
         print(s.logs(), file=sys.stderr)

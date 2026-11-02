@@ -361,11 +361,10 @@ class ResourceTest(unittest.TestCase):
 class GcCpuProbeTest(unittest.TestCase):
     # The worker's forced-collection CPU time and context-switch probes (#441),
     # reported beside force_gc_us and force_gc_after_send_us in benchmark
-    # builds. The emitted fields are validated end-to-end by `make bench`
-    # through --require-probes, as force_gc_us is; a release build has
-    # BenchProbe.enabled false and so emits no worker probes, and the release
-    # --smoke suite runs it in make test. Here the all-or-none rule is tested
-    # on synthetic samples.
+    # builds. `make bench` checks the emitted fields through --require-probes,
+    # as it checks force_gc_us. test/protocol/worker.py checks that a release
+    # build writes no BENCH line. Here the all-or-none rule is tested on
+    # synthetic samples.
 
     def test_gc_cpu_probes_are_all_or_none_per_build(self):
         # A probed build emits each of the three fields once per matching wall
