@@ -4,6 +4,11 @@
 VIRGIL ?= vendor/virgil
 BUILD  ?= build
 V3C    := scripts/v3c.sh
+# Flags for every executable. At the default optimization level the pinned
+# Aeneas keeps loop variables in stack slots, and the runtime's GC zeroes and
+# copies the heap word by word, so its routines get the global register
+# allocator. See docs/decisions/0015-gc-global-register-allocation.md.
+V3C_FLAGS = '-global-regalloc=RiGc.*'
 
 # Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.
 PROTOCOL_SHAPES_SEED  ?= 0
@@ -109,7 +114,7 @@ SUITES = \
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
 $(BUILD)/benchmark-build.json: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
-	python3 scripts/bench-build-info.py $(BUILD) $(WORKER_HEAP) $(BENCH) $(V3C_TARGET) \
+	python3 scripts/bench-build-info.py $(BUILD) $(WORKER_HEAP) $(BENCH) $(V3C_TARGET) $(V3C_FLAGS) -- \
 	  $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # One command builds the opt-in probes and runs all corpus/scenario blocks.
@@ -132,19 +137,19 @@ buildinfo: check-virgil
 	@scripts/gen-buildinfo.sh $(BUILDINFO)
 
 $(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB)
-	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=virgil-lsp \
+	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=virgil-lsp \
 	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The server starts this executable from its own directory.
 $(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
-	$(V3C) $(BENCH_FLAGS) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
+	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The real worker, with deterministic stalls enabled only for tests. Share the
 # normal worker's sources, heap and build info so the server accepts its hello.
 $(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
 	@mkdir -p $(BUILD)/stall
-	$(V3C) $(BENCH_FLAGS) -redef-field=WorkerStall.enabled=true \
+	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -redef-field=WorkerStall.enabled=true \
 	  -heap-size=$(WORKER_HEAP) -output=$(BUILD)/stall -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
@@ -152,17 +157,17 @@ project-fixtures:
 	python3 test/fixtures/projects/prepare.py $(BUILD)
 
 $(BUILD)/unit-tests: buildinfo project-fixtures $(TEST_SRC) $(SERVER_LIB)
-	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=unit-tests \
+	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=unit-tests \
 	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 
 # A separate process is essential: prior analyses could hide the initial static
 # cache roots in the heap baseline. The probe also accepts source-file arguments.
 $(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB)
-	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=retain-probe \
+	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=retain-probe \
 	  test/analysis/RetainProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LIB)
-	$(V3C) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
+	$(V3C) $(V3C_FLAGS) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The unit tests need two fixture directories to be unreadable. test/unit/run.py
