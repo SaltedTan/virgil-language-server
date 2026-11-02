@@ -62,6 +62,11 @@ component HostOs {
 	private def SIG_IGN = 1L;
 	// Built with the program, so that reading random words allocates nothing.
 	private def words = Array<long>.new(2);
+	// Built with the program, so the thread CPU time and context-switch
+	// readers allocate nothing inside the interval they measure; near the
+	// heap limit an allocation can trigger a collection that contaminates it.
+	private def threadCpuTime = Array<long>.new(2); // seconds and nanoseconds
+	private def threadRusage = Array<long>.new(18); // struct rusage
 
 	// Creates a pipe. Returns its read and write descriptors, both
 	// close-on-exec, or a negated errno as the first value.
@@ -168,16 +173,14 @@ component HostOs {
 	// The current thread's CPU time in microseconds, from
 	// clock_gettime(CLOCK_THREAD_CPUTIME_ID), or -1 if the call fails.
 	def threadCpuTimeUs() -> long {
-		var ts = Array<long>.new(2); // seconds and nanoseconds
-		if (sys(SYS_clock_gettime, (CLOCK_THREAD_CPUTIME_ID, Pointer.atContents(ts))) != 0) return -1;
-		return ts[0] * 1000000 + ts[1] / 1000;
+		if (sys(SYS_clock_gettime, (CLOCK_THREAD_CPUTIME_ID, Pointer.atContents(threadCpuTime))) != 0) return -1;
+		return threadCpuTime[0] * 1000000 + threadCpuTime[1] / 1000;
 	}
 	// The current thread's voluntary and involuntary context switches, from
 	// getrusage(RUSAGE_THREAD), or (-1, -1) if the call fails.
 	def threadContextSwitches() -> (long, long) {
-		var ru = Array<long>.new(18); // struct rusage
-		if (sys(SYS_getrusage, (RUSAGE_THREAD, Pointer.atContents(ru))) != 0) return (-1, -1);
-		return (ru[16], ru[17]); // ru_nvcsw, ru_nivcsw
+		if (sys(SYS_getrusage, (RUSAGE_THREAD, Pointer.atContents(threadRusage))) != 0) return (-1, -1);
+		return (threadRusage[16], threadRusage[17]); // ru_nvcsw, ru_nivcsw
 	}
 	// The resolved absolute path of this process's executable, or null.
 	def executablePath() -> string {

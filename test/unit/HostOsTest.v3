@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The thread CPU time and context-switch readings the worker's collection
-// probes use, one per target (see src/os/<target>/HostOs.v3).
+// probes use (one per target, see src/os/<target>/HostOs.v3), and the delta
+// and validity logic that turns two readings into the reported fields.
 def T = UnitTests.register;
 def X = [
 	T("HostOs:thread_metrics", test_thread_metrics),
+	T("GcCpu:deltas", test_gc_cpu_deltas),
 	()
 ];
 
@@ -23,14 +25,35 @@ def test_thread_metrics(t: Tester) {
 	var s0 = HostOs.threadContextSwitches();
 	t.assert(before >= 0, "CPU time is valid");
 	t.assert(s0.0 >= 0 && s0.1 >= 0, "switch counts are nonnegative");
-	// A few milliseconds of work the compiler can't fold away, so the thread's
-	// CPU time advances.
-	var start = System.ticksNs();
-	var x = 0;
-	while (System.ticksNs() - start < 5000000) x += 1;
-	t.assert(x > 0, "the busy loop ran");
+	// A fixed, bounded amount of work whose result is used, so the thread's
+	// CPU time must advance; the array write keeps the loop from folding away.
+	var n = 4000000;
+	var buf = Array<int>.new(1024);
+	for (i < n) buf[i & 1023] = i;
+	t.assertl(3999999, buf[3999999 & 1023]); // the last iteration's write
 	var after = HostOs.threadCpuTimeUs();
 	var s1 = HostOs.threadContextSwitches();
-	t.assert(after > before, "CPU time grows across a busy loop");
+	t.assert(after > before, "CPU time grows across the busy loop");
 	t.assert(s1.0 >= s0.0 && s1.1 >= s0.1, "switch counts don't decrease");
+}
+
+def test_gc_cpu_deltas(t: Tester) {
+	var g = BenchGcCpu.new();
+	// Valid readings give their differences and are valid.
+	var d = g.deltas(100, 2, 3, 150, 5, 9);
+	t.assertl(50, d.0);
+	t.assertl(3, d.1);
+	t.assertl(6, d.2);
+	t.assert(d.3, "valid readings are valid");
+	// A negative reading in any of the six positions makes the result invalid,
+	// so the fields are omitted.
+	var bad = [
+		g.deltas(-1, 2, 3, 150, 5, 9),
+		g.deltas(100, -1, 3, 150, 5, 9),
+		g.deltas(100, 2, -1, 150, 5, 9),
+		g.deltas(100, 2, 3, -1, 5, 9),
+		g.deltas(100, 2, 3, 150, -1, 9),
+		g.deltas(100, 2, 3, 150, 5, -1)
+	];
+	for (b in bad) t.assert(!b.3, "a negative reading is invalid");
 }

@@ -360,48 +360,47 @@ class ResourceTest(unittest.TestCase):
 
 class GcCpuProbeTest(unittest.TestCase):
     # The worker's forced-collection CPU time and context-switch probes (#441),
-    # reported beside force_gc_us and force_gc_after_send_us in benchmark builds.
-    NEW_FIELDS = ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
-                  "force_gc_after_send_cpu_us", "force_gc_after_send_nvcsw",
-                  "force_gc_after_send_nivcsw")
-
-    def run_smoke(self, exe, output):
-        cmd = [sys.executable, str(ROOT / "scripts/bench-lsp.py"), "--smoke",
-               "--exe", str(exe), "--output", str(output)]
-        result = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(Path(output).read_text())
-
-    def worker_fields(self, result):
-        return {p["metric"] for block in result["blocks"] for sample in block["samples"]
-                for p in sample["probes"] if p["process"] == "worker"}
+    # reported beside force_gc_us and force_gc_after_send_us in benchmark
+    # builds. The emitted fields are validated end-to-end by `make bench`
+    # through --require-probes, as force_gc_us is; a release build has
+    # BenchProbe.enabled false and so emits no worker probes, and the release
+    # --smoke suite runs it in make test. Here the all-or-none rule is tested
+    # on synthetic samples.
 
     def test_gc_cpu_probes_are_all_or_none_per_build(self):
-        # A build with the probes emits all three beside every force_gc_us; an
-        # older control build, and a darwin build, emits none.
-        with_fields = ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"]
-        self.assertIsNone(bench.gc_cpu_problem(True, with_fields))
-        self.assertIsNone(bench.gc_cpu_problem(True, []))  # A sample with no worker collection.
-        self.assertIsNone(bench.gc_cpu_problem(False, ["force_gc_us"]))
+        # A probed build emits each of the three fields once per matching wall
+        # probe, however many collections a sample holds; an older control
+        # build, and a darwin build, emits none.
+        # One collection, both triplets.
+        one = ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+               "force_gc_after_send_us", "force_gc_after_send_cpu_us",
+               "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"]
+        self.assertIsNone(bench.gc_cpu_problem(True, one))
+        # Several collections, as a typing burst or first-semantic open holds.
+        many = (["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"] * 3
+                + ["force_gc_after_send_us", "force_gc_after_send_cpu_us",
+                   "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"] * 3)
+        self.assertIsNone(bench.gc_cpu_problem(True, many))
+        # A sample with no worker collection, and a control build.
+        self.assertIsNone(bench.gc_cpu_problem(True, []))
+        self.assertIsNone(bench.gc_cpu_problem(False, ["force_gc_us", "force_gc_after_send_us"]))
         self.assertIsNone(bench.gc_cpu_problem(False, []))
         # A probed build missing a field, or with a duplicate, is inconsistent.
-        for bad in (["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw"],
-                    ["force_gc_us", "force_gc_cpu_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"]):
+        for bad in (
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw"],  # missing nivcsw
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw"],  # duplicate
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+             "force_gc_after_send_us", "force_gc_after_send_cpu_us"],  # after-send missing two
+            ["force_gc_us", "force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw",
+             "force_gc_after_send_us", "force_gc_after_send_cpu_us", "force_gc_after_send_cpu_us",
+             "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw"],  # after-send duplicate
+        ):
             self.assertIsNotNone(bench.gc_cpu_problem(True, bad), bad)
         # A control build with any of the fields is inconsistent.
-        for bad in (["force_gc_us", "force_gc_cpu_us"], ["force_gc_nvcsw"]):
+        for bad in (["force_gc_us", "force_gc_cpu_us"],
+                    ["force_gc_after_send_us", "force_gc_after_send_nivcsw"],
+                    ["force_gc_nvcsw"]):
             self.assertIsNotNone(bench.gc_cpu_problem(False, bad), bad)
-
-    def test_release_build_reports_no_collection_cpu_or_context_switches(self):
-        # The release server make test already built; a release worker has no
-        # benchmark code, so it emits no worker probes at all.
-        release_exe = ROOT / "build/virgil-lsp"
-        self.assertTrue(release_exe.exists(), "build the release server before this test")
-        with tempfile.TemporaryDirectory() as directory:
-            result = self.run_smoke(release_exe, Path(directory) / "release.json")
-            fields = self.worker_fields(result)
-            for field in self.NEW_FIELDS:
-                self.assertNotIn(field, fields, field)
 
 
 class CorpusPinTest(unittest.TestCase):

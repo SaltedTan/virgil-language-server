@@ -288,9 +288,15 @@ PARSE_WORK_METRICS = ("parse_classify_us", "parse_unchanged_files", "parse_uncha
 # Capture's source reads and its hash, which split capture_us (#413).
 CAPTURE_SPLIT_METRICS = ("capture_read_us", "capture_hash_us")
 # The worker collection's thread CPU time and context switches, reported beside
-# force_gc_us in benchmark builds (#441). A build has them in every worker
-# transaction that has force_gc_us, or in none.
-GC_CPU_METRICS = ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw")
+# each collection's wall-time probe in benchmark builds (#441). A probed build
+# emits each field once per matching wall probe, however many collections a
+# sample holds (a typing burst or a first-semantic open can hold several);
+# an older build, and a darwin build, emits none.
+GC_CPU_TRIPLES = (
+    ("force_gc_us", ("force_gc_cpu_us", "force_gc_nvcsw", "force_gc_nivcsw")),
+    ("force_gc_after_send_us", ("force_gc_after_send_cpu_us", "force_gc_after_send_nvcsw", "force_gc_after_send_nivcsw")),
+)
+GC_CPU_METRICS = tuple(metric for _, fields in GC_CPU_TRIPLES for metric in fields)
 
 
 def capture_split_problem(split_build, server_metrics):
@@ -313,14 +319,20 @@ def capture_split_problem(split_build, server_metrics):
 def gc_cpu_problem(gc_cpu_build, worker_metrics):
     """Why a sample's collection CPU/switch probes are inconsistent, or None.
 
-    A build with the probes emits all three in every worker transaction that
-    has force_gc_us; an older build, the control, emits none. A darwin build
+    A build with the probes emits each of the three fields once for every
+    matching wall-time probe (force_gc_us and force_gc_after_send_us), however
+    many collections a sample holds (a typing burst or a first-semantic open
+    can hold several); an older build, the control, emits none. A darwin build
     has none, as its HostOs reports the readings unsupported.
     """
-    counts = {metric: worker_metrics.count(metric) for metric in GC_CPU_METRICS}
-    expected = 1 if (gc_cpu_build and worker_metrics.count("force_gc_us") > 0) else 0
-    if any(count != expected for count in counts.values()):
-        return ("collection CPU/switch probes don't match force_gc_us", expected, counts)
+    for wall, fields in GC_CPU_TRIPLES:
+        counts = {metric: worker_metrics.count(metric) for metric in fields}
+        if gc_cpu_build:
+            expected = worker_metrics.count(wall)
+            if any(count != expected for count in counts.values()):
+                return ("collection CPU/switch probes don't match " + wall, expected, counts)
+        elif any(counts.values()):
+            return ("unexpected collection CPU/switch probes beside " + wall, counts)
     return None
 
 
