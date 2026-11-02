@@ -3498,6 +3498,133 @@ with no server collection, and only 4 to 15 ms of that was in the worker round
 trip and 6 to 10 ms in the substitution; this benchmark doesn't break the rest
 down.
 
+## Worker collection after sending (2026-11-02)
+
+Measured on 2026-11-02 for [#434](https://github.com/SaltedTan/virgil-language-server/issues/434).
+The [budget re-measurement](performance-budgets.md) at `bf9e70a8` recorded the
+worker's collection after sending an Aeneas result, `force_gc_after_send_us`,
+at 50 to 55 ms, against 38 to 40 ms at `85baf49d` two days earlier. Within
+each capture the block medians agreed: 37.7 to 44.7 ms on 2026-10-31 and 49.7
+to 55.5 ms on 2026-11-01, for `reused_analysis` and `error_analysis` together.
+The step comes from where the compiler placed the runtime's memory-clearing
+loop in each build. Neither the work nor the data the worker keeps changed
+with it.
+
+**What the collection does.** The worker collects twice per transaction, and
+both times it copies about the same live data. The collection before sending
+also copies the 4.4 MB result, into a semispace that the previous
+transaction's collection after sending already cleared, and it takes 0.8 ms.
+The collection after sending copies the 181,200 live bytes back
+into the semispace the analysis just filled. The pinned runtime then zeroes
+the rest of that semispace, `RiGc.memClear` in
+`vendor/virgil/rt/gc/SemiSpace.v3`, about 190 MB for a full Aeneas analysis.
+Almost all of that collection's work is the zeroing. A scratch probe, not
+committed, read the worker thread's CPU time and context switches around each
+forced collection. The collection after sending took 15.8, 17.8, and 20.4 ms
+of CPU when the previous analysis had filled 148.9, 166.4, and 190.6 MB,
+about 0.11 ms per MB. Its wall time was about twice that, with six to eight
+involuntary context switches, because the benchmark pins every process to
+hardware thread 12. While the worker zeroes, the server decodes the result
+and prepares the next request and the client reads the reply, and the worker
+gets about half of that thread.
+With each build's worker wrapped to run on CPU 14, as in
+[prepareRename on one CPU](#preparerename-on-one-cpu-2026-10-31), the wall
+time equaled the CPU time, 20.9 to 24.5 ms at the median, with no involuntary
+switches.
+
+**What moved it.** Compiled by the pinned Aeneas, `memClear` keeps its pointer
+in stack slots. Each 8-byte store therefore makes two store-and-reload round
+trips through the stack, about four cycles per word, so the loop is limited
+by the core rather than by memory bandwidth. Its machine code is the same 77
+bytes in all 24 workers built here, but its address moves whenever code laid
+out before it changes size. The tables give the loop's first
+instruction's offset within a 64-byte line in each worker.
+
+Every run below had six alternating process blocks of two warmups and five
+measured operations, for the Aeneas project with `--error-result
+--require-probes --cpu 12`, under the shared benchmark lock, with every
+semantic check passing. Each build is the merge's commit in its own checkout
+with identical generated BuildInfo and `BENCH=1`. Times are the median
+(p10–p90), milliseconds, of the collection after the previous transaction's
+send, reported with the named scenario:
+
+| Build | Loop offset | `reused_analysis` | `error_analysis` |
+| --- | ---: | ---: | ---: |
+| `85baf49d` | 23 | 39.9 (36.0–47.3) | 39.6 (36.6–49.2) |
+| #411, `d7bd2444` | 31 | 40.5 (38.5–51.5) | 41.5 (38.4–50.2) |
+| #412, `1d296d55` | 7 | 40.1 (36.4–50.6) | 48.7 (37.9–52.9) |
+| #416, `f3cf0707` | 7 | 42.7 (38.0–51.0) | 41.4 (38.2–51.9) |
+| #417, `265fc8d6` | 7 | 42.9 (39.4–50.8) | 42.0 (38.4–52.8) |
+| #418, `109d5ca5` | 7 | 40.6 (37.0–50.1) | 40.8 (37.7–47.7) |
+| #421, `b62d7f37` | 55 | 49.0 (45.2–56.6) | 48.3 (45.1–52.7) |
+| #425, `f8b1a37e` | 55 | 49.7 (45.2–53.9) | 50.5 (45.3–55.3) |
+
+Every block of `b62d7f37` and `f8b1a37e` had a median of 45.5 to 54.7 ms.
+Of the earlier builds' 72 block medians, 53 were 37.4 to 45.6 ms and 19 were
+47.8 to 53.7 ms, spread over all six builds; the same-session run below didn't
+repeat those for `1d296d55`. Between `bf9e70a8` and `f8b1a37e` only
+`scripts/github-setup.sh` changed, so `f8b1a37e` stands for the build behind
+the 50 to 55 ms cell. The
+2026-10-31 and 2026-11-01 captures' own binaries no longer exist, so their
+loop offsets weren't checked. The same effect is the likely source of the 3.3
+to 7.4 ms that [Hover comment spans](#hover-comment-spans-2026-11-01) measured
+for #421 and couldn't attribute to recording the comments: its ablation copy
+without them took about as long as the change, as a layout effect would.
+Those builds weren't kept either.
+
+The same commits with the probe, which adds two system calls around each
+forced collection and changes the layout before the loop, ranked the other way
+in a separate run of the same form:
+
+| Build with the probe | Loop offset | `reused_analysis` | CPU | `error_analysis` | CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `85baf49d` | 15 | 40.2 (38.5–42.5) | 20.3 | 40.2 (39.0–42.7) | 20.3 |
+| #411, `d7bd2444` | 23 | 40.0 (37.7–44.0) | 20.1 | 39.9 (39.1–42.2) | 20.2 |
+| #412, `1d296d55` | 63 | 44.6 (42.0–47.8) | 22.5 | 44.3 (41.4–46.4) | 22.2 |
+| #416, `f3cf0707` | 63 | 44.9 (41.2–46.8) | 22.7 | 44.1 (41.8–47.3) | 22.2 |
+| #417, `265fc8d6` | 63 | 44.9 (42.7–47.8) | 22.5 | 44.6 (41.1–49.3) | 22.3 |
+| #418, `109d5ca5` | 63 | 44.7 (42.3–46.3) | 22.2 | 44.0 (41.2–46.4) | 22.0 |
+| #421, `b62d7f37` | 47 | 40.2 (37.9–43.0) | 20.2 | 40.1 (38.9–42.2) | 20.3 |
+| #425, `f8b1a37e` | 47 | 40.3 (37.9–41.9) | 20.4 | 40.0 (39.0–42.4) | 20.2 |
+
+Then one run alternated both forms of two commits. `f8b1a37e` took 51.7 ms
+(45.7–56.0) without the probe and 40.4 (36.9–50.0) with it for
+`reused_analysis`. `1d296d55` took 39.1 (35.8–42.1) without it and 48.9
+(44.0–53.4) with it, when its CPU time was 25.1 ms against `f8b1a37e`'s 20.0.
+`error_analysis` moved the same way. In each pair the live bytes and the
+zeroed heap were identical. Finally, a scratch program copied the loop's 77
+bytes from the `85baf49d` worker into executable memory at chosen offsets and
+zeroed the same 190,575,848 bytes on hardware thread 12, fifteen times per
+offset in interleaved rounds. At offsets 7, 15, 47, 48, and 54 it took 15.3 to
+15.5 ms at the median. At 52, 55, and 56 it took 23.1 to 25.2 ms, at 63 20.5
+to 22.0 ms, and at 23 and 31 16.5 to 17.8 ms. These timings rank the offsets
+as the worker builds do. They don't show which part of the core causes the
+difference, and there is no `perf` on this host to look further.
+
+**Live bytes.** The bytes live after the worker's collection rose from
+177,344 to 181,200 at #412 and stayed there through `f8b1a37e`, with and
+without the probe. The 3,856 bytes are #412's record of the files each parse
+reached: the hashes and flags of the 206 Aeneas files, in `BenchParseWork`.
+`BenchProbe` creates it only in a benchmark build, so a release worker doesn't
+keep it. It is a constant, not retention that grows, and copying it costs
+microseconds.
+
+**Release builds.** A release worker has none of the benchmark code, so its
+layout differs. Built with the same BuildInfo, its loop is at offset 7 at
+`85baf49d`, 15 from #411 to #418, and 63 from #421. #412 didn't move it, and
+the release worker stayed 888,984 bytes. #421 moved the loop to an offset that
+is slower both in the benchmark builds with the probe and in the copied loop.
+A release build from #421 on therefore likely spends about 2 to 5 ms more CPU
+per Aeneas collection after sending. Release builds have no probes, so this
+wasn't measured in place. Unpinned, as under an editor, the server and the
+worker usually run on separate cores, as in the CPU 14 runs, so the doubling
+doesn't apply, and the reply has already been sent either way.
+
+Read `force_gc_after_send_us` in a pinned capture as twice the zeroing's CPU
+time. That time can move by about 25% with any change to the code laid out
+before `memClear`, and against the captures' 38 to 55 ms the zeroing itself
+is 20 to 26 ms of CPU.
+
 ## Memory soak
 
 [`scripts/bench-memory-soak.py`](../scripts/bench-memory-soak.py) qualifies
