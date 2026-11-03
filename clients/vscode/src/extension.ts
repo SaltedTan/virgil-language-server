@@ -56,7 +56,7 @@ let output: vscode.LogOutputChannel;
 let extensionPath: string;
 let client: QueuedLanguageClient | undefined;
 // Set when deactivation starts, so that no extension change restarts a server
-// that is about to stop.
+// that is about to stop, and a queued or in-progress restart starts no replacement.
 let deactivating = false;
 // Starts and stops run one at a time, in the order they were requested.
 let queue: Promise<void> = Promise.resolve();
@@ -316,6 +316,7 @@ async function restart(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  if (deactivating) return;
   let executable: string;
   try {
     executable = await resolveServer();
@@ -323,6 +324,7 @@ async function start(): Promise<void> {
     reportStartupFailure(error);
     return;
   }
+  if (deactivating) return;
   const serverOptions: ServerOptions = {
     command: executable,
     // The stdio transport appends `--stdio` to the arguments.

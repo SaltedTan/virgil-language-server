@@ -828,6 +828,27 @@ test('auto restarts once when titzer.virgil appears twice', async () => {
   await host.extension.deactivate();
 });
 
+for (const action of ['extension change', 'restart command']) {
+  test(`deactivation during a restart from ${action} starts no replacement`, async () => {
+    const host = extensionHost();
+    await host.activate();
+    const gate = host.pauseStop();
+    const restarting = action === 'extension change'
+      ? host.changeExtensions('titzer.virgil') : host.restart();
+    await settle();
+    assert.deepEqual(host.events, ['start:0', 'shutdown:0']);
+    assert.equal(host.clients[0].$state, 'stopping');
+    const deactivation = host.extension.deactivate();
+    gate.resolve();
+    await restarting;
+    await deactivation;
+    assert.equal(host.clients.length, 1);
+    assert.equal(host.events.includes('start:1'), false);
+    assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0']);
+    assert.deepEqual(host.subscriptionCounts(), [0, 0]);
+  });
+}
+
 test('an extension change after deactivation starts no client', async () => {
   const host = extensionHost();
   await host.activate();
