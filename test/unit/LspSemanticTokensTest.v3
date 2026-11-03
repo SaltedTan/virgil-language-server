@@ -8,6 +8,7 @@
 def X = [
 	UnitTests.register("LspSemanticTokens:classify", classify),
 	UnitTests.register("LspSemanticTokens:data_matches_tree", data_matches_tree),
+	UnitTests.register("LspSemanticTokens:default_library", default_library),
 	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
 	UnitTests.register("LspSemanticTokens:limit", limit),
 	UnitTests.register("LspSemanticTokens:named_this", named_this),
@@ -43,6 +44,7 @@ def FN = LspSemanticLegend.FUNCTION;
 def ME = LspSemanticLegend.METHOD;
 def D = LspSemanticLegend.DECLARATION;
 def R = LspSemanticLegend.READONLY;
+def DL = LspSemanticLegend.DEFAULT_LIBRARY;
 // The tokens of SOURCE: line, UTF-16 character, length, type, and modifiers.
 def EXPECTED: Array<(int, int, int, int, int)> = [
 	(1, 10, 6, NS, D),		// component Shapes
@@ -132,7 +134,20 @@ def tokens(t: Tester, s: AnalysisSnapshot, text: string, limit: int) -> Array<(i
 	var result = Vector<(int, int, int, int, int)>.new();
 	// Text on disk, with no substitution: its ranges map to themselves.
 	s.recordDocumentVersions([AnalysisDocumentVersion.new(ProjectFiles.uri(PATH), 0, null)]);
-	var c = LspTokenCursor.new(s, 0, s.fileIndex(PATH), text, text, limit);
+	var c = LspTokenCursor.new(s, 0, s.fileIndex(PATH), text, text, limit, null);
+	while (c.next()) result.put((c.line, c.character, c.length, c.tokenType, c.modifiers));
+	return result.extract();
+}
+// The tokens of {path} of {s}, with the names whose declarations are under
+// {prefix} getting the DEFAULT_LIBRARY modifier.
+def tokensAt(t: Tester, s: AnalysisSnapshot, path: string, text: string, limit: int, prefix: string) -> Array<(int, int, int, int, int)> {
+	var result = Vector<(int, int, int, int, int)>.new();
+	var versions = Array<AnalysisDocumentVersion>.new(s.paths.length);
+	for (i < s.paths.length) versions[i] = AnalysisDocumentVersion.new(ProjectFiles.uri(s.paths[i]), 0, null);
+	s.recordDocumentVersions(versions);
+	var index = 0;
+	for (i < s.paths.length) if (Strings.equal(s.paths[i], path)) index = i;
+	var c = LspTokenCursor.new(s, index, s.fileIndex(path), text, text, limit, prefix);
 	while (c.next()) result.put((c.line, c.character, c.length, c.tokenType, c.modifiers));
 	return result.extract();
 }
@@ -154,6 +169,40 @@ def classify(t: Tester) {
 	if (s == null) return;
 	t.assert(s.verified, "the fixture verifies");
 	check(t, EXPECTED, tokens(t, s, SOURCE, 100000));
+}
+// A name whose declaration is in a library file, under the Virgil root's
+// lib/, gets the DEFAULT_LIBRARY modifier, at its declaration and at its
+// uses; a project's own names do not. The prefix is the server's, so the test
+// supplies one directly.
+def LIBRARY_TEXT = "class StringBuilder { new() { } }";
+def MAIN_TEXT_LIB = "component Main { def f() -> StringBuilder { return StringBuilder.new(); } }";
+def default_library(t: Tester) {
+	var library = "/lib/util/StringBuilder.v3", main = "/proj/Main.v3";
+	var s = snapshot(t, [(library, LIBRARY_TEXT), (main, MAIN_TEXT_LIB)]);
+	if (s == null) return;
+	t.assert(s.verified, "the program verifies");
+	var prefix = "/lib/";
+	// The library's own declaration gets the modifier, with its declaration.
+	var lib = tokensAt(t, s, library, LIBRARY_TEXT, 100000, prefix);
+	t.asserti(1, lib.length);
+	t.asserti(CL, lib[0].3);
+	t.asserti(D | DL, lib[0].4);
+	// A use in the project file gets the modifier; the project's own names
+	// do not. The explicit "new" gets no token.
+	var proj = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, prefix);
+	t.asserti(4, proj.length);
+	t.asserti(NS, proj[0].3);
+	t.asserti(D, proj[0].4);			// Main
+	t.asserti(FN, proj[1].3);
+	t.asserti(D, proj[1].4);			// f
+	t.asserti(CL, proj[2].3);
+	t.asserti(DL, proj[2].4);			// StringBuilder, the return type
+	t.asserti(CL, proj[3].3);
+	t.asserti(DL, proj[3].4);			// StringBuilder, the receiver
+	// Without a prefix, nothing is a library name.
+	var plain = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, null);
+	t.asserti(CL, plain[2].3);
+	t.asserti(0, plain[2].4);
 }
 // A reply's result is rendered token by token, not as a JsonValue tree. For
 // no tokens, one, and many, with more than and fewer than the writer

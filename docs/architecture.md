@@ -1528,7 +1528,7 @@ The legend holds only the protocol's standard token types and modifiers, in a fi
 | Parameter | `parameter` | |
 | Local | `variable` | |
 
-A declaration's own name has the `declaration` modifier. Every token of a local, parameter, or field that the compiler marks read-only has the `readonly` modifier, such as a `def` local or field, or a class's parameter declared without `var`. The flag comes from the compiler: a local's or parameter's read-only flag, and a field's writability. The server never parses a signature for it.
+A declaration's own name has the `declaration` modifier. Every token of a local, parameter, or field that the compiler marks read-only has the `readonly` modifier, such as a `def` local or field, or a class's parameter declared without `var`. The flag comes from the compiler: a local's or parameter's read-only flag, and a field's writability. The server never parses a signature for it. Every token of a name whose declaration is in the Virgil library, the bundled library or the configured Virgil root's `lib/`, as opposed to the project's own files, has the `defaultLibrary` modifier, so that themes can style library names as built-ins ([#456](https://github.com/SaltedTan/virgil-language-server/issues/456)).
 
 These names get no token:
 

@@ -12,7 +12,7 @@ from type_definition import open_file, change
 
 TYPES = ['namespace', 'class', 'enum', 'enumMember', 'struct', 'type',
          'typeParameter', 'parameter', 'variable', 'property', 'function', 'method']
-MODIFIERS = ['declaration', 'readonly']
+MODIFIERS = ['declaration', 'readonly', 'defaultLibrary']
 PROVIDER = {'full': True, 'legend': {'tokenModifiers': MODIFIERS, 'tokenTypes': TYPES}}
 CONTENT_MODIFIED = -32801
 METHOD_NOT_FOUND = -32601
