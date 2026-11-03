@@ -1,0 +1,28 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def X = [
+	UnitTests.register("AnalysisSnapshot:declaration_paths", declaration_paths),
+	()
+];
+
+def declaration_paths(t: Tester) {
+	var paths = ["/z.v3", "/a.v3", "/empty.v3"];
+	var expected: Array<string> = [paths[0], paths[1], paths[0], null];
+	var declarations = Array<AnalysisDeclaration>.new(expected.length);
+	for (i < declarations.length) {
+		var range = AnalysisRange.new(expected[i], 1, 1, 1, 2, 0, 1);
+		declarations[i] = AnalysisDeclaration.new(AnalysisDeclKind.CLASS, "X", range);
+	}
+	var s = AnalysisSnapshot.new(1, paths, true, true, [], null, true, declarations);
+	for (i < expected.length) t.assert(Strings.equal(expected[i], s.declarationPath(i)), "declaration path without file indexes");
+	var files = AnalysisSnapshotFiles.new(paths);
+	files.add(0, AnalysisSnapshotFile.new([], [], [], [], 0, 1));
+	files.add(1, AnalysisSnapshotFile.new([], [], [], [], 1, 1));
+	files.add(2, AnalysisSnapshotFile.new([], [], [], [], 2, 0));
+	s.setFiles(files);
+	for (i < expected.length) t.assert(Strings.equal(expected[i], s.declarationPath(i)), "declaration path with file indexes");
+	for (i in [-1, int.min, expected.length, int.max]) t.assert(s.declarationPath(i) == null, "invalid declaration index");
+	var empty = AnalysisSnapshot.new(1, [], true, true, [], null, false, []);
+	t.assert(empty.declarationPath(0) == null, "empty declaration table");
+}

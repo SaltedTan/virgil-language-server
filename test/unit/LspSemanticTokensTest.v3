@@ -9,6 +9,7 @@ def X = [
 	UnitTests.register("LspSemanticTokens:classify", classify),
 	UnitTests.register("LspSemanticTokens:data_matches_tree", data_matches_tree),
 	UnitTests.register("LspSemanticTokens:default_library", default_library),
+	UnitTests.register("LspSemanticTokens:default_library_single_case", default_library_single_case),
 	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
 	UnitTests.register("LspSemanticTokens:library_project", library_project),
 	UnitTests.register("LspSemanticTokens:limit", limit),
@@ -206,6 +207,33 @@ def default_library(t: Tester) {
 	var plain = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, null, root);
 	t.asserti(CL, plain[2].3);
 	t.asserti(0, plain[2].4);
+}
+def default_library_single_case(t: Tester) {
+	var library = "/virgil/lib/Single.v3", main = "/proj/Main.v3";
+	var libText = "type Single(value: int) { }";
+	var mainText = "component Main { def f() -> Single { return Single(1); } }";
+	for (reverse in [false, true]) {
+		var s = snapshot(t, if(reverse, [(main, mainText), (library, libText)], [(library, libText), (main, mainText)]));
+		if (s == null) return;
+		t.assert(s.verified, "the program verifies");
+		var file = s.fileIndex(main), target = file.target(file.targets.length - 1), end = 0;
+		for (path in s.paths) {
+			var run = s.declarationSiteRun(path);
+			if (run.1 > end) end = run.1;
+		}
+		t.assert(target >= end, "the constructor target follows all declaration-site runs");
+		t.assert(s.declarations[target].kind == AnalysisDeclKind.VARIANT_CASE, "the constructor targets the single case");
+		t.assert_string(library, s.declarationPath(target));
+		var proj = tokensAt(t, s, main, mainText, 100000, "/virgil/lib/", "/proj/");
+		t.asserti(4, proj.length);
+		t.asserti(D, proj[0].4);
+		t.asserti(D, proj[1].4);
+		t.asserti(EN, proj[2].3);
+		t.asserti(DL, proj[2].4);
+		t.asserti(EM, proj[3].3);
+		t.asserti(6, proj[3].2);
+		t.asserti(4, proj[3].4);
+	}
 }
 // A project whose root is inside the library: its own names in that root are
 // not library names, but names in the library's other directories are.
