@@ -47,9 +47,9 @@ warmup cycles. The raw JSON files, the build log, and the binary and corpus
 hashes are retained in the scratch directory
 `/home/sean-tan/.t3/scratch-virgil/budgets-refresh2/`. Every capture passed
 its correctness checks; no sample was removed and no capture was rerun.
-Other work on the host slowed the middle blocks of the full-scenario
-capture, and those blocks set several of its Aeneas values below; the
-[changes section](#changes-since-the-2026-11-02-capture) describes them.
+Other work on the host slowed the last four blocks of the error-result
+capture, and those blocks set its p95 values below; the [changes
+section](#changes-since-the-2026-11-02-capture) describes them.
 
 The [memory soak record in `docs/benchmarks.md`](benchmarks.md#memory-soak)
 was measured at revision `500b9f53` with different server and worker binaries,
@@ -71,18 +71,21 @@ runtime's collector compiled with the global register allocator), and #445
 collector loops and new float parsing in the bundled `lib/util`). #445 also
 changed the corpus and the soak's fixture, which copies the Aeneas sources.
 
-The host's one-minute load average was 1.2, 3.5, and 2.8 when the three
-`bench-lsp.py` captures started, against 2.3, 1.5, and 1.3 before. Other work
-slowed the full-scenario capture's second to fifth blocks: in them, Aeneas
-`fresh_analysis` had block medians of 391.9 to 464.2 ms, against 349.7 and
-354.7 ms in the first and last blocks, although the worker allocated the same
-bytes in every block. In the second to fourth blocks, the worker's
-collection after sending, a fixed amount of work, took 10.4 to 11.2 ms of CPU
-at the block median for `reused_analysis`, against 10.0 to 10.2 ms in the
-others, so the host gave less CPU throughput, not just less time. util and
-small analyses slowed in the same blocks. The error-result capture, which ran
-after it, recorded an Aeneas `fresh_analysis` p50 of 354.304 ms, against
-358.579 ms before.
+The host's one-minute load average was 0.5, 1.0, and 1.0 when the three
+`bench-lsp.py` captures started, against 2.3, 1.5, and 1.3 before. The
+full-scenario and first-semantic captures were even across their blocks:
+Aeneas `fresh_analysis` had block medians of 343.6 to 357.0 ms. The
+error-result capture was not. Other work started on the host during it, and
+the load average was 10.0 when it ended. Its `error_analysis` block medians
+were 296.8 and 297.3 ms in the first two blocks and 332.6 to 452.0 ms in
+the last four, and its other analyses slowed in the same blocks, so that
+capture's p95 values and the `error_analysis` p95 target rest on a loaded
+host. The data is kept, as the procedure requires. An earlier capture of
+this revision on the same day, whose full-scenario capture met the same kind
+of load, was replaced wholesale by this one, as decided before this one ran;
+it is retained in the scratch directory's `contaminated-2026-11-03/`. The
+soak also ran after the load rose; its memory values matched the earlier
+capture's to within 8,192 bytes.
 
 A latency p50 counts as moved when the two captures' p10–p90 intervals are
 disjoint, the test the [scheduled
@@ -97,19 +100,17 @@ no cause was ablated:
 
 | Cell | 2026-11-02 | 2026-11-03 | Likely cause |
 | --- | ---: | ---: | --- |
-| Aeneas `fresh_analysis` p95 | 361.650 ms | 473.447 ms | The host's load in the second to fifth blocks. Its p50 rose from 353.998 to 407.372 ms, but the p10–p90 intervals overlap. |
-| Aeneas `semantic_diagnostic` p95 | 521.011 ms | 603.070 ms | The host's load, as above. |
-| Aeneas `completion_miss` p95 | 119.143 ms | 131.601 ms | The host's load, as above. |
-| small `rename` p95 | 0.499 ms | 0.552 ms | The host's load: the slowest samples are in the third to fifth blocks. |
-| Aeneas `completion_hit` p95 | 33.564 ms | 20.128 ms | #444. The fourth measured hit of every block still meets a server collection, as #433 found, but took 16.6 to 21.4 ms instead of 29.6 to 35.3 ms; the other hits took at most 8.1 ms. The server's collector is compiled with the global register allocator too. The collection itself wasn't timed. |
-| Aeneas `prepareRename` p95 | 23.534 ms | 13.984 ms | #444. On one CPU this request waits for the worker's collection after sending ([prepareRename on one CPU](benchmarks.md#preparerename-on-one-cpu-2026-10-31)), which is shorter, below. Its p50 fell from 20.492 to 11.935 ms; the p10–p90 intervals overlap only because six of the old 30 samples took 11.1 to 11.5 ms, which put the old p10 at 11.159 ms. |
-| Aeneas `rename`, error-result capture, p95 | 364.269 ms | 325.935 ms | #444, through the same collection: its p50 fell from 340.252 to 316.492 ms. |
-| Aeneas `references` p95 | 4.242 ms | 0.963 ms | Not identified: the old capture's slowest few samples. Its p50 didn't move. |
-| Aeneas `syntax_diagnostic` p95 | 2.801 ms | 0.425 ms | Not identified: the old capture's slowest three samples. Its p50 didn't move. |
-| util first semantic, config first, p50 | 30.010 ms | 28.654 ms | #444: this session discards one analysis, and the second waits for the worker's collection after sending the first, which fell from 1.431 to 0.288 ms at p50. #445's smaller util corpus may contribute. |
-| Aeneas first semantic, config first, p50 | 698.004 ms | 656.635 ms | #444, as above: that collection fell from 57.967 to 20.761 ms at p50. The server's result decoding also fell, from 32.062 to 24.509 ms, and the probes record no server collection in the round trip and none during the worker's analysis; that part is not identified. |
-| Aeneas first semantic, source first, p50 | 373.625 ms | 355.493 ms | Not identified. This session runs one analysis, and the probes record no server collection in its round trip and none during the worker's analysis. The worker's verification p50 fell from 54.074 to 46.510 ms and the server's result decoding from 32.199 to 24.360 ms. |
-| small first semantic, worker HWM / largest simultaneous total | 933,888 / 2,027,520 bytes | 950,272 / 2,060,288 bytes | #443 and #445: the worker executable is 11,144 bytes larger. |
+| Aeneas `completion_hit` p95 | 33.564 ms | 19.107 ms | #444. The fourth measured hit of every block still meets a server collection, as #433 found, but took 17.0 to 19.4 ms instead of 29.6 to 35.3 ms; the other hits took at most 8.0 ms. The server's collector is compiled with the global register allocator too. The collection itself wasn't timed. |
+| Aeneas `prepareRename` p95 | 23.534 ms | 11.819 ms | #444. On one CPU this request waits for the worker's collection after sending ([prepareRename on one CPU](benchmarks.md#preparerename-on-one-cpu-2026-10-31)), which is shorter, below. Its p50 fell from 20.492 to 11.141 ms; the p10–p90 intervals overlap only because six of the old 30 samples took 11.1 to 11.5 ms, which put the old p10 at 11.159 ms. |
+| Aeneas `references` p95 | 4.242 ms | 1.167 ms | Not identified: the old capture's slowest few samples. Its p50 didn't move. |
+| Aeneas `syntax_diagnostic` p95 | 2.801 ms | 0.388 ms | Not identified: the old capture's slowest three samples. Its p50 didn't move. |
+| util `reused_analysis` p95 | 15.148 ms | 13.087 ms | #444 and #445, not separated: the worker's collection after sending fell from 1.311 to 0.256 ms at p50, and the smaller util corpus allocates 9,751,160 bytes instead of 9,983,928. |
+| util `rename` p50 | 16.393 ms | 15.041 ms | #444 and #445, as above. |
+| util `completion_hit` p95 | 1.560 ms | 0.982 ms | Not identified: the old capture's slowest few samples. Its p50 didn't move. |
+| small `fresh_analysis` p95 | 0.480 ms | 0.538 ms | Not identified. Its p50 didn't move. |
+| util first semantic, config first, p50 | 30.010 ms | 28.627 ms | #444: this session discards one analysis, and the second waits for the worker's collection after sending the first, which fell from 1.431 to 0.286 ms at p50. |
+| Aeneas `error_analysis`, `fresh_analysis`, `reused_analysis`, and `semantic_diagnostic` p95, error-result capture | 339.061, 371.950, 330.490, and 535.177 ms | 457.413, 521.058, 496.516, and 673.821 ms | The host's load in that capture's last four blocks, above. |
+| small first semantic, worker HWM / largest simultaneous total | 933,888 / 2,027,520 bytes | 950,272 / 2,064,384 bytes | #443 and #445: the worker executable is 11,144 bytes larger. |
 | util corpus | 31 files, 166,628 bytes, 5,360 lines | 33 files, 161,421 bytes, 5,033 lines | #445. |
 | Aeneas corpus | 206 files, 3,072,972 bytes, 84,585 lines | 208 files, 3,068,198 bytes, 84,272 lines | #445. |
 | Aeneas RESULT frame, fresh, reused, and rename analyses | 4,384,791 bytes | 4,379,351 bytes | #445's smaller corpus. |
@@ -118,64 +119,54 @@ no cause was ablated:
 | Aeneas RESULT frame, `completion_miss` | 62,858 bytes | 62,959 bytes | #445, as above. |
 | Aeneas snapshot charge | 13,123,309 bytes | 13,113,155 bytes | #445, as above. |
 | Soak fixture | 207 files | 209 files | #445. |
-| Soak worker HWM, four workers | 194,048,000 to 194,064,384 bytes | 193,957,888 to 193,970,176 bytes | #445's smaller fixture. |
+| Soak worker HWM, four workers | 194,048,000 to 194,064,384 bytes | 193,957,888 to 193,966,080 bytes | #445's smaller fixture. |
 | Soak worker live bytes after collection | 180,960 bytes | 180,816 bytes | #445, as above. |
-| Soak largest sum of RSS in one pass | 404,656,128 bytes | 404,574,208 bytes | The worker's HWM above. |
+| Soak largest sum of RSS in one pass | 404,656,128 bytes | 404,566,016 bytes | The worker's HWM above. |
 | Soak largest parseable-text charge | 4,155,623 bytes | 4,148,406 bytes | #445's smaller fixture. |
 | Soak largest retained snapshot charge, and with the reservation | 26,268,564 / 30,017,837 bytes | 26,249,314 / 30,009,605 bytes | #445, as above. |
 
 The worker's collection after sending an Aeneas analysis, which #434
-explained, took 19.2 to 20.3 ms of wall time and 10.1 to 10.2 ms of CPU at
+explained, took 19.6 to 20.2 ms of wall time and 10.2 to 10.3 ms of CPU at
 p50 in every scenario that reports it except `rename`, against 43.9 to
-55.2 ms of wall time before; `rename` took 14.9 to 16.0 ms and 7.8 ms of CPU.
-That agrees with the 20.1 ms of wall time and about 10 ms of CPU that the
-[ADR-0015](decisions/0015-gc-global-register-allocation.md) comparison
-recorded and with the [pin
+55.2 ms of wall time before; `rename` took 14.7 to 14.9 ms and 7.8 to
+7.9 ms of CPU. That agrees with the 20.1 ms of wall time and about 10 ms of
+CPU that the [ADR-0015](decisions/0015-gc-global-register-allocation.md)
+comparison recorded and with the [pin
 comparison](benchmarks.md#pinned-virgil-revision-comparison-2026-11-03),
 which found clearing the same at both pins, so #444, not #445, likely made it
 shorter. An analysis that follows another one in a session likely gains part
-of that: the error-result capture's `error_analysis`, `reused_analysis`,
-`semantic_diagnostic`, and `rename` p50 values fell by 14.0 to 23.8 ms, but
-their p10–p90 intervals overlap the old ones, so they don't count as moved.
-In the full-scenario capture, the host's load hid the same gain. Every other
-cell moved by less than its noise. The soak's server HWM was
-210,604,032 bytes, 12,288 more than before, and equal to the error-result
-capture's, whose server HWM varies by about 179 MB across sessions.
+of that: in the full-scenario capture, Aeneas `reused_analysis` p50 fell from
+309.889 to 289.981 ms and `rename` from 340.288 to 316.391 ms, and the
+first-semantic config-first p50 from 698.004 to 645.277 ms, but their
+p10–p90 intervals overlap the old ones, so they don't count as moved. Every
+other cell moved by less than its noise. The soak's server HWM was
+210,599,936 bytes, 8,192 more than before, and the error-result capture's
+largest was 210,608,128 bytes; that capture's server HWM varies by about
+179 MB across sessions.
 
-Sixteen proposed latency targets changed, each by the unchanged rule:
+Thirteen proposed latency targets changed, each by the unchanged rule:
 
-- Raised by the slow blocks of the full-scenario capture: Aeneas
-  `fresh_analysis` from 450/550 to 550/800 ms, Aeneas `reused_analysis` p95
-  from 500 to 550 ms, Aeneas `rename` p95 from 550 to 600 ms, and Aeneas
-  `semantic_diagnostic` p95 from 800 to 1,100 ms.
-- Raised by a slower measurement: util `fresh_analysis` from 20/25 to
-  25/30 ms. Its p50 rose from 15.847 to 17.117 ms, with overlapping p10–p90
-  intervals, and the [pin
-  comparison](benchmarks.md#pinned-virgil-revision-comparison-2026-11-03)
-  measured 15.102 ms at the same pin, so the host's load is the likeliest
-  cause; it wasn't ablated.
-- Raised by a small change that crossed a rounding step: util
-  `completion_hit` p50 from 1 to 2 ms (0.832 × 1.25 is just over 1), and util
-  first semantic source first p95 from 25 to 30 ms (16.814 × 1.5 is just over
-  25).
 - Lowered by a faster or tighter measurement: Aeneas `completion_hit` p95
-  from 75 to 40 ms, Aeneas `prepareRename` from 30/40 to 15/25 ms, Aeneas
-  `references` p95 from 10 to 2 ms, Aeneas `syntax_diagnostic` p95 from 5 to
-  1 ms, Aeneas `error_analysis` from 450/550 to 375/500 ms, Aeneas first
-  semantic source first from 500/600 to 450/550 ms, small `completion_miss`
-  p95 from 3 to 2 ms, util `prepareRename` p95 from 5 to 3 ms, and util
-  `rename` p50 from 25 to 20 ms (15.961 × 1.25 is just under 20).
+  from 75 to 30 ms, Aeneas `prepareRename` from 30/40 to 15/20 ms, Aeneas
+  `references` from 2/10 to 1/2 ms, Aeneas `rename` from 450/550 to
+  400/500 ms, Aeneas `reused_analysis` p50 from 400 to 375 ms, Aeneas
+  `syntax_diagnostic` p95 from 5 to 1 ms, Aeneas first semantic source first
+  p50 from 500 to 450 ms, small `completion_miss` p95 from 3 to 2 ms, util
+  `completion_hit` p95 from 3 to 2 ms, util `prepareRename` p95 from 5 to
+  3 ms, util `rename` from 25/30 to 20/25 ms, and util `reused_analysis` p95
+  from 25 to 20 ms.
+- Raised by the error-result capture's loaded blocks: Aeneas
+  `error_analysis` p95 from 550 to 800 ms. Its p50 target stayed at 450 ms.
 
 The previous capture set the Aeneas `completion_hit` p95 target to 75 ms
 because one server collection fell in every block's fourth hit (#433,
 explained in #437). That collection still falls there, but it is shorter, so
-the target is 40 ms, below the issue's starting 50 ms. The four Aeneas rows
-the slow blocks raised rest on a capture whose second to fifth blocks ran slower
-than its first and last for a reason outside the server; a capture on a
-quiet host would likely bring them back down. The rule was not changed to
-correct for that, and the decision to adopt targets from this capture is
-the maintainer's. The memory targets did not change: the largest measured
-values moved by less than 1 MiB.
+the target is 30 ms, below the issue's starting 50 ms. The `error_analysis`
+p95 target of 800 ms rests on the loaded blocks; a capture on a quiet host
+would likely bring it back down. The rule was not changed to correct for
+that, and the decision to adopt targets from this capture is the
+maintainer's. The memory targets did not change: the largest measured values
+moved by less than 1 MiB.
 
 ## Measured baselines
 
@@ -190,27 +181,22 @@ From `budgets.json`, the `summary` rows with `metric: latency_ms`.
 
 | Scenario | small p50 | small p95 | small p10 | small p90 | small MAD | util p50 | util p95 | util p10 | util p90 | util MAD | Aeneas p50 | Aeneas p95 | Aeneas p10 | Aeneas p90 | Aeneas MAD |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fresh_analysis` | 0.479 | 0.499 | 0.454 | 0.494 | 0.011 | 17.117 | 17.749 | 15.177 | 17.681 | 0.557 | 407.372 | 473.447 | 352.413 | 469.143 | 50.918 |
-| `reused_analysis` | 0.172 | 0.184 | 0.163 | 0.184 | 0.005 | 13.663 | 15.346 | 12.611 | 15.150 | 1.011 | 313.683 | 359.399 | 284.150 | 348.781 | 19.030 |
-| `definition` | 0.058 | 0.066 | 0.055 | 0.062 | 0.002 | 0.089 | 0.094 | 0.080 | 0.093 | 0.003 | 0.194 | 0.241 | 0.161 | 0.224 | 0.024 |
-| `hover` | 0.054 | 0.059 | 0.051 | 0.057 | 0.001 | 0.080 | 0.088 | 0.075 | 0.087 | 0.003 | 0.179 | 0.629 | 0.143 | 0.199 | 0.021 |
-| `references` | 0.059 | 0.066 | 0.056 | 0.063 | 0.002 | 0.131 | 0.145 | 0.113 | 0.141 | 0.010 | 0.827 | 0.963 | 0.777 | 0.944 | 0.028 |
-| `prepareRename` | 0.161 | 0.187 | 0.153 | 0.182 | 0.007 | 1.461 | 1.978 | 1.342 | 1.611 | 0.087 | 11.935 | 13.984 | 11.240 | 13.273 | 0.560 |
-| `rename` | 0.477 | 0.552 | 0.469 | 0.543 | 0.012 | 15.961 | 17.748 | 14.985 | 17.565 | 0.989 | 340.418 | 373.496 | 306.466 | 369.977 | 21.844 |
-| `completion_miss` | 0.729 | 0.827 | 0.694 | 0.779 | 0.022 | 7.896 | 8.422 | 7.061 | 8.393 | 0.488 | 117.520 | 131.601 | 109.889 | 124.977 | 6.243 |
-| `completion_hit` | 0.470 | 0.558 | 0.443 | 0.533 | 0.021 | 0.832 | 1.326 | 0.756 | 1.038 | 0.042 | 6.554 | 20.128 | 5.935 | 18.158 | 0.396 |
-| `syntax_diagnostic` | 0.074 | 0.080 | 0.069 | 0.077 | 0.002 | 0.284 | 0.297 | 0.257 | 0.296 | 0.011 | 0.389 | 0.425 | 0.374 | 0.413 | 0.014 |
-| `semantic_diagnostic` | 200.750 | 203.204 | 200.626 | 201.258 | 0.065 | 215.151 | 220.051 | 213.334 | 217.994 | 1.518 | 519.701 | 603.070 | 494.173 | 584.707 | 23.513 |
+| `fresh_analysis` | 0.485 | 0.538 | 0.464 | 0.527 | 0.010 | 14.976 | 15.968 | 14.846 | 15.906 | 0.099 | 347.288 | 363.882 | 342.505 | 361.407 | 4.863 |
+| `reused_analysis` | 0.172 | 0.198 | 0.164 | 0.185 | 0.006 | 12.661 | 13.087 | 12.448 | 12.996 | 0.098 | 289.981 | 306.919 | 284.568 | 305.940 | 5.084 |
+| `definition` | 0.055 | 0.059 | 0.054 | 0.058 | 0.001 | 0.083 | 0.094 | 0.079 | 0.089 | 0.003 | 0.199 | 0.214 | 0.159 | 0.211 | 0.013 |
+| `hover` | 0.053 | 0.064 | 0.051 | 0.055 | 0.001 | 0.080 | 0.083 | 0.075 | 0.082 | 0.002 | 0.156 | 0.189 | 0.138 | 0.188 | 0.018 |
+| `references` | 0.058 | 0.064 | 0.056 | 0.060 | 0.001 | 0.114 | 0.130 | 0.109 | 0.125 | 0.004 | 0.790 | 1.167 | 0.764 | 0.862 | 0.025 |
+| `prepareRename` | 0.156 | 0.172 | 0.152 | 0.164 | 0.003 | 1.318 | 1.553 | 1.305 | 1.539 | 0.012 | 11.141 | 11.819 | 11.044 | 11.532 | 0.084 |
+| `rename` | 0.470 | 0.490 | 0.457 | 0.488 | 0.007 | 15.041 | 15.701 | 14.875 | 15.644 | 0.129 | 316.391 | 323.924 | 304.957 | 322.583 | 5.661 |
+| `completion_miss` | 0.708 | 0.757 | 0.683 | 0.739 | 0.020 | 7.136 | 7.894 | 6.935 | 7.369 | 0.123 | 115.136 | 118.729 | 110.921 | 117.906 | 2.323 |
+| `completion_hit` | 0.451 | 0.505 | 0.440 | 0.480 | 0.009 | 0.772 | 0.982 | 0.745 | 0.826 | 0.022 | 6.226 | 19.107 | 3.400 | 17.829 | 0.650 |
+| `syntax_diagnostic` | 0.073 | 0.091 | 0.071 | 0.088 | 0.002 | 0.269 | 0.303 | 0.256 | 0.292 | 0.010 | 0.374 | 0.388 | 0.366 | 0.384 | 0.006 |
+| `semantic_diagnostic` | 202.192 | 202.307 | 200.982 | 202.296 | 0.109 | 218.684 | 226.171 | 217.775 | 219.816 | 0.708 | 507.046 | 522.047 | 495.675 | 521.401 | 7.635 |
 
-The Aeneas `completion_hit` and `hover` p95 values (20.128 ms and
-0.629 ms) sit far above their p50 values (6.554 ms and 0.179 ms); the p10
-and p90 values (5.935 to 18.158 ms and 0.143 to 0.199 ms) show the tail is a
-small number of slow samples, not a shift of the whole distribution. The
-Aeneas `fresh_analysis`, `reused_analysis`, `rename`, and
-`semantic_diagnostic` rows have wide p10–p90 intervals and MADs of 50.918,
-19.030, 21.844, and 23.513 ms because the host slowed this capture's second
-to fifth blocks, as the [changes
-section](#changes-since-the-2026-11-02-capture) describes.
+The Aeneas `completion_hit` p95 value (19.107 ms) sits far above its p50
+value (6.226 ms); the p10 and p90 values (3.400 to 17.829 ms) show the tail
+is a small number of slow samples, one hit per block that meets a server
+collection, not a shift of the whole distribution.
 
 ### First semantic diagnostics, `first-semantic.json`
 
@@ -221,12 +207,12 @@ observed, and no worker was unobserved.
 
 | Project | Order | p50 | p95 | p10 | p90 | MAD |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| small | config first | 1.108 | 1.176 | 1.079 | 1.155 | 0.017 |
-| small | source first | 0.995 | 1.068 | 0.961 | 1.053 | 0.026 |
-| util | config first | 28.654 | 29.467 | 28.443 | 29.274 | 0.135 |
-| util | source first | 16.195 | 16.814 | 16.038 | 16.654 | 0.123 |
-| Aeneas | config first | 656.635 | 663.932 | 642.644 | 663.356 | 3.591 |
-| Aeneas | source first | 355.493 | 360.467 | 344.554 | 359.466 | 1.594 |
+| small | config first | 1.116 | 1.157 | 1.091 | 1.155 | 0.020 |
+| small | source first | 1.004 | 1.059 | 0.962 | 1.039 | 0.019 |
+| util | config first | 28.627 | 29.949 | 28.431 | 29.341 | 0.167 |
+| util | source first | 16.077 | 16.380 | 15.972 | 16.342 | 0.070 |
+| Aeneas | config first | 645.277 | 675.403 | 638.299 | 669.987 | 6.376 |
+| Aeneas | source first | 356.124 | 367.895 | 345.883 | 365.231 | 8.650 |
 
 ### Error-result workload, `error-result.json`
 
@@ -237,12 +223,18 @@ source bytes); the other rows use the ordinary workloads.
 
 | Scenario | p50 | p95 | p10 | p90 | MAD |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `error_analysis` | 297.753 | 323.198 | 286.285 | 315.017 | 7.074 |
-| `fresh_analysis` | 354.304 | 366.364 | 350.784 | 364.477 | 2.541 |
-| `reused_analysis` | 299.348 | 322.618 | 284.202 | 317.606 | 9.547 |
-| `semantic_diagnostic` | 498.285 | 511.915 | 490.245 | 510.838 | 4.049 |
-| `completion_miss` | 111.642 | 118.272 | 109.013 | 114.143 | 0.835 |
-| `rename` | 316.492 | 325.935 | 306.748 | 325.727 | 7.166 |
+| `error_analysis` | 328.439 | 457.413 | 294.153 | 450.675 | 27.768 |
+| `fresh_analysis` | 374.734 | 521.058 | 348.114 | 506.469 | 15.757 |
+| `reused_analysis` | 312.162 | 496.516 | 291.591 | 452.549 | 20.250 |
+| `semantic_diagnostic` | 549.370 | 673.821 | 502.444 | 659.330 | 37.330 |
+| `completion_miss` | 119.689 | 123.193 | 111.848 | 123.009 | 2.809 |
+| `rename` | 326.380 | 365.977 | 312.450 | 363.753 | 13.540 |
+
+The wide p10–p90 intervals and high p95 values of the analysis rows come
+from other work on the host during this capture's last four blocks, as the
+[changes section](#changes-since-the-2026-11-02-capture) describes; the
+full-scenario capture's Aeneas rows measure the same ordinary workloads on
+an even host.
 
 ### Memory, per-PID and simultaneous
 
@@ -253,10 +245,10 @@ the largest sum of RSS within one 50 ms sampling pass.
 
 | Capture, project | Server HWM | Worker HWM | Largest simultaneous total |
 | --- | ---: | ---: | ---: |
-| `first-semantic.json`, small | 1,114,112 bytes | 950,272 bytes | 2,060,288 bytes |
-| `first-semantic.json`, util | 4,284,416 bytes | 11,075,584 bytes | 15,360,000 bytes |
-| `first-semantic.json`, Aeneas | 53,460,992 bytes | 196,853,760 bytes | 250,310,656 bytes |
-| `error-result.json`, Aeneas | 210,604,032 bytes | 197,775,360 bytes | 408,379,392 bytes |
+| `first-semantic.json`, small | 1,114,112 bytes | 950,272 bytes | 2,064,384 bytes |
+| `first-semantic.json`, util | 4,284,416 bytes | 11,075,584 bytes | 15,355,904 bytes |
+| `first-semantic.json`, Aeneas | 53,465,088 bytes | 196,853,760 bytes | 250,310,656 bytes |
+| `error-result.json`, Aeneas | 210,608,128 bytes | 197,775,360 bytes | 408,379,392 bytes |
 
 The independent server and worker maxima are not a simultaneous peak; the
 simultaneous column is the only sum of two processes' RSS in one pass.
@@ -268,9 +260,9 @@ lifetime through two warmup cycles and 80 measured cycles over three physical
 copies of the Aeneas sources (fixture tree hash
 `de59c0546ea1be7520eb56278e1ad0ed47031b5938c9b8e7d2f1d0d6f122724d`, which
 differs from the recorded soak's tree because the Virgil pin changed), in
-101.4 seconds with 0 findings. The worker
+101.9 seconds with 0 findings. The worker
 completed 381 analyses (240 measured main), four workers ran, three were
-retired after 100 analyses each, and every PID was observed over 2,095
+retired after 100 analyses each, and every PID was observed over 2,105
 sampler passes with 0 unobserved workers.
 
 | Bound | Observed | Limit |
@@ -279,19 +271,20 @@ sampler passes with 0 unobserved workers.
 | Contexts' parseable texts together | 9,601,449 bytes, evictions in 271 completions | more than 4,194,304 bytes |
 | Retained snapshot charge, 381 admissions | at most 26,249,314 bytes | 33,554,432 bytes |
 | Retained charge and reservation after admission | at most 30,009,605 bytes | 33,554,432 bytes |
-| Server RSS and HWM | 210,604,032 bytes, reached by cycle 21 and flat to cycle 80 | |
-| Worker HWM, four workers | 193,957,888 to 193,970,176 bytes | |
-| Largest sum of RSS in one pass | 404,574,208 bytes | |
+| Server RSS and HWM | 210,599,936 bytes, reached by cycle 21 and flat to cycle 80 | |
+| Worker HWM, four workers | 193,957,888 to 193,966,080 bytes | |
+| Largest sum of RSS in one pass | 404,566,016 bytes | |
 | Worker live bytes after collection | 180,816 bytes, flat | 50,331,648 bytes (an eighth of the heap) |
 
-The server's settled RSS was 210,538,496 bytes after cycle 1 and rose by
+The server's settled RSS was 210,534,400 bytes after cycle 1 and rose by
 65,536 bytes in three steps, at cycles 4, 12, and 21, then stayed flat for the
 remaining 59 cycles; that gives a slope of 549.3 bytes per cycle, which
 describes the early steps, not continuing growth. The worker's slope was
-4.7 bytes per cycle: each worker's settled RSS rose by 8,192 to 40,960 bytes
-over its own cycles, and every worker ended between 193,957,888 and
-193,961,984 bytes, so it describes small rises within each worker, not
-growth across workers. These are this schedule's values, not a proof that nothing leaks.
+-44.5 bytes per cycle: each worker's settled RSS rose by 8,192 to 40,960
+bytes over its own cycles, and every worker ended between 193,957,888 and
+193,961,984 bytes, so it describes the differences within and between
+workers, not growth across the session. These are this schedule's values,
+not a proof that nothing leaks.
 
 ## Supported envelope
 
@@ -334,89 +327,88 @@ Targets are Linux reference-host values. The macOS/Rosetta cells are
 
 | Scenario | Measured p50 | Measured p95 | Target p50 | Target p95 | p50 margin | p95 margin |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fresh_analysis` | 0.479 ms | 0.499 ms | 1 ms | 1 ms | 0.521 ms | 0.501 ms |
-| `reused_analysis` | 0.172 ms | 0.184 ms | 1 ms | 1 ms | 0.828 ms | 0.816 ms |
-| `definition` | 0.058 ms | 0.066 ms | 1 ms | 1 ms | 0.942 ms | 0.934 ms |
-| `hover` | 0.054 ms | 0.059 ms | 1 ms | 1 ms | 0.946 ms | 0.941 ms |
-| `references` | 0.059 ms | 0.066 ms | 1 ms | 1 ms | 0.941 ms | 0.934 ms |
-| `prepareRename` | 0.161 ms | 0.187 ms | 1 ms | 1 ms | 0.839 ms | 0.813 ms |
-| `rename` | 0.477 ms | 0.552 ms | 1 ms | 1 ms | 0.523 ms | 0.448 ms |
-| `completion_miss` | 0.729 ms | 0.827 ms | 1 ms | 2 ms | 0.271 ms | 1.173 ms |
-| `completion_hit` | 0.470 ms | 0.558 ms | 1 ms | 1 ms | 0.530 ms | 0.442 ms |
-| `syntax_diagnostic` | 0.074 ms | 0.080 ms | 1 ms | 1 ms | 0.926 ms | 0.920 ms |
-| `semantic_diagnostic` | 200.750 ms | 203.204 ms | 300 ms | 350 ms | 99.250 ms | 146.796 ms |
-| first semantic, config first | 1.108 ms | 1.176 ms | 2 ms | 2 ms | 0.892 ms | 0.824 ms |
-| first semantic, source first | 0.995 ms | 1.068 ms | 2 ms | 2 ms | 1.005 ms | 0.932 ms |
+| `fresh_analysis` | 0.485 ms | 0.538 ms | 1 ms | 1 ms | 0.515 ms | 0.462 ms |
+| `reused_analysis` | 0.172 ms | 0.198 ms | 1 ms | 1 ms | 0.828 ms | 0.802 ms |
+| `definition` | 0.055 ms | 0.059 ms | 1 ms | 1 ms | 0.945 ms | 0.941 ms |
+| `hover` | 0.053 ms | 0.064 ms | 1 ms | 1 ms | 0.947 ms | 0.936 ms |
+| `references` | 0.058 ms | 0.064 ms | 1 ms | 1 ms | 0.942 ms | 0.936 ms |
+| `prepareRename` | 0.156 ms | 0.172 ms | 1 ms | 1 ms | 0.844 ms | 0.828 ms |
+| `rename` | 0.470 ms | 0.490 ms | 1 ms | 1 ms | 0.530 ms | 0.510 ms |
+| `completion_miss` | 0.708 ms | 0.757 ms | 1 ms | 2 ms | 0.292 ms | 1.243 ms |
+| `completion_hit` | 0.451 ms | 0.505 ms | 1 ms | 1 ms | 0.549 ms | 0.495 ms |
+| `syntax_diagnostic` | 0.073 ms | 0.091 ms | 1 ms | 1 ms | 0.927 ms | 0.909 ms |
+| `semantic_diagnostic` | 202.192 ms | 202.307 ms | 300 ms | 350 ms | 97.808 ms | 147.693 ms |
+| first semantic, config first | 1.116 ms | 1.157 ms | 2 ms | 2 ms | 0.884 ms | 0.843 ms |
+| first semantic, source first | 1.004 ms | 1.059 ms | 2 ms | 2 ms | 0.996 ms | 0.941 ms |
 
 ### util
 
 | Scenario | Measured p50 | Measured p95 | Target p50 | Target p95 | p50 margin | p95 margin |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fresh_analysis` | 17.117 ms | 17.749 ms | 25 ms | 30 ms | 7.883 ms | 12.251 ms |
-| `reused_analysis` | 13.663 ms | 15.346 ms | 20 ms | 25 ms | 6.337 ms | 9.654 ms |
-| `definition` | 0.089 ms | 0.094 ms | 1 ms | 1 ms | 0.911 ms | 0.906 ms |
-| `hover` | 0.080 ms | 0.088 ms | 1 ms | 1 ms | 0.920 ms | 0.912 ms |
-| `references` | 0.131 ms | 0.145 ms | 1 ms | 1 ms | 0.869 ms | 0.855 ms |
-| `prepareRename` | 1.461 ms | 1.978 ms | 2 ms | 3 ms | 0.539 ms | 1.022 ms |
-| `rename` | 15.961 ms | 17.748 ms | 20 ms | 30 ms | 4.039 ms | 12.252 ms |
-| `completion_miss` | 7.896 ms | 8.422 ms | 10 ms | 15 ms | 2.104 ms | 6.578 ms |
-| `completion_hit` | 0.832 ms | 1.326 ms | 2 ms | 2 ms | 1.168 ms | 0.674 ms |
-| `syntax_diagnostic` | 0.284 ms | 0.297 ms | 1 ms | 1 ms | 0.716 ms | 0.703 ms |
-| `semantic_diagnostic` | 215.151 ms | 220.051 ms | 300 ms | 350 ms | 84.849 ms | 129.949 ms |
-| first semantic, config first | 28.654 ms | 29.467 ms | 40 ms | 50 ms | 11.346 ms | 20.533 ms |
-| first semantic, source first | 16.195 ms | 16.814 ms | 25 ms | 30 ms | 8.805 ms | 13.186 ms |
+| `fresh_analysis` | 14.976 ms | 15.968 ms | 20 ms | 25 ms | 5.024 ms | 9.032 ms |
+| `reused_analysis` | 12.661 ms | 13.087 ms | 20 ms | 20 ms | 7.339 ms | 6.913 ms |
+| `definition` | 0.083 ms | 0.094 ms | 1 ms | 1 ms | 0.917 ms | 0.906 ms |
+| `hover` | 0.080 ms | 0.083 ms | 1 ms | 1 ms | 0.920 ms | 0.917 ms |
+| `references` | 0.114 ms | 0.130 ms | 1 ms | 1 ms | 0.886 ms | 0.870 ms |
+| `prepareRename` | 1.318 ms | 1.553 ms | 2 ms | 3 ms | 0.682 ms | 1.447 ms |
+| `rename` | 15.041 ms | 15.701 ms | 20 ms | 25 ms | 4.959 ms | 9.299 ms |
+| `completion_miss` | 7.136 ms | 7.894 ms | 10 ms | 15 ms | 2.864 ms | 7.106 ms |
+| `completion_hit` | 0.772 ms | 0.982 ms | 1 ms | 2 ms | 0.228 ms | 1.018 ms |
+| `syntax_diagnostic` | 0.269 ms | 0.303 ms | 1 ms | 1 ms | 0.731 ms | 0.697 ms |
+| `semantic_diagnostic` | 218.684 ms | 226.171 ms | 300 ms | 350 ms | 81.316 ms | 123.829 ms |
+| first semantic, config first | 28.627 ms | 29.949 ms | 40 ms | 50 ms | 11.373 ms | 20.051 ms |
+| first semantic, source first | 16.077 ms | 16.380 ms | 25 ms | 25 ms | 8.923 ms | 8.620 ms |
 
 ### Aeneas
 
 | Scenario | Measured p50 | Measured p95 | Target p50 | Target p95 | p50 margin | p95 margin |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fresh_analysis` | 407.372 ms | 473.447 ms | 550 ms | 800 ms | 142.628 ms | 326.553 ms |
-| `reused_analysis` | 313.683 ms | 359.399 ms | 400 ms | 550 ms | 86.317 ms | 190.601 ms |
-| `definition` | 0.194 ms | 0.241 ms | 1 ms | 1 ms | 0.806 ms | 0.759 ms |
-| `hover` | 0.179 ms | 0.629 ms | 1 ms | 1 ms | 0.821 ms | 0.371 ms |
-| `references` | 0.827 ms | 0.963 ms | 2 ms | 2 ms | 1.173 ms | 1.037 ms |
-| `prepareRename` | 11.935 ms | 13.984 ms | 15 ms | 25 ms | 3.065 ms | 11.016 ms |
-| `rename` | 340.418 ms | 373.496 ms | 450 ms | 600 ms | 109.582 ms | 226.504 ms |
-| `completion_miss` | 117.520 ms | 131.601 ms | 175 ms | 250 ms | 57.480 ms | 118.399 ms |
-| `completion_hit` | 6.554 ms | 20.128 ms | 10 ms | 40 ms | 3.446 ms | 19.872 ms |
-| `syntax_diagnostic` | 0.389 ms | 0.425 ms | 1 ms | 1 ms | 0.611 ms | 0.575 ms |
-| `semantic_diagnostic` | 519.701 ms | 603.070 ms | 650 ms | 1,100 ms | 130.299 ms | 496.930 ms |
-| `error_analysis` | 297.753 ms | 323.198 ms | 375 ms | 500 ms | 77.247 ms | 176.802 ms |
-| first semantic, config first | 656.635 ms | 663.932 ms | 900 ms | 1,100 ms | 243.365 ms | 436.068 ms |
-| first semantic, source first | 355.493 ms | 360.467 ms | 450 ms | 550 ms | 94.507 ms | 189.533 ms |
+| `fresh_analysis` | 347.288 ms | 363.882 ms | 450 ms | 550 ms | 102.712 ms | 186.118 ms |
+| `reused_analysis` | 289.981 ms | 306.919 ms | 375 ms | 500 ms | 85.019 ms | 193.081 ms |
+| `definition` | 0.199 ms | 0.214 ms | 1 ms | 1 ms | 0.801 ms | 0.786 ms |
+| `hover` | 0.156 ms | 0.189 ms | 1 ms | 1 ms | 0.844 ms | 0.811 ms |
+| `references` | 0.790 ms | 1.167 ms | 1 ms | 2 ms | 0.210 ms | 0.833 ms |
+| `prepareRename` | 11.141 ms | 11.819 ms | 15 ms | 20 ms | 3.859 ms | 8.181 ms |
+| `rename` | 316.391 ms | 323.924 ms | 400 ms | 500 ms | 83.609 ms | 176.076 ms |
+| `completion_miss` | 115.136 ms | 118.729 ms | 175 ms | 250 ms | 59.864 ms | 131.271 ms |
+| `completion_hit` | 6.226 ms | 19.107 ms | 10 ms | 30 ms | 3.774 ms | 10.893 ms |
+| `syntax_diagnostic` | 0.374 ms | 0.388 ms | 1 ms | 1 ms | 0.626 ms | 0.612 ms |
+| `semantic_diagnostic` | 507.046 ms | 522.047 ms | 650 ms | 800 ms | 142.954 ms | 277.953 ms |
+| `error_analysis` | 328.439 ms | 457.413 ms | 450 ms | 800 ms | 121.561 ms | 342.587 ms |
+| first semantic, config first | 645.277 ms | 675.403 ms | 900 ms | 1,100 ms | 254.723 ms | 424.597 ms |
+| first semantic, source first | 356.124 ms | 367.895 ms | 450 ms | 600 ms | 93.876 ms | 232.105 ms |
 
 The issue's starting numbers for Aeneas, measured at an older revision,
-compare as follows: hover/definition 5/25 ms covers the measured 0.179/0.629
-ms and 0.194/0.241 ms; completion miss 150/250 ms covers 117.520/131.601 ms
-with 32.480 ms and 118.399 ms of margin; completion hit 10/50 ms covers
-6.554/20.128 ms with 3.446 ms and 29.872 ms of margin; reused analysis
-350/500 ms covers 313.683/359.399 ms with 36.317 ms and 140.601 ms of margin;
-publication 600/800 ms covers 519.701/603.070 ms with 80.299 ms and
-196.930 ms of margin; first-semantic config-first 750/1,000 ms covers
-656.635/663.932 ms with 93.365 ms and 336.068 ms of margin. The policy's
+compare as follows: hover/definition 5/25 ms covers the measured 0.156/0.189
+ms and 0.199/0.214 ms; completion miss 150/250 ms covers 115.136/118.729 ms
+with 34.864 ms and 131.271 ms of margin; completion hit 10/50 ms covers
+6.226/19.107 ms with 3.774 ms and 30.893 ms of margin; reused analysis
+350/500 ms covers 289.981/306.919 ms with 60.019 ms and 193.081 ms of margin;
+publication 600/800 ms covers 507.046/522.047 ms with 92.954 ms and
+277.953 ms of margin; first-semantic config-first 750/1,000 ms covers
+645.277/675.403 ms with 104.723 ms and 324.597 ms of margin. The policy's
 Aeneas rows match the issue's starting rows where they coincide: completion
-hit p50 at 10 ms and completion miss p95 at 250 ms. The policy's completion
-hit p95, 40 ms, is below the issue's 50 ms. Its reused analysis p95, 550 ms,
-and publication p95, 1,100 ms, are above the issue's 500 and 800 ms, because
-this capture's slow blocks set those p95 values.
+hit p50 at 10 ms, completion miss p95 at 250 ms, reused analysis p95 at
+500 ms, and publication p95 at 800 ms. The policy's completion hit p95,
+30 ms, is below the issue's 50 ms.
 
 ### Memory targets
 
 The measured maxima over this revision's captures are: server HWM
-210,604,032 bytes (200.8 MiB) in both the error-result capture and the soak;
-worker HWM 197,775,360 bytes (188.6 MiB) in the error-result capture and
-193,970,176 bytes (185.0 MiB) in the soak; largest simultaneous total
-408,379,392 bytes (389.5 MiB) in the error-result capture and 404,574,208
-bytes (385.8 MiB) in the soak. The proposed targets are:
+210,608,128 bytes (200.9 MiB) in the error-result capture and 210,599,936
+bytes (200.8 MiB) in the soak; worker HWM 197,775,360 bytes (188.6 MiB) in
+the error-result capture and 193,966,080 bytes (185.0 MiB) in the soak;
+largest simultaneous total 408,379,392 bytes (389.5 MiB) in the error-result
+capture and 404,566,016 bytes (385.8 MiB) in the soak. The proposed targets are:
 
 | Quantity | Measured maximum | Target | Margin |
 | --- | ---: | ---: | ---: |
-| Server HWM | 210,604,032 bytes | 256 MiB (268,435,456 bytes) | 57,831,424 bytes (27.5%) |
+| Server HWM | 210,608,128 bytes | 256 MiB (268,435,456 bytes) | 57,827,328 bytes (27.5%) |
 | Worker HWM | 197,775,360 bytes | 256 MiB (268,435,456 bytes) | 70,660,096 bytes (35.7%) |
 | Largest simultaneous total | 408,379,392 bytes | 512 MiB (536,870,912 bytes) | 128,491,520 bytes (31.5%) |
 
 The issue's starting proposal of 224/400 MiB for server/worker peak RSS
-covers the measured server HWM with 24,276,992 bytes (11.5%) of margin and the
+covers the measured server HWM with 24,272,896 bytes (11.5%) of margin and the
 worker HWM with 221,655,040 bytes (112.1%) of margin. This proposal sets both
 processes at 256 MiB, which leaves 27.5% and 35.7% of headroom over the
 measured maxima, and adds a simultaneous-total target of 512 MiB, because the
@@ -493,7 +485,7 @@ can run in CI or scheduled runs as-is:
   heap, the retirement classifications, and the binding and version checks.
 - The worker collection counts, and the RESULT frame lengths checked
   against a documented bound: the lengths vary within a scenario (small's
-  rename records 665 and 666 bytes), so a constant
+  semantic diagnostic records 865, 867, and 868 bytes), so a constant
   length is not a valid check.
 
 **Calibrated absolute reference-run checks** compare p50/p95 latency and RSS
