@@ -117,8 +117,9 @@ The published assets that these runs used, with their SHA-256s as their releases
 | --- | --- | --- | --- |
 | 0.1.0-alpha.4 | `virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz`, `a9858416cb09df318a8e49899bf3bd918405666404bb168a5aa86d4aa199a2ea` | `virgil-lsp-vscode-0.1.3-linux-x64.vsix`, `d20a9c64b666cc918f00547949a3adc4feb927a2236f267da25497e4274a3100` | `5e287010`, Virgil `7cf038fc` |
 | 0.1.0-alpha.5 | `virgil-lsp-0.1.0-alpha.5-x86-64-linux.tar.gz`, `7611ba4f5dcb26fe66923e793221dc2dc188168eab11524385db34a28a3fdeb2` | `virgil-lsp-vscode-0.1.4-linux-x64.vsix`, `acc234f2cf39a52fffd8fad5169299af59de1b5adb73e0abef9e28ddd2721854` | `ebb952f8`, Virgil `57318d37` |
+| 0.1.0-alpha.6 | `virgil-lsp-0.1.0-alpha.6-x86-64-linux.tar.gz`, `41eb6dfbffc53787efb7db49ddf7bad293cc2fd796243993a994c7cc5c0ffea2` | `virgil-lsp-vscode-0.1.5-linux-x64.vsix`, `46f30154d5a541185a60bdd0b31b99f3a01e66d429d4a117d77ead171beed927` | `de966c31`, Virgil `b86f43f1` |
 
-The last three runs show that the rehearsal fails when an installation is broken. Two use damaged copies of the 0.1.0-alpha.5 archive, each with a `SHA256SUMS` of its own, and the 0.1.0-alpha.5 VSIX; the third uses the published assets with `--rollback-without-force`.
+The second, third, and fourth runs of 2026-10-31 show that the rehearsal fails when an installation is broken. Two use damaged copies of the 0.1.0-alpha.5 archive, each with a `SHA256SUMS` of its own, and the 0.1.0-alpha.5 VSIX; the third uses the published assets with `--rollback-without-force`.
 
 | Date | Commit | Where | Assets | Editor | Install | Upgrade | Rollback | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -126,6 +127,9 @@ The last three runs show that the rehearsal fails when an installation is broken
 | 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → a copy of the 0.1.0-alpha.5 archive with `virgil-lsp-worker` moved into `libexec/` (`39af8322ad653f09250afd9439b67b5941f472e877fd5844635916aebd321ec8`) | The same | Archive pass; VS Code pass | Archive fail: no diagnostic within 60 seconds, as the server couldn't start the worker beside its real path | Not run | Fail, as expected |
 | 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → a copy of the 0.1.0-alpha.5 archive with `virgil/` moved into `share/` (`0d76e45cb2b6e50d43704c60f2fd3336e2ef158f87cf6fc0e0b3fbe28266c70a`) | The same | Archive pass; VS Code pass | Archive fail: no diagnostic within 60 seconds, as the server found no Virgil root | Not run | Fail, as expected |
 | 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → 0.1.0-alpha.5 → 0.1.0-alpha.4, with `--rollback-without-force` | The same, but the rollback installed 0.1.3 without `--force` | Archive pass; VS Code pass | Archive pass; VS Code pass | Archive pass; VS Code fail: VS Code refused the older VSIX, exited with status 0, and kept 0.1.4 active, which the active-version check caught | Fail, as expected |
+| 2026-11-03 | `de966c31` | Ubuntu 26.04.1, x86-64, under `xvfb-run -a` | 0.1.0-alpha.5 → 0.1.0-alpha.6 → 0.1.0-alpha.5 | VS Code 1.142.0 (`6d62b1d5`), extensions 0.1.4, 0.1.5, then 0.1.4 with `--force` | Archive pass; VS Code pass | Archive pass; VS Code pass | Archive pass; VS Code pass | Pass |
+
+The run of 2026-11-03 crosses the pin change from Virgil `57318d37` to `b86f43f1`. An attempt before it, with the same driver and assets, stopped in the install phase's VS Code part after its archive part passed: VS Code exited with status 1 and `listen EINVAL` because it couldn't listen on its IPC socket, whose 118-byte path under that attempt's `TMPDIR` was longer than Linux allows. With a shorter `TMPDIR`, the recorded run passed.
 
 ### 0.1.0-alpha.6
 
@@ -149,6 +153,8 @@ These runs are at `ff8b2e6e`, the pull request's head, and at `7c8ff1b6`, its sq
 | 2026-11-03 | `7c8ff1b6` | The same dry run, job "VS Code Extension Host test (bundled VSIX, macOS Apple Silicon via Rosetta 2)", `macos-15` | `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.5-darwin-arm64.vsix`, with the server that the VSIX bundles | VS Code 1.142.0 (darwin-arm64), extension 0.1.5 installed from the run's darwin-arm64 VSIX | Pass |
 | 2026-11-03 | `7c8ff1b6` | The same dry run, job "VS Code Remote-SSH test (bundled VSIX, linux)", `ubuntu-24.04`, connected with VS Code Remote-SSH to the same machine | `npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-0.1.5-linux-x64.vsix --bundled --repeat 3 --out <dir>` | VS Code 1.142.0 (Linux), extension 0.1.5 installed on the remote from the run's linux-x64 VSIX | Pass, three times |
 | 2026-11-03 | `7c8ff1b6` | The same dry run, job "Clean README install (Linux, archive and VSIX)", `ubuntu-24.04`, in a clean environment with the run's Linux archive and VSIX | The [clean install test](releasing.md#clean-install-test), following the READMEs | VS Code, Neovim, and LazyVim | Pass: each editor with the bundled library and with an explicit root |
+
+The maintainer approved pushing tag `v0.1.0-alpha.6` on 2026-11-03. The tag is on `de966c31`, the merge of these results, which changed only documentation since `7c8ff1b6`. Its [release run 41631307315](https://github.com/SaltedTan/virgil-language-server/actions/runs/41631307315) passed every job on its first attempt and published the prerelease on 2026-11-03. The published `SHA256SUMS` lists every other release asset with a matching SHA-256, `gh attestation verify` with the release workflow as the signer succeeds for the two archives, the four VSIX files, and `SHA256SUMS`, and both manifests record the tag, source revision `de966c31`, a clean build, and Virgil `b86f43f1`. The published Linux archive's `virgil-lsp --version` reports version `0.1.0-alpha.6`, source revision `v0.1.0-alpha.6`, and Virgil revision `b86f43f102406e94dc2ac4a85909c38ef414e214`. The [upgrade and rollback rehearsal](#upgrade-and-rollback-rehearsals) from 0.1.0-alpha.5 passed.
 
 ### 0.1.0-alpha.5
 
