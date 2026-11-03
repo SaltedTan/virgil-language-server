@@ -45,8 +45,9 @@ operations per scenario per block, so that every latency cell below
 summarizes 30 measured operations. The soak ran 80 measured cycles after two
 warmup cycles. The raw JSON files, the build log, and the binary and corpus
 hashes are retained in the scratch directory
-`/home/sean-tan/.t3/scratch-virgil/budgets-refresh2/`. Every capture passed
-its correctness checks; no sample was removed and no capture was rerun.
+`/home/sean-tan/.t3/scratch-virgil/budgets-refresh2/`. Every retained capture
+passed its correctness checks; no sample was removed and the replacement set
+was not rerun.
 Other work on the host slowed the last four blocks of the error-result
 capture, and those blocks set its p95 values below; the [changes
 section](#changes-since-the-2026-11-02-capture) describes them.
