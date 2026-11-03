@@ -127,6 +127,10 @@ The last three runs show that the rehearsal fails when an installation is broken
 | 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → a copy of the 0.1.0-alpha.5 archive with `virgil/` moved into `share/` (`0d76e45cb2b6e50d43704c60f2fd3336e2ef158f87cf6fc0e0b3fbe28266c70a`) | The same | Archive pass; VS Code pass | Archive fail: no diagnostic within 60 seconds, as the server found no Virgil root | Not run | Fail, as expected |
 | 2026-10-31 | `faa41901` | The same | 0.1.0-alpha.4 → 0.1.0-alpha.5 → 0.1.0-alpha.4, with `--rollback-without-force` | The same, but the rollback installed 0.1.3 without `--force` | Archive pass; VS Code pass | Archive pass; VS Code pass | Archive pass; VS Code fail: VS Code refused the older VSIX, exited with status 0, and kept 0.1.4 active, which the active-version check caught | Fail, as expected |
 
+### 0.1.0-alpha.6
+
+This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
+
 ### 0.1.0-alpha.5
 
 This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
