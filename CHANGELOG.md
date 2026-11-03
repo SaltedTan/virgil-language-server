@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- [Semantic tokens](docs/architecture.md#semantic-tokens) now advertise the `defaultLibrary` modifier, on a name whose declaration is in the Virgil library, the bundled library or the configured Virgil root's `lib/`, so that themes can style library names as built-ins. Files outside every project now get tokens from an analysis of that file alone, using only the library path rule for `defaultLibrary` ([#456](https://github.com/SaltedTan/virgil-language-server/issues/456)).
+- [Semantic tokens](docs/architecture.md#semantic-tokens) now advertise the `defaultLibrary` modifier, on a name whose declaration is in the Virgil library, the bundled library or the configured Virgil root's `lib/`, and outside the active project's root, so that themes can style library names as built-ins. Files outside every project now get tokens from an analysis of that file alone, using only the library path rule for `defaultLibrary` ([#456](https://github.com/SaltedTan/virgil-language-server/issues/456)).
 
 - The [performance budgets](docs/performance-budgets.md) are now adopted: the maintainer adopted the proposal's numbers, reference environments, and enforcement policy on 2026-11-03, exactly as proposed, with advisory enforcement and no CI gate enabled. The thresholds of [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) are not in the adopted table, and enabling its gate needs the maintainer's separate approval of its resource-policy file ([ADR-0016](docs/decisions/0016-performance-budgets.md), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)).
 
