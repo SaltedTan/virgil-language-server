@@ -142,9 +142,9 @@ def exact(exe, root):
         i = [t[:2] for t in EXPECTED].index((1, 6))
         assert reply['result']['data'][5 * i:5 * i + 5] == [1, 6, 3, 1, 1], reply
         assert list(reply['result']) == ['data'], reply
-        # A document in no project has no tokens.
+        # A document in no project is analyzed on its own.
         open_file(s, loose, MAIN)
-        assert request(s, loose)['result'] == {'data': []}
+        assert tokens(s, loose, MAIN) == EXPECTED
         for params in [None, {}, {'textDocument': {}}, {'textDocument': {'uri': 7}}]:
             assert s.reply(s.send('textDocument/semanticTokens/full', params))['error']['code'] == INVALID_PARAMS
         for method in ['textDocument/semanticTokens/full/delta', 'textDocument/semanticTokens/range']:
@@ -167,6 +167,73 @@ def option_off(exe, root):
         change(s, main, MAIN + '// edited\n', 2)
         assert request(s, main)['error']['code'] == METHOD_NOT_FOUND
         assert not s.refreshes, s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
+def single_file(exe, root):
+    """Unowned files use their own analysis and only the library path rule."""
+    virgil = root / 'virgil'
+    library = virgil / 'lib'
+    library.mkdir(parents=True)
+    path = library / 'Single.v3'
+    text = ('type Single(value: int) { }\n'
+            'component Main { def f() -> Single { return Single(1); } }\n')
+    path.write_text(text)
+    outside = virgil / 'library' / 'Outside.v3'
+    outside.parent.mkdir()
+    outside.write_text(text)
+    s = TokensSession(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'initializationOptions': {'virgilRoot': str(virgil)},
+            'capabilities': {'workspace': {'semanticTokens': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        first = tokens(s, path, text)
+        singles = [(t[3], t[4]) for t in first if t[2] == 'Single']
+        assert singles == [('enum', ['declaration', 'defaultLibrary']),
+                           ('enum', ['defaultLibrary']),
+                           ('enumMember', ['defaultLibrary'])], (first, s.transcript)
+        assert s.result(s.send('virgil-lsp/snapshot')) is None
+        # Explicit development analysis is not needed and must not change
+        # the ordinary standalone request's answer.
+        snapshot = s.result(s.analyze([path.as_uri()]))
+        assert tokens(s, path, text) == first
+        assert s.result(s.send('virgil-lsp/snapshot')) == snapshot
+        edited = text.replace('Main', 'Edited')
+        change(s, path, edited, 2)
+        current = tokens(s, path, edited)
+        assert any(t[2] == 'Edited' for t in current), current
+        assert not any(t[2] == 'Main' for t in current), current
+        open_file(s, outside, text)
+        plain = tokens(s, outside, text)
+        assert plain and all('defaultLibrary' not in t[4] for t in plain), plain
+        assert not s.refreshes, s.transcript
+        # A project created inside lib owns these same declarations, so
+        # they lose the modifier; removing it restores the single-file rule.
+        config = library / '.virgil-lsp.json'
+        config.write_text(json.dumps({'version': 1, 'projects': [
+            {'name': 'own', 'sources': ['Single.v3']}]}))
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': config.as_uri(), 'type': 1}]}, request=False)
+        owned = tokens(s, path, edited)
+        assert owned and all('defaultLibrary' not in t[4] for t in owned), owned
+        assert len(s.refreshes) == 1, s.transcript
+        config.unlink()
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': config.as_uri(), 'type': 3}]}, request=False)
+        assert tokens(s, path, edited) == current
+        assert len(s.refreshes) == 2, s.transcript
+        # Unrelated file events cannot repeatedly refresh standalone tokens.
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': outside.as_uri(), 'type': 2}]}, request=False)
+        assert tokens(s, path, edited) == current
+        assert len(s.refreshes) == 2, s.transcript
+        change(s, path, 'type Single {', 3)
+        assert request(s, path)['error']['code'] == CONTENT_MODIFIED
+        change(s, path, edited, 4)
+        assert tokens(s, path, edited) == current
         s.shutdown()
     finally:
         s.close()
@@ -286,12 +353,14 @@ def refresh(exe, root, support):
         change(s, library, KIND_VARIANT, 5)
         assert tokens(s, main, edited)[3] == (1,) + kind[1:3] + ('enum', [])
         assert len(s.refreshes) == int(support), s.transcript
-        # Main leaves the project: its tokens are gone, which needs a refresh.
+        # Main leaves the project: its standalone analysis cannot resolve
+        # Kind, so that use loses its token and needs a refresh.
         (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
             {'name': 'tokens', 'sources': ['Library.v3']}]}))
         s.send('workspace/didChangeWatchedFiles', {'changes': [
             {'uri': (root / '.virgil-lsp.json').as_uri(), 'type': 2}]}, request=False)
-        assert request(s, main)['result'] == {'data': []}
+        standalone = tokens(s, main, edited)
+        assert standalone and all(t[2] != 'Kind' for t in standalone), standalone
         assert len(s.refreshes) == 2 * int(support), s.transcript
         s.shutdown()
     finally:
@@ -304,12 +373,13 @@ def request_baselines(exe, root, support):
     library.write_text(KIND_CLASS)
     s, _ = start(exe, root, ['Library.v3'], support=support)
     try:
-        # Load the project before opening its excluded file. Its empty reply
-        # must remain the baseline when a later configuration includes it.
+        # Load the project before opening its excluded file. Its standalone
+        # reply must remain the baseline when a later configuration includes it.
         open_file(s, library, KIND_CLASS)
         tokens(s, library, KIND_CLASS)
         open_file(s, main, USER)
-        assert request(s, main)['result'] == {'data': []}
+        standalone = tokens(s, main, USER)
+        assert standalone and all(t[2] != 'Kind' for t in standalone), standalone
         assert len(s.refreshes) == 0, s.transcript
         config = root / '.virgil-lsp.json'
         config.write_text(json.dumps({'version': 1, 'projects': [
@@ -378,7 +448,7 @@ def failed_refresh(exe, root, support):
 
 def main():
     exe = Path(sys.argv[1]).resolve()
-    for case in [exact, option_off, unanalyzable, fallback, repair,
+    for case in [exact, option_off, single_file, unanalyzable, fallback, repair,
                  lambda e, r: refresh(e, r, True), lambda e, r: refresh(e, r, False),
                  lambda e, r: request_baselines(e, r, True),
                  lambda e, r: request_baselines(e, r, False),
