@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-11-03
+
 ### Added
 
 - The performance benchmark's worker collection probes now report each forced collection's thread CPU time and its voluntary and involuntary context switches, `force_gc_cpu_us`, `force_gc_nvcsw`, and `force_gc_nivcsw` beside `force_gc_us`, and the same with `_after_send_` beside `force_gc_after_send_us`, in benchmark builds only. A pinned capture can now tell collection work from waiting for the CPU: on one shared thread the collection after sending runs at about half its wall time. The three fields of a collection are reported together or omitted together, wherever a reading is unsupported or fails; macOS has no `RUSAGE_THREAD`, so its build omits them, and `--require-probes` checks them all-or-none per build so an older build can be a control ([worker collection after sending](docs/benchmarks.md#worker-collection-after-sending-2026-11-02), [#441](https://github.com/SaltedTan/virgil-language-server/issues/441)).
@@ -31,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The VS Code extension's version is now 0.1.5. Its `virgil.semanticTokens` setting at `auto` now follows the `titzer.virgil` extension while VS Code runs: installing, enabling, disabling, or uninstalling that extension restarts the language server when that changes whether the server sends [semantic tokens](docs/architecture.md#semantic-tokens), with one output-channel line that says why, and `on` and `off` don't follow it ([#324](https://github.com/SaltedTan/virgil-language-server/issues/324), [#447](https://github.com/SaltedTan/virgil-language-server/issues/447)). It works with `0.1.0-alpha.6` and `main`, whose servers also answer completion item documentation; `0.1.0-alpha.5` and earlier work as before, without it; `0.1.0-alpha.2` and `0.1.0-alpha.1` need `virgil.virgilRoot` or `VIRGIL_LOC` to give an absolute path, since those servers exit without a root ([compatibility](docs/compatibility.md#editors)).
 - In VS Code, `virgil.semanticTokens` at `auto` now follows the `titzer.virgil` extension while the editor runs: installing, enabling, disabling, or uninstalling it restarts the language server when that changes whether the server sends semantic tokens, with one output-channel line that says why, and `on` and `off` don't follow it ([#324](https://github.com/SaltedTan/virgil-language-server/issues/324)).
 
 - The server, the worker, and the test executables are compiled with the global register allocator for the runtime's garbage collector, `-global-regalloc=RiGc.*` ([ADR-0015](docs/decisions/0015-gc-global-register-allocation.md)). The worker's collection after sending an Aeneas analysis took about 10 ms of CPU instead of 15 to 21 ms in the measured runs, and in the quieter run every process took 10.1 to 10.3 ms.
