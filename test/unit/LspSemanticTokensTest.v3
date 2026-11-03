@@ -10,7 +10,9 @@ def X = [
 	UnitTests.register("LspSemanticTokens:data_matches_tree", data_matches_tree),
 	UnitTests.register("LspSemanticTokens:default_library", default_library),
 	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
+	UnitTests.register("LspSemanticTokens:library_project", library_project),
 	UnitTests.register("LspSemanticTokens:limit", limit),
+	UnitTests.register("LspSemanticTokens:modifier_bits", modifier_bits),
 	UnitTests.register("LspSemanticTokens:named_this", named_this),
 	UnitTests.register("LspSemanticTokens:options", options),
 	UnitTests.register("LspSemanticTokens:refresh", refresh),
@@ -19,6 +21,7 @@ def X = [
 	UnitTests.register("LspSemanticTokens:request_current_baseline", request_current_baseline),
 	UnitTests.register("LspSemanticTokens:request_tokens_baseline", request_tokens_baseline),
 	UnitTests.register("LspSemanticTokens:request_failure_refreshes_once", request_failure_refreshes_once),
+	UnitTests.register("LspSemanticTokens:single_file_library", single_file_library),
 	()
 ];
 def PATH = "/semantic-tokens/Main.v3";
@@ -134,20 +137,20 @@ def tokens(t: Tester, s: AnalysisSnapshot, text: string, limit: int) -> Array<(i
 	var result = Vector<(int, int, int, int, int)>.new();
 	// Text on disk, with no substitution: its ranges map to themselves.
 	s.recordDocumentVersions([AnalysisDocumentVersion.new(ProjectFiles.uri(PATH), 0, null)]);
-	var c = LspTokenCursor.new(s, 0, s.fileIndex(PATH), text, text, limit, null);
+	var c = LspTokenCursor.new(s, 0, s.fileIndex(PATH), text, text, limit, null, null);
 	while (c.next()) result.put((c.line, c.character, c.length, c.tokenType, c.modifiers));
 	return result.extract();
 }
 // The tokens of {path} of {s}, with the names whose declarations are under
-// {prefix} getting the DEFAULT_LIBRARY modifier.
-def tokensAt(t: Tester, s: AnalysisSnapshot, path: string, text: string, limit: int, prefix: string) -> Array<(int, int, int, int, int)> {
+// {prefix} and not under {projectPrefix} getting the DEFAULT_LIBRARY modifier.
+def tokensAt(t: Tester, s: AnalysisSnapshot, path: string, text: string, limit: int, prefix: string, projectPrefix: string) -> Array<(int, int, int, int, int)> {
 	var result = Vector<(int, int, int, int, int)>.new();
 	var versions = Array<AnalysisDocumentVersion>.new(s.paths.length);
 	for (i < s.paths.length) versions[i] = AnalysisDocumentVersion.new(ProjectFiles.uri(s.paths[i]), 0, null);
 	s.recordDocumentVersions(versions);
 	var index = 0;
 	for (i < s.paths.length) if (Strings.equal(s.paths[i], path)) index = i;
-	var c = LspTokenCursor.new(s, index, s.fileIndex(path), text, text, limit, prefix);
+	var c = LspTokenCursor.new(s, index, s.fileIndex(path), text, text, limit, prefix, projectPrefix);
 	while (c.next()) result.put((c.line, c.character, c.length, c.tokenType, c.modifiers));
 	return result.extract();
 }
@@ -181,15 +184,15 @@ def default_library(t: Tester) {
 	var s = snapshot(t, [(library, LIBRARY_TEXT), (main, MAIN_TEXT_LIB)]);
 	if (s == null) return;
 	t.assert(s.verified, "the program verifies");
-	var prefix = "/lib/";
+	var prefix = "/lib/", root = "/proj/";
 	// The library's own declaration gets the modifier, with its declaration.
-	var lib = tokensAt(t, s, library, LIBRARY_TEXT, 100000, prefix);
+	var lib = tokensAt(t, s, library, LIBRARY_TEXT, 100000, prefix, root);
 	t.asserti(1, lib.length);
 	t.asserti(CL, lib[0].3);
 	t.asserti(D | DL, lib[0].4);
 	// A use in the project file gets the modifier; the project's own names
 	// do not. The explicit "new" gets no token.
-	var proj = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, prefix);
+	var proj = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, prefix, root);
 	t.asserti(4, proj.length);
 	t.asserti(NS, proj[0].3);
 	t.asserti(D, proj[0].4);			// Main
@@ -200,9 +203,57 @@ def default_library(t: Tester) {
 	t.asserti(CL, proj[3].3);
 	t.asserti(DL, proj[3].4);			// StringBuilder, the receiver
 	// Without a prefix, nothing is a library name.
-	var plain = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, null);
+	var plain = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, null, root);
 	t.asserti(CL, plain[2].3);
 	t.asserti(0, plain[2].4);
+}
+// A project whose root is inside the library: its own names in that root are
+// not library names, but names in the library's other directories are.
+def library_project(t: Tester) {
+	var util = "/lib/util/StringBuilder.v3", file = "/lib/file/Buffer.v3", main = "/lib/util/Main.v3";
+	var sb = "class StringBuilder { new() { } }", buf = "class Buffer { new() { } }";
+	var text = "component Main { def a() -> StringBuilder { return StringBuilder.new(); } def b() -> Buffer { return Buffer.new(); } }";
+	var s = snapshot(t, [(main, text), (util, sb), (file, buf)]);
+	if (s == null) return;
+	t.assert(s.verified, "the program verifies");
+	var prefix = "/lib/", root = "/lib/util/";
+	// A name in the project's own lib/util directory is not a library name.
+	var own = tokensAt(t, s, util, sb, 100000, prefix, root);
+	t.asserti(1, own.length);
+	t.asserti(CL, own[0].3);
+	t.asserti(D, own[0].4);
+	// A name in the library's other directory is a library name.
+	var other = tokensAt(t, s, file, buf, 100000, prefix, root);
+	t.asserti(1, other.length);
+	t.asserti(CL, other[0].3);
+	t.asserti(D | DL, other[0].4);
+	// In the project file, the own-directory use has no bit; the other-
+	// directory use does.
+	var proj = tokensAt(t, s, main, text, 100000, prefix, root);
+	t.asserti(7, proj.length);
+	t.asserti(D, proj[0].4);		// Main
+	t.asserti(D, proj[1].4);		// a
+	t.asserti(0, proj[2].4);		// StringBuilder, own directory
+	t.asserti(0, proj[3].4);		// StringBuilder, own directory
+	t.asserti(D, proj[4].4);		// b
+	t.asserti(DL, proj[5].4);		// Buffer, other directory
+	t.asserti(DL, proj[6].4);		// Buffer, other directory
+}
+// In single-file mode, with no project, only the lib/ rule applies.
+def single_file_library(t: Tester) {
+	var util = "/lib/util/StringBuilder.v3", main = "/main.v3";
+	var s = snapshot(t, [(main, MAIN_TEXT_LIB), (util, LIBRARY_TEXT)]);
+	if (s == null) return;
+	t.assert(s.verified, "the program verifies");
+	var proj = tokensAt(t, s, main, MAIN_TEXT_LIB, 100000, "/lib/", null);
+	t.asserti(4, proj.length);
+	t.asserti(DL, proj[2].4);
+	t.asserti(DL, proj[3].4);
+}
+// Each modifier's bit is 1 << its position in the legend, so a client's
+// bitset reads each bit for its own modifier.
+def modifier_bits(t: Tester) {
+	for (i < LspSemanticLegend.MODIFIERS.length) t.asserti(1 << byte.view(i), LspSemanticLegend.modifier(i));
 }
 // A reply's result is rendered token by token, not as a JsonValue tree. For
 // no tokens, one, and many, with more than and fewer than the writer
