@@ -53,8 +53,8 @@ component LspSemanticLegend {
 			CONSTRUCTOR => return -1;
 		}
 	}
-	// The modifiers of every token of {d}: READONLY for a local, parameter,
-	// or field that nothing may assign. A declaration's name adds DECLARATION.
+	// Modifiers from declaration metadata only. The cursor adds the
+	// declaration-site and source-path modifiers.
 	def modifiers(d: AnalysisDeclaration) -> int {
 		match (d.kind) {
 			LOCAL, PARAMETER, FIELD => return if(d.flagged(), READONLY);

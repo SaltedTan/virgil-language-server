@@ -1538,7 +1538,7 @@ These names get no token:
 - Names in a method or constructor body that [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair) excluded. The other tokens are mapped to the current text, as definition maps ranges.
 - The names after a file's 100,000th token, which keep the grammar's colors.
 
-Tokens are in source order and relative, five integers each, as the protocol encodes them. Their positions are lines and UTF-16 characters of the document's current text, counting CR, LF, and CRLF as line breaks. A token never spans lines or overlaps another.
+Tokens are in source order and relative, five integers each, as the protocol encodes them. Modifiers combine as a bitset, with each flag equal to `1 <<` its zero-based position in the legend. Their positions are lines and UTF-16 characters of the document's current text, counting CR, LF, and CRLF as line breaks. A token never spans lines or overlaps another.
 
 The server writes the reply's result, `{"data":[...]}`, as it walks the tokens (`LspTokenData`), into a buffer with room for 12 bytes for each declaration site and use in the file, and sends it as a `RawResponse`, which copies it into the response once. These are the bytes that rendering the integers as a `JsonValue` tree gave, without the tree. On `Verifier.v3`, a full reply allocated about 0.86 MB on the server instead of 1.9 MB ([measurements](benchmarks.md#cost-of-a-reply-2026-11-01)), 0.55 MB of it the position map of the document's current text, which every snapshot request builds. Since [the map stopped keeping a table of every byte](benchmarks.md#position-maps-2026-11-01), the map takes about 36 KB of a reply's 0.34 MB.
 
