@@ -29,6 +29,7 @@ PARAM_ERRORS = {-32602}
 METHOD_ERRORS = {
     "textDocument/rename": {-32602, -32803},
     "textDocument/prepareRename": {-32602, -32803},
+    "textDocument/semanticTokens/full": {-32602, -32801},
 }
 
 
