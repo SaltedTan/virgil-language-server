@@ -22,7 +22,7 @@ def X = [
 	UnitTests.register("LspSemanticTokens:request_current_baseline", request_current_baseline),
 	UnitTests.register("LspSemanticTokens:request_tokens_baseline", request_tokens_baseline),
 	UnitTests.register("LspSemanticTokens:request_failure_refreshes_once", request_failure_refreshes_once),
-	UnitTests.register("LspSemanticTokens:single_file_library", single_file_library),
+	UnitTests.register("LspSemanticTokens:library_without_project_prefix", library_without_project_prefix),
 	()
 ];
 def PATH = "/semantic-tokens/Main.v3";
@@ -267,8 +267,8 @@ def library_project(t: Tester) {
 	t.asserti(DL, proj[5].4);		// Buffer, other directory
 	t.asserti(DL, proj[6].4);		// Buffer, other directory
 }
-// In single-file mode, with no project, only the lib/ rule applies.
-def single_file_library(t: Tester) {
+// Without a project prefix, only the lib/ rule applies.
+def library_without_project_prefix(t: Tester) {
 	var util = "/lib/util/StringBuilder.v3", main = "/main.v3";
 	var s = snapshot(t, [(main, MAIN_TEXT_LIB), (util, LIBRARY_TEXT)]);
 	if (s == null) return;
