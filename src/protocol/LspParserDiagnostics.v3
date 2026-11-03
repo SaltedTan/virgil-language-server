@@ -16,11 +16,11 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
 		var start = if(BenchProbe.enabled, BenchProbe.now(), 0);
-		var result = parse(doc, options);
+		var admitted = AnalysisParseBudget.admits(doc.text), result = parse(doc, options, admitted);
 		if (BenchProbe.enabled) BenchProbe.server(0, "parser_diagnostics_us", long.view(BenchProbe.now() - start));
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics: Array<LspDiagnostic>;
-		if (!AnalysisParseBudget.admits(doc.text)) {
+		if (!admitted) {
 			// The text was not parsed; say so, in the style of the per-file
 			// cap's note (LspSemanticDiagnostics), at the document's start.
 			diagnostics = Array<LspDiagnostic>.new(1);
@@ -31,7 +31,9 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 			diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
 			for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
 		}
-		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, diagnostics.length == 0, result.repairAt,
+		// Clean by the parse itself, not the published list: a text over the
+		// budget counts as parsing although it gets the note.
+		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt,
 			result.errorAt());
 		lists.parsed(doc, diagnostics);
 	}
@@ -46,7 +48,7 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	def outcome(doc: DocumentOverlay, options: Array<string>) -> (LspParsedDocument, bool) {
 		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return (last, false);
-		var result = parse(doc, options);
+		var result = parse(doc, options, AnalysisParseBudget.admits(doc.text));
 		return (LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt,
 			result.errorAt()), true);
 	}
@@ -63,8 +65,8 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	// ({update}) and counts as parsing, so that the analysis worker, which
 	// contains its own failures, analyzes it as it is, without fallback or
 	// repair.
-	private def parse(doc: DocumentOverlay, options: Array<string>) -> FileParseResult {
-		if (!AnalysisParseBudget.admits(doc.text)) return FileParseResult.new(pathOf(doc), [], 0);
+	private def parse(doc: DocumentOverlay, options: Array<string>, admitted: bool) -> FileParseResult {
+		if (!admitted) return FileParseResult.new(pathOf(doc), [], 0);
 		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
 	}
 	// The path that names {doc} in its diagnostics: its file's, or its URI.

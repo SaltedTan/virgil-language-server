@@ -251,8 +251,11 @@ def test_diagnostics_parse_budget(t: Tester) {
 	AnalysisParseBudget.maxTokens = count - 1;
 	replace(t, server, 2, text);
 	assertNote(t, publication(t, rec, 1, URI, 2), count - 1);
-	var doc = server.documents.overlay(URI), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(server.documents, null));
+	var doc = server.documents.overlay(URI), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(server.documents, DiagnosticRecorder.new().send));
 	t.assert(parser.parses(doc, []), "a refused text counts as parsing");
+	// Also after its note is published, from the cached outcome.
+	parser.update(doc, []);
+	t.assert(parser.parses(doc, []), "a refused text counts as parsing after its note");
 	AnalysisParseBudget.maxTokens = count;
 	replace(t, server, 3, text);
 	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 22);
