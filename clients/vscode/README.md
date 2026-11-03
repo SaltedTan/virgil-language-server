@@ -91,9 +91,9 @@ To run the extension from source instead of installing a VSIX, you need a [suppo
 
 The extension runs only in [trusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust), because the server analyzes the workspace's files.
 
-With `0.1.0-alpha.5` or `main`, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
+With a `0.1.0-alpha.5` or later server, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
 
-The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion). On `main`, an item's details show its declaration's [leading comment](../../docs/architecture.md#item-documentation), as hover does.
+The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion). An item's details show its declaration's [leading comment](../../docs/architecture.md#item-documentation), as hover does.
 
 ## Settings
 
@@ -151,7 +151,7 @@ Since this extension added semantic tokens ([#313](https://github.com/SaltedTan/
 - With `on`, in either order, VS Code first showed `titzer.virgil`'s tokens, and this extension's after **Virgil: Restart Language Server**. VS Code asks the providers that match a document equally well newest first, and uses the first that returns tokens. Here `titzer.virgil` registered its provider when the first `.v3` file opened, after this extension had started its server for the project file, and the restart registered this extension's again. The order of registration decides, not the order of installation.
 - With this extension alone, its tokens colored each kind of declaration, legibly in the Dark Modern, Light Modern, and Dark High Contrast themes; with `off`, the grammar's colors remained.
 
-On `main`, `auto` follows the other extension while VS Code runs, as [Settings](#settings) describes. The extension subscribes to `vscode.extensions.onDidChange`, which VS Code documents as firing when extensions are installed, uninstalled, enabled, or disabled, and decides again under `auto` when the queued task runs, after any start in progress has finished. The [lifecycle tests](#development) check this by changing the installed extensions in their mock of the editor; the real `titzer.virgil` extension was not part of that check, and the 2026-10-27 test above ran before it.
+`auto` follows the other extension while VS Code runs, as [Settings](#settings) describes. The extension subscribes to `vscode.extensions.onDidChange`, which VS Code documents as firing when extensions are installed, uninstalled, enabled, or disabled, and decides again under `auto` when the queued task runs, after any start in progress has finished. The [lifecycle tests](#development) check this by changing the installed extensions in their mock of the editor; the real `titzer.virgil` extension was not part of that check, and the 2026-10-27 test above ran before it.
 
 Which extension owns semantic coloring is still for the two maintainers to agree; `on` has no provider-selection guarantee.
 
