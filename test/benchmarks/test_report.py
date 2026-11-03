@@ -149,7 +149,10 @@ RESOURCE_SCENARIOS = ("fresh_analysis", "reused_analysis", "completion_miss", "r
 
 
 def resource_result(pins=(PIN, PIN)):
-    """A two-build comparison with one warmup and two measured transactions per case."""
+    """A two-build comparison with one warmup and two measured transactions per case.
+
+    As in a real run, each fresh analysis has its own server and worker, and
+    the later scenarios number their transactions on the last fresh worker."""
     builds = [{"exe": f"/runner/_temp/bench-builds/{name}/build/bench/virgil-lsp",
                "version": f"virgil-lsp 0.1.0\n  source revision: {revision}\n  virgil revision: {pin}",
                "build": {"server_revision": revision, "benchmark_probes": True, "target": "x86-64-linux",
@@ -158,18 +161,22 @@ def resource_result(pins=(PIN, PIN)):
     blocks = []
     for build in (0, 1):
         for project, allocated in ALLOCATED.items():
-            samples = []
+            samples, pid = [], 1000 * (len(blocks) + 1)
             for scenario in RESOURCE_SCENARIOS + ("definition",):
                 for i in range(3):
                     probes = []
                     if scenario == "fresh_analysis":
-                        probes.append({"process": "server", "metric": "worker_heap_bytes", "value": HEAP})
+                        pid, id = pid + 2, 0
+                        probes += [{"process": "server", "analysis_id": 1, "metric": metric, "value": value}
+                                   for metric, value in (("worker_heap_bytes", HEAP), ("worker_pid", pid + 1))]
                     if scenario != "definition":
-                        probes += [{"process": "worker", "metric": metric, "value": value} for metric, value in (
+                        id += 1
+                        probes += [{"process": "worker", "analysis_id": id, "metric": metric, "value": value}
+                                   for metric, value in (
                             ("allocated_bytes", allocated + 8 * i), ("result_bytes", allocated // 40),
                             ("gc_count", 0), ("heap_after_handle_bytes", allocated + 1_000_000))]
-                        probes.append({"process": "server", "metric": "gc_count", "value": i % 2})
-                    samples.append({"scenario": scenario, "iteration": i, "warmup": i == 0,
+                        probes.append({"process": "server", "analysis_id": id, "metric": "gc_count", "value": i % 2})
+                    samples.append({"scenario": scenario, "iteration": i, "warmup": i == 0, "server_pid": pid,
                                     "latency_ms": 10.0 + i, "probes": probes})
             blocks.append({"block": 0, "build": build, "project": project, "samples": samples, "processes": []})
     result = {"schema": 1, "started_utc": "2026-11-03T00:00:00+00:00", "root": "/runner/work/tooling",
@@ -264,6 +271,28 @@ class ResourceTest(unittest.TestCase):
         passed = self.cli(resource_result(), approved(self.policy), mode="enforce")
         self.assertEqual(passed.returncode, 0, passed.stderr)
 
+    def test_report_mode_warns_when_the_check_cannot_run(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        comparison = directory / "comparison.json"
+        comparison.write_text(json.dumps(self.result))
+        (directory / "malformed.json").write_text("{")
+        (directory / "schema2.json").write_text(json.dumps({**self.policy, "schema": 2}))
+        (directory / "truncated.json").write_text(json.dumps(self.result)[:100])
+        cases = [(comparison, directory / "missing.json"), (comparison, directory / "malformed.json"),
+                 (comparison, directory / "schema2.json"), (directory / "truncated.json", POLICY),
+                 (directory / "absent.json", POLICY)]
+        for source, policy in cases:
+            command = [sys.executable, ROOT / "scripts/bench-report.py", source, "--resources", policy, "--annotations"]
+            with self.subTest(source=source.name, policy=policy.name):
+                result = subprocess.run(command, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("**Not checked.** The resource checks could not run:", result.stdout)
+                self.assertIn("::warning title=Resource check::the resource checks could not run:", result.stderr)
+                enforced = subprocess.run(command + ["--mode", "enforce"], text=True, capture_output=True)
+                self.assertNotEqual(enforced.returncode, 0)
+                self.assertNotIn("Not checked", enforced.stdout)
+
     def test_new_worker_collection_fails_only_in_clean_analyses(self):
         for scenario in ("reused_analysis", "completion_miss"):
             set_worker(self.result, 1, "util", scenario, "gc_count", lambda v: 1)
@@ -276,13 +305,48 @@ class ResourceTest(unittest.TestCase):
         set_worker(self.result, 0, "util", "reused_analysis", "gc_count", lambda v: 1)
         _, verdicts, _ = self.check()
         self.assertNotIn(("fail", "util/reused_analysis"), verdicts)
-        # The server's collections alone are never checked.
+
+    def test_server_collections_alone_are_never_checked(self):
+        before = self.check()
         for block in self.result["blocks"]:
             for sample in block["samples"]:
                 for probe in sample["probes"]:
                     if probe["process"] == "server" and probe["metric"] == "gc_count" and block["build"] == 1:
                         probe["value"] = 5
-        self.assertEqual(self.check(resource_result())[1], [("warn", "absolute baseline pending")])
+        self.assertEqual(self.check(), before)
+        self.assertEqual(before[1], [("warn", "absolute baseline pending")])
+
+    def test_worker_probes_must_be_one_transactions_own(self):
+        def sample(result, project, scenario, iteration, build=1):
+            block = next(b for b in result["blocks"] if b["build"] == build and b["project"] == project)
+            return next(s for s in block["samples"] if s["scenario"] == scenario and s["iteration"] == iteration)
+        def probe(sample, metric):
+            return next(p for p in sample["probes"] if p["process"] == "worker" and p["metric"] == metric)
+        def mismatched(result):
+            probe(sample(result, "aeneas", "reused_analysis", 1), "gc_count")["analysis_id"] = 999999
+        def borrowed(result):
+            # A measured transaction's collection replaced by another's zero.
+            target, source = sample(result, "util", "reused_analysis", 2), sample(result, "util", "rename", 1)
+            probe(target, "gc_count")["value"] = 1
+            target["probes"] = [p for p in target["probes"] if p["metric"] != "gc_count" or p["process"] != "worker"]
+            target["probes"].append(dict(probe(source, "gc_count")))
+        def duplicated(result):
+            # A whole transaction's probes copied into another sample of the same process.
+            target, source = sample(result, "small", "rename", 2), sample(result, "small", "rename", 1)
+            target["probes"] = [dict(p) for p in source["probes"]]
+        def unnumbered(result):
+            del probe(sample(result, "small", "fresh_analysis", 2, build=0), "result_bytes")["analysis_id"]
+        for change, detail in ((mismatched, "worker probes from transactions [3, 999999]"),
+                               (borrowed, "worker probes from transactions"),
+                               (duplicated, "worker transaction 9 also belongs to ('small', 'rename', 1)"),
+                               (unnumbered, "without a transaction number")):
+            with self.subTest(change=change.__name__):
+                result = resource_result()
+                change(result)
+                text, verdicts, messages = self.check(result)
+                self.assertIn("Qualification failed", text)
+                self.assertTrue(verdicts and all(severity == "fail" for severity, _ in verdicts), verdicts)
+                self.assertTrue(any(detail in message for _, message in messages), messages)
 
     def test_omitted_probe_scenario_or_metadata_fails_qualification(self):
         def omit(result):
@@ -405,8 +469,9 @@ class ResourceTest(unittest.TestCase):
 
     def test_unreviewed_worker_scenario_warns(self):
         for block in self.result["blocks"]:
-            block["samples"] += [{**s, "scenario": "new_analysis"} for s in block["samples"]
-                                 if s["scenario"] == "fresh_analysis"]
+            # Each a transaction of its own process.
+            block["samples"] += [{**s, "scenario": "new_analysis", "server_pid": s["server_pid"] + 500}
+                                 for s in block["samples"] if s["scenario"] == "fresh_analysis"]
         _, verdicts, _ = self.check()
         self.assertIn(("warn", "new_analysis"), verdicts)
 

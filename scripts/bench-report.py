@@ -176,8 +176,26 @@ def resource_cases(result, policy, groups):
     qualification problems."""
     problems, cases, unreviewed = [], {}, set()
     samples = collections.defaultdict(list)
+    # Each worker transaction is its server process, its worker process (the
+    # last worker_pid the server reported), and the analysis number that its
+    # probes carry. A transaction belongs to one sample only.
+    owners = {}
     for block in result["blocks"]:
+        workers = {}
         for sample in block["samples"]:
+            server = sample.get("server_pid")
+            for probe in sample["probes"]:
+                if probe["process"] == "server" and probe["metric"] == "worker_pid":
+                    workers[server] = probe["value"]
+            ids = {probe.get("analysis_id") for probe in sample["probes"]
+                   if probe["process"] == "worker" and probe["metric"] in WORKER_RESOURCE_METRICS}
+            for id in ids:
+                key = (block["build"], server, workers.get(server), id)
+                owner = owners.setdefault(key, (block["project"], sample["scenario"], sample.get("iteration")))
+                if id is None or owner != (block["project"], sample["scenario"], sample.get("iteration")):
+                    problems.append(f"build {block['build']} {block['project']}/{sample['scenario']} iteration "
+                                    f"{sample.get('iteration')}: " + ("worker probes without a transaction number"
+                                    if id is None else f"worker transaction {id} also belongs to {owner}"))
             if not sample["warmup"]:
                 samples[(block["build"], block["project"], sample["scenario"])].append(sample)
     for (build, project, scenario), measured in sorted(samples.items()):
@@ -188,10 +206,15 @@ def resource_cases(result, policy, groups):
             continue
         values = collections.defaultdict(list)
         for sample in measured:
-            worker = collections.defaultdict(list)
+            worker, ids = collections.defaultdict(list), set()
             for probe in sample["probes"]:
                 if probe["process"] == "worker":
                     worker[probe["metric"]].append(probe["value"])
+                    if probe["metric"] in WORKER_RESOURCE_METRICS:
+                        ids.add(probe.get("analysis_id"))
+            if len(ids) > 1:
+                problems.append(f"build {build} {project}/{scenario} iteration {sample.get('iteration')}: "
+                                f"worker probes from transactions {sorted(ids, key=str)}, expected one")
             for metric in WORKER_RESOURCE_METRICS:
                 if len(worker[metric]) != 1:
                     problems.append(f"build {build} {project}/{scenario} iteration {sample.get('iteration')}: "
@@ -387,22 +410,34 @@ def resource_baseline(result, policy):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
-    parser.add_argument("--baseline", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--baseline", action="store_true")
     parser.add_argument("--annotations", action="store_true", help="emit GitHub warning annotations to stderr")
-    parser.add_argument("--resources", type=Path, metavar="POLICY",
+    modes.add_argument("--resources", type=Path, metavar="POLICY",
                         help="instead check worker resources against a resource-policy file")
     parser.add_argument("--mode", choices=("report", "enforce"), default="report",
                         help="with --resources: enforce exits 1 on a failed check; report never does")
-    parser.add_argument("--resource-baseline", type=Path, metavar="POLICY",
+    modes.add_argument("--resource-baseline", type=Path, metavar="POLICY",
                         help="instead print a candidate absolute baseline for the new build")
     args = parser.parse_args()
-    result = json.loads(args.input.read_text())
+    result = None if args.resources else json.loads(args.input.read_text())
     if args.resource_baseline:
         policy = json.loads(args.resource_baseline.read_text())
         print(json.dumps(resource_baseline(result, policy), indent=2))
     elif args.resources:
         enforce = args.mode == "enforce"
-        report, verdicts = resources(result, json.loads(args.resources.read_text()), enforce)
+        try:
+            report, verdicts = resources(json.loads(args.input.read_text()),
+                                         json.loads(args.resources.read_text()), enforce)
+        except Exception as error:
+            if enforce:
+                raise
+            # Report mode never fails the job, even when the check can't run.
+            text = f"the resource checks could not run: {type(error).__name__}: {error}"
+            print(f"## Resource checks\n\n**Not checked.** {text[0].upper() + text[1:]}.\n")
+            if args.annotations:
+                print("::warning title=Resource check::" + annotation(text), file=sys.stderr)
+            return
         print(report, end="")
         if args.annotations:
             for severity, text in verdicts:

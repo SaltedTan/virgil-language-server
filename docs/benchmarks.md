@@ -1368,8 +1368,10 @@ uses no timing, so a timing-only change never changes its verdicts.
 from #347, which the maintainer hasn't approved, and the step runs with
 `RESOURCE_CHECKS: report`: every verdict is reported, a would-fail verdict as
 `WOULD FAIL` with a "Resource check (would fail)" warning annotation, and the
-step never fails the job. Benchmark correctness failures in the "Build and
-compare" step still fail it.
+step never fails the job. If the check can't run at all, for example because
+the policy file is missing or malformed, report mode says so in the summary and
+a warning annotation and still exits successfully. Benchmark correctness
+failures in the "Build and compare" step still fail the job.
 
 **Qualification.** Each build needs explicit compatibility metadata: the Virgil
 revision from `--version`, the compiler's SHA-256, the corpus SHA-256, the
@@ -1379,8 +1381,12 @@ heap, the byte lengths of the tooling root (the analyzed sources' paths) and of
 each build directory (the compiled-in paths), and the policy's scenario
 options. Every measured transaction of every policy scenario needs exactly one
 worker `allocated_bytes`, `result_bytes`, `gc_count`, and
-`heap_after_handle_bytes` probe, and every required scenario must be measured
-in both builds for every project. Anything missing fails qualification, and
+`heap_after_handle_bytes` probe. The four must carry one transaction's
+analysis number, and that transaction, identified by its server process, its
+worker process, and the number, must belong to no other sample, so that probes
+from different transactions can't make a set look complete. Every required
+scenario must be measured in both builds for every project. Anything missing
+or mismatched fails qualification, and
 nothing is compared. If both builds have the metadata but it differs, as for a
 Virgil pin, heap, or path layout change, the comparison is incomparable: the
 table shows no change, no relative check runs, and a warning says which fields
@@ -1446,6 +1452,44 @@ one byte; across the iterations of one process, allocation varied by up to
 during handling. The least room was Aeneas `rename`'s 9,930,016 bytes. All
 30 ordered same-build pairs produced no verdict other than the pending
 baseline. The step took under 0.1 s.
+
+On the hosted runners, two same-build dispatches of the workflow at
+`4c5f3109` (runs 41640403126 and 41640407087) gave 4 builds and 12 process
+blocks per project on each platform. Neither platform had a verdict other than
+the pending baseline, in each run's own comparison or in any of the 12 ordered
+same-build pairs across the two runs. On `ubuntu-24.04`, allocation at the same
+iteration was identical on both runners, as locally. On `macos-15`, small and
+util `semantic_diagnostic` varied by one 8-byte word within and between runs,
+at most +0.0136% between medians. RESULT bytes differed by at most 2 bytes on
+Linux and 3 on macOS. The hosted builds have longer paths than the local ones,
+so they allocate slightly more; their compatibility metadata was identical
+between the two runners of each platform. No case collected during handling.
+Allocated is worker bytes per transaction, min–max over all measured
+transactions:
+
+| Project / scenario | Allocated, local | Allocated, `ubuntu-24.04` | Allocated, `macos-15` | Least room, local / Linux / macOS |
+| --- | ---: | ---: | ---: | ---: |
+| small / `fresh_analysis` | 56,424 | 56,464 | 56,464 | 201,269,032 / 201,268,952 / 201,268,952 |
+| util / `fresh_analysis` | 9,798,920 | 9,799,528 | 9,799,584 | 191,362,816 / 191,361,552 / 191,361,464 |
+| aeneas / `fresh_analysis` | 188,284,408 | 188,288,512 | 188,288,712 | 9,953,272 / 9,945,008 / 9,944,600 |
+| small / `reused_analysis` | 55,344 | 55,384 | 55,384 | 201,269,224 / 201,269,144 / 201,269,144 |
+| util / `reused_analysis` | 9,747,096–9,762,152 | 9,747,704–9,762,760 | 9,747,760–9,762,816 | 191,354,704 / 191,353,440 / 191,353,352 |
+| aeneas / `reused_analysis` | 188,111,024–188,124,304 | 188,115,128–188,128,408 | 188,115,328–188,128,608 | 9,932,864 / 9,924,600 / 9,924,192 |
+| small / `completion_miss` | 64,192 | 64,232 | 64,232 | 201,260,376 / 201,260,296 / 201,260,288 |
+| util / `completion_miss` | 8,082,728–8,084,232 | 8,083,336–8,084,840 | 8,083,392–8,084,896 | 193,032,616 / 193,031,352 / 193,031,264 |
+| aeneas / `completion_miss` | 145,545,960–145,559,240 | 145,550,064–145,563,344 | 145,550,264–145,563,544 | 52,497,920 / 52,489,656 / 52,489,248 |
+| small / `rename` | 55,400 | 55,440 | 55,440 | 201,269,160 / 201,269,080 / 201,269,072 |
+| util / `rename` | 9,749,008–9,767,824 | 9,749,616–9,768,432 | 9,749,672–9,768,488 | 191,349,008 / 191,347,736 / 191,347,648 |
+| aeneas / `rename` | 188,110,704–188,127,152 | 188,114,808–188,131,256 | 188,115,008–188,131,456 | 9,930,016 / 9,921,752 / 9,921,344 |
+| small / `semantic_diagnostic` | 58,768 | 58,824 | 58,824–58,832 | 201,265,768 / 201,265,672 / 201,265,664 |
+| util / `semantic_diagnostic` | 9,593,992–9,614,328 | 9,594,616–9,614,952 | 9,594,672–9,615,016 | 191,502,496 / 191,501,208 / 191,501,112 |
+| aeneas / `semantic_diagnostic` | 185,243,176–185,251,848 | 185,247,296–185,255,968 | 185,247,496–185,256,168 | 12,805,280 / 12,797,000 / 12,796,592 |
+
+A weekly-shaped dispatch (run 41640410747, base `14d486f0`, new `db61e9b9`)
+also had only the pending baseline on both platforms. Each "Check resources"
+step took at most 1 s. The jobs took 3m53s to 4m21s on Linux and 5m09s to
+7m59s on macOS, against 4m09s to 5m09s and 5m48s to 7m48s in the three runs
+before the step existed, so the step adds no measurable job time.
 
 ## Reference baseline
 
