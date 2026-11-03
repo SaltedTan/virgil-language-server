@@ -14,6 +14,7 @@ def X = [
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
 	T("LspParserDiagnostics:parse_budget", test_diagnostics_parse_budget),
+	T("LspParserDiagnostics:long_decimal_literal", test_diagnostics_long_literal),
 	()
 ];
 
@@ -256,4 +257,16 @@ def test_diagnostics_parse_budget(t: Tester) {
 	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 22);
 	t.assertz(false, parser.parses(server.documents.overlay(URI), []));
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+// A decimal literal of more than 255 digits is an error, not the end of the
+// server: Virgil's NumberParser counted its digits in a byte before b86f43f1.
+// The same digits before a fraction make a float, which parses.
+def test_diagnostics_long_literal(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	var digits = Array<byte>.new(300);
+	for (i < digits.length) digits[i] = '1';
+	open(t, server, URI, 1, Strings.format1("component C { def x = %s; }", digits));
+	assertRange(t, publication(t, rec, 0, URI, 1), 0, 322, 322);
+	replace(t, server, 2, Strings.format1("component C { def x = %s.5; }", digits));
+	t.asserti(0, publication(t, rec, 1, URI, 2).length);
 }

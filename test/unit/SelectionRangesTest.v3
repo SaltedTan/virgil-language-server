@@ -28,6 +28,7 @@ def X = [
 	T("SelectionRanges:protocol", protocol),
 	T("SelectionRanges:limits", limits),
 	T("SelectionRanges:parse_budget", parse_budget),
+	T("SelectionRanges:long_decimal_literal", long_decimal_literal),
 	()
 ];
 
@@ -418,4 +419,15 @@ def parse_budget(t: Tester) {
 	t.asserti(-32803, JsonValue.Int.!(error["code"]).v);
 	t.assert_string("the document has more than 9 tokens", JsonValue.String.!(error["message"]).v);
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+// Lexical recovery reads a decimal literal of more than 255 digits as an
+// invalid literal and stops there, rather than ending the server, as Virgil's
+// NumberParser did before b86f43f1 by counting the digits in a byte.
+def long_decimal_literal(t: Tester) {
+	var digits = Array<byte>.new(300);
+	for (i < digits.length) digits[i] = '1';
+	var text = Strings.format1("component C { def x = %s; }\n", digits);
+	var a = AeneasAdapter.selectionRanges("selection.v3", text, [], [4]);
+	t.asserti(1, a.length);
+	t.assert(a[0].length > 0, "a chain before the literal");
 }
