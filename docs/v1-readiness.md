@@ -126,7 +126,7 @@ The [cursor tolerance histories](benchmarks.md#cursor-tolerance-histories-2026-1
 
 ### 4. Performance budgets
 
-The performance budgets are adopted: the maintainer adopted the proposal in [performance-budgets.md](performance-budgets.md) on 2026-11-03 ([ADR-0016](decisions/0016-performance-budgets.md)), exactly as proposed, with its numbers, reference environments, and enforcement policy. The clause can't be satisfied until the candidate passes a run on the reference host checked against the adopted table. The requirements the clause needs, and which are now met:
+The performance budgets are adopted: the maintainer adopted the proposal in [performance-budgets.md](performance-budgets.md) on 2026-11-03 ([ADR-0016](decisions/0016-performance-budgets.md)), exactly as proposed, with its numbers, reference environments, and enforcement policy. The clause can't be satisfied until the candidate passes a run on the reference host checked against the adopted table. The clause's requirements and their current status:
 
 - a budget table: met, the adopted target tables in [performance-budgets.md](performance-budgets.md);
 - the qualified host and workloads that it applies to: met, the i7-14700KF reference host, CPU 12, on the small, util, and Aeneas fixtures within the document's supported envelope;
