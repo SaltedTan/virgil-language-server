@@ -20,7 +20,8 @@ The same budget bounds the server's other single-file parses (#428).
 Repairing the current text of a dense project file whose method body is
 broken, or whose braces are one closer short, ended the server with
 HeapOverflow at rest; now the file is analyzed as it is. Parser diagnostics of a dense document ended it
-with two Aeneas-sized analysis snapshots retained; now the document has none.
+with two Aeneas-sized analysis snapshots retained; now the document gets one
+Information note saying it was not checked for syntax errors (#449).
 Each case is followed by a small document's outline, a ping, shutdown, and
 exit with status 0. The pressure case copies the pinned Aeneas sources, as
 evicted_snapshot.py does, checks that both projects' analyses completed and
@@ -40,6 +41,11 @@ SMALL_URI = 'untitled:s'
 SMALL = 'component C {\n\tdef f() {}\n}\n'
 MAX_TOKENS = 350000
 REFUSED = 'the document has more than %d tokens' % MAX_TOKENS
+# The note a document over the parse budget gets in place of its parser
+# diagnostics (#449).
+NOTE = {'range': {'start': {'line': 0, 'character': 0}, 'end': {'line': 0, 'character': 0}},
+        'severity': 3, 'source': 'virgil-lsp', 'code': 'ParseBudget',
+        'message': "This document has more than %d tokens, the server's parse budget, so it was not checked for syntax errors." % MAX_TOKENS}
 # Just under the 1 MiB overlay limit, beside the small document: each is
 # charged its text, URI, and language ID, and 256 bytes for its record.
 SIZE = 1024 * 1024 - 2 * 256 - len(SMALL) - len(SMALL_URI) - len(DENSE_URI) - 2 * len('virgil')
@@ -227,7 +233,7 @@ def run_pressure(exe):
         s.send('textDocument/didChange', {'textDocument': {'uri': DENSE_URI, 'version': 2},
                                           'contentChanges': [{'text': text[:-1] + ' '}]}, request=False)
         s.ping()
-        assert diagnostics(s, DENSE_URI) == [], 'a dense document has no parser diagnostics'
+        assert diagnostics(s, DENSE_URI) == [NOTE], 'a dense document gets the over-budget note'
         outline_small(s, SMALL_URI)
         s.ping()
         s.shutdown()
@@ -284,7 +290,7 @@ def main():
         run_repair(exe, name, tail)
     run_pressure(exe)
     print('PASS: outline parse budget (%d cases of %d methods: refused and admitted documents, and a quick fix '
-          'refused; dense repairs and parser diagnostics under pressure; then a small document, a ping, shutdown, '
+          'refused; dense repairs and the over-budget note under pressure; then a small document, a ping, shutdown, '
           'and exit)' % (len(cases), len(METHODS)))
 
 
