@@ -105,13 +105,9 @@ class LspTokenData {
 }
 
 // textDocument/semanticTokens/full from the active project's current
-// snapshot, or a temporary analysis of an unowned file. The
+// snapshot, sharing definition's freshness, waiting, and cancellation. The
 // option is fixed at initialization, like the inlay hints'.
 class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore, projects: WorkspaceProjects) {
-	var standalone: LspStandaloneTokens;
-	new() {
-		standalone = LspStandaloneTokens.new(store, projects, send, answer, failure);
-	}
 	// A reply has at most this many tokens, the first in source order; later
 	// names keep the grammar's colors. Each takes at most about 60 bytes
 	// encoded.
@@ -129,26 +125,26 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 	// Only an enabled server handles requests; otherwise the dispatcher
 	// refuses them as an unknown method.
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
-		standalone.maxWaiting = requests.MAX_WAITING;
-		if (enabled) requests.registerDocument(dispatcher, "textDocument/semanticTokens/full", "semantic tokens", prepare, failure).unowned = standalone.receive;
+		if (enabled) requests.registerDocument(dispatcher, "textDocument/semanticTokens/full", "semantic tokens", prepare, failure);
 	}
 	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
 		return answer;
 	}
-	// A failure, such as a project that doesn't parse, is temporary.
-	// ContentModified makes
+	// A document in no project has no tokens. Every other failure, such as a
+	// project that doesn't parse, is temporary, and ContentModified makes
 	// VS Code and Neovim keep the tokens they have, which they move with
 	// edits, rather than clear them until the next analysis.
 	private def failure(uri: string, identity: DocumentVersionIdentity, reason: string) -> JsonRpcReply {
-		record(uri, identity, UNAVAILABLE);
+		record(uri, identity, if(reason == LspSnapshotReasons.UNOWNED, EMPTY, UNAVAILABLE));
+		if (reason == LspSnapshotReasons.UNOWNED) return JsonRpcReply.ResultJson(LspTokenData.new(0).finish());
 		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.CONTENT_MODIFIED, reason));
 	}
 	private def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
 		var file = at.snapshot.fileIndex(at.path()), hash = SEED, data: LspTokenData;
-		var owners = projects.owners([at.path()]);
 		if (file == null) {
 			data = LspTokenData.new(0);
 		} else {
+			var owners = projects.owners([at.path()]);
 			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens, libraryPrefix(), projectPrefix(if(owners.length > 0, owners[0], null))), line = 0, character = 0;
 			data = LspTokenData.new(c.bound());
 			while (c.next()) {
@@ -163,8 +159,6 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		}
 		var version = at.snapshot.documentVersions[at.index];
 		record(version.uri, version.identity, hash);
-		var baseline = baselines[version.uri];
-		if (baseline != null) baseline.standalone = owners[0] == null;
 		return (true, JsonRpcReply.ResultJson(data.finish()));
 	}
 	private def record(uri: string, identity: DocumentVersionIdentity, hash: u64) {
@@ -176,8 +170,8 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 	}
 
 	// Refresh. Each open document keeps a fingerprint for its text from a
-	// request's reply or the last analysis comparison, including standalone
-	// replies. ContentModified records UNAVAILABLE, unless it keeps the
+	// request's reply or the last analysis comparison. An unowned reply
+	// records EMPTY; ContentModified records UNAVAILABLE, unless it keeps the
 	// fingerprint as described below. A new analysis
 	// whose tokens differ for the same text sends workspace/semanticTokens/refresh,
 	// including when an unowned document joins a project or analysis recovers
@@ -190,8 +184,8 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 	// sends, and can't keep the client and analyses requesting each other.
 	def documentClosed(uri: string) { baselines.remove(uri); }
 	// Membership can change without any analysis completing. A document that
-	// left every project needs a standalone reply; one whose active context
-	// already has a current snapshot is compared with it.
+	// left every project has no tokens; one whose active context already has a
+	// current snapshot is compared with it.
 	def scopesChanged() {
 		if (!refreshSupport) return;
 		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
@@ -203,11 +197,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		for (i < open.length) {
 			var ctx = owners[i];
 			if (ctx == null) {
-				var previous = baselines[open[i].uri];
-				if (previous != null && !previous.standalone) {
-					remember(open[i].uri, open[i].identity, EMPTY);
-					baselines[open[i].uri].standalone = true;
-				}
+				remember(open[i].uri, open[i].identity, EMPTY);
 				continue;
 			}
 			var visited = false;
@@ -309,10 +299,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (path == null) return null;
 		return ProjectFiles.join(ProjectFiles.parent(path), "");
 	}
-	def close() {
-		standalone.close();
-		refreshSupport = false; dirty = false; baselines = OrderedStringMap<LspTokenFingerprint>.new();
-	}
+	def close() { refreshSupport = false; dirty = false; baselines = OrderedStringMap<LspTokenFingerprint>.new(); }
 }
 
 def MAX_TOKENS = 100000;
@@ -320,8 +307,8 @@ def DATA_OPEN = "{\"data\":[";
 // The room a reply reserves for each token. A token takes 10 to 11 bytes on
 // average in the Aeneas and lib/util sources.
 def TOKEN_BYTES = 12;
-// FNV-1a's offset basis seeds a fingerprint; an empty token list hashes to
-// it. No token sequence's hash is the sentinel for a
+// FNV-1a's offset basis seeds a fingerprint; the tokens of a document in no
+// project hash to it. No token sequence's hash is the sentinel for a
 // document the server can't analyze, but for a collision with 2^-64 odds.
 def SEED = 0xcbf29ce484222325ul;
 def EMPTY = SEED;
@@ -331,10 +318,7 @@ def UNAVAILABLE = 0ul;
 // document's text, which {identity} names, or UNAVAILABLE. {served} if a
 // reply gave the client these tokens; {covered} if a refresh asked for them
 // after the client couldn't get this text's tokens.
-class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool, covered: bool) {
-	// A standalone reply was served or requested after leaving a project.
-	var standalone: bool;
-}
+class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool, covered: bool) { }
 
 // The tokens of file {index} of {snapshot}, in source order, at most {limit}:
 // its declaration sites and the occurrences that resolve to a source

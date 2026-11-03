@@ -255,7 +255,7 @@ The file does decide which files the server reads. Open editor buffers override 
 
 ## Without a project file
 
-The server falls back to single-file mode: parsing, syntax diagnostics, document symbols, [folding ranges](architecture.md#folding-ranges), [selection ranges](architecture.md#selection-ranges), [keyword completion](architecture.md#completion), and [semantic tokens](architecture.md#semantic-tokens) from an on-demand worker analysis of that file alone, with default language options and no dependencies. Once per session, when a document has no active project, it logs that semantic features are limited. Configuration discovery itself does not start an analysis worker.
+The server falls back to single-file mode: parsing, syntax diagnostics, document symbols, [folding ranges](architecture.md#folding-ranges), [selection ranges](architecture.md#selection-ranges), and [keyword completion](architecture.md#completion). Once per session, when a document has no active project, it logs that semantic features are limited. Configuration discovery itself does not start an analysis worker.
 
 ## Stability and evolution
 

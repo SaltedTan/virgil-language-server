@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Semantic tokens from snapshots that the worker's encoder and decoder made,
-// plus standalone request lifecycle checks through the worker scheduler.
-// The stdio test (test/protocol/semantic_tokens.py)
+// without a worker process. The stdio test (test/protocol/semantic_tokens.py)
 // covers requests, the option, fallback, repair, and refresh through real
 // workers.
 def X = [
@@ -18,13 +17,12 @@ def X = [
 	UnitTests.register("LspSemanticTokens:named_this", named_this),
 	UnitTests.register("LspSemanticTokens:options", options),
 	UnitTests.register("LspSemanticTokens:refresh", refresh),
-	UnitTests.register("LspSemanticTokens:request_unowned_baseline", request_unowned_baseline),
+	UnitTests.register("LspSemanticTokens:request_empty_baseline", request_empty_baseline),
 	UnitTests.register("LspSemanticTokens:request_unavailable_baseline", request_unavailable_baseline),
 	UnitTests.register("LspSemanticTokens:request_current_baseline", request_current_baseline),
 	UnitTests.register("LspSemanticTokens:request_tokens_baseline", request_tokens_baseline),
 	UnitTests.register("LspSemanticTokens:request_failure_refreshes_once", request_failure_refreshes_once),
 	UnitTests.register("LspSemanticTokens:single_file_library", single_file_library),
-	UnitTests.register("LspSemanticTokens:standalone_requests", standalone_requests),
 	()
 ];
 def PATH = "/semantic-tokens/Main.v3";
@@ -491,13 +489,12 @@ class TokenBaselineSession {
 	}
 }
 
-def request_unowned_baseline(t: Tester) {
+def request_empty_baseline(t: Tester) {
 	for (support in [true, false]) {
 		var s = TokenBaselineSession.new(t, false, support);
 		s.request();
-		// This session has no worker for the standalone request. Its failed
-		// baseline still refreshes when the document joins an analyzed project.
-		t.asserti(LspErrorCode.CONTENT_MODIFIED, JsonValue.Int.!(JsonValue.JObject.!(s.response["error"]).v["code"]).v);
+		var result = JsonValue.JObject.!(s.response["result"]).v;
+		t.asserti(0, JsonValue.JArray.!(result["data"]).v.length);
 		t.asserti(0, s.refreshes);
 		s.store.change(s.config, 2, s.configuration(true));
 		s.projects.refresh();
@@ -511,44 +508,6 @@ def request_unowned_baseline(t: Tester) {
 		s.tokens.scopesChanged();
 		t.asserti(if(support, 1), s.refreshes);
 	}
-}
-
-// Drive the real worker scheduler without polling between requests and
-// edits, so queued/running invalidation and cancellation are deterministic.
-def standalone_requests(t: Tester) {
-	var s = SemanticTestSession.new(), name = "Standalone.v3";
-	s.open(name, 1, "component Alone { def f() { } }");
-	var request = fun (id: int) {
-		var b = StringBuilder.new().puts("{\"jsonrpc\":\"2.0\",\"id\":").putd(id);
-		b.put1(",\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"%s\"}}}", s.uri(name));
-		s.server.handle(b.extract());
-	};
-	request(41);
-	s.server.handle("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":41}}");
-	request(42); // queued behind the cancelled job, which still runs
-	s.change(name, 2, "component Changed { def f() { } }");
-	s.settle();
-	request(43); // now running; its result must be discarded after an edit
-	s.change(name, 3, "component Current { def f() { } }");
-	s.settle();
-	s.server.projects.snapshotBudget = 0;
-	request(44);
-	s.server.projects.snapshotBudget = s.server.projects.MAX_SNAPSHOT_BYTES;
-	request(45);
-	s.server.handle("{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"shutdown\"}");
-	s.server.close();
-	var seen = 0;
-	for (msg in s.take()) {
-		if (!msg.has("id")) continue;
-		var id = JsonValue.Int.!(msg["id"]).v;
-		if (id < 41 || id > 45) continue;
-		var bit = 1 << byte.view(id - 41);
-		t.asserti(0, seen & bit);
-		seen |= bit;
-		var code = JsonValue.Int.!(JsonValue.JObject.!(msg["error"]).v["code"]).v;
-		t.asserti(if(id == 41 || id == 45, LspErrorCode.REQUEST_CANCELLED, LspErrorCode.CONTENT_MODIFIED), code);
-	}
-	t.asserti(31, seen);
 }
 
 def request_unavailable_baseline(t: Tester) {

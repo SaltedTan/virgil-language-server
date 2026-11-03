@@ -165,7 +165,6 @@ class LspServer {
 		rename.scheduler = semanticDiagnostics;
 		completion.scheduler = semanticDiagnostics;
 		signatureHelp.scheduler = semanticDiagnostics;
-		semanticTokens.standalone.scheduler = semanticDiagnostics;
 	}
 	// A new current snapshot can change the inlay hints and semantic tokens
 	// of open documents, which ask the client to refresh them.
@@ -501,7 +500,6 @@ class LspServer {
 		rename.cancel(n);
 		completion.cancel(n);
 		signatureHelp.cancel(n);
-		semanticTokens.standalone.cancel(n);
 		snapshotRequests.cancel(n);
 	}
 	// The client's first notification after initialize.
