@@ -55,6 +55,9 @@ class StartupError extends Error {}
 let output: vscode.LogOutputChannel;
 let extensionPath: string;
 let client: QueuedLanguageClient | undefined;
+// Set when deactivation starts, so that no extension change restarts a server
+// that is about to stop.
+let deactivating = false;
 // Starts and stops run one at a time, in the order they were requested.
 let queue: Promise<void> = Promise.resolve();
 
@@ -62,6 +65,9 @@ class QueuedLanguageClient extends LanguageClient {
   // The client stops listening to its file watchers but doesn't dispose them.
   watchers: vscode.Disposable[] = [];
   notificationDrainTimeout = NOTIFICATION_DRAIN_TIMEOUT_MS;
+  // The `semanticTokens` option this client started with, so that an
+  // extension change can tell whether the answer differs.
+  semanticTokens = true;
   private readonly pendingNotifications = new Set<Promise<void>>();
   private readonly pendingRequests = new Set<(error: ResponseError<void>) => void>();
   private requestFailure: ResponseError<void> | undefined;
@@ -214,6 +220,7 @@ class QueuedLanguageClient extends LanguageClient {
 
 export function activate(context: vscode.ExtensionContext): Promise<void> {
   extensionPath = context.extensionPath;
+  deactivating = false;
   const channel = vscode.window.createOutputChannel(CHANNEL_NAME, { log: true });
   output = ignoreWriteFailures(channel);
   context.subscriptions.push(
@@ -226,6 +233,12 @@ export function activate(context: vscode.ExtensionContext): Promise<void> {
         void enqueue(restart);
       }
     }),
+    // `auto` defers to titzer.virgil, so a change in the installed extensions
+    // can change the answer. The restart itself decides again, since several
+    // events can arrive before it runs.
+    vscode.extensions.onDidChange(() => {
+      if (semanticTokensRestartReason() !== undefined) void enqueue(restartForSemanticTokens);
+    }),
   );
   return enqueue(start);
 }
@@ -233,6 +246,7 @@ export function activate(context: vscode.ExtensionContext): Promise<void> {
 // VS Code waits for the returned promise, so the server gets `shutdown` and
 // `exit` before the extension host goes away.
 export function deactivate(): Promise<void> {
+  deactivating = true;
   return enqueue(stop);
 }
 
@@ -241,14 +255,45 @@ function enqueue(task: () => Promise<void>): Promise<void> {
   return queue;
 }
 
-// Whether the server sends semantic tokens: `on` and `off` decide, and
+function semanticTokensSetting(): string {
+  return vscode.workspace.getConfiguration().get<string>(SEMANTIC_TOKENS_SETTING, 'auto');
+}
+
+// Whether the server sends semantic tokens, with the line that says why `auto`
+// turned them off, if it did. `on` and `off` decide without a message, and
 // `auto`, the default, turns them off while titzer.virgil is enabled.
-function semanticTokens(): boolean {
-  const setting = vscode.workspace.getConfiguration().get<string>(SEMANTIC_TOKENS_SETTING, 'auto');
-  if (setting === 'on' || setting === 'off') return setting === 'on';
-  if (vscode.extensions.getExtension(VIRGIL_EXTENSION) === undefined) return true;
-  output.info(`Semantic tokens are off: ${VIRGIL_EXTENSION} is enabled, and ${SEMANTIC_TOKENS_SETTING} is auto`);
-  return false;
+function decideSemanticTokens(): { enabled: boolean; reason?: string } {
+  const setting = semanticTokensSetting();
+  if (setting === 'on' || setting === 'off') return { enabled: setting === 'on' };
+  if (vscode.extensions.getExtension(VIRGIL_EXTENSION) === undefined) return { enabled: true };
+  return {
+    enabled: false,
+    reason: `Semantic tokens are off: ${VIRGIL_EXTENSION} is enabled, and ${SEMANTIC_TOKENS_SETTING} is auto`,
+  };
+}
+
+// Why an extension change should restart the running server, or undefined
+// when it shouldn't: `on` and `off` don't follow titzer.virgil, no server is
+// running or deactivation has begun, and under `auto` only a different answer
+// from the running client's needs a restart. Another, unrelated extension's
+// change leaves the answer as it was.
+function semanticTokensRestartReason(): string | undefined {
+  if (deactivating || client === undefined || !client.isRunning()) return undefined;
+  if (semanticTokensSetting() !== 'auto') return undefined;
+  const enabled = decideSemanticTokens().enabled;
+  if (enabled === client.semanticTokens) return undefined;
+  return enabled
+    ? `${VIRGIL_EXTENSION} is no longer enabled; restarting the server with semantic tokens`
+    : `${VIRGIL_EXTENSION} was enabled; restarting the server without semantic tokens`;
+}
+
+// Runs from the queue, so it decides again when it runs: several extension
+// events that cancel out before then restart nothing.
+async function restartForSemanticTokens(): Promise<void> {
+  const reason = semanticTokensRestartReason();
+  if (reason === undefined) return;
+  output.info(reason);
+  await restart();
 }
 
 async function restart(): Promise<void> {
@@ -271,6 +316,8 @@ async function start(): Promise<void> {
   };
   const virgilRoot = resolveVirgilRoot();
   const watchers = WATCHED_FILES.map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
+  const semanticTokens = decideSemanticTokens();
+  if (semanticTokens.reason !== undefined) output.info(semanticTokens.reason);
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', language: 'virgil' },
@@ -284,7 +331,7 @@ async function start(): Promise<void> {
         types: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.types', true),
         parameterNames: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.parameterNames', true),
       },
-      semanticTokens: semanticTokens(),
+      semanticTokens: semanticTokens.enabled,
     },
     // Changes made outside the editor, such as a checkout, refresh projects.
     // The client batches these events with those of the server's own
@@ -297,6 +344,7 @@ async function start(): Promise<void> {
   // The client ID `virgil` makes the client read `virgil.trace.server`.
   const started = new QueuedLanguageClient('virgil', CHANNEL_NAME, serverOptions, clientOptions);
   started.watchers = watchers;
+  started.semanticTokens = semanticTokens.enabled;
   client = started;
   output.info(`Starting ${executable} --stdio`);
   try {

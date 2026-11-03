@@ -35,6 +35,8 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
   const pendingTimers = new Set();
   const tabListeners = new Set();
   const editorListeners = new Set();
+  const extensionListeners = new Set();
+  const installedExtensions = new Set(extensions);
   const subscribe = (listeners) => (callback) => {
     listeners.add(callback);
     return { dispose: () => listeners.delete(callback) };
@@ -182,7 +184,10 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       },
     },
     // The other installed extensions, by ID.
-    extensions: { getExtension: (id) => (extensions.includes(id) ? { id } : undefined) },
+    extensions: {
+      getExtension: (id) => (installedExtensions.has(id) ? { id } : undefined),
+      onDidChange: subscribe(extensionListeners),
+    },
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../out/extension.js'), 'utf8'), {
@@ -228,6 +233,13 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
     pauseStart() { nextStart = deferred(); return nextStart; },
     pauseStop() { nextStop = deferred(); return nextStop; },
     pauseNotification() { nextNotification = deferred(); return nextNotification; },
+    // Replaces the installed extensions and fires extensions.onDidChange, as
+    // installing, enabling, disabling, or uninstalling one does.
+    changeExtensions(...ids) {
+      installedExtensions.clear();
+      for (const id of ids) installedExtensions.add(id);
+      for (const callback of extensionListeners) callback();
+    },
     changeVisibility() {
       for (const callback of tabListeners) callback();
       for (const callback of editorListeners) callback();
@@ -711,4 +723,101 @@ test('changing virgil.semanticTokens restarts with semantic tokens off', async (
   assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
   assert.equal(host.clients[1].options.initializationOptions.semanticTokens, false);
   await host.extension.deactivate();
+});
+
+const VIRGIL_ENABLED_LINE = 'titzer.virgil was enabled; restarting the server without semantic tokens';
+const VIRGIL_GONE_LINE = 'titzer.virgil is no longer enabled; restarting the server with semantic tokens';
+
+test('auto restarts the server when titzer.virgil appears after start', async () => {
+  const host = extensionHost();
+  await host.activate();
+  assert.equal(host.clients[0].options.initializationOptions.semanticTokens, true);
+  host.changeExtensions('titzer.virgil');
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients[1].options.initializationOptions.semanticTokens, false);
+  assert.equal(host.messages.filter((message) => message === VIRGIL_ENABLED_LINE).length, 1);
+  // The restarted server says once why its tokens are off, as any start does.
+  assert.equal(host.messages.filter((message) =>
+    message === 'Semantic tokens are off: titzer.virgil is enabled, and virgil.semanticTokens is auto').length, 1);
+  await host.extension.deactivate();
+});
+
+test('auto restarts the server when titzer.virgil goes away after start', async () => {
+  const host = extensionHost({ extensions: ['titzer.virgil'] });
+  await host.activate();
+  assert.equal(host.clients[0].options.initializationOptions.semanticTokens, false);
+  host.changeExtensions();
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients[1].options.initializationOptions.semanticTokens, true);
+  assert.equal(host.messages.filter((message) => message === VIRGIL_GONE_LINE).length, 1);
+  await host.extension.deactivate();
+});
+
+test('auto ignores another extension change, without logging that tokens are off', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const messages = host.messages.length;
+  host.changeExtensions('other.extension');
+  await settle();
+  assert.deepEqual(host.events, ['start:0']);
+  assert.equal(host.clients.length, 1);
+  assert.deepEqual(host.messages.slice(messages), []);
+  assert.equal(host.messages.some((message) => message.startsWith('Semantic tokens are off')), false);
+  await host.extension.deactivate();
+});
+
+for (const [setting, before, after] of [
+  ['on', [], ['titzer.virgil']],
+  ['on', ['titzer.virgil'], []],
+  ['off', [], ['titzer.virgil']],
+  ['off', ['titzer.virgil'], []],
+]) {
+  test(`virgil.semanticTokens ${setting} does not restart when titzer.virgil ${after.length ? 'appears' : 'goes away'}`,
+    async () => {
+      const host = extensionHost({ settings: { 'virgil.semanticTokens': setting }, extensions: before });
+      await host.activate();
+      host.changeExtensions(...after);
+      await settle();
+      assert.deepEqual(host.events, ['start:0']);
+      assert.equal(host.clients.length, 1);
+      await host.extension.deactivate();
+    });
+}
+
+test('auto restarts nothing when titzer.virgil appears and goes away before the queue runs', async () => {
+  const host = extensionHost();
+  await host.activate();
+  host.changeExtensions('titzer.virgil');
+  host.changeExtensions();
+  await settle();
+  assert.deepEqual(host.events, ['start:0']);
+  assert.equal(host.clients.length, 1);
+  assert.equal(host.messages.some((message) => message.includes('restarting the server')), false);
+  await host.extension.deactivate();
+});
+
+test('auto restarts once when titzer.virgil appears twice', async () => {
+  const host = extensionHost();
+  await host.activate();
+  host.changeExtensions('titzer.virgil');
+  host.changeExtensions('titzer.virgil');
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients.length, 2);
+  assert.equal(host.messages.filter((message) => message === VIRGIL_ENABLED_LINE).length, 1);
+  await host.extension.deactivate();
+});
+
+test('an extension change after deactivation starts no client', async () => {
+  const host = extensionHost();
+  await host.activate();
+  await host.extension.deactivate();
+  const events = [...host.events];
+  host.changeExtensions('titzer.virgil');
+  await settle();
+  assert.deepEqual(host.events, events);
+  assert.equal(host.clients.length, 1);
+  assert.equal(host.messages.some((message) => message.includes('restarting the server')), false);
 });
