@@ -155,8 +155,7 @@ Each case has three validity labels, available with `--list`:
 
 URI normalization, rename eligibility, and other semantic checks are server
 policies beyond structural validation. The runner allows only the documented
-handler errors (`InvalidParams`, `RequestFailed` for rename/prepareRename, and
-`ContentModified` for semantic tokens when analysis cannot answer).
+handler errors (`InvalidParams`, and `RequestFailed` for rename/prepareRename).
 It asserts the [number and full-sync limitations](../../docs/known-limitations.md#protocol-numbers-and-synchronization)
 as expected behavior. There are currently no known server failures excluded
 from the oracles.
