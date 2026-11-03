@@ -19,5 +19,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0013](0013-recover-other-files-in-query-analyses.md) | Recover other open files in completion and signature-help analyses | Accepted; amends [0006](0006-incomplete-code-repair.md), [0008](0008-method-body-fallback.md), and [0009](0009-current-text-repair.md) |
 | [0014](0014-compatibility-and-support-policy.md) | Supported Virgil, library, and editor combinations | Accepted |
 | [0015](0015-gc-global-register-allocation.md) | Compile the runtime's GC with the global register allocator | Accepted |
+| [0016](0016-performance-budgets.md) | Adopt the performance budgets | Accepted |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
