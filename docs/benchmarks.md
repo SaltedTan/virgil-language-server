@@ -3039,6 +3039,123 @@ different files than at the old pin: 5 next-line, 6 body-end, and 7 two-bodies
 states. There are 67 partial answers, including session diagnostics, as in that
 comparison's run; each is an exact subset of its own current-program oracle.
 
+## Pinned Virgil revision comparison (2026-11-03)
+
+The bump from `57318d37` to `b86f43f1` was measured the way the
+[2026-10-27 comparison](#pinned-virgil-revision-comparison-2026-10-27) was, from
+the same server sources at `a8964c94` with pending tests and documentation, the
+same stable compiler executable, byte-identical generated `BuildInfo.v3`, probes
+enabled, `-global-regalloc=RiGc.*` ([ADR-0015](decisions/0015-gc-global-register-allocation.md)),
+and the default 384 MiB worker heap. Both builds used this physical checkout and
+equal-length `build/pin-old` and `build/pin-new` paths. The shared BuildInfo
+retains the old revision strings, and the build metadata records each build's
+source hashes: the server sources are identical, and only the upstream files
+the bump changes differ.
+
+The entire run held the shared benchmark lock and ran under `taskset -c 12`
+with `--cpu 12` on the Intel Core i7-14700KF host, from 16:49 to 17:10 AEDT,
+starting at a load average of 0.48. Each pin used its own reviewed corpus: the
+gitlink and corpus were switched together before each invocation. Six
+alternating old/new, then new/old process blocks ran each project with two
+warmups and five measured operations per build, giving 30 samples per build,
+project, and scenario. The Aeneas project also ran `--error-result`. Every
+semantic check passed and no samples were removed. Of the 34 latency
+comparisons, 33 have overlapping p10–p90 intervals. The exception is util's
+reused analysis, which is faster at the new pin because its corpus shrank, as
+described below. The short pin-update benchmark also passed with one block,
+one operation, and no warmup.
+
+Analysis times are median (p10–p90), milliseconds:
+
+| Project / analysis | Old pin | New pin |
+| --- | ---: | ---: |
+| Small / fresh | 0.455 (0.444–0.475) | 0.452 (0.442–0.478) |
+| Small / reused | 0.170 (0.159–0.179) | 0.171 (0.162–0.181) |
+| Util / fresh | 15.496 (15.244–16.359) | 15.102 (14.932–15.497) |
+| Util / reused | 12.971 (12.880–13.717) | 12.657 (12.497–12.850) |
+| Aeneas / fresh | 352.813 (348.672–367.598) | 353.012 (345.721–366.659) |
+| Aeneas / reused | 301.217 (290.804–311.006) | 297.903 (291.045–308.355) |
+| Aeneas / error result | 305.325 (294.989–314.103) | 301.656 (290.311–304.935) |
+
+Small worker allocation and live bytes match within 8 bytes. Util grows from
+31 to 33 files but shrinks from 166,628 bytes and 5,360 lines to 161,421 bytes
+and 5,033 lines: `Floats.v3` is rewritten, `FpSketch.v3` and `NumberParser.v3`
+are smaller, and `FpConv.v3` and `Doubles.v3` are new. Its fresh analysis
+allocates 9,798,920 bytes instead of 10,012,872, and keeps 45,408 live bytes
+instead of 43,240. Aeneas grows from 206 to 208 files, the same two library
+files, and shrinks from 3,072,972 bytes and 84,585 lines to 3,068,198 bytes and
+84,272 lines. Aeneas worker memory is median (p10–p90), bytes:
+
+| Metric | Old pin | New pin |
+| --- | ---: | ---: |
+| Fresh allocation | 188,357,720 (188,357,720–188,357,720) | 188,284,408 (188,284,408–188,284,408) |
+| Reused allocation | 188,210,976 (188,202,464–188,212,608) | 188,120,880 (188,111,024–188,124,304) |
+| Error-result allocation | 188,916,784 (188,897,552–188,918,896) | 188,831,584 (188,821,920–188,837,120) |
+| Fresh heap after handling | 191,451,232 (191,451,232–191,451,232) | 191,373,320 (191,373,320–191,373,320) |
+| Reused heap after handling | 191,485,224 (191,476,712–191,486,856) | 191,390,304 (191,380,448–191,393,728) |
+| Error-result heap after handling | 192,245,864 (192,226,632–192,247,976) | 192,155,840 (192,146,176–192,161,376) |
+| Live after collection, every scenario | 181,264 (181,264–181,264) | 181,040 (181,040–181,040) |
+| Reserved worker heap | 402,653,184 (402,653,184–402,653,184) | 402,653,184 (402,653,184–402,653,184) |
+
+Every Aeneas scenario leaves room under the 201,326,592-byte collection
+boundary: at the new pin 9,953,272 bytes fresh, 9,936,288 reused, and 9,170,752
+with an error result, against 9,875,360, 9,841,368, and 9,080,728 at the old pin.
+
+**Worker collection after sending.** The new pin's runtime unrolls `RiGc.memClear`
+to eight words and `RiGc.memCopy` to four per iteration
+([titzer/virgil#827](https://github.com/titzer/virgil/pull/827)). Both builds
+compile `RiGc` with the global register allocator, so the clearing that
+dominates this collection already kept its pointer in a register. The
+collection after sending copies only the 181 KB of live data, so a faster copy
+loop has almost nothing to act on here. Median (p10–p90), milliseconds, of
+the Aeneas collection after the previous transaction's send, reported with the
+named scenario, and its median involuntary context switches:
+
+| Scenario | Wall, old | Wall, new | CPU, old | CPU, new | Switches, old / new |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `reused_analysis` | 20.4 (19.5–22.3) | 20.4 (19.3–22.3) | 10.4 (10.2–10.5) | 10.4 (10.2–10.6) | 3 / 3 |
+| `error_analysis` | 20.3 (19.3–23.0) | 20.4 (19.3–22.6) | 10.5 (10.3–10.6) | 10.4 (10.3–10.6) | 3 / 3 |
+| `completion_miss` | 20.3 (19.3–22.6) | 20.5 (19.7–23.0) | 10.3 (10.2–10.5) | 10.4 (10.3–10.6) | 3 / 3 |
+| `semantic_diagnostic` | 19.5 (19.2–21.5) | 20.3 (19.3–22.4) | 10.3 (10.2–10.4) | 10.4 (10.3–10.6) | 3 / 3 |
+| `rename` | 15.2 (13.4–17.7) | 15.5 (13.7–16.8) | 8.0 (7.9–8.1) | 8.0 (7.9–8.2) | 3 / 3 |
+
+Every block median of that collection's CPU time was 10.2 to 10.6 ms at both
+pins for the four full-analysis scenarios, and 7.9 to 8.1 ms for `rename`, so
+clearing costs the same at both pins. The collection before sending copies the
+analysis result as well as the live data, and copying shows up there. Its CPU
+time, median (p10–p90), microseconds:
+
+| Scenario | Old pin | New pin |
+| --- | ---: | ---: |
+| `fresh_analysis` | 1,322 (1,224–1,395) | 1,262 (1,205–1,373) |
+| `reused_analysis` | 494 (481–519) | 468 (458–494) |
+| `error_analysis` | 504 (483–526) | 475 (466–499) |
+| `rename` | 492 (481–525) | 466 (458–499) |
+| `semantic_diagnostic` | 507 (476–553) | 496 (462–530) |
+| `completion_miss` | 379 (375–395) | 380 (376–397) |
+
+The scenarios that copy a full analysis result take 2 to 6% less CPU at the
+new pin, within overlapping p10–p90 intervals, and `completion_miss`, whose
+result is small, is unchanged. Wall time moved the same way. That is what
+upstream's measurement leads one to expect: with the global allocator, as at
+`-O2`, the unroll left clearing about the same and made copying about 4%
+faster. Either way the change is at most 60 µs per transaction.
+
+Full tolerance runs on both builds each completed 700 state/mode records and 72
+session steps, with zero wrong answers, zero unmet control expectations, and 73
+partial answers, in 481.86 seconds at the old pin and 480.49 at the new. The
+[release scorecard](#release-scorecard) passed on both with identical counts in
+both modes: 180/185 primary and 44/94 held-out states retaining all four
+features, 616/627 exact definitions and hovers, 589/627 exact references,
+180/185 exact diagnostic sets, and all 56 negative controls and stale-predecessor
+injections. The bump changes three held-out states' Aeneas sources,
+`next-line/main/CLOptions.v3`, `next-line/core/Opcode.v3`, and
+`brace-mixed/if-opener/mach/MachBackend.v3`; `tolerance-parse-facts.json`
+records their new texts' verdicts, with the same first-error lines except
+`CLOptions.v3`, where `-O4`'s two lines move it from 347 to 349. The cursor
+histories' inventory records the new sources' hashes, and its `Compiler.v3`
+observer anchor moves from line 233 to 241.
+
 ## Worker heap room (2026-10-31)
 
 Measured on 2026-10-31 for [#380](https://github.com/SaltedTan/virgil-language-server/issues/380) against main `fa53d2a7`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `57318d37` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in equal-length `build/bmain` and `build/bnext` directories, with `BENCH=1 all bench-metadata`: main's before the change, and the change's from its commit `bfedd574`, each with generated BuildInfo revision strings of the same length (`bisect-` and twelve hex digits). The build metadata's source hashes differ only in BuildInfo and the six changed sources. The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed:
