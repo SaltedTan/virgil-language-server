@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "server_source_revision": "9a9e384dc371a88268762a66115c1bec8c283f0d",
-  "virgil_source_revision": "57318d37e9fcca8de6fda5f9cd82d669479f49ff",
+  "virgil_source_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214",
   "projects": {
     "small": {
       "base": "test/fixtures/analysis/two-file",
@@ -192,19 +192,29 @@
           "sha256": "7c7a1543c78694e4f46f47bbe15f00126a3e8f19fa231b8bb6533d72eb1b1b75"
         },
         {
+          "path": "vendor/virgil/lib/util/Doubles.v3",
+          "bytes": 1535,
+          "sha256": "2c02c0b4bf088c2a477ef579d5c2daf531380fd81037921fef121b8ce7ac5984"
+        },
+        {
           "path": "vendor/virgil/lib/util/Edge.v3",
           "bytes": 1475,
           "sha256": "4131055dfb03774a30f57c0838dcdb1e278f6b90f92441b4d632c5e0c14d5a55"
         },
         {
           "path": "vendor/virgil/lib/util/Floats.v3",
-          "bytes": 16982,
-          "sha256": "1f7bf7864fde202479728ca40eccf3c7dec75015c72c03bcc38c90d517a445ea"
+          "bytes": 1378,
+          "sha256": "1a8442857d41cc00f61528bb6511eefad73555f3a7bc63e48f8b7394fb9a6dc2"
+        },
+        {
+          "path": "vendor/virgil/lib/util/FpConv.v3",
+          "bytes": 14363,
+          "sha256": "6e84b3bc7a08efbef5b403d4a0f458197bf6a8fd8012031ec1f090b20f0efa7a"
         },
         {
           "path": "vendor/virgil/lib/util/FpSketch.v3",
-          "bytes": 10585,
-          "sha256": "39d3ecc02b1415d1ad91fb57da225d1a52ee68832d3237868773b7745034c538"
+          "bytes": 6697,
+          "sha256": "f6115f3f1b5f4c8134fdf4badca772a15000b9bfd1097420b0f2977655bd1750"
         },
         {
           "path": "vendor/virgil/lib/util/Functions.v3",
@@ -243,8 +253,8 @@
         },
         {
           "path": "vendor/virgil/lib/util/NumberParser.v3",
-          "bytes": 13115,
-          "sha256": "f0df5f4a84b6d10f43747416fc56cbc85bd42cd2b5cd426c6a6ad268350d78ff"
+          "bytes": 11502,
+          "sha256": "495cf3d51277300312b0a05a3c07887014fbf4b101a7ea45c269655fffbdeec8"
         },
         {
           "path": "vendor/virgil/lib/util/Option.v3",
@@ -322,8 +332,8 @@
           "sha256": "7e5a8a0c2fcd5ef98d20cf1a52b3856f314690f2fc428f75f47c4cd55f905fff"
         }
       ],
-      "source_bytes": 166628,
-      "lines": 5360,
+      "source_bytes": 161421,
+      "lines": 5033,
       "query": {
         "path": "vendor/virgil/lib/util/Vector.v3",
         "anchor": "return if(index >= 0 && index < length, array[index]);",
@@ -562,8 +572,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/core/Opcode.v3",
-          "bytes": 11145,
-          "sha256": "d8848630fcf0736fab517ffaeeef0d9c9b665c2c803816bfe7414ff33db3c7bb"
+          "bytes": 11137,
+          "sha256": "0ea3b5e7982bd5f6d553c55c919e099776a459cad14297800d74de9e39468972"
         },
         {
           "path": "vendor/virgil/aeneas/src/core/OpcodeVisitor.v3",
@@ -607,8 +617,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/ir/Facts.v3",
-          "bytes": 2435,
-          "sha256": "dff9136474d44b631fe4f2da47a580c96fcfbc57b4b6c0bdf15895244bc8ad58"
+          "bytes": 2689,
+          "sha256": "e3bccf2b94caa5d96e453bde0dbba91aee02d28e1be5a64a095ad0da79ee6bca"
         },
         {
           "path": "vendor/virgil/aeneas/src/ir/FunctionWrappers.v3",
@@ -667,8 +677,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/ir/SsaNormalizer.v3",
-          "bytes": 83348,
-          "sha256": "b3daa3a7c005f97de7e36142aa131dbaa6aee529cf797e936b0bc4f7cbcf8fef"
+          "bytes": 83360,
+          "sha256": "d8784c2dd363d2b987dede7b2a1c6366439295cfbf11365e81fe39432a0e2394"
         },
         {
           "path": "vendor/virgil/aeneas/src/ir/TypeNorm.v3",
@@ -767,8 +777,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/mach/MachBackend.v3",
-          "bytes": 46213,
-          "sha256": "28ce8eb08f517247faf79026d1c323c92582c9d6abe80b5b7d2f04b2f133c6b8"
+          "bytes": 46225,
+          "sha256": "bb89ab110864c66728afa2485161a9a0854b9cf6e37cbe68a2904448cf9df4f9"
         },
         {
           "path": "vendor/virgil/aeneas/src/mach/MachDataWriter.v3",
@@ -867,13 +877,13 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/main/CLOptions.v3",
-          "bytes": 21214,
-          "sha256": "10dde10f7c80f0ddbbd06f6eb70a96dfdb9fa3f77b0b443e9fb54ca8d283c818"
+          "bytes": 21289,
+          "sha256": "4d3e96e0cb53174a66cf0990eba7d04e77b5bf332852d543698cf463f341c8da"
         },
         {
           "path": "vendor/virgil/aeneas/src/main/Compiler.v3",
-          "bytes": 16250,
-          "sha256": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd"
+          "bytes": 16412,
+          "sha256": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47"
         },
         {
           "path": "vendor/virgil/aeneas/src/main/Debug.v3",
@@ -893,7 +903,7 @@
         {
           "path": "vendor/virgil/aeneas/src/main/Version.v3",
           "bytes": 248,
-          "sha256": "efb600b4d0b63bf308b9064a7c876b995b6f7364c35c4b596451601361dd621e"
+          "sha256": "f59afaded5d38d26edffbd4258f595fc7e3323c2fa1aead8ce7cbf62ec178f7c"
         },
         {
           "path": "vendor/virgil/aeneas/src/os/Darwin.v3",
@@ -1002,8 +1012,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/ssa/SsaOptimizer.v3",
-          "bytes": 89960,
-          "sha256": "03510811883934f28f85b024764ea59e7b712f2f260e586078f3116e7ac47fb3"
+          "bytes": 89984,
+          "sha256": "383717179a4409498b445e614094874223ba13309393c60c98f5a30a296f3376"
         },
         {
           "path": "vendor/virgil/aeneas/src/ssa/SsaPrinter.v3",
@@ -1242,8 +1252,8 @@
         },
         {
           "path": "vendor/virgil/aeneas/src/vst/VstNumberParser.v3",
-          "bytes": 969,
-          "sha256": "d29b3d901ba36fd3ff69ba0d150282901aaeacc1d539d5e6ed1c1bb65e4cdd4b"
+          "bytes": 871,
+          "sha256": "0fed3e3a9ab154e99faa4c325bec019f2e4d7e133055a151132c2c59a604a595"
         },
         {
           "path": "vendor/virgil/aeneas/src/vst/VstPrinter.v3",
@@ -1391,19 +1401,29 @@
           "sha256": "7c7a1543c78694e4f46f47bbe15f00126a3e8f19fa231b8bb6533d72eb1b1b75"
         },
         {
+          "path": "vendor/virgil/lib/util/Doubles.v3",
+          "bytes": 1535,
+          "sha256": "2c02c0b4bf088c2a477ef579d5c2daf531380fd81037921fef121b8ce7ac5984"
+        },
+        {
           "path": "vendor/virgil/lib/util/Edge.v3",
           "bytes": 1475,
           "sha256": "4131055dfb03774a30f57c0838dcdb1e278f6b90f92441b4d632c5e0c14d5a55"
         },
         {
           "path": "vendor/virgil/lib/util/Floats.v3",
-          "bytes": 16982,
-          "sha256": "1f7bf7864fde202479728ca40eccf3c7dec75015c72c03bcc38c90d517a445ea"
+          "bytes": 1378,
+          "sha256": "1a8442857d41cc00f61528bb6511eefad73555f3a7bc63e48f8b7394fb9a6dc2"
+        },
+        {
+          "path": "vendor/virgil/lib/util/FpConv.v3",
+          "bytes": 14363,
+          "sha256": "6e84b3bc7a08efbef5b403d4a0f458197bf6a8fd8012031ec1f090b20f0efa7a"
         },
         {
           "path": "vendor/virgil/lib/util/FpSketch.v3",
-          "bytes": 10585,
-          "sha256": "39d3ecc02b1415d1ad91fb57da225d1a52ee68832d3237868773b7745034c538"
+          "bytes": 6697,
+          "sha256": "f6115f3f1b5f4c8134fdf4badca772a15000b9bfd1097420b0f2977655bd1750"
         },
         {
           "path": "vendor/virgil/lib/util/Functions.v3",
@@ -1442,8 +1462,8 @@
         },
         {
           "path": "vendor/virgil/lib/util/NumberParser.v3",
-          "bytes": 13115,
-          "sha256": "f0df5f4a84b6d10f43747416fc56cbc85bd42cd2b5cd426c6a6ad268350d78ff"
+          "bytes": 11502,
+          "sha256": "495cf3d51277300312b0a05a3c07887014fbf4b101a7ea45c269655fffbdeec8"
         },
         {
           "path": "vendor/virgil/lib/util/Option.v3",
@@ -1556,8 +1576,8 @@
           "sha256": "5bd6f0d77fd5df7f8b23f475dd5a32c47e070fa3aada989f1550ad4db365b4d2"
         }
       ],
-      "source_bytes": 3072972,
-      "lines": 84585,
+      "source_bytes": 3068198,
+      "lines": 84272,
       "query": {
         "path": "vendor/virgil/aeneas/src/core/Program.v3",
         "anchor": "if (explicitName != null) return explicitName;",

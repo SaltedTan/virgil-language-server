@@ -8,19 +8,53 @@ This file lists third-party material that is used by, linked into, or adapted in
 | --- | --- |
 | Upstream | https://github.com/titzer/virgil |
 | Location | `vendor/virgil` (git submodule) |
-| Pinned revision | `57318d37e9fcca8de6fda5f9cd82d669479f49ff` (2026-10-27) |
+| Pinned revision | `b86f43f102406e94dc2ac4a85909c38ef414e214` (2026-11-03) |
 | License | Apache License 2.0 (the root README names `vendor/virgil/rt/LICENSE`; compiler headers also refer to `aeneas/LICENSE`) |
 | Copyright | Ben L. Titzer, Google Inc., and the Virgil authors, as stated in individual source headers |
 | How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`) and `lib/file/json/JsonParser.v3`. `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. Release archives and platform VSIX payloads also redistribute the entire unchanged `lib/` as `virgil/lib/`, with `virgil/LICENSE` copied from `rt/LICENSE` and `virgil/REVISION` recording this pin. |
 | Modifications | The submodule is unmodified. The single-file parser driver is adapted as recorded below. |
 
-The bundled sources retain all upstream headers and attribution, including Ulf Adams's copyright and Apache-2.0 notice in `lib/util/Floats.v3`. The bundle contains no compiler executable, `rt/`, or `aeneas/` sources.
+The bundled sources retain all upstream headers and attribution. The bundle contains no compiler executable, `rt/`, or `aeneas/` sources.
+
+`lib/util/FpConv.v3` states that it is adapted from [rsc/fpfmt](https://github.com/rsc/fpfmt), Copyright 2025 The Go Authors, under a BSD license. The compiler's number parser reads float literals through it, so it is compiled into the `virgil-lsp` and `virgil-lsp-worker` executables as well as bundled. That repository's `LICENSE`, BSD-3-Clause at revision `ec108cbb39e2cae8e1961d79ba34bd9cc8249f80`, reads:
+
+```text
+Copyright (c) 2009 The Go Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Before Virgil `b86f43f1`, `lib/util/Floats.v3` carried Ulf Adams's copyright and Apache-2.0 notice; the rewritten file no longer carries it.
 
 Release archives and platform VSIX payloads that contain a `virgil-lsp` binary must include a copy of the Apache License 2.0 and this notice file. [`scripts/package-release.sh`](scripts/package-release.sh) adds both to the archive; [`scripts/package-vsix.py`](scripts/package-vsix.py) preserves them in the VSIX payload.
 
 ## Adapted material
 
-`src/analysis/AnalysisSingleFileParser.v3` adapts the setup and top-level loop of [`Parser.parseFile`](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/Parser.v3#L102-L123), and from `ParserState` its [current and retrospective token extraction](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/ParserState.v3#L40-L55), [`advance`](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/ParserState.v3#L56-L61), [`optN` matching and the `column` tab rule](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/ParserState.v3), [`error`](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/ParserState.v3#L159-L169), and [`errorAtOffset`](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/ParserState.v3#L178-L184), from Virgil revision `57318d37e9fcca8de6fda5f9cd82d669479f49ff`, under Apache License 2.0. It also mirrors the whitespace and comment skipping of [`Parser.skipToNextToken`](https://github.com/titzer/virgil/blob/57318d37e9fcca8de6fda5f9cd82d669479f49ff/aeneas/src/vst/Parser.v3#L1445-L1512). Its original notice, **Copyright 2011 Google Inc. All rights reserved.**, is preserved in the adapted file. See [Compiler adapter](docs/architecture.md#compiler-adapter) for implementation details.
+`src/analysis/AnalysisSingleFileParser.v3` adapts the setup and top-level loop of [`Parser.parseFile`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/Parser.v3#L102-L123), and from `ParserState` its [current and retrospective token extraction](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/ParserState.v3#L40-L55), [`advance`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/ParserState.v3#L56-L61), [`optN` matching and the `column` tab rule](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/ParserState.v3), [`error`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/ParserState.v3#L159-L169), and [`errorAtOffset`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/ParserState.v3#L178-L184), from Virgil revision `b86f43f102406e94dc2ac4a85909c38ef414e214`, under Apache License 2.0. It also mirrors the whitespace and comment skipping of [`Parser.skipToNextToken`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/vst/Parser.v3#L1445-L1512). Its original notice, **Copyright 2011 Google Inc. All rights reserved.**, is preserved in the adapted file. See [Compiler adapter](docs/architecture.md#compiler-adapter) for implementation details.
 
 ## VS Code client (npm)
 

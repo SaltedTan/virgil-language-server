@@ -6,7 +6,7 @@ This note records an experiment for [#364](https://github.com/SaltedTan/virgil-l
 
 ## Setup
 
-- Compiler: `vendor/virgil` at `57318d37`, whose `bin/stable/x86-64-linux/Aeneas` prints `Aeneas III-12.1989 stable`, `Build Data: x86-64-linux 2026-09-29 15:55:21` (SHA-256 `5cb4a2f5e0133fd0fb7ec94f1c938da8560964bad99f1f4ba06252788efac65e`).
+- Compiler: `vendor/virgil` at `57318d37`, whose `bin/stable/x86-64-linux/Aeneas` prints `Aeneas III-12.1989 stable`, `Build Data: x86-64-linux 2026-09-29 15:55:21` (SHA-256 `5cb4a2f5e0133fd0fb7ec94f1c938da8560964bad99f1f4ba06252788efac65e`). The pin has since moved to `b86f43f1`, which ships the same `bin/stable` compiler and changes none of the interpreter options below; the experiment wasn't repeated there.
 - Platform: Ubuntu 24.04 on x86-64 (Linux 7.0.0-42-generic, Intel i7-14700KF), repository at `4bf867c8`.
 - Prerequisites: an initialized `vendor/virgil`, and `make build/unit-tests` for the full source list, which includes `build/gen/BuildInfo.v3`. There is no separate interpreter binary: `Aeneas -run` interprets the program's SSA.
 - Times are wall-clock times from `/usr/bin/time`, three unpinned runs each, which agreed within 0.05 s.
