@@ -38,4 +38,3 @@ What the adoption does not cover:
 ## Alternatives considered
 
 - **Enable a CI gate with the adoption.** The proposal set enforcement to advisory. Its [Enforcement](../performance-budgets.md#enforcement) section finds the absolute checks meaningful only on the reference host, and records no evidence that supports a timing gate on the hosted runners of the scheduled comparison.
-- **Include the #347 thresholds.** [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) requires calibration with at least six same-build process blocks per platform, and an explicit approval of its resource-policy file, before its gate is enabled. Neither exists yet, so its thresholds stay a separate decision.
