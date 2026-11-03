@@ -4,8 +4,11 @@
 // Synchronous, single-file syntax diagnostics for the accepted overlay, parsed
 // with the language options of the document's active project. No disk reads
 // or verification. UTF-16 is the protocol default; negotiation is not yet
-// implemented. {LspDiagnosticLists} merges them with the URI's
-// current semantic diagnostics and publishes the complete list.
+// implemented. A text over the parse budget (AnalysisParseBudget) is not
+// parsed and gets one Information note in place of its parser diagnostics,
+// so the editor does not show it as checked and clean. {LspDiagnosticLists}
+// merges them with the URI's current semantic diagnostics and publishes the
+// complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	// The last parse outcome of each open document, by URI in byte order; see
 	// OrderedStringMap.
@@ -16,8 +19,18 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		var result = parse(doc, options);
 		if (BenchProbe.enabled) BenchProbe.server(0, "parser_diagnostics_us", long.view(BenchProbe.now() - start));
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
-		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
-		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
+		var diagnostics: Array<LspDiagnostic>;
+		if (!AnalysisParseBudget.admits(doc.text)) {
+			// The text was not parsed; say so, in the style of the per-file
+			// cap's note (LspSemanticDiagnostics), at the document's start.
+			diagnostics = Array<LspDiagnostic>.new(1);
+			diagnostics[0] = LspDiagnostics.make(map, 0, 0, 3, "virgil-lsp", "ParseBudget",
+				Strings.format1("This document has more than %d tokens, the server's parse budget, so it was not checked for syntax errors.",
+					AnalysisParseBudget.maxTokens));
+		} else {
+			diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
+			for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
+		}
 		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, diagnostics.length == 0, result.repairAt,
 			result.errorAt());
 		lists.parsed(doc, diagnostics);
@@ -46,9 +59,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	}
 	// The parse of {doc}'s text with language options {options}. A text with
 	// more conservatively counted tokens than the server's parse budget
-	// (AnalysisParseBudget) isn't parsed: it has no parser diagnostics and
-	// counts as parsing, so that the analysis worker, which contains its own
-	// failures, analyzes it as it is, without fallback or repair.
+	// (AnalysisParseBudget) isn't parsed: it gets the over-budget note
+	// ({update}) and counts as parsing, so that the analysis worker, which
+	// contains its own failures, analyzes it as it is, without fallback or
+	// repair.
 	private def parse(doc: DocumentOverlay, options: Array<string>) -> FileParseResult {
 		if (!AnalysisParseBudget.admits(doc.text)) return FileParseResult.new(pathOf(doc), [], 0);
 		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
