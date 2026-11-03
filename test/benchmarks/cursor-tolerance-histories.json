@@ -7,7 +7,7 @@
   "aeneas/src/arm64/SsaArm64Gen.v3": "6416332dfb7ae54f049303f58f86e1994702cae1435cee30fc4d6556ba59a4fc",
   "aeneas/src/core/Eval.v3": "abfa7a305eb16cd9092176aa554d70111046d0dbf0d65f280cb05d19a2a5a616",
   "aeneas/src/core/Member.v3": "35cc6e2f75a806a940905430582c5b8e2cfcc2c6d3632415e878caa7572958cf",
-  "aeneas/src/core/Opcode.v3": "d8848630fcf0736fab517ffaeeef0d9c9b665c2c803816bfe7414ff33db3c7bb",
+  "aeneas/src/core/Opcode.v3": "0ea3b5e7982bd5f6d553c55c919e099776a459cad14297800d74de9e39468972",
   "aeneas/src/core/OpcodeVisitor.v3": "138e4d139edfe0b106c324cb828b07f69384a421402195d45e4dea1a81ffcf6e",
   "aeneas/src/core/Operator.v3": "3b79fabd45b3833a4fae13d5aaa76b0ecd2c3b08fca53cffa9a543afa212c2f5",
   "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
@@ -16,7 +16,7 @@
   "aeneas/src/debug/DwarfConst.v3": "6daf3b0ad8052a061dfb3e94f188cf6638fbab2c59f78e0bc2acfbd706bbefa0",
   "aeneas/src/exe/ELF.v3": "9bb3af7b68c66122df8e5e5c88cc02e823718320e2115d307f149310bea727f6",
   "aeneas/src/exe/MachO.v3": "4199f6f2def08569e05883dd846b28d3774e2ebf88444cc9321f43df735b0adc",
-  "aeneas/src/ir/Facts.v3": "dff9136474d44b631fe4f2da47a580c96fcfbc57b4b6c0bdf15895244bc8ad58",
+  "aeneas/src/ir/Facts.v3": "e3bccf2b94caa5d96e453bde0dbba91aee02d28e1be5a64a095ad0da79ee6bca",
   "aeneas/src/ir/FunctionWrappers.v3": "00f799af70ebf547d7ce3bd035a1231b07fe0b69b7272217b2c1754da6cea427",
   "aeneas/src/ir/IntNormalizer.v3": "9666d6930d80f9d93b77213186e68d6c3f9c843ba43d50a50b49f0a4246bbd4c",
   "aeneas/src/ir/Ir.v3": "e77093426fd339b195f2ebc306f8644d0544326485bd8efe4f19fa173435b853",
@@ -28,7 +28,7 @@
   "aeneas/src/ir/PartialSpecialization.v3": "8b201b54977f22797ea6ae5c457226058dfbe1f28a7720707b0e262f6b9f385e",
   "aeneas/src/ir/Reachability.v3": "2b777eead01cbbc417b70e55c908ec1f5407789d123743c05c783b053b6c271c",
   "aeneas/src/ir/ScalarPattern.v3": "69f8055d6fdc2dbe5ba7b41477a9280c70ca5e9fea68f792ad61970cd53d533a",
-  "aeneas/src/ir/SsaNormalizer.v3": "b3daa3a7c005f97de7e36142aa131dbaa6aee529cf797e936b0bc4f7cbcf8fef",
+  "aeneas/src/ir/SsaNormalizer.v3": "d8784c2dd363d2b987dede7b2a1c6366439295cfbf11365e81fe39432a0e2394",
   "aeneas/src/ir/TypeNorm.v3": "a3013f299e776daebcb6598f4940f36eff91e5419c9322a54a521a191f5c99df",
   "aeneas/src/ir/VariantNormalizer.v3": "736bdc8ee421ea357266bd3d32ad713d83abea856a9fc345df9f8b45f4de46f7",
   "aeneas/src/ir/VariantSolver.v3": "3710e2ccf2361cde93d681b91b0168f1f1ee6f41248226200a1a3f71faba1c69",
@@ -48,7 +48,7 @@
   "aeneas/src/mach/LinearScanRegAlloc.v3": "a6d9c5667aced6a766507e37877cdc273f41e1d97fe33d6e9d3a42345581b39a",
   "aeneas/src/mach/Linking.v3": "2db3b42f385154e285ea9814c15cbed6e09a98367f9876d38e70e4ccf7642a94",
   "aeneas/src/mach/LocalRegAlloc.v3": "e393e2556c2f0c886f46f6623c100a6d23350d16e27d1a7f621b000eef621f01",
-  "aeneas/src/mach/MachBackend.v3": "28ce8eb08f517247faf79026d1c323c92582c9d6abe80b5b7d2f04b2f133c6b8",
+  "aeneas/src/mach/MachBackend.v3": "bb89ab110864c66728afa2485161a9a0854b9cf6e37cbe68a2904448cf9df4f9",
   "aeneas/src/mach/MachDataWriter.v3": "3d66420b718f4bc6861fd781472cc75e8a899d644bcb4c99550e323aa04a149f",
   "aeneas/src/mach/MachImportAdapterGen.v3": "807b81865af5d13727fdd3db05567fccf8f5a6a52281584b01692b1c5c898b0f",
   "aeneas/src/mach/MachLowering.v3": "2e8e72338b41a805948d5d5ac923683b57054f692b3e9a1ccb2ea7802f1b19ce",
@@ -68,12 +68,12 @@
   "aeneas/src/mach/ShadowStackSpiller.v3": "cd53f341fc2085895b0e5e7035ec319e060f0cdde8a6e213bcc9847622f3d4d9",
   "aeneas/src/mach/SimpleRegAlloc.v3": "356491bb7a55def6dd8d5b2bbf6786d2a34ae61498b9d54f0de2aa5533f1befd",
   "aeneas/src/main/Aeneas.v3": "1905abb71306269a6f0f661e0f4920af0bf36646459c665d5b17478a4efb2682",
-  "aeneas/src/main/CLOptions.v3": "10dde10f7c80f0ddbbd06f6eb70a96dfdb9fa3f77b0b443e9fb54ca8d283c818",
-  "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+  "aeneas/src/main/CLOptions.v3": "4d3e96e0cb53174a66cf0990eba7d04e77b5bf332852d543698cf463f341c8da",
+  "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
   "aeneas/src/main/Debug.v3": "e91ec1e13e868370104babc48b001e8790afa482972b683b6c2e026a84168c47",
   "aeneas/src/main/Error.v3": "227f0da4bb41722df5f1fbd3d7af0fca7b73fb79109c1a9f925d536254fd229e",
   "aeneas/src/main/Profiler.v3": "cc39ab4e02580741f9c80565016741c8d34a39754ac4cffe0141172cef4a470c",
-  "aeneas/src/main/Version.v3": "efb600b4d0b63bf308b9064a7c876b995b6f7364c35c4b596451601361dd621e",
+  "aeneas/src/main/Version.v3": "f59afaded5d38d26edffbd4258f595fc7e3323c2fa1aead8ce7cbf62ec178f7c",
   "aeneas/src/os/Darwin.v3": "8893403c5aef5887412c9382ac1cb2174716146026b2f446aec20394dca86f31",
   "aeneas/src/os/Kernel.v3": "74e065b4cf32ea9ca5e79e64e11bd60f33568e06ff6c1286e97191c44c3306fa",
   "aeneas/src/os/Linux.v3": "4a0ed04f169d48b8f79062d3e5bb2373b8f73a32a2f6f210c169a5212c3c5a0e",
@@ -95,7 +95,7 @@
   "aeneas/src/ssa/SsaInstrVisitor.v3": "e9c580540adac38f6bfdc3f2852d0e889717573cb9dcb0e85c9f8472d079ecae",
   "aeneas/src/ssa/SsaInterpreter.v3": "23ce744fc8ebe975e64f3b1d8d2ab524eb1fdd3b545021d2939c18f1593f00dc",
   "aeneas/src/ssa/SsaMap.v3": "474d42946f7dd332162157ee65e715983dafe3ab56fa246fd007e10d521a565a",
-  "aeneas/src/ssa/SsaOptimizer.v3": "03510811883934f28f85b024764ea59e7b712f2f260e586078f3116e7ac47fb3",
+  "aeneas/src/ssa/SsaOptimizer.v3": "383717179a4409498b445e614094874223ba13309393c60c98f5a30a296f3376",
   "aeneas/src/ssa/SsaPrinter.v3": "68695d6959696b0021f8af269ebfb0852b5707dad97a39c9b51042731435e716",
   "aeneas/src/ssa/SsaProfiler.v3": "1b061090f78835fa0d79df07b6ac082cbcc3b14a61263db4e44ad3b3fbdcf4a2",
   "aeneas/src/ssa/SsaRebuilder.v3": "72eba86e0e5772b88a98e7fab12c7908329b345a7ed8163182c3e983fdaffc8d",
@@ -143,7 +143,7 @@
   "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b",
   "aeneas/src/vst/Vst.v3": "143c0e9055211a853906f9b317e637b3ae7871eb0ced3945877f37e8799cc35f",
   "aeneas/src/vst/VstMatcher.v3": "b9077427ace77c108f30506d746aef312b64836be92c78edde0ec516a1b4a0c8",
-  "aeneas/src/vst/VstNumberParser.v3": "d29b3d901ba36fd3ff69ba0d150282901aaeacc1d539d5e6ed1c1bb65e4cdd4b",
+  "aeneas/src/vst/VstNumberParser.v3": "0fed3e3a9ab154e99faa4c325bec019f2e4d7e133055a151132c2c59a604a595",
   "aeneas/src/vst/VstPrinter.v3": "123573a1d688d35d02364769b74fdb157397122f3fef3fc733ae8ac4198afd86",
   "aeneas/src/wasm/CfgRestructurer.v3": "a625996516fc900a71c4851129d523f030ab055f0ed3ff6eab996aa7e0b6f4e6",
   "aeneas/src/wasm/WasmCodeGen.v3": "6724d07950d8d9f65450a75342d7d7a9e45d105889affe8b6eb32a3fe91b2e8c",
@@ -180,9 +180,11 @@
   "lib/util/Chars.v3": "54daa530c28b711c637610f429850102d04a18cb5d092703ac9ecd6382b7cd44",
   "lib/util/DataReader.v3": "4f6f5c79589ac4da019cffcf273c6c349f3cdbaf6472e3337581ad3cf8ee0156",
   "lib/util/DataWriter.v3": "7c7a1543c78694e4f46f47bbe15f00126a3e8f19fa231b8bb6533d72eb1b1b75",
+  "lib/util/Doubles.v3": "2c02c0b4bf088c2a477ef579d5c2daf531380fd81037921fef121b8ce7ac5984",
   "lib/util/Edge.v3": "4131055dfb03774a30f57c0838dcdb1e278f6b90f92441b4d632c5e0c14d5a55",
-  "lib/util/Floats.v3": "1f7bf7864fde202479728ca40eccf3c7dec75015c72c03bcc38c90d517a445ea",
-  "lib/util/FpSketch.v3": "39d3ecc02b1415d1ad91fb57da225d1a52ee68832d3237868773b7745034c538",
+  "lib/util/Floats.v3": "1a8442857d41cc00f61528bb6511eefad73555f3a7bc63e48f8b7394fb9a6dc2",
+  "lib/util/FpConv.v3": "6e84b3bc7a08efbef5b403d4a0f458197bf6a8fd8012031ec1f090b20f0efa7a",
+  "lib/util/FpSketch.v3": "f6115f3f1b5f4c8134fdf4badca772a15000b9bfd1097420b0f2977655bd1750",
   "lib/util/Functions.v3": "a6e4db5e6c095fd858853837a896c8e526493b7a7ca0fff4bb338061955bf28b",
   "lib/util/GlobMatcher.v3": "af7e58f95917be8940a716714b7705150aa54015e64f3f81d89e8f25d1236668",
   "lib/util/Ints.v3": "f13548a2c7f47a26900860fa71295ac17216c31ddc8587dbe486b7bece836bd6",
@@ -190,7 +192,7 @@
   "lib/util/List.v3": "f3cdfb2fe3edd37cae45f11db35fb469bf33b773b7b7dc2463014e7d83e01f97",
   "lib/util/Longs.v3": "2889efd58bfdb724017d4c94e1d065101875a9d756cf4bc6d625457b0bf1fb7f",
   "lib/util/Map.v3": "fef9a2b6e995bf427ac4bfe222030242d5997f8d557d11982a237cee0b17ca7b",
-  "lib/util/NumberParser.v3": "f0df5f4a84b6d10f43747416fc56cbc85bd42cd2b5cd426c6a6ad268350d78ff",
+  "lib/util/NumberParser.v3": "495cf3d51277300312b0a05a3c07887014fbf4b101a7ea45c269655fffbdeec8",
   "lib/util/Option.v3": "e0cd85fe51f6d51a4a7db20b89d6af1f79aded1f425928c3a3f3a21bf440b6c8",
   "lib/util/Poly.v3": "305f20de06bb8e643be355f5b5a095ee8eccd591a2c24674d5d648d8775cf17d",
   "lib/util/Random.v3": "5e517462847fa34ad77c9afab3b130d9b60831c3aa323e5a05f2e5917b533d9c",
@@ -9314,11 +9316,11 @@
    ],
    "open": ["aeneas/src/vst/Verifier.v3"],
    "origin": "aeneas",
-   "project_sources": 206,
+   "project_sources": 208,
    "role": "member completion in a real method body",
    "sources": {
     "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-    "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+    "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
     "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
    },
    "steps": [
@@ -9329,7 +9331,7 @@
      "id": "baseline",
      "intended": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      },
      "intended_step": "baseline",
@@ -9385,7 +9387,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "id": "other-file",
        "intended": {
@@ -9393,7 +9395,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "path": "aeneas/src/main/Compiler.v3",
        "role": "other-file",
@@ -9446,7 +9448,7 @@
      "state": "valid",
      "texts": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      }
     },
@@ -9459,7 +9461,7 @@
      "id": "dot",
      "intended": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      },
      "intended_step": "baseline",
@@ -9515,7 +9517,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "id": "other-file",
        "intended": {
@@ -9523,7 +9525,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "path": "aeneas/src/main/Compiler.v3",
        "role": "other-file",
@@ -9560,7 +9562,7 @@
      "state": "damaged",
      "texts": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "db88b38d068617a8d7b584dcdc09eee254c7fef619c5acd5ff8b796d8c377a5b"
      }
     },
@@ -9573,7 +9575,7 @@
      "id": "prefix",
      "intended": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      },
      "intended_step": "baseline",
@@ -9629,7 +9631,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "id": "other-file",
        "intended": {
@@ -9637,7 +9639,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "path": "aeneas/src/main/Compiler.v3",
        "role": "other-file",
@@ -9674,7 +9676,7 @@
      "state": "damaged",
      "texts": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "7a1b8895e66050da315acebf0032191d2896ced1d829eb85ab77fbeabb1ecd74"
      }
     },
@@ -9687,7 +9689,7 @@
      "id": "restored",
      "intended": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      },
      "intended_step": "restored",
@@ -9743,7 +9745,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "id": "other-file",
        "intended": {
@@ -9751,7 +9753,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "path": "aeneas/src/main/Compiler.v3",
        "role": "other-file",
@@ -9804,7 +9806,7 @@
      "state": "valid",
      "texts": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      }
     },
@@ -9815,7 +9817,7 @@
      "id": "repeat",
      "intended": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      },
      "intended_step": "repeat",
@@ -9871,7 +9873,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "id": "other-file",
        "intended": {
@@ -9879,7 +9881,7 @@
          "range": {"end": {"character": 11, "line": 23}, "start": {"character": 5, "line": 23}},
          "uri": "project:///aeneas/src/vst/Verifier.v3"
         },
-        "position": {"character": 32, "line": 233}
+        "position": {"character": 32, "line": 241}
        },
        "path": "aeneas/src/main/Compiler.v3",
        "role": "other-file",
@@ -9932,7 +9934,7 @@
      "state": "valid",
      "texts": {
       "aeneas/src/core/Program.v3": "6a9fe527599122e21a4cef53b8f31f89137e7b5a91f96e9bc0269be1c6d0cbf6",
-      "aeneas/src/main/Compiler.v3": "544b08a34bb5d7a6ce19b72cbf71bb1ed76452366df5fe9cc595133edf17affd",
+      "aeneas/src/main/Compiler.v3": "7685fa5ba6de950cc3f34539952bb073c1643090293d4f92b8f545f4fea3ad47",
       "aeneas/src/vst/Verifier.v3": "54bf9b6df137aece8f39359342ae5b37f1f189062f77e7e745f7d9034f3fec3b"
      }
     }
@@ -9986,7 +9988,7 @@
    ],
    "open": ["aeneas/src/arm64/Arm64AddrPatcher.v3"],
    "origin": "aeneas",
-   "project_sources": 206,
+   "project_sources": 208,
    "role": "member completion in a real method body",
    "sources": {
     "aeneas/src/arm64/Arm64AddrPatcher.v3": "9cf5b15ea3ba9ed9a685341018ba00c7e09cc35b7f8c0a3ccf90ce96fea180dd",
@@ -11528,5 +11530,5 @@
   "eb92c848008949b6ae60fe47ea97aa1f0a0d47f9dc256484d67fa48914b5db9c": "component A {\n\tdef typed: int = Util.add(1, 2);\n\tdef inferred = Util.add(1, 2);\n\tdef edit(n: int) -> int {\n\t\tvar r = Util.add(n, 2);\n\t\tvar s = \"text\"; /* note */\n\t\tif (r > 0) {\n\t\t\tr = r + s.length;\n\t\t\n\t\treturn r;\n\t}\n\tdef sibling() -> int {\n\t\treturn Util.add(3, 4);\n\t}\n\tdef third() {\n\t\tvar x = 0;\n\t}\n}\n",
   "f53fa9e1a6427b63f967d46f48b0b684e7b80ba4664d798a3dd81e03dd859def": "// Completion repair corpus: a syntax error in another file.\nclass Point(x: int, y: int) {\n\tdef norm() -> int { return x * x + y * y; }\n\tdef scaled(k: int) -> Point { return Point.new(x * k, y * k); }\n}\ntype Shape {\n\tcase Circle(r: int);\n\tcase Square(w: int);\n}\nenum Color { RED, GREEN }\ncomponent Util {\n\tdef add(a: int, b: int) -> int { return a + b; }\n\tdef id<T>(v: T) -> T { return v; }\n\tdef log(s: string, n: int) { }\n}\ncomponent Main {\n\tdef run(p: Point) -> int {\n\t\treturn p.x;\n\t}\n}\n"
  },
- "virgil_revision": "57318d37e9fcca8de6fda5f9cd82d669479f49ff"
+ "virgil_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214"
 }

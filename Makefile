@@ -4,10 +4,9 @@
 VIRGIL ?= vendor/virgil
 BUILD  ?= build
 V3C    := scripts/v3c.sh
-# Flags for every executable. At the default optimization level the pinned
-# Aeneas keeps loop variables in stack slots, and the runtime's GC zeroes and
-# copies the heap word by word, so its routines get the global register
-# allocator. See docs/decisions/0015-gc-global-register-allocation.md.
+# Flags for every executable. The pinned runtime's unrolled GC clearing and
+# copying loops still benefit from the global register allocator at the default
+# optimization level. See docs/decisions/0015-gc-global-register-allocation.md.
 V3C_FLAGS = '-global-regalloc=RiGc.*'
 
 # Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.

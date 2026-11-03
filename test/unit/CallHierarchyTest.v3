@@ -430,41 +430,41 @@ def index_methods_and_headers(t: Tester) {
 	p.checkCalls("incoming of f", p.expand(p.item(0, "def f", 4), true), true, 0, "f", [
 		call(method(0, "B", "m", "def m", 4, "; }", "def m() -> int"), [("f(); }", 0)])]);
 }
-// A library's functions are items like any others: lib/util's Ints.abs,
-// which the program and lib/util's Floats call.
+// A library's functions are items like any others: lib/util's
+// Ints.parseDecimal, which the program and lib/util's Option call.
 def library_callees(t: Tester) {
-	var text = Arrays.concat(NOTE, "component Use {\n\tdef magnitude(x: int) -> u32 { return Ints.abs(x) + Ints.abs(-x); }\n}\n");
+	var text = Arrays.concat(NOTE, "component Use {\n\tdef sum(s: Array<byte>) -> int { return Ints.parseDecimal(s, 0).1 + Ints.parseDecimal(s, 1).1; }\n}\n");
 	var dir = "vendor/virgil/lib/util", listing = ProjectFiles.list(dir, 4096);
 	if (listing.names == null) return t.fail("lib/util is not listed");
-	var names = Vector<string>.new().put("library.v3"), texts = Vector<Array<byte>>.new().put(text), ints = -1, floats = -1;
+	var names = Vector<string>.new().put("library.v3"), texts = Vector<Array<byte>>.new().put(text), ints = -1, option = -1;
 	for (name in listing.names) {
 		if (!Strings.endsWith(name, ".v3")) continue;
 		if (Strings.equal(name, "Ints.v3")) ints = names.length;
-		if (Strings.equal(name, "Floats.v3")) floats = names.length;
+		if (Strings.equal(name, "Option.v3")) option = names.length;
 		names.put(Arrays.concat("util/", name));
 		texts.put(System.fileLoad(ProjectFiles.join(dir, name)));
 	}
-	if (ints < 0 || floats < 0) return t.fail("lib/util has Ints.v3 and Floats.v3");
+	if (ints < 0 || option < 0) return t.fail("lib/util has Ints.v3 and Option.v3");
 	var p = CallProgram.new(t, names.extract(), texts.extract(), [], true);
-	var abs = method(ints, "Ints", "abs", "def abs", 4, "\n\t}", "def abs(a: int) -> u32");
-	var magnitude = method(0, "Use", "magnitude", "def magnitude", 4, "; }", "def magnitude(x: int) -> u32");
-	p.checkCalls("outgoing of magnitude", p.expand(p.item(0, "def magnitude", 4), false), false, 0, null, [
-		call(abs, [("Ints.abs(x)", 5), ("Ints.abs(-x)", 5)])]);
-	var incoming = p.expand(p.item(0, "Ints.abs(x)", 5), true);
-	p.checkItems("first caller of abs", JsonRpcReply.Result(JsonValue.JArray([p.first(incoming, true)])), [magnitude]);
-	// Every other caller is in Floats.v3, after library.v3 in byte order.
+	var parse = method(ints, "Ints", "parseDecimal", "def parseDecimal", 4, "\n\t}", "def parseDecimal(a: Array<byte>, pos: int) -> (int, int)");
+	var sum = method(0, "Use", "sum", "def sum", 4, "; }", "def sum(s: Array<byte>) -> int");
+	p.checkCalls("outgoing of sum", p.expand(p.item(0, "def sum", 4), false), false, 0, null, [
+		call(parse, [("Ints.parseDecimal(s, 0)", 5), ("Ints.parseDecimal(s, 1)", 5)])]);
+	var incoming = p.expand(p.item(0, "Ints.parseDecimal(s, 0)", 5), true);
+	p.checkItems("first caller of parseDecimal", JsonRpcReply.Result(JsonValue.JArray([p.first(incoming, true)])), [sum]);
+	// Every other caller is in Option.v3, after library.v3 in byte order.
 	var calls = JsonValue.JArray.!(JsonRpcReply.Result.!(incoming).v).v, ranges = 0;
-	t.assert(calls.length > 1, "Floats calls abs");
+	t.assert(calls.length > 1, "Option calls parseDecimal");
 	for (k = 1; k < calls.length; k++) {
 		var from = JsonValue.JObject.!(JsonValue.JObject.!(calls[k]).v["from"]).v;
-		t.assert_string(p.uri(floats), JsonValue.String.!(from["uri"]).v);
+		t.assert_string(p.uri(option), JsonValue.String.!(from["uri"]).v);
 		ranges += JsonValue.JArray.!(JsonValue.JObject.!(calls[k]).v["fromRanges"]).v.length;
 	}
 	var count = 0;
-	var at = indexFrom(p.texts[floats], "Ints.abs(", 0);
+	var at = indexFrom(p.texts[option], "Ints.parseDecimal(", 0);
 	while (at >= 0) {
 		count++;
-		at = indexFrom(p.texts[floats], "Ints.abs(", at + 1);
+		at = indexFrom(p.texts[option], "Ints.parseDecimal(", at + 1);
 	}
 	t.asserti(count, ranges);
 }
