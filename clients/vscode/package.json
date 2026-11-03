@@ -104,13 +104,13 @@
             "off"
           ],
           "enumDescriptions": [
-            "Off if the titzer.virgil extension is enabled when the language server starts, and on otherwise.",
+            "Off if the titzer.virgil extension is enabled, and on otherwise. Installing, enabling, disabling, or uninstalling that extension restarts the language server when it changes the answer.",
             "Color names by the declarations they resolve to, with the language server's semantic tokens.",
             "Leave colors to the grammar and other extensions."
           ],
           "default": "auto",
           "scope": "window",
-          "markdownDescription": "Color names by the declarations they resolve to, with the language server's semantic tokens. `auto` turns them off if the `titzer.virgil` extension is enabled when the language server starts, and on otherwise. Changing this setting restarts the language server."
+          "markdownDescription": "Color names by the declarations they resolve to, with the language server's semantic tokens. `auto` turns them off if the `titzer.virgil` extension is enabled, and follows that extension being installed, enabled, disabled, or uninstalled by restarting the language server when the answer changes. Changing this setting restarts the language server."
         }
       }
     }
