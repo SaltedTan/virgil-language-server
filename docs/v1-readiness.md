@@ -135,7 +135,7 @@ The performance budgets are adopted: the maintainer adopted the proposal in [per
 - a failure and retest procedure: met, the document's failure and retest procedure;
 - a run of the candidate in CI or a scheduled run, checked against the table: not met, no candidate has been checked yet, and no CI gate is enabled.
 
-Enforcement is advisory: no CI gate is enabled, and the [weekly scheduled comparison](benchmarks.md#scheduled-comparison) is advisory; its change heuristic only produces warning annotations, so it can't satisfy the clause alone. [#347](https://github.com/SaltedTan/virgil-language-server/issues/347), which would add deterministic allocation and worker-collection checks to that workflow, is open and waits for the maintainer to adopt its thresholds; its thresholds are not in the adopted table, and enabling its gate needs the maintainer's separate approval of its resource-policy file.
+Enforcement is advisory: no CI gate is enabled, and the [weekly scheduled comparison](benchmarks.md#scheduled-comparison) is advisory; its change heuristic only produces warning annotations, so it can't satisfy the clause alone. [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) adds deterministic allocation and worker-collection [resource checks](benchmarks.md#resource-checks) to that workflow, which report but never fail the job. #347 stays open: it waits for the maintainer to adopt its thresholds, which are not in the adopted table, and enabling its gate needs the maintainer's separate approval of its resource-policy file.
 
 The existing evidence sources:
 

@@ -1329,7 +1329,8 @@ records the measurements and why the collection stays.
 
 Download `benchmarks-ubuntu-24.04` or `benchmarks-macos-15` from the workflow run's
 artifacts (retained for 90 days). Each contains `comparison.json`, resolved
-`refs.json`, and `summary.md`; macOS also contains `baseline.md`, the newer
+`refs.json`, `summary.md`, and `resources.md` from the [resource
+checks](#resource-checks); macOS also contains `baseline.md`, the newer
 build's reference table. Failed benchmarks retain `comparison.json.failure.json`
 when available. Per-case budgets should be proposed separately only after
 several weeks of scheduled results establish runner variability.
@@ -1342,15 +1343,109 @@ python3 scripts/bench-compare.py --base-ref BASE_SHA --new-ref NEW_SHA \
   --work-dir "$PWD/build/bench-checkouts" --output-dir "$PWD/build/bench-results"
 python3 scripts/bench-report.py build/bench-results/comparison.json --annotations > build/bench-results/summary.md
 python3 scripts/bench-report.py build/bench-results/comparison.json --baseline > build/bench-results/baseline.md
+python3 scripts/bench-report.py build/bench-results/comparison.json --resources test/benchmarks/resource-policy.json > build/bench-results/resources.md
 ```
 
 The work directory must not exist; it is removed after the run. The output
 directory remains. `test/benchmarks/test_report.py`, included in `make test`,
 checks flag boundaries, warmup exclusion, server/worker GC accounting, ref
-selection, and baseline rendering. Its `linux-reference.json` fixture retains
+selection, baseline rendering, and the resource checks. Its `linux-reference.json` fixture retains
 the latency summaries and host/build identifiers from the recorded Linux
 `compare-default.json` below (raw samples and other metrics omitted); the
 expected table matches the documented current default-heap baseline exactly.
+
+### Resource checks
+
+The workflow's "Check resources" step runs `bench-report.py --resources` on the
+same `comparison.json` with the resource policy in
+[`test/benchmarks/resource-policy.json`](../test/benchmarks/resource-policy.json)
+([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)). It
+adds a "Resource checks" table to the job summary, writes it to `resources.md`
+in the artifact, and emits warning annotations. It reads only the probes; it
+uses no timing, so a timing-only change never changes its verdicts.
+
+**The policy is proposed, not approved.** Its thresholds are the starting values
+from #347, which the maintainer hasn't approved, and the step runs with
+`RESOURCE_CHECKS: report`: every verdict is reported, a would-fail verdict as
+`WOULD FAIL` with a "Resource check (would fail)" warning annotation, and the
+step never fails the job. Benchmark correctness failures in the "Build and
+compare" step still fail it.
+
+**Qualification.** Each build needs explicit compatibility metadata: the Virgil
+revision from `--version`, the compiler's SHA-256, the corpus SHA-256, the
+target, a `BENCH=1` build, the worker heap from the build metadata and the
+worker's actual reserved heap from its HELLO (`worker_heap_bytes`), the server
+heap, the byte lengths of the tooling root (the analyzed sources' paths) and of
+each build directory (the compiled-in paths), and the policy's scenario
+options. Every measured transaction of every policy scenario needs exactly one
+worker `allocated_bytes`, `result_bytes`, `gc_count`, and
+`heap_after_handle_bytes` probe, and every required scenario must be measured
+in both builds for every project. Anything missing fails qualification, and
+nothing is compared. If both builds have the metadata but it differs, as for a
+Virgil pin, heap, or path layout change, the comparison is incomparable: the
+table shows no change, no relative check runs, and a warning says which fields
+differ.
+
+**Checks.** For each project and policy scenario, the step compares the median
+worker allocation and RESULT bytes over measured transactions, and counts
+in-handle worker collections, which exclude the explicit collections before and
+after sending. The policy's starting values:
+
+| Group | Scenarios | Allocation increase | New in-handle worker collection |
+| --- | --- | --- | --- |
+| `clean_analysis` | `fresh_analysis`, `reused_analysis` | Over 5%: fail | Fail, if the base had none |
+| `query_analysis` | `completion_miss`, `rename`, `semantic_diagnostic` | Over 5%: fail | Warning |
+| `diagnostic_heavy` | `error_analysis`, which the schedule doesn't run | Reported only; #347 proposes no allowance | Reported only |
+
+RESULT bytes are reported with no limit, as #347 proposes none. The room left
+in the worker's semispace after handling, which is half the reported
+`worker_heap_bytes` minus the largest `heap_after_handle_bytes`, warns under
+2 MiB and never fails. A case that collected during handling shows `collected`
+instead. Server collections are not checked, since retained history and
+response rendering affect them. The policy's `excluded` list names the
+scenarios it doesn't check, with the reason for each, and a worker transaction
+in a scenario that the policy neither checks nor excludes warns.
+
+**Absolute baselines.** A relative check alone misses gradual drift and can't
+compare across a pin change, so the policy also holds approved absolute
+baselines, each with its compatibility metadata and a per-case ceiling on the
+median worker allocation and on in-handle collections. The new build is
+checked against the approved baseline whose metadata matches exactly. If none
+matches, as after a Virgil pin bump or before any baseline is approved, the
+step reports the absolute check as pending with a warning; it neither passes
+nor fails it as a regression. To propose a baseline, download a run's
+`comparison.json` for the platform and run:
+
+```sh
+python3 scripts/bench-report.py comparison.json --resource-baseline test/benchmarks/resource-policy.json
+```
+
+It prints a candidate for the newer build, with its measured ranges and
+proposed ceilings (the median allocation plus the group's allowance, and zero
+collections where a new collection fails), and `"approval": null`. The
+maintainer reviews it, records the approval in its `approval` field, and adds
+it to `baselines`; the step ignores a baseline without an approval. A pin or
+feature change that legitimately grows the result needs that review and a new
+approved baseline, not regenerated numbers to make the check pass.
+
+**Enabling the gate.** After the maintainer approves the policy, set its
+`status` to `approved` and record the approval in `approval`, then change
+`RESOURCE_CHECKS: report` to `RESOURCE_CHECKS: enforce` in the workflow. That
+one line makes a failed check fail the job, with error annotations.
+`--mode enforce` refuses a policy that isn't approved. The workflow change
+needs a human merge.
+
+**Calibration (2026-11-03).** On the reference host, three local
+`bench-compare.py` runs with the same revision as base and new
+(`4c5f3109`), with the workflow's options and checkout layout, gave 6 builds
+and 18 process blocks per project, each with 5 measured transactions per
+scenario. At the same iteration, every transaction's worker allocation was
+identical across processes and runs, and its RESULT bytes differed by at most
+one byte; across the iterations of one process, allocation varied by up to
+0.21% (util `semantic_diagnostic`) and 0.009% for Aeneas. No case collected
+during handling. The least room was Aeneas `rename`'s 9,930,016 bytes. All
+30 ordered same-build pairs produced no verdict other than the pending
+baseline. The step took under 0.1 s.
 
 ## Reference baseline
 
