@@ -234,10 +234,11 @@ export function activate(context: vscode.ExtensionContext): Promise<void> {
       }
     }),
     // `auto` defers to titzer.virgil, so a change in the installed extensions
-    // can change the answer. The restart itself decides again, since several
-    // events can arrive before it runs.
+    // can change the answer. The queued task decides, when it runs: a start
+    // queued or in progress has already chosen its options, and several
+    // events can arrive before the task runs.
     vscode.extensions.onDidChange(() => {
-      if (semanticTokensRestartReason() !== undefined) void enqueue(restartForSemanticTokens);
+      if (!deactivating) void enqueue(restartForSemanticTokens);
     }),
   );
   return enqueue(start);
@@ -287,13 +288,26 @@ function semanticTokensRestartReason(): string | undefined {
     : `${VIRGIL_EXTENSION} was enabled; restarting the server without semantic tokens`;
 }
 
-// Runs from the queue, so it decides again when it runs: several extension
-// events that cancel out before then restart nothing.
+// Runs from the queue, so it decides when it runs: several extension events
+// that cancel out before then restart nothing. A start still in progress
+// outside the queue, the language client's own restart after the server
+// exits, chose its options before the event: decide again once it settles,
+// without holding the queue, so that a start that hangs can't delay
+// deactivation. A start that fails leaves no running server to restart.
 async function restartForSemanticTokens(): Promise<void> {
+  const starting = client;
+  if (starting !== undefined && starting.state === State.Starting) {
+    void starting.start().then(retry, retry);
+    return;
+  }
   const reason = semanticTokensRestartReason();
   if (reason === undefined) return;
   output.info(reason);
   await restart();
+
+  function retry(): void {
+    if (!deactivating && client === starting) void enqueue(restartForSemanticTokens);
+  }
 }
 
 async function restart(): Promise<void> {

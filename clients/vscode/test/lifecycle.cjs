@@ -756,15 +756,21 @@ test('auto restarts the server when titzer.virgil goes away after start', async 
 });
 
 test('auto ignores another extension change, without logging that tokens are off', async () => {
-  const host = extensionHost();
+  // titzer.virgil stays enabled, so a handler that logged its decision on
+  // every event would say again that tokens are off.
+  const host = extensionHost({ extensions: ['titzer.virgil'] });
   await host.activate();
   const messages = host.messages.length;
-  host.changeExtensions('other.extension');
+  host.changeExtensions('titzer.virgil', 'other.extension');
   await settle();
   assert.deepEqual(host.events, ['start:0']);
   assert.equal(host.clients.length, 1);
   assert.deepEqual(host.messages.slice(messages), []);
-  assert.equal(host.messages.some((message) => message.startsWith('Semantic tokens are off')), false);
+  // Control: the subscription is live, so titzer.virgil going away restarts.
+  host.changeExtensions('other.extension');
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients[1].options.initializationOptions.semanticTokens, true);
   await host.extension.deactivate();
 });
 
@@ -782,6 +788,14 @@ for (const [setting, before, after] of [
       await settle();
       assert.deepEqual(host.events, ['start:0']);
       assert.equal(host.clients.length, 1);
+      // Control: under `auto`, an extension event whose answer differs from
+      // the running server's restarts. The setting changes without a
+      // configuration event, so only the extension event can restart.
+      host.values['virgil.semanticTokens'] = 'auto';
+      host.changeExtensions(...(setting === 'on' ? ['titzer.virgil'] : []));
+      await settle();
+      assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+      assert.equal(host.clients[1].options.initializationOptions.semanticTokens, setting !== 'on');
       await host.extension.deactivate();
     });
 }
@@ -795,6 +809,10 @@ test('auto restarts nothing when titzer.virgil appears and goes away before the 
   assert.deepEqual(host.events, ['start:0']);
   assert.equal(host.clients.length, 1);
   assert.equal(host.messages.some((message) => message.includes('restarting the server')), false);
+  // Control: the subscription is live, so a change that stays restarts.
+  host.changeExtensions('titzer.virgil');
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
   await host.extension.deactivate();
 });
 
@@ -813,11 +831,54 @@ test('auto restarts once when titzer.virgil appears twice', async () => {
 test('an extension change after deactivation starts no client', async () => {
   const host = extensionHost();
   await host.activate();
-  await host.extension.deactivate();
-  const events = [...host.events];
+  // Control: before deactivation, the same kind of change restarts.
   host.changeExtensions('titzer.virgil');
   await settle();
+  assert.equal(host.clients.length, 2);
+  await host.extension.deactivate();
+  const events = [...host.events];
+  const restarts = host.messages.filter((message) => message.includes('restarting the server')).length;
+  host.changeExtensions();
+  await settle();
   assert.deepEqual(host.events, events);
+  assert.equal(host.clients.length, 2);
+  assert.equal(host.messages.filter((message) => message.includes('restarting the server')).length, restarts);
+});
+
+// A start that has already chosen its options, whether the first, a restart,
+// or the language client's own restart after the server exits, must not lose
+// an extension change that arrives before it finishes.
+for (const phase of ['first start', 'restart', 'recovery']) {
+  test(`auto follows titzer.virgil appearing during a ${phase}`, async () => {
+    const host = extensionHost();
+    if (phase !== 'first start') await host.activate();
+    const gate = host.pauseStart();
+    const starting = phase === 'first start' ? host.activate()
+      : phase === 'restart' ? host.restart() : host.clients[0].connectionClosed();
+    await settle();
+    assert.equal(host.clients.at(-1).state, State.Starting);
+    assert.equal(host.clients.at(-1).options.initializationOptions.semanticTokens, true);
+    host.changeExtensions('titzer.virgil');
+    gate.resolve();
+    await starting;
+    await settle();
+    assert.equal(host.clients.at(-1).state, State.Running);
+    assert.equal(host.clients.at(-1).options.initializationOptions.semanticTokens, false);
+    assert.equal(host.messages.filter((message) => message === VIRGIL_ENABLED_LINE).length, 1);
+    await host.extension.deactivate();
+  });
+}
+
+test('an extension change during a start that fails starts no client', async () => {
+  const host = extensionHost();
+  const gate = host.pauseStart();
+  const starting = host.activate();
+  await settle();
+  host.changeExtensions('titzer.virgil');
+  gate.reject(new Error('startup failed'));
+  await starting;
+  await settle();
   assert.equal(host.clients.length, 1);
-  assert.equal(host.messages.some((message) => message.includes('restarting the server')), false);
+  assert.equal(host.clients[0].state, State.StartFailed);
+  await host.extension.deactivate();
 });
