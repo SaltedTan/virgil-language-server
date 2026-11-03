@@ -420,7 +420,7 @@ def parse_budget(t: Tester) {
 	t.assert_string("the document has more than 9 tokens", JsonValue.String.!(error["message"]).v);
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }
-// Lexical recovery reads a decimal literal of more than 255 digits as an
+// Lexical recovery reads this 300-digit decimal literal as an
 // invalid literal and stops there, rather than ending the server, as Virgil's
 // NumberParser did before b86f43f1 by counting the digits in a byte.
 def long_decimal_literal(t: Tester) {

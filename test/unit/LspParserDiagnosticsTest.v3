@@ -258,7 +258,7 @@ def test_diagnostics_parse_budget(t: Tester) {
 	t.assertz(false, parser.parses(server.documents.overlay(URI), []));
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }
-// A decimal literal of more than 255 digits is an error, not the end of the
+// This 300-digit decimal literal reports an error without ending the
 // server: Virgil's NumberParser counted its digits in a byte before b86f43f1.
 // The same digits before a fraction make a float, which parses.
 def test_diagnostics_long_literal(t: Tester) {
