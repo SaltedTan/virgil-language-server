@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The [performance budgets](docs/performance-budgets.md) are now adopted: the maintainer adopted the proposal's numbers, reference environments, and enforcement policy on 2026-11-03, exactly as proposed, with advisory enforcement and no CI gate enabled. The thresholds of [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) are not in the adopted table, and enabling its gate needs the maintainer's separate approval of its resource-policy file ([ADR-0016](docs/decisions/0016-performance-budgets.md), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)).
+
 ## [0.1.0-alpha.6] - 2026-11-03
 
 ### Added

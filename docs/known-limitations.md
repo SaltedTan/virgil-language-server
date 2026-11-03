@@ -9,12 +9,13 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, for `0.1.0
 
 ## Performance budgets
 
-No performance budget has been adopted. The numbers in
-[docs/performance-budgets.md](performance-budgets.md) are measured
-baselines and candidate targets, not a release gate: the maintainer has not
-adopted the numbers, the reference environments, or an enforcement policy,
-and until that decision, benchmark timings are advisory and no performance
-number is a guarantee.
+The maintainer adopted the budgets in
+[docs/performance-budgets.md](performance-budgets.md) on 2026-11-03
+([ADR-0016](decisions/0016-performance-budgets.md)). They apply only to Linux
+x86-64 on the documented reference host (i7-14700KF, CPU 12) within the
+supported envelope; macOS/Rosetta is unmeasured. Enforcement is advisory,
+with no CI gate, so the budgets are not a release gate. No performance number
+is a guarantee.
 
 ## Code actions
 

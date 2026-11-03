@@ -1,17 +1,18 @@
-# Proposal — not an adopted release gate
+# Adopted performance budgets
 
-This performance-budget proposal records measured
-baselines and candidate targets for the roadmap's requirement that published
-performance budgets pass in CI or scheduled runs. The maintainer must
-separately adopt the numbers, the reference environments, and the enforcement
-policy. Nothing in this document is an adopted budget, a release gate, or a
-guarantee.
+These performance budgets record measured
+baselines and adopted targets for the roadmap's requirement that published
+performance budgets pass in CI or scheduled runs. The maintainer adopted the
+numbers, the reference environments, and the enforcement policy on
+2026-11-03 ([ADR-0016](decisions/0016-performance-budgets.md)). Enforcement
+is advisory: no CI gate is enabled, and no workflow, test setting, heap, or
+code changes with the adoption.
 
 | Item | Status |
 | --- | --- |
-| Adoption | Not adopted |
-| Adoption date | None |
-| Authority | The maintainer, after the evidence below is reviewed |
+| Adoption | Adopted |
+| Adoption date | 2026-11-03 |
+| Authority | The maintainer, per [ADR-0016](decisions/0016-performance-budgets.md) |
 
 ## Evidence
 
@@ -306,7 +307,7 @@ bytes against its 4 MiB limit. The worker's heap is 402,653,184 bytes
 supports; they are not a universal file or line count guarantee, and no
 target below applies to a program outside this envelope.
 
-## Proposed targets
+## Targets
 
 Every target is a p50/p95 pair in milliseconds on the reference host above,
 for the corpus and build recorded in [Evidence](#evidence). The margin
@@ -400,7 +401,7 @@ The measured maxima over this revision's captures are: server HWM
 bytes (200.8 MiB) in the soak; worker HWM 197,775,360 bytes (188.6 MiB) in
 the error-result capture and 193,966,080 bytes (185.0 MiB) in the soak;
 largest simultaneous total 408,379,392 bytes (389.5 MiB) in the error-result
-capture and 404,566,016 bytes (385.8 MiB) in the soak. The proposed targets are:
+capture and 404,566,016 bytes (385.8 MiB) in the soak. The adopted targets are:
 
 | Quantity | Measured maximum | Target | Margin |
 | --- | ---: | ---: | ---: |
@@ -410,7 +411,7 @@ capture and 404,566,016 bytes (385.8 MiB) in the soak. The proposed targets are:
 
 The issue's starting proposal of 224/400 MiB for server/worker peak RSS
 covers the measured server HWM with 24,272,896 bytes (11.5%) of margin and the
-worker HWM with 221,655,040 bytes (112.1%) of margin. This proposal sets both
+worker HWM with 221,655,040 bytes (112.1%) of margin. This document sets both
 processes at 256 MiB, which leaves 27.5% and 35.7% of headroom over the
 measured maxima, and adds a simultaneous-total target of 512 MiB, because the
 independent maxima are not a simultaneous peak.
@@ -471,7 +472,7 @@ independent maxima are not a simultaneous peak.
   never finishes a timed semantic publication, so no fast reply is counted
   as a successful semantic latency sample.
 
-## Enforcement proposal
+## Enforcement
 
 The checks split into two kinds.
 
@@ -523,14 +524,14 @@ suite-wide test settings require a human merge.
 
 ## Adoption decision table
 
-These questions are for the maintainer after the evidence above is reviewed.
-Their absence does not block this proposal.
+The maintainer adopted every row on 2026-11-03, with the values exactly as
+proposed ([ADR-0016](decisions/0016-performance-budgets.md)).
 
-| Question | Proposed value | Status |
+| Question | Adopted value | Status |
 | --- | --- | --- |
-| Exact numeric rows | The target tables above, at revision `139db84582d7f230bd28e3609d2699a200878fe1` on the i7-14700KF reference host, CPU 12 | Not adopted |
-| Platforms | Linux x86-64 only; macOS/Rosetta unmeasured | Not adopted |
-| Noise and sample policy | 30 measured operations per cell, p50/p95, no trimming; a second run before any failure is declared | Not adopted |
-| Memory envelope | Server 256 MiB HWM, worker 256 MiB HWM, 512 MiB largest simultaneous total | Not adopted |
-| Enforcement mode | Advisory; no CI gate enabled | Not adopted |
-| Exception and retest authority | The maintainer | Not adopted |
+| Exact numeric rows | The target tables above, at revision `139db84582d7f230bd28e3609d2699a200878fe1` on the i7-14700KF reference host, CPU 12 | Adopted 2026-11-03 |
+| Platforms | Linux x86-64 only; macOS/Rosetta unmeasured | Adopted 2026-11-03 |
+| Noise and sample policy | 30 measured operations per cell, p50/p95, no trimming; a second run before any failure is declared | Adopted 2026-11-03 |
+| Memory envelope | Server 256 MiB HWM, worker 256 MiB HWM, 512 MiB largest simultaneous total | Adopted 2026-11-03 |
+| Enforcement mode | Advisory; no CI gate enabled | Adopted 2026-11-03 |
+| Exception and retest authority | The maintainer | Adopted 2026-11-03 |
