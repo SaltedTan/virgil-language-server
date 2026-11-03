@@ -33,6 +33,8 @@ const path = require('node:path');
 const { isZombie, processFiles, runOwned, signalProcesses } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
+// The address that the SSH server listens on, unless listen gives another,
+// as host.cjs does for a client on another machine.
 const HOST = '127.0.0.1';
 // How long the X server and the SSH server get to start.
 const START_TIMEOUT_MS = 10000;
@@ -43,8 +45,11 @@ const STOP_TIMEOUT_MS = 5000;
 // sockets its directory for Unix sockets, whose paths must be short; env is
 // the environment for every process, with the run's marker. start() starts
 // the display and the SSH server; teardown() stops them and everything else
-// of the run, including what a failed start() left.
-function create({ work, sockets, env, marker, sshd, log }) {
+// of the run, including what a failed start() left. host.cjs passes listen,
+// the address to listen on, and display false, since its client runs
+// elsewhere; allowFrom, if given, is the only client address that the SSH
+// server accepts.
+function create({ work, sockets, env, marker, sshd, log, listen = HOST, display: withDisplay = true, allowFrom }) {
   const ssh = path.join(work, 'ssh');
   const root = path.join(work, 'remote');
   const remoteTmp = path.join(sockets, 'r');
@@ -55,7 +60,7 @@ function create({ work, sockets, env, marker, sshd, log }) {
     alias: ALIAS,
     root,
     sshConfig: path.join(ssh, 'config'),
-    details: { host: HOST, user },
+    details: { host: listen, user },
     clientEnv: {},
     logs: [['sshd.log', path.join(work, 'sshd.log')], ['xvfb.log', path.join(work, 'xvfb.log')]],
     start: async () => {
@@ -65,10 +70,12 @@ function create({ work, sockets, env, marker, sshd, log }) {
       // A non-interactive bash over SSH reads ~/.bashrc, here the empty one.
       fs.writeFileSync(path.join(home, '.bashrc'), '');
 
-      const display = await startXvfb(work, env, started);
-      target.clientEnv = { DISPLAY: display.name, XAUTHORITY: display.auth };
-      target.details.display = display.name;
-      log(`-- display ${display.name}`);
+      if (withDisplay) {
+        const display = await startXvfb(work, env, started);
+        target.clientEnv = { DISPLAY: display.name, XAUTHORITY: display.auth };
+        target.details.display = display.name;
+        log(`-- display ${display.name}`);
+      }
 
       for (const name of ['host', 'client']) {
         await check(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', `virgil-remote-ssh-${name}`, '-f', path.join(ssh, name)], env);
@@ -78,12 +85,13 @@ function create({ work, sockets, env, marker, sshd, log }) {
       target.details.hostKeySha256 = `SHA256:${crypto.createHash('sha256')
         .update(Buffer.from(hostKey.split(' ')[1], 'base64')).digest('base64').replace(/=+$/, '')}`;
 
-      const server = await startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKey, started });
+      const server = await startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKey, started, listen, allowFrom });
       target.details.port = server.port;
       target.details.sshd = server.version;
-      log(`-- SSH server ${server.version} on ${HOST}:${server.port}, host key ${target.details.hostKeySha256}`);
+      target.hostKey = hostKey;
+      log(`-- SSH server ${server.version} on ${listen}:${server.port}, host key ${target.details.hostKeySha256}`);
     },
-    teardown: () => teardown({ work, sockets, marker, started, port: target.details.port }),
+    teardown: () => teardown({ work, sockets, marker, started, port: target.details.port, listen }),
   };
   return target;
 }
@@ -130,13 +138,13 @@ function quoted(value) {
 
 // Starts the SSH server on a free port; another process can take the port
 // between the check and the bind, so a failed bind is retried on another.
-async function startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKey, started }) {
+async function startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKey, started, listen, allowFrom }) {
   for (let attempt = 1; ; attempt++) {
-    const port = await freePort();
+    const port = await freePort(listen);
     // The client's configuration: only the run's key and the pinned host
     // key, no agent, prompts, or connection sharing.
     fs.writeFileSync(path.join(ssh, 'config'), `Host ${ALIAS}
-  HostName ${HOST}
+  HostName ${listen}
   Port ${port}
   User ${user}
   IdentityFile ${quoted(path.join(ssh, 'client'))}
@@ -157,13 +165,13 @@ async function startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKe
   ConnectTimeout 15
   LogLevel ERROR
 `);
-    fs.writeFileSync(path.join(ssh, 'known_hosts'), `[${HOST}]:${port} ${hostKey}\n`);
+    fs.writeFileSync(path.join(ssh, 'known_hosts'), `[${listen}]:${port} ${hostKey}\n`);
     // The server: this user only, with the run's key, on 127.0.0.1. Each
     // session gets the run's home and directories, and the marker. The work
     // directory's parents may be writable by others, so StrictModes is off.
     const config = path.join(ssh, 'sshd_config');
     fs.writeFileSync(config, `Port ${port}
-ListenAddress ${HOST}
+ListenAddress ${listen}
 AddressFamily inet
 HostKey ${quoted(path.join(ssh, 'host'))}
 PidFile ${quoted(path.join(ssh, 'sshd.pid'))}
@@ -174,7 +182,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 PermitRootLogin no
-AllowUsers ${user}
+AllowUsers ${allowFrom === undefined ? user : `${user}@${allowFrom}`}
 StrictModes no
 PermitUserRC no
 PermitUserEnvironment no
@@ -215,7 +223,7 @@ SetEnv ${[
       child.on('error', () => { exited = true; });
       child.on('exit', () => { exited = true; });
       const poll = async () => {
-        const banner = exited ? undefined : await readBanner(port).catch(() => undefined);
+        const banner = exited ? undefined : await readBanner(port, listen).catch(() => undefined);
         if (banner !== undefined || exited || Date.now() > deadline) resolve(banner);
         else setTimeout(poll, 100);
       };
@@ -226,7 +234,7 @@ SetEnv ${[
     if (running(entry)) signal([entry.identity], 'SIGKILL');
     const text = fs.readFileSync(logFile, 'utf8');
     if (attempt < 3 && /Address already in use/.test(text)) continue;
-    throw new Error(`the SSH server did not start on ${HOST}:${port}; see sshd.log${privsepHint(text)}`);
+    throw new Error(`the SSH server did not start on ${listen}:${port}; see sshd.log${privsepHint(text)}`);
   }
 }
 
@@ -239,11 +247,11 @@ function privsepHint(text) {
     : `; the SSH server needs its privilege separation directory, ${missing[1]}, which root must create, as CI does: sudo install -d -m 0755 ${missing[1]}`;
 }
 
-function freePort() {
+function freePort(listen = HOST) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
-    server.on('error', (error) => reject(new Error(`no free port on ${HOST}: ${error.message}`)));
-    server.listen(0, HOST, () => {
+    server.on('error', (error) => reject(new Error(`no free port on ${listen}: ${error.message}`)));
+    server.listen(0, listen, () => {
       const { port } = server.address();
       server.close(() => resolve(port));
     });
@@ -251,9 +259,9 @@ function freePort() {
 }
 
 // The SSH server's identification line, such as "OpenSSH_9.6p1 Ubuntu-3ubuntu13".
-function readBanner(port) {
+function readBanner(port, listen = HOST) {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(port, HOST);
+    const socket = net.connect(port, listen);
     let text = '';
     socket.setTimeout(2000, () => socket.destroy(new Error('no banner')));
     socket.on('data', (data) => {
@@ -269,9 +277,9 @@ function readBanner(port) {
   });
 }
 
-function portOpen(port) {
+function portOpen(port, listen = HOST) {
   return new Promise((resolve) => {
-    const socket = net.connect(port, HOST);
+    const socket = net.connect(port, listen);
     socket.on('connect', () => { socket.destroy(); resolve(true); });
     socket.on('error', () => resolve(false));
   });
@@ -405,7 +413,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // no thread's files could identify (see runProcesses), it tries again five
 // times, 200 ms apart, and reports what it found if it still can't, rather
 // than taking that for none left.
-async function teardown({ work, sockets, marker, started, port }) {
+async function teardown({ work, sockets, marker, started, port, listen = HOST }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null };
   const display = started.find((entry) => entry.name === 'Xvfb');
   const xvfb = display !== undefined && running(display) ? display.identity : undefined;
@@ -462,7 +470,7 @@ async function teardown({ work, sockets, marker, started, port }) {
     result.error = `could not list the run's processes: ${error.message}`;
   }
   if (port !== undefined) {
-    result.portClosed = !(await portOpen(port));
+    result.portClosed = !(await portOpen(port, listen));
     if (!result.portClosed) result.ok = false;
   }
   return result;
