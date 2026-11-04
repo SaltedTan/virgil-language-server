@@ -56,6 +56,10 @@ The JVM build differs from the native one in these ways:
 - The worker's heap size and live heap come from the JVM's `Runtime.maxMemory()` and `totalMemory() - freeMemory()` after `System.gc()`, so its restart threshold is approximate. The Linux budgets stay those of the native build.
 - `BENCH=1` fails for the JVM target, which has no collection counts, allocation totals, or thread CPU times for the benchmark probes.
 
+The [native size accounting](testing-notes/jvm-native-size.md) records the
+112/176-byte comparison for this change and the source-path alignment that can
+make the same comparison report 120/176 bytes.
+
 [Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow, including the [editor tests that each release runs on its own files](releasing.md#how-the-workflow-works).
 
 ## Benchmarks
