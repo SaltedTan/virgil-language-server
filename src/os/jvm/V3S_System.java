@@ -43,6 +43,12 @@ import java.util.regex.Pattern;
  * errno and nothing else. Any other name is an ordinary file name, as in
  * upstream's runtime.
  *
+ * <p>JVM limitation: {@code openRead} and regular-file {@code openAt} check
+ * the file type before opening, then check the opened channel's size and
+ * seekability. Public Java APIs expose no channel file-type query. A local
+ * process racing the server can swap a checked regular file for a FIFO before
+ * open; that open can block until a writer appears, before channel validation.
+ *
  * <p>Int commands:
  * <ul>
  * <li>{@code pipe}: a pipe's read end r; its write end is r + 1. A pipe
@@ -55,7 +61,8 @@ import java.util.regex.Pattern;
  *     {@code fd}, never following a symlink, as openat with O_NOFOLLOW (and
  *     O_DIRECTORY if {@code directory} is 1): ELOOP for a symlink, or ENOTDIR
  *     if a directory was asked for. Regular files and directories are opened
- *     at once; other kinds of file are never opened, so that a FIFO can't block.
+ *     at once; other kinds of file are not opened when the metadata check
+ *     identifies them. See the JVM check/open race limitation above.
  * <li>{@code nonblock fd}, {@code close fd}: 0.
  * <li>{@code access path}: 0 if {@code path} is executable.
  * <li>{@code spawn n fd0 .. fd(n-1) arg0 arg1 ..}: starts {@code arg0} with the
@@ -105,7 +112,8 @@ public class V3S_System {
 
     // Linux errno values, which the bridge reports on every host.
     static final int ENOENT = 2, ESRCH = 3, EIO = 5, EBADF = 9, ECHILD = 10, EAGAIN = 11,
-        EACCES = 13, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, EPIPE = 32, ENOSYS = 38, ELOOP = 40, ENOTSUP = 95;
+        EACCES = 13, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, ENFILE = 23, EMFILE = 24,
+        ENOSPC = 28, EROFS = 30, EPIPE = 32, ENAMETOOLONG = 36, ENOSYS = 38, ELOOP = 40, ENOTSUP = 95;
     // Bits of poll's events and revents.
     static final int POLLIN = 0x1, POLLOUT = 0x4, POLLERR = 0x8, POLLHUP = 0x10, POLLNVAL = 0x20;
     // File type bits of st_mode.
@@ -552,6 +560,11 @@ public class V3S_System {
         if (e instanceof FileSystemException) {
             String reason = ((FileSystemException) e).getReason();
             if (reason != null) {
+                if (reason.startsWith("File name too long")) return ENAMETOOLONG;
+                if (reason.startsWith("Too many open files in system")) return ENFILE;
+                if (reason.startsWith("Too many open files")) return EMFILE;
+                if (reason.startsWith("No space left on device")) return ENOSPC;
+                if (reason.startsWith("Read-only file system")) return EROFS;
                 if (reason.startsWith("Not a directory")) return ENOTDIR;
                 if (reason.startsWith("Is a directory")) return EISDIR;
                 if (reason.startsWith("Too many levels of symbolic links")) return ELOOP;
@@ -634,17 +647,34 @@ public class V3S_System {
         return add(new DirEnd((SecureDirectoryStream<Path>) stream));
     }
 
+    static int openRegular(SeekableByteChannel channel) {
+        try {
+            channel.size();
+            channel.position(0);
+        } catch (IOException | UnsupportedOperationException e) {
+            try { channel.close(); } catch (IOException ignored) { }
+            return -EINVAL;
+        }
+        return add(new FileEnd(channel));
+    }
+
     // The int commands.
+    // JVM limitation: a local process racing the server can replace the checked
+    // regular file with a FIFO; open can block until a writer appears, before
+    // the opened channel's size and seekability can be checked.
     static int openRead(Path p) throws IOException {
         long[] m = metadata(p);
         if (m[0] < 0) return (int) m[0];
         if (m[0] == S_IFDIR) return -EISDIR;
         if (m[0] != S_IFREG) return -EINVAL;
-        return add(new FileEnd(FileChannel.open(p, StandardOpenOption.READ)));
+        return openRegular(FileChannel.open(p, StandardOpenOption.READ));
     }
     static int openDirectoryPath(Path p) throws IOException {
         return openDirectory(Files.newDirectoryStream(p));
     }
+    // JVM limitation: a local process racing the server can replace the checked
+    // regular file with a FIFO; open can block until a writer appears, before
+    // the opened channel's size and seekability can be checked.
     static int openAt(int fd, String name, boolean directory) throws IOException {
         if (name.isEmpty() || name.indexOf('/') >= 0) return -EINVAL;
         End e = get(fd);
@@ -661,7 +691,7 @@ public class V3S_System {
             Set<OpenOption> options = new HashSet<OpenOption>();
             options.add(StandardOpenOption.READ);
             options.add(LinkOption.NOFOLLOW_LINKS);
-            return add(new FileEnd(d.stream.newByteChannel(p, options)));
+            return openRegular(d.stream.newByteChannel(p, options));
         }
         return add(new OtherEnd(m[0]));
     }

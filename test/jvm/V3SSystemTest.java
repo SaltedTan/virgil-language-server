@@ -18,6 +18,7 @@ import java.net.URLClassLoader;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
@@ -487,6 +488,85 @@ public class V3SSystemTest {
                 eq(5, V3S_System.errno(new IOException("error=62")), "unknown host");
             } finally {
                 System.setProperty("os.name", host);
+            }
+        });
+
+        test("errors: NIO filesystem reasons use Linux values", () -> {
+            Object[][] mappings = {
+                {"File name too long", 36}, {"Too many open files", 24}, {"Too many open files in system", 23},
+                {"No space left on device", 28}, {"Not a directory", 20}, {"Is a directory", 21},
+                {"Permission denied", 13}, {"Read-only file system", 30}, {"No such file or directory", 2},
+                {"Too many levels of symbolic links", 40}, {"Unknown filesystem error", 5}, {null, 5}
+            };
+            for (Object[] mapping : mappings) {
+                FileSystemException failure = new FileSystemException("entry", null, (String) mapping[0]);
+                eq(mapping[1], V3S_System.errno(failure), "NIO reason " + mapping[0]);
+                eq(mapping[1], V3S_System.errno(new DirectoryIteratorException(failure)), "iterator reason " + mapping[0]);
+            }
+        });
+        test("errors: overlong path components report ENAMETOOLONG", () -> {
+            char[] chars = new char[256];
+            Arrays.fill(chars, 'a');
+            String component = new String(chars);
+            Path path = scratch.resolve(component);
+            eq(-36, cmd("openRead", path), "path metadata before a regular-file open");
+            eq(-36, cmd("openDirectory", path), "directory open");
+            int dir = cmd("openDirectory", scratch);
+            for (int directory : new int[] {0, 1}) {
+                eq(-36, cmd("openAt", dir, component, directory), "relative open, directory=" + directory);
+            }
+            eq(36, failure("statAt", dir, component), "relative metadata byte reply");
+            cmd("close", dir);
+        });
+        test("descriptors: opened channel validation keeps the original file", () -> {
+            Path path = file(scratch.resolve("validated-file"), "original");
+            try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+                Files.move(path, scratch.resolve("validated-file-moved"));
+                file(path, "replacement");
+                int fd = V3S_System.openRegular(channel);
+                check(fd >= V3S_System.MIN_FD, "validated descriptor: " + fd);
+                eq("original", text(readFully(fd, -1, 1000)), "opened file content");
+                eq(0, cmd("close", fd), "close descriptor");
+                check(!channel.isOpen(), "channel closed with descriptor");
+            }
+        });
+        test("descriptors: opened FIFO validation rejects and closes the channel", () -> {
+            Path fifo = scratch.resolve("validated-fifo");
+            Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).inheritIO().start();
+            eq(0, mkfifo.waitFor(), "create FIFO");
+            try (FileChannel channel = FileChannel.open(fifo, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+                eq(-V3S_System.EINVAL, V3S_System.openRegular(channel), "FIFO rejected after open");
+                check(!channel.isOpen(), "rejected channel closed");
+            }
+        });
+
+        test("directories: openAt rejects a FIFO swapped in after metadata", () -> {
+            Path dir = Files.createDirectory(scratch.resolve("fifo-open-race"));
+            Path source = file(dir.resolve("source"), "regular");
+            Path fifo = dir.resolve("fifo");
+            Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).inheritIO().start();
+            eq(0, mkfifo.waitFor(), "create FIFO");
+            try (FileChannel writer = FileChannel.open(fifo, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                    DirectoryStream<Path> listing = Files.newDirectoryStream(dir)) {
+                check(writer.isOpen(), "FIFO has a writer before the raced open");
+                SecureDirectoryStream<Path> stream = (SecureDirectoryStream<Path>) listing;
+                @SuppressWarnings("unchecked")
+                SecureDirectoryStream<Path> swapping = (SecureDirectoryStream<Path>) java.lang.reflect.Proxy.newProxyInstance(
+                    V3SSystemTest.class.getClassLoader(), new Class<?>[] {SecureDirectoryStream.class},
+                    (proxy, method, args) -> {
+                        if (method.getName().equals("newByteChannel")) {
+                            Files.move(source, dir.resolve("original"));
+                            Files.move(fifo, source);
+                        }
+                        try {
+                            return method.invoke(stream, args);
+                        } catch (InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    });
+                int fd = V3S_System.add(new V3S_System.DirEnd(swapping));
+                eq(-V3S_System.EINVAL, cmd("openAt", fd, "source", 0), "raced FIFO rejected after open");
+                cmd("close", fd);
             }
         });
 
