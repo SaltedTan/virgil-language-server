@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Provisions the Remote-SSH host for run.cjs on this Linux machine, and takes
-// it down again: a private X display for the client, and an SSH server of the
-// test's own, which listens only on a free 127.0.0.1 port, accepts only a
-// key made for the run, and gives each session a home, temporary directory,
-// and runtime directory in the work directory. The client's SSH configuration
+// it down again: by default, a private X display for the client and an SSH
+// server of the test's own on a free 127.0.0.1 port. host.cjs selects another
+// listen address and disables the display for an external client. It accepts
+// only a key made for the run, and gives each session a home, temporary
+// directory, and runtime directory in the work directory. The client's SSH configuration
 // pins the server's host key. None of it uses or changes the user's ~/.ssh,
 // the system's SSH server, or /etc.
 //
@@ -166,8 +167,8 @@ async function startSshd({ ssh, home, remoteTmp, user, marker, sshd, env, hostKe
   LogLevel ERROR
 `);
     fs.writeFileSync(path.join(ssh, 'known_hosts'), `[${listen}]:${port} ${hostKey}\n`);
-    // The server: this user only, with the run's key, on 127.0.0.1. Each
-    // session gets the run's home and directories, and the marker. The work
+    // The server: this user only, with the run's key, on the listen address.
+    // Each session gets the run's home and directories, and the marker. The work
     // directory's parents may be writable by others, so StrictModes is off.
     const config = path.join(ssh, 'sshd_config');
     fs.writeFileSync(config, `Port ${port}

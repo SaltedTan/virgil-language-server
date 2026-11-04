@@ -17,8 +17,7 @@
 # the Mac, which holds repo/, and gets w/ and results/; MAC-PATH is relative
 # to DIR. See the README's "Remote-SSH test from a Mac".
 # The results, with the Mac's manifest and the host's teardown, go in --out
-# here. The exit status is run.cjs's, made 3 if the host's teardown could not
-# confirm that nothing is left, or if the Mac could not be reached.
+# here. See that README section for verdict precedence and evidence failures.
 
 set -u
 mac='' study='' listen='' host_name='' allow_from='' vsix='' client_vsix='' out='' work_dir=${TMPDIR:-/tmp} repeat=1 keep_work=''
