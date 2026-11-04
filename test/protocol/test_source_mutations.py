@@ -31,8 +31,10 @@ import source_mutations as sm  # noqa: E402
 from reply_shapes import ReplyValidator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = ROOT / "build/virgil-lsp"
-STALL = ROOT / "build/stall/virgil-lsp-worker"
+# The built server under test. Set VIRGIL_LSP_EXE to run this suite against
+# another build, such as build/jvm-target/virgil-lsp (#462).
+EXE = Path(os.environ.get("VIRGIL_LSP_EXE", ROOT / "build/virgil-lsp"))
+STALL = EXE.parent / "stall/virgil-lsp-worker"
 SEED = 20261028
 SEEDS, INPUTS = sm.load_seeds()
 LIMITS = sm.resolve_limits({})
@@ -387,8 +389,36 @@ class WorkerDeaths(unittest.TestCase):
     OVERFLOW = ("!StackOverflow\n\nvirgil-lsp: warning: analysis worker 8 crashed during an analysis; "
                 "it ended with exit status 255\n")
 
+    # What the JVM target's runtime prints for the same verifier crash as TRACE.
+    JVM_TRACE = ('Exception in thread "main" java.lang.NullPointerException: Cannot read field "typeCon" '
+                 'because "<local6>" is null\n'
+                 "\tat V3C_MethodEnv.lookupInfix(Unknown Source)\n"
+                 "\tat V3C_TypeChecker.visitBinOp(Unknown Source)\n\n"
+                 "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1; "
+                 "snapshot 3 is kept\n")
+
     def known(self, log, *texts):
         return [d["known"] for d in sm.worker_deaths(log.encode(), [(None, list(texts))])]
+
+    def jvm_known(self, log, *texts):
+        return [d["known"] for d in sm.worker_deaths(log.encode(), [(None, list(texts))], jvm=True)]
+
+    def jvm_trace(self, exception, *frames):
+        lines = ['Exception in thread "main" %s: detail' % exception]
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        return ("\n".join(lines) + "\n\n"
+                "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
+
+    def jvm_exception(self, exception, *frames):
+        lines = ['Exception in thread "main" %s: detail' % exception]
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        return "\n".join(lines) + "\n"
+
+    def jvm_captured_overflow(self, frames):
+        lines = ['Exception in thread "main" java.lang.StackOverflowError']
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        lines += ["", "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1"]
+        return "\n".join(lines) + "\n"
 
     def test_known_signature_needs_its_source(self):
         deaths = sm.worker_deaths(self.TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])])
@@ -417,6 +447,144 @@ class WorkerDeaths(unittest.TestCase):
         self.assertEqual([d["known"] for d in sm.worker_deaths(log, windows[::-1][:1] + [(None, [])])], [None])
         self.assertEqual([d["known"] for d in sm.worker_deaths(log, [(0, ["1 + 1"]), (None, ["0i + b"])])],
                          ["crash-path row 1"])
+
+    def test_jvm_exception_maps_to_its_documented_trap(self):
+        deaths = sm.worker_deaths(self.JVM_TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])], jvm=True)
+        self.assertEqual([(d["pid"], d["exception"], d["trap"], d["known"], d["status"]) for d in deaths],
+                         [(7, "java.lang.NullPointerException", "!NullCheckException", "crash-path row 1",
+                           "exit status 1")])
+        self.assertEqual(deaths[0]["frames"][0]["function"], "MethodEnv.lookupInfix()")
+        self.assertIsNone(deaths[0]["frames"][0]["file"])
+        # The source condition still has the last word, as for a native trap.
+        self.assertEqual(self.jvm_known(self.JVM_TRACE, "def f() -> int { return 0i32 + 1; }"), [None])
+        # The same trace has no Virgil trap for the native parser.
+        self.assertEqual(self.known(self.JVM_TRACE, "0i"), [None])
+
+    def test_jvm_trap_table_is_explicit(self):
+        duplicate = "type T { case A; }\ntype T { case B; }\n"
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.ArrayIndexOutOfBoundsException", "V3C_MethodEnv.lookupVariantCaseMember"), duplicate),
+            ["crash-path row 7"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.ArrayIndexOutOfBoundsException", "V3C_MethodEnv.lookupInfix"), duplicate), [None])
+        deep = "def f() { var x = %s; }" % ("(" * 1000 + "1" + ")" * 1000)
+        chain = "def f() { var x = a" + ".b" * 1000 + "; }"
+        # A Java stack overflow must show the documented recursion and source.
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_Parser.parseList", "V3C_Parser.parseTupleExpr",
+            "V3D_Parser$DparseExpr.invoke", "V3C_Parser.parseList", "V3C_Parser.parseTupleExpr",
+            "V3D_Parser$DparseExpr.invoke"), deep), ["crash-path row 13"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
+            "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
+        for source in (deep, chain):
+            with self.subTest(source=source):
+                self.assertEqual(self.jvm_known(self.jvm_trace(
+                    "java.lang.StackOverflowError", "V3C_Verifier.verify"), source), [None])
+        # An exception outside the table, including a deliberate System.error,
+        # is never accepted as a documented trap.
+        for exception in ("java.lang.OutOfMemoryError", "java.lang.Exception", "java.lang.IllegalStateException"):
+            with self.subTest(exception):
+                deaths = sm.worker_deaths(self.jvm_trace(exception, "V3C_Verifier.verify").encode(),
+                                          [(None, ["0i"])], jvm=True)
+                self.assertEqual([d["trap"] for d in deaths],
+                                 ["!HeapOverflow"] if exception.endswith("OutOfMemoryError") else [None])
+                self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_stack_overflow_requires_documented_recursive_frames(self):
+        source = ("class S<T> {} class A extends S<A> {} class B extends S<B> {} "
+                  "component M { def f(a: A, b: B) { var xs = [a, b]; } "
+                  "def g() { var x = %s; } }") % ("(" * 1000 + "1" + ")" * 1000)
+        frames = ["V3C_TypeSystem.unify0", "V3C_TypeSystem.mergeLists"] * 8
+        self.assertEqual(self.known(self.OVERFLOW, source), ["crash-path row 13"])
+        self.assertEqual(self.jvm_known(self.jvm_captured_overflow(frames), source), [None])
+
+    def test_jvm_row13_stack_overflow_matches_captured_recursive_frames(self):
+        # These frame excerpts are trimmed from the 1 MB-stack captures in
+        # review2/live-calls1000.log and live-parens4000.log.
+        calls = "component M { def g(x: int) -> int { return x; } def f() { var x = %s; } }" % (
+            "g(" * 1000 + "1" + ")" * 1000
+        )
+        call_frames = [
+            "V3C_MethodEnv.lookupComponentMember", "V3C_MethodEnv.lookupComponentExprMember",
+            "V3C_MethodEnv.lookupExprMember", "V3C_MethodEnv.lookupVar", "V3C_TypeChecker.lookupBinding",
+            "V3C_TypeChecker.visitApp", "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs", "V3C_TypeChecker.visitApp",
+            "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs", "V3C_TypeChecker.visitApp",
+            "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs",
+        ]
+        with self.subTest(shape="nested calls"):
+            self.assertEqual(self.jvm_known(self.jvm_captured_overflow(call_frames), calls), ["crash-path row 13"])
+
+        # This excerpt is from live-parens4000.log; the first repeated parser
+        # cycle only completes beyond the six frames kept for display.
+        parens = "def f() { var x = %s; }" % ("(" * 4000 + "1" + ")" * 4000)
+        parse_frames = [
+            "V3C_Parser.skipToNextToken", "V3C_AnalysisParseSkipper.skip",
+            "V3D_AnalysisParseSkipper$Dskip.invoke", "V3C_ParserState.advance1",
+            "V3C_Parser.parseList$LExpr$R", "V3C_Parser.parseTupleExpr", "V3C_Parser.parseTerm",
+            "V3C_Parser.parseSubExpr", "V3C_Parser.parseExpr",
+            "V3D_Parser$DparseExpr.invoke", "V3C_Parser.parseList$LExpr$R",
+            "V3C_Parser.parseTupleExpr", "V3C_Parser.parseTerm", "V3C_Parser.parseSubExpr",
+            "V3C_Parser.parseExpr", "V3D_Parser$DparseExpr.invoke",
+            "V3C_Parser.parseList$LExpr$R", "V3C_Parser.parseTupleExpr",
+            "V3C_Parser.parseTerm", "V3C_Parser.parseSubExpr", "V3C_Parser.parseExpr",
+        ]
+        with self.subTest(shape="nested parentheses"):
+            self.assertEqual(self.jvm_known(self.jvm_captured_overflow(parse_frames), parens), ["crash-path row 13"])
+
+    def test_jvm_row25_verification_stack_overflow_matches_captured_frames(self):
+        # The source and repeated lookupBinding frames are trimmed from
+        # review2/live-members2000.log and members2000.v3.
+        members = "class A { def a: A; } component M { def f(a: A) { %s; } }" % ("a" + ".a" * 2000)
+        lookup_frames = ["V3C_TypeChecker.lookupBinding"] * 8
+        self.assertEqual(self.jvm_known(self.jvm_captured_overflow(lookup_frames), members), ["crash-path row 25"])
+
+    def test_jvm_interval_with_multiple_exceptions_is_unclassified(self):
+        source = "def f() -> int { return 0i + b; }"
+        oom = self.jvm_exception("java.lang.OutOfMemoryError", "V3S_System$Input.run")
+        npe = self.jvm_exception("java.lang.NullPointerException", "V3C_MethodEnv.lookupInfix")
+        death = ("virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
+        for traces in ((oom, npe), (npe, oom)):
+            with self.subTest(first=traces[0].splitlines()[0]):
+                deaths = sm.worker_deaths(("".join(traces) + death).encode(), [(None, [source])], jvm=True)
+                self.assertEqual([(d["exception"], d["trap"], d["known"]) for d in deaths], [(None, None, None)])
+                self.assertEqual([item["exception"] for item in deaths[0]["exceptions"]],
+                                 [trace.split(" ", 4)[4].split(":", 1)[0] for trace in traces])
+
+    def test_jvm_cause_frames_are_kept_separate_and_unclassified(self):
+        log = (self.jvm_exception("java.lang.NullPointerException")
+               + "Caused by: java.lang.IllegalStateException: unrelated\n"
+               + "\tat V3C_MethodEnv.lookupInfix(Unknown Source)\n\n"
+               + "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
+        deaths = sm.worker_deaths(log.encode(), [(None, ["def f() -> int { return 0i + b; }"])], jvm=True)
+        self.assertEqual([d["known"] for d in deaths], [None])
+        self.assertEqual(deaths[0]["frames"], [])
+        self.assertEqual(deaths[0]["exception"], "java.lang.NullPointerException")
+        self.assertEqual(deaths[0]["causes"][0]["exception"], "java.lang.IllegalStateException")
+        self.assertEqual(deaths[0]["causes"][0]["frames"][0]["function"], "MethodEnv.lookupInfix()")
+        self.assertEqual(deaths[0]["exceptions"][0]["causes"], deaths[0]["causes"])
+
+    def test_jvm_trap_mapping_requires_observed_exit_status(self):
+        for status in ("exit status 0", "exit status 255", "signal 9"):
+            with self.subTest(status=status):
+                log = self.JVM_TRACE.replace("exit status 1", status)
+                deaths = sm.worker_deaths(log.encode(), [(None, ["def f() { return 0i; }"])], jvm=True)
+                self.assertEqual([d["exception"] for d in deaths], ["java.lang.NullPointerException"])
+                self.assertEqual([d["trap"] for d in deaths], [None])
+                self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_target_does_not_confuse_native_shell_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = Path(directory) / "native-wrapper"
+            native.write_text("#!/bin/sh\nexec /path/to/native-server \"$@\"\n")
+            jvm = Path(directory) / "jvm-launcher"
+            jvm.write_text("#!/bin/sh\n# Generated by scripts/v3c.sh for the JVM target; do not edit.\n"
+                           "exec /path/to/java -jar /path/to/server.jar \"$@\"\n")
+            self.assertFalse(sm.jvm_target(native))
+            self.assertTrue(sm.jvm_target(jvm))
 
     def test_error_objects(self):
         self.assertIsNone(sm.error_problem({"code": -32803, "message": "no"}))

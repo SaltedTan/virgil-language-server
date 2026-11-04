@@ -396,10 +396,12 @@ signature names the trap, its innermost frame, and a condition that the
 source of the failed analysis must meet, from a row of the
 [Aeneas crash paths](../../docs/aeneas-crash-paths.md): row 1's `0i` literal at
 either trap site, rows 2, 7, and 17, and a stack overflow, which prints no
-frames, after nesting at least 1,000 levels (row 13) or a chain of at least
-1,000 links (row 25). The conditions count only executable tokens: a lexer
-pass drops comments, strings, and characters first, so 1,000 `(` in a comment
-are no nesting. A result over the worker's decoded
+frames natively, after nesting at least 1,000 levels (row 13) or a chain of at
+least 1,000 links (row 25). See the crash-path reference for
+[JVM exception mappings and frame-matching rules](../../docs/aeneas-crash-paths.md).
+The conditions count only executable tokens: a lexer pass drops comments, strings, and
+characters first, so 1,000 `(` in a comment are no nesting. A result over the
+worker's decoded
 [result budget](../../docs/decisions/0004-analysis-worker-process.md#restart-policy)
 is never accepted: a long chain's errors are capped at 100 for each file
 ([#393](https://github.com/SaltedTan/virgil-language-server/issues/393)).
@@ -531,3 +533,9 @@ replacement tests:
 ```sh
 python3 test/protocol/test_source_mutations.py
 ```
+
+It uses `build/virgil-lsp`; set `VIRGIL_LSP_EXE` to run it against another
+build, such as `build/jvm-target/virgil-lsp`, whose stall worker it expects
+under that build directory. The harness identifies the JVM launcher by the
+generator-owned comment from `scripts/v3c.sh`, not just a shebang that a native
+test wrapper may also use, so `source_mutations.py` needs no target option.
