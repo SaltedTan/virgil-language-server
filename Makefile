@@ -231,8 +231,8 @@ test-jvm-runtime: jvm-runtime check-virgil
 	$(JAVAC) -source 8 -target 8 -nowarn -Xlint:-options -d $(BUILD)/jvm/upstream $(VIRGIL)/rt/jvm/src/V3S_System.java
 	$(JAVAC) $(JAVAC_FLAGS) -cp $(JVM_RT) -d $(BUILD)/jvm/test test/jvm/V3SSystemTest.java
 	$(JAVA) -cp $(JVM_RT):$(BUILD)/jvm/test -Djava.io.tmpdir=$${TMPDIR:-/tmp} \
-	  -Dv3s.runtime.classes=$(JVM_RT) -Dv3s.source=src/os/jvm/V3S_System.java \
-	  -Dv3s.upstream.classes=$(BUILD)/jvm/upstream -Dv3s.upstream.source=$(VIRGIL)/rt/jvm/src/V3S_System.java \
+	  -Dv3s.runtime.classes=$(JVM_RT) \
+	  -Dv3s.upstream.classes=$(BUILD)/jvm/upstream \
 	  V3SSystemTest $(ARGS) </dev/null
 
 # scripts/package-release.sh records the worker heap in its build manifest.

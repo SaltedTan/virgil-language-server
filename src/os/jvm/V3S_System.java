@@ -7,8 +7,8 @@
 // Adapted from Virgil's rt/jvm/src/V3S_System.java at revision
 // b86f43f102406e94dc2ac4a85909c38ef414e214, under the Apache License 2.0 (see
 // THIRD_PARTY_NOTICES.md). The methods after "Unchanged from upstream" are
-// copied verbatim, and test/jvm/V3SSystemTest.java checks that they still match
-// the pinned copy. The I/O methods and the host bridge before it are this
+// copied verbatim, and test/jvm/V3SSystemTest.java compares their behavior with
+// the compiled pinned copy. The I/O methods and the host bridge before it are this
 // repository's.
 
 import java.io.*;
@@ -16,9 +16,11 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -64,7 +66,9 @@ import java.util.regex.Pattern;
  * <li>{@code kill pid signal}: signal 9 or 15 to a child that hasn't been
  *     waited for.
  * <li>{@code wait pid}: waits for a child to end and returns its wait status:
- *     the exit status times 256, or the signal number.
+ *     the exit status times 256, or the signal number. Java collapses normal
+ *     exits 129–159 and signal exits, so those values mean signal (status - 128);
+ *     the server worker never exits normally in that range.
  * <li>{@code alarm ms}: halts this process as if by SIGALRM (exit status 142)
  *     after {@code ms} milliseconds, unless called again first; 0 cancels.
  * <li>{@code gc}: runs the collector.
@@ -101,7 +105,7 @@ public class V3S_System {
 
     // Linux errno values, which the bridge reports on every host.
     static final int ENOENT = 2, ESRCH = 3, EIO = 5, EBADF = 9, ECHILD = 10, EAGAIN = 11,
-        EACCES = 13, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, EPIPE = 32, ENOSYS = 38, ELOOP = 40;
+        EACCES = 13, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, EPIPE = 32, ENOSYS = 38, ELOOP = 40, ENOTSUP = 95;
     // Bits of poll's events and revents.
     static final int POLLIN = 0x1, POLLOUT = 0x4, POLLERR = 0x8, POLLHUP = 0x10, POLLNVAL = 0x20;
     // File type bits of st_mode.
@@ -338,8 +342,8 @@ public class V3S_System {
 
     // A regular file opened for reading.
     static final class FileEnd extends End {
-        final FileChannel channel;
-        FileEnd(FileChannel channel) { this.channel = channel; }
+        final SeekableByteChannel channel;
+        FileEnd(SeekableByteChannel channel) { this.channel = channel; }
         int read(byte[] b, int off, int len) {
             try {
                 int n = channel.read(ByteBuffer.wrap(b, off, len));
@@ -370,18 +374,23 @@ public class V3S_System {
 
     // A directory, listed through a stream opened with it.
     static final class DirEnd extends End {
-        final Path path;
-        final DirectoryStream<Path> stream;
+        final SecureDirectoryStream<Path> stream;
         final Iterator<Path> entries;
         byte[] pending;
-        DirEnd(Path path, DirectoryStream<Path> stream) {
-            this.path = path;
+        DirEnd(SecureDirectoryStream<Path> stream) {
             this.stream = stream;
             this.entries = stream.iterator();
         }
         int read(byte[] b, int off, int len) { return -EISDIR; }
         int revents(int events) { return events & (POLLIN | POLLOUT); }
-        long[] stat() { return metadata(path, true); }
+        long[] stat() {
+            try {
+                BasicFileAttributes a = stream.getFileAttributeView(BasicFileAttributeView.class).readAttributes();
+                return new long[] {kind(a), a.size()};
+            } catch (Exception e) {
+                return new long[] {-errno(e), -1};
+            }
+        }
         void close() {
             try { stream.close(); } catch (IOException e) { }
         }
@@ -534,6 +543,7 @@ public class V3S_System {
     // ---- Host operations -----------------------------------------------
 
     static int errno(Exception e) {
+        if (e instanceof UnsupportedOperationException) return ENOTSUP;
         if (e instanceof NoSuchFileException) return ENOENT;
         if (e instanceof AccessDeniedException) return EACCES;
         if (e instanceof NotDirectoryException) return ENOTDIR;
@@ -553,17 +563,48 @@ public class V3S_System {
             // ProcessBuilder reports "error=2, No such file or directory" on
             // Java 8 and "Exec failed, error: 2 (No such file or directory)" later.
             Matcher m = Pattern.compile("error(?:=|: )(\\d+)").matcher(String.valueOf(e.getMessage()));
-            if (m.find()) return Integer.parseInt(m.group(1));
+            if (m.find()) return nativeErrno(Integer.parseInt(m.group(1)));
         }
         return EIO;
     }
 
+    static int nativeErrno(int value) {
+        String host = System.getProperty("os.name", "");
+        if (host.startsWith("Linux")) return value > 0 && value <= 133 && value != 41 && value != 58 ? value : EIO;
+        if (!host.startsWith("Mac") && !host.startsWith("Darwin")) return EIO;
+        switch (value) {
+            case 1: return 1;
+            case 2: return ENOENT;
+            case 3: return ESRCH;
+            case 4: return 4;
+            case 5: return EIO;
+            case 7: return 7;
+            case 8: return 8;
+            case 9: return EBADF;
+            case 10: return ECHILD;
+            case 12: return 12;
+            case 13: return EACCES;
+            case 17: return 17;
+            case 20: return ENOTDIR;
+            case 21: return EISDIR;
+            case 22: return EINVAL;
+            case 23: return 23;
+            case 24: return 24;
+            case 28: return 28;
+            case 32: return EPIPE;
+            case 35: return EAGAIN;
+            case 45: return ENOTSUP;
+            case 62: return ELOOP;
+            case 63: return 36;
+            case 66: return 39;
+            default: return EIO;
+        }
+    }
+
     // The file type bits and size of {path}, or a negated errno and -1.
-    static long[] metadata(Path path, boolean follow) {
+    static long[] metadata(Path path) {
         try {
-            BasicFileAttributes a = follow
-                ? Files.readAttributes(path, BasicFileAttributes.class)
-                : Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class);
             return new long[] {kind(a), a.size()};
         } catch (Exception e) {
             return new long[] {-errno(e), -1};
@@ -576,43 +617,52 @@ public class V3S_System {
         return S_IFIFO; // or a device or socket: Java doesn't say which
     }
 
-    static int openRegular(Path p, LinkOption... options) throws IOException {
-        Set<OpenOption> o = new HashSet<OpenOption>();
-        o.add(StandardOpenOption.READ);
-        o.addAll(Arrays.asList(options));
-        return add(new FileEnd(FileChannel.open(p, o)));
+    static long[] metadata(DirEnd directory, Path name) {
+        try {
+            BasicFileAttributes a = directory.stream.getFileAttributeView(name,
+                BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
+            return new long[] {kind(a), a.size()};
+        } catch (Exception e) {
+            return new long[] {-errno(e), -1};
+        }
     }
-    static int openDirectory(Path p) throws IOException {
-        // Like open(2), an unreadable directory fails here, not when listed.
-        return add(new DirEnd(p, Files.newDirectoryStream(p)));
+    static int openDirectory(DirectoryStream<Path> stream) {
+        if (!(stream instanceof SecureDirectoryStream<?>)) {
+            try { stream.close(); } catch (IOException e) { }
+            return -ENOTSUP;
+        }
+        return add(new DirEnd((SecureDirectoryStream<Path>) stream));
     }
 
     // The int commands.
     static int openRead(Path p) throws IOException {
-        long[] m = metadata(p, true);
+        long[] m = metadata(p);
         if (m[0] < 0) return (int) m[0];
         if (m[0] == S_IFDIR) return -EISDIR;
         if (m[0] != S_IFREG) return -EINVAL;
-        return openRegular(p);
+        return add(new FileEnd(FileChannel.open(p, StandardOpenOption.READ)));
     }
     static int openDirectoryPath(Path p) throws IOException {
-        long[] m = metadata(p, true);
-        if (m[0] < 0) return (int) m[0];
-        if (m[0] != S_IFDIR) return -ENOTDIR;
-        return openDirectory(p);
+        return openDirectory(Files.newDirectoryStream(p));
     }
     static int openAt(int fd, String name, boolean directory) throws IOException {
         if (name.isEmpty() || name.indexOf('/') >= 0) return -EINVAL;
         End e = get(fd);
         if (e == null) return -EBADF;
         if (!(e instanceof DirEnd)) return -ENOTDIR;
-        Path p = ((DirEnd) e).path.resolve(name);
-        long[] m = metadata(p, false);
+        DirEnd d = (DirEnd) e;
+        Path p = Paths.get(name);
+        long[] m = metadata(d, p);
         if (m[0] < 0) return (int) m[0];
         if (m[0] == S_IFLNK) return directory ? -ENOTDIR : -ELOOP;
         if (directory && m[0] != S_IFDIR) return -ENOTDIR;
-        if (m[0] == S_IFDIR) return openDirectory(p);
-        if (m[0] == S_IFREG) return openRegular(p, LinkOption.NOFOLLOW_LINKS);
+        if (m[0] == S_IFDIR) return openDirectory(d.stream.newDirectoryStream(p, LinkOption.NOFOLLOW_LINKS));
+        if (m[0] == S_IFREG) {
+            Set<OpenOption> options = new HashSet<OpenOption>();
+            options.add(StandardOpenOption.READ);
+            options.add(LinkOption.NOFOLLOW_LINKS);
+            return add(new FileEnd(d.stream.newByteChannel(p, options)));
+        }
         return add(new OtherEnd(m[0]));
     }
     static int pipe() {
@@ -647,7 +697,9 @@ public class V3S_System {
     // inherited standard error. As ADR-0004 says of the native worker, the
     // child's environment is otherwise empty, so a launcher names its java by
     // an absolute path. A program that can't be started is reported here, not
-    // by an exit status of 127.
+    // by an exit status of 127. Java collapses normal exits 129–159 and
+    // signal exits: wait treats that range as signal (status - 128). The server
+    // worker never exits normally in that range.
     static final class Spawn {
         static int run(int[] layout, List<String> argv) {
             if (argv.isEmpty() || layout.length > MIN_FD) return -EINVAL;
@@ -817,20 +869,17 @@ public class V3S_System {
         if (m[0] < 0) throw new Failure((int) -m[0]);
         return longs(m[0], m[1]);
     }
-    static Path child(int fd, String name) throws Failure {
+    static byte[] statAt(int fd, String name) throws Failure {
         if (name.isEmpty() || name.indexOf('/') >= 0) throw new Failure(EINVAL);
         End e = get(fd);
         if (e == null) throw new Failure(EBADF);
         if (!(e instanceof DirEnd)) throw new Failure(ENOTDIR);
-        return ((DirEnd) e).path.resolve(name);
-    }
-    static byte[] statAt(int fd, String name) throws Failure {
-        long[] m = metadata(child(fd, name), false);
+        long[] m = metadata((DirEnd) e, Paths.get(name));
         if (m[0] < 0) throw new Failure((int) -m[0]);
         return longs(m[0], m[1]);
     }
-    static int dtype(Path p) {
-        long k = metadata(p, false)[0];
+    static int dtype(DirEnd directory, Path name) {
+        long k = metadata(directory, name)[0];
         return k == S_IFDIR ? DT_DIR : k == S_IFREG ? DT_REG : k == S_IFLNK ? DT_LNK : DT_UNKNOWN;
     }
     // linux_dirent64: d_ino (8 bytes), d_off (8), d_reclen (2), d_type (1),
@@ -852,7 +901,7 @@ public class V3S_System {
                     byte[] name = p.getFileName().toString().getBytes(StandardCharsets.UTF_8);
                     int len = (19 + name.length + 1 + 7) & ~7;
                     rec = ByteBuffer.allocate(len).order(ByteOrder.LITTLE_ENDIAN)
-                        .putLong(1).putLong(0).putShort((short) len).put((byte) dtype(p)).put(name).array();
+                        .putLong(1).putLong(0).putShort((short) len).put((byte) dtype(d, p.getFileName())).put(name).array();
                 }
                 if (out.size() + rec.length > size) {
                     if (out.size() == 0) {

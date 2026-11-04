@@ -11,6 +11,7 @@
 
 import java.io.*;
 import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -20,8 +21,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class V3SSystemTest {
     interface Body {
@@ -462,6 +461,35 @@ public class V3SSystemTest {
             V3S_System.fileClose(fd);
         });
 
+        test("errors: native errno numbers use Linux values", () -> {
+            String host = System.getProperty("os.name");
+            int[][] mappings = {
+                {1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}, {7, 7}, {8, 8}, {9, 9}, {10, 10}, {12, 12}, {13, 13},
+                {17, 17}, {20, 20}, {21, 21}, {22, 22}, {23, 23}, {24, 24}, {28, 28}, {32, 32},
+                {35, 11}, {45, 95}, {62, 40}, {63, 36}, {66, 39}, {0, 5}, {999, 5}
+            };
+            try {
+                for (String mac : new String[] {"Mac OS X", "Darwin"}) {
+                    System.setProperty("os.name", mac);
+                    for (int[] mapping : mappings) {
+                        for (String message : new String[] {"error=" + mapping[0] + ", failure",
+                                "Exec failed, error: " + mapping[0] + " (failure)"}) {
+                            eq(mapping[1], V3S_System.errno(new IOException(message)), mac + " " + message);
+                        }
+                    }
+                }
+                System.setProperty("os.name", "Linux");
+                for (int linux : new int[] {2, 11, 13, 20, 36, 39, 40, 95}) {
+                    eq(linux, V3S_System.errno(new IOException("error=" + linux)), "Linux " + linux);
+                }
+                eq(5, V3S_System.errno(new IOException("error=999")), "unknown Linux errno");
+                System.setProperty("os.name", "Unknown");
+                eq(5, V3S_System.errno(new IOException("error=62")), "unknown host");
+            } finally {
+                System.setProperty("os.name", host);
+            }
+        });
+
         // Descriptor reads and writes, and the end of input.
         test("descriptors: a file reads to its end, then 0 every time", () -> {
             StringBuilder s = new StringBuilder();
@@ -578,6 +606,16 @@ public class V3SSystemTest {
             cmd("close", w.requests);
             cmd("close", w.results);
             eq(7 << 8, cmd("wait", w.pid), "wait status");
+        });
+        test("children: JVM exit values 129–159 conventionally mean signals", () -> {
+            for (int status : new int[] {128, 129, 137, 142, 159, 160, 255}) {
+                Worker w = start("write", "", String.valueOf(status));
+                eq("", text(readFully(w.results, -1, 20000)), "output");
+                cmd("close", w.requests);
+                cmd("close", w.results);
+                int expected = status >= 129 && status <= 159 ? status - 128 : status << 8;
+                eq(expected, cmd("wait", w.pid), "wait status for exit " + status);
+            }
         });
         test("children: the child's environment holds only the descriptor layout", () -> {
             Worker w = start("environment");
@@ -745,6 +783,88 @@ public class V3SSystemTest {
             }
             cmd("close", dir);
         });
+        test("directories: openAt stays anchored after parent replacement", () -> {
+            Path original = tree("anchored-open");
+            Path moved = scratch.resolve("anchored-open-moved");
+            Path replacement = tree("anchored-open-replacement");
+            file(replacement.resolve("a.v3"), "replacement");
+            file(replacement.resolve("sub").resolve("b.v3"), "replacement");
+            int dir = cmd("openDirectory", original);
+            Files.move(original, moved);
+            Files.createSymbolicLink(original, replacement);
+            int fd = cmd("openAt", dir, "a.v3", 0);
+            eq("a = 1", text(readFully(fd, -1, 1000)), "original file");
+            cmd("close", fd);
+            for (int flag : new int[] {0, 1}) {
+                int sub = cmd("openAt", dir, "sub", flag);
+                int child = cmd("openAt", sub, "b.v3", 0);
+                eq("b", text(readFully(child, -1, 1000)), "original subdirectory");
+                cmd("close", child);
+                cmd("close", sub);
+            }
+            eq(-V3S_System.ELOOP, cmd("openAt", dir, "link", 0), "final symlink refused");
+            eq(-V3S_System.ENOTDIR, cmd("openAt", dir, "dlink", 1), "intermediate directory symlink refused");
+            cmd("close", dir);
+        });
+        for (int flag : new int[] {0, 1}) {
+            test("directories: child directory stays anchored after parent replacement, flag " + flag, () -> {
+                Path original = tree("anchored-child-" + flag);
+                Path replacement = tree("anchored-child-replacement-" + flag);
+                file(replacement.resolve("sub").resolve("b.v3"), "replacement");
+                int dir = cmd("openDirectory", original);
+                Files.move(original, scratch.resolve("anchored-child-moved-" + flag));
+                Files.createSymbolicLink(original, replacement);
+                int sub = cmd("openAt", dir, "sub", flag);
+                int child = cmd("openAt", sub, "b.v3", 0);
+                eq("b", text(readFully(child, -1, 1000)), "original child directory");
+                cmd("close", child);
+                cmd("close", sub);
+                cmd("close", dir);
+            });
+        }
+        test("metadata: statAt stays anchored after parent replacement", () -> {
+            Path original = tree("anchored-statat");
+            Path replacement = tree("anchored-statat-replacement");
+            file(replacement.resolve("a.v3"), "replacement");
+            int dir = cmd("openDirectory", original);
+            Files.move(original, scratch.resolve("anchored-statat-moved"));
+            Files.createSymbolicLink(original, replacement);
+            eq("[" + V3S_System.S_IFREG + ", 5]", Arrays.toString(longs(payload("statAt", dir, "a.v3"))), "original metadata");
+            eq(V3S_System.S_IFLNK, longs(payload("statAt", dir, "dlink"))[0], "symlink metadata");
+            cmd("close", dir);
+        });
+        test("metadata: stat uses the open directory after path replacement", () -> {
+            Path original = tree("anchored-stat");
+            int dir = cmd("openDirectory", original);
+            long[] before = longs(payload("stat", dir));
+            Files.move(original, scratch.resolve("anchored-stat-moved"));
+            file(original, "replacement");
+            eq(Arrays.toString(before), Arrays.toString(longs(payload("stat", dir))), "original directory metadata");
+            cmd("close", dir);
+        });
+        test("directories: entry types stay anchored after parent replacement", () -> {
+            Path original = tree("anchored-list");
+            Path replacement = Files.createDirectory(scratch.resolve("anchored-list-replacement"));
+            Files.createDirectory(replacement.resolve("a.v3"));
+            file(replacement.resolve("sub"), "replacement");
+            int dir = cmd("openDirectory", original);
+            Files.move(original, scratch.resolve("anchored-list-moved"));
+            Files.createSymbolicLink(original, replacement);
+            TreeMap<String, Integer> entries = new TreeMap<String, Integer>();
+            parseDirents(payload("readDirectory", dir, 8192), entries);
+            eq(expectedEntries(), entries, "original entries and types");
+            eq(0, payload("readDirectory", dir, 8192).length, "end of directory");
+            cmd("close", dir);
+        });
+        test("directories: an insecure provider fails closed and closes its stream", () -> {
+            final boolean[] closed = {false};
+            DirectoryStream<Path> plain = new DirectoryStream<Path>() {
+                public Iterator<Path> iterator() { throw new AssertionError("insecure directory was read"); }
+                public void close() { closed[0] = true; }
+            };
+            eq(-V3S_System.ENOTSUP, V3S_System.openDirectory(plain), "unsupported directory provider");
+            check(closed[0], "unsupported directory stream closed");
+        });
         test("metadata: stat and statAt", () -> {
             Path d = tree("stat");
             int dir = cmd("openDirectory", d);
@@ -836,19 +956,38 @@ public class V3SSystemTest {
             }
             check(count > 50, "upstream's methods: " + count);
         });
-        test("upstream: unchanged methods match the pinned source", () -> {
-            Map<String, String> upstream = methods(new String(Files.readAllBytes(Paths.get(property("v3s.upstream.source"))), StandardCharsets.UTF_8));
-            Map<String, String> ours = methods(new String(Files.readAllBytes(Paths.get(property("v3s.source"))), StandardCharsets.UTF_8));
-            List<String> replaced = Arrays.asList("putc", "puts", "puti", "ln", "fileRead", "fileWriteK", "fileReadK",
-                "write", "read", "fileOpen", "fileLeft", "fileClose", "fileLoad", "getFileInput", "getFileOutput");
-            int same = 0;
-            for (Map.Entry<String, String> m : upstream.entrySet()) {
-                String methodName = m.getKey().replaceAll("^.* (\\w+)\\(.*$", "$1");
-                if (replaced.contains(methodName)) continue;
-                eq(m.getValue(), ours.get(m.getKey()), "the body of " + m.getKey());
-                same++;
+        test("upstream: unchanged methods match executable results and failures", () -> {
+            Path classes = Paths.get(property("v3s.upstream.classes"));
+            try (URLClassLoader loader = new URLClassLoader(new URL[] {classes.toUri().toURL()}, null)) {
+                Class<?> upstream = Class.forName("V3S_System", true, loader);
+                List<String> replaced = Arrays.asList("putc", "puts", "puti", "ln", "fileRead", "fileWriteK", "fileReadK",
+                    "write", "read", "fileOpen", "fileLeft", "fileClose", "fileLoad");
+                for (Method method : upstream.getDeclaredMethods()) {
+                    if (!Modifier.isPublic(method.getModifiers()) || !Modifier.isStatic(method.getModifiers())) continue;
+                    String name = method.getName();
+                    if (replaced.contains(name)) continue;
+                    Method ours = V3S_System.class.getMethod(name, method.getParameterTypes());
+                    if (name.startsWith("ticks")) {
+                        int before = (Integer) method.invoke(null);
+                        int actual = (Integer) ours.invoke(null);
+                        int after = (Integer) method.invoke(null);
+                        check(Integer.compareUnsigned(actual - before, after - before) <= 0, name + " clock interval");
+                    } else if (name.equals("chmod")) {
+                        Path reference = file(scratch.resolve("upstream-mode"), "x");
+                        Path actual = file(scratch.resolve("runtime-mode"), "x");
+                        for (int mode : new int[] {0600, 0755, 0000}) {
+                            method.invoke(null, bytes(reference.toString()), mode);
+                            ours.invoke(null, bytes(actual.toString()), mode);
+                            eq(Files.getPosixFilePermissions(reference), Files.getPosixFilePermissions(actual), "chmod " + mode);
+                        }
+                    } else if (name.equals("error")) {
+                        compareInvocation(method, ours, new Object[] {bytes("type"), bytes("message")});
+                        compareInvocation(method, ours, new Object[] {null, bytes("")});
+                    } else {
+                        compareInputs(method, ours, new Object[method.getParameterCount()], 0);
+                    }
+                }
             }
-            check(same > 50, "unchanged methods: " + same);
         });
         test("packaging: every runtime class is V3S_System or nested in it", () -> {
             // Aeneas copies only V3S_System.class into a jar; the jar build
@@ -867,21 +1006,83 @@ public class V3SSystemTest {
         return v;
     }
 
-    // Each method declared at the class's indentation, by its declaration
-    // line, mapped to its whole text.
-    static Map<String, String> methods(String source) {
-        Map<String, String> r = new LinkedHashMap<String, String>();
-        Matcher m = Pattern.compile("\n    (?:public|private|protected) static [^\n;=]*\\([^\n]*\\{").matcher(source);
-        while (m.find()) {
-            int depth = 0, i = source.indexOf('{', m.start());
-            for (; i < source.length(); i++) {
-                char c = source.charAt(i);
-                if (c == '{') depth++;
-                else if (c == '}' && --depth == 0) break;
-            }
-            r.put(m.group().trim(), source.substring(m.start() + 1, i + 1));
+    static void compareInputs(Method reference, Method actual, Object[] args, int at) throws Exception {
+        if (at == args.length) {
+            compareInvocation(reference, actual, args);
+            return;
         }
-        return r;
+        Class<?> type = reference.getParameterTypes()[at];
+        Object[] values;
+        boolean bytes = reference.getName().startsWith("readBytes") || reference.getName().startsWith("setBytes");
+        if (type == byte[].class) {
+            byte[] pattern = new byte[64];
+            for (int i = 0; i < pattern.length; i++) pattern[i] = (byte) (i * 37 + 129);
+            values = new Object[] {null, new byte[0], pattern};
+        } else if (type == Object.class) {
+            values = new Object[] {null, "", "same", "other", 0, 1};
+        } else if (type == int.class && bytes && (at == 1 || at == args.length - 1)) {
+            values = new Object[] {-1, 0, 1, 8, 63, 64, Integer.MAX_VALUE};
+        } else if (type == int.class) {
+            values = new Object[] {Integer.MIN_VALUE, -16777217, -65, -33, -1, 0, 1, 2, 7, 31, 32, 33, 63, 64,
+                16777216, 16777217, Integer.MAX_VALUE};
+        } else if (type == long.class) {
+            values = new Object[] {Long.MIN_VALUE, -9007199254740993L, -65L, -1L, 0L, 1L, 2L, 31L, 32L, 63L, 64L,
+                16777217L, 9007199254740992L, 9007199254740993L, Long.MAX_VALUE};
+        } else if (type == byte.class) {
+            values = new Object[] {Byte.MIN_VALUE, (byte) -1, (byte) 0, (byte) 1, (byte) 31, (byte) 63, Byte.MAX_VALUE};
+        } else if (type == short.class) {
+            values = new Object[] {Short.MIN_VALUE, (short) -1, (short) 0, (short) 1, Short.MAX_VALUE};
+        } else if (type == float.class) {
+            values = new Object[] {Float.NEGATIVE_INFINITY, -Float.MAX_VALUE, -1.5f, -0.0f, 0.0f, Float.MIN_VALUE,
+                1.0f, 1.5f, Float.MAX_VALUE, Float.POSITIVE_INFINITY, Float.NaN, Float.intBitsToFloat(0xFFC00001)};
+        } else if (type == double.class) {
+            values = new Object[] {Double.NEGATIVE_INFINITY, -Double.MAX_VALUE, -0x1p63, -1.5d, -0.0d, 0.0d,
+                Double.MIN_VALUE, 1.0d, 1.5d, 0x1p63, 0x1p64, Double.MAX_VALUE, Double.POSITIVE_INFINITY,
+                Double.NaN, Double.longBitsToDouble(0xFFF8000000000001L)};
+        } else {
+            throw new AssertionError("uncovered parameter: " + reference + " " + type);
+        }
+        for (Object value : values) {
+            args[at] = value;
+            compareInputs(reference, actual, args, at + 1);
+        }
+    }
+
+    static void compareInvocation(Method reference, Method actual, Object[] inputs) throws Exception {
+        Object[] expectedArgs = inputs.clone(), actualArgs = inputs.clone();
+        for (int i = 0; i < inputs.length; i++) {
+            if (inputs[i] instanceof byte[]) {
+                expectedArgs[i] = ((byte[]) inputs[i]).clone();
+                actualArgs[i] = ((byte[]) inputs[i]).clone();
+            }
+        }
+        Object expected = null, got = null;
+        Throwable expectedFailure = null, actualFailure = null;
+        try {
+            expected = reference.invoke(null, expectedArgs);
+        } catch (InvocationTargetException e) {
+            expectedFailure = e.getCause();
+        }
+        try {
+            got = actual.invoke(null, actualArgs);
+        } catch (InvocationTargetException e) {
+            actualFailure = e.getCause();
+        }
+        String context = reference.getName() + Arrays.deepToString(inputs);
+        eq(expectedFailure == null ? null : expectedFailure.getClass(),
+            actualFailure == null ? null : actualFailure.getClass(), context + " exception");
+        if (expectedFailure != null && reference.getName().equals("error")) {
+            eq(expectedFailure.getMessage(), actualFailure.getMessage(), context + " message");
+        }
+        if (expected instanceof Float) {
+            expected = Float.floatToRawIntBits((Float) expected);
+            got = Float.floatToRawIntBits((Float) got);
+        } else if (expected instanceof Double) {
+            expected = Double.doubleToRawLongBits((Double) expected);
+            got = Double.doubleToRawLongBits((Double) got);
+        }
+        eq(expected, got, context + " result");
+        check(Arrays.deepEquals(expectedArgs, actualArgs), context + " side effects");
     }
 
     // A directory for the directory tests: a.v3, sub/b.v3, a symlink to each,
