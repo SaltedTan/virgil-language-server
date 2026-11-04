@@ -14,6 +14,7 @@ def X = [
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
 	T("LspParserDiagnostics:parse_budget", test_diagnostics_parse_budget),
+	T("LspParserDiagnostics:parse_budget_note", test_diagnostics_parse_budget_note),
 	T("LspParserDiagnostics:long_decimal_literal", test_diagnostics_long_literal),
 	()
 ];
@@ -238,9 +239,9 @@ def test_diagnostics_write_failure(t: Tester) {
 	t.assertz(false, transport.close());
 }
 // A document with more conservatively counted tokens than the server's parse
-// budget (AnalysisParseBudget) isn't parsed: it has no parser diagnostics,
-// and its parse outcome counts it as parsing. One at the budget has the same
-// diagnostics as without it.
+// budget (AnalysisParseBudget) isn't parsed: it gets the over-budget note
+// (test_diagnostics_parse_budget_note) and its parse outcome counts it as
+// parsing. One at the budget has the same diagnostics as without it.
 def test_diagnostics_parse_budget(t: Tester) {
 	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
 	var text = "component C { def x = ; }", count = AnalysisParseBudget.count(text, int.max);
@@ -249,13 +250,56 @@ def test_diagnostics_parse_budget(t: Tester) {
 	assertRange(t, publication(t, rec, 0, URI, 1), 0, 22, 22);
 	AnalysisParseBudget.maxTokens = count - 1;
 	replace(t, server, 2, text);
-	t.asserti(0, publication(t, rec, 1, URI, 2).length);
-	var doc = server.documents.overlay(URI), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(server.documents, null));
+	assertNote(t, publication(t, rec, 1, URI, 2), count - 1);
+	var doc = server.documents.overlay(URI), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(server.documents, DiagnosticRecorder.new().send));
 	t.assert(parser.parses(doc, []), "a refused text counts as parsing");
+	// Also after its note is published, from the cached outcome.
+	parser.update(doc, []);
+	t.assert(parser.parses(doc, []), "a refused text counts as parsing after its note");
 	AnalysisParseBudget.maxTokens = count;
 	replace(t, server, 3, text);
 	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 22);
 	t.assertz(false, parser.parses(server.documents.overlay(URI), []));
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+// A document over the parse budget (AnalysisParseBudget) gets one Information
+// note at its start, in place of its parser diagnostics. A version-only
+// change keeps it; a version within the budget drops it and returns the
+// parser diagnostics, and a close clears it. One at the budget is parsed as
+// usual, with no note.
+def assertNote(t: Tester, values: Array<JsonValue>, maxTokens: int) {
+	t.asserti(1, values.length);
+	if (values.length != 1) return;
+	var d = JsonValue.JObject.!(values[0]).v;
+	t.asserti(3, JsonValue.Int.!(d["severity"]).v);
+	t.assert_string("virgil-lsp", JsonValue.String.!(d["source"]).v);
+	t.assert_string("ParseBudget", JsonValue.String.!(d["code"]).v);
+	t.assert_string(Strings.format1("This document has more than %d tokens, the server's parse budget, so it was not checked for syntax errors.", maxTokens),
+		JsonValue.String.!(d["message"]).v);
+	var range = JsonValue.JObject.!(d["range"]).v;
+	diagnosticPosition(t, range["start"], 0, 0);
+	diagnosticPosition(t, range["end"], 0, 0);
+}
+def test_diagnostics_parse_budget_note(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	var text = "component C { def x = ; }", count = AnalysisParseBudget.count(text, int.max);
+	AnalysisParseBudget.maxTokens = count - 1;
+	open(t, server, URI, 1, text);
+	assertNote(t, publication(t, rec, 0, URI, 1), count - 1);
+	// A version-only change keeps the note at the new version.
+	change(t, server, 2, "[]");
+	assertNote(t, publication(t, rec, 1, URI, 2), count - 1);
+	// A version within the budget drops the note and returns the parse error.
+	AnalysisParseBudget.maxTokens = count;
+	replace(t, server, 3, text);
+	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 22);
+	// One more token over the budget gets the note again.
+	AnalysisParseBudget.maxTokens = count - 1;
+	replace(t, server, 4, text);
+	assertNote(t, publication(t, rec, 3, URI, 4), count - 1);
+	notify(t, server, "didClose", ID);
+	t.asserti(0, publication(t, rec, 4, URI, 4).length);
+	t.asserti(5, rec.payloads.length);
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }
 // This 300-digit decimal literal reports an error without ending the
