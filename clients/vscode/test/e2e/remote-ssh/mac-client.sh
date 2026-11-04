@@ -186,6 +186,20 @@ else
     printf ']}\n'
   } > "$out/manifest.json" || echo 'INFRA: could not write the combined manifest' >&2
 fi
+if [ -n "$interrupted" ]; then
+  status=$interrupted
+  node - "$out/manifest.json" "$status" <<'EOF' || {
+const fs = require('node:fs');
+const [file, status] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+manifest.result = 'INTERRUPTED';
+manifest.exitStatus = Number(status);
+fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+EOF
+    echo 'INFRA: could not record the interruption in the combined manifest' >&2
+    rm -f "$out/manifest.json"
+  }
+fi
 result=INFRA
 case $status in 0) result=PASS ;; 1) result=FAIL ;; 2) result=USAGE ;; 129|130|143) result=INTERRUPTED ;; esac
 echo "results: $out"
