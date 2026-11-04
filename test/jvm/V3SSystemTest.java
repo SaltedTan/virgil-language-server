@@ -1031,6 +1031,11 @@ public class V3SSystemTest {
             check(m[0] > 0 && m[1] > 0 && m[1] <= m[0], "max " + m[0] + ", used " + m[1]);
             eq(0, cmd("gc"), "gc");
         });
+        test("host: the thread's stack depth in frames", () -> {
+            long[] d = longs(payload("stack"));
+            eq(1, d.length, "values");
+            check(d[0] > 4, "depth " + d[0]);
+        });
         test("host: standard output keeps raw bytes in order", () -> {
             ProcessBuilder pb = new ProcessBuilder(childArgv("print"));
             pb.environment().remove(V3S_System.LAYOUT_ENV);

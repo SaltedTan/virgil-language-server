@@ -6,12 +6,51 @@
 // native ones; see each. Commands reach src/os/jvm/V3S_System.java as
 // src/os/jvm/HostOs.v3 describes.
 component HostRuntime {
-	// The JVM exposes no stack pointer, so the mark never moves and the
-	// parser's stack guard never stops a parse: deep enough nesting ends the
-	// process with StackOverflowError instead (#461).
+	// A Java program can read its stack only as a count of frames, and
+	// Thread.getStackTrace() caps that count at 1,024, so stackMark returns a
+	// virtual position: minus the current thread's frame depth times
+	// STACK_SCALE. The parser compares two marks, which gives the frames that
+	// parsing used, and its existing STACK_LIMIT of 1 MiB then stops a parse
+	// at STACK_LIMIT / STACK_SCALE = 512 frames of recursion.
+	//
+	// The limit stays inside the capped reading: a sample deeper than it is
+	// resampled at the next call (STACK_RESAMPLE), so a parse never starts
+	// from a stale base that would push its cutoff past the cap, and the
+	// guard's cutoff is always a real depth. The limit is far below where an
+	// unguarded parse overflows: on x86-64 Linux with JDK 25's default 1 MiB
+	// thread stack, the deepest nesting that parses is about 960 brackets,
+	// 1,600 blocks, 1,700 prefix operators, 2,300 while statements, or
+	// 2,300 else-if branches, at about six frames per level of the deepest
+	// of these. The margin covers the interpreter's larger frames, which
+	// compiled code replaces, and the shipped darwin-arm64 target, which is
+	// untested. A parse that reaches the limit reports "nesting too deep"
+	// and stops; nothing catches StackOverflowError, and no larger -Xss is
+	// needed. The parser's chain limit keeps its range() recursion separate;
+	// see docs/aeneas-crash-paths.md.
+	def STACK_SCALE = 2048;
+	// The parser calls stackMark once per token, and reading the frame depth
+	// costs about a microsecond per frame, so sample it every this many
+	// calls. Between samples the depth can grow by at most one level per
+	// token, which the limit's margin above covers.
+	def STACK_SAMPLE = 128;
+	// A sampled depth at or above the parser's frame limit is resampled at
+	// the next call, so a parse that starts after a deep one measures from a
+	// fresh, shallow base instead of the deep parse's last sample.
+	def STACK_RESAMPLE = 1024 * 1024 / STACK_SCALE;
+
+	private var stackCalls: int;
+	private var stackDepth: long;
+
+	// A mark of the current stack position, in virtual bytes. The stack grows
+	// down, so {base - stackMark()} is the frames used since {base} was
+	// taken, times STACK_SCALE.
 	def stackMark() -> long {
-		return 0;
+		stackCalls++;
+		if (stackCalls % STACK_SAMPLE == 0 || stackDepth >= STACK_RESAMPLE) stackDepth = frameDepth();
+		return -stackDepth * STACK_SCALE;
 	}
+	// The virtual bytes left below the mark {base}: effectively unlimited, so
+	// that the parser's stack limit stays at STACK_LIMIT.
 	def stackFree(base: long) -> long {
 		return 1L << 62;
 	}
@@ -38,6 +77,11 @@ component HostRuntime {
 		return unsupported();
 	}
 
+	private def frameDepth() -> long {
+		var r = System.fileLoad("\x01stack");
+		if (r == null || r.length != 9 || r[0] != 0) System.error("HostRuntimeError", "the JVM runtime's stack reply is malformed");
+		return long.view(Ref<Layout_u64>.at(r, 1).val);
+	}
 	private def memory() -> (long, long) {
 		var r = System.fileLoad("\x01memory");
 		if (r == null || r.length != 17 || r[0] != 0) System.error("HostRuntimeError", "the JVM runtime's memory reply is malformed");

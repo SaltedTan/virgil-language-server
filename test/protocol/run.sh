@@ -14,6 +14,9 @@
 #   output       The expected standard output. @VERSION@ stands for the
 #                server version, and the Content-Length of a message that
 #                contains it is checked as written, then adjusted.
+#   output.jvm   Instead of output for the JVM build, when it exists. The
+#                build is detected from the launcher's header, which
+#                scripts/v3c.sh writes for the JVM target only.
 #   status       The expected exit status.
 #   args         Optional. Arguments added after --stdio, on one line.
 #   stderr       Optional. Extended regular expressions, one per line of
@@ -33,6 +36,13 @@ trap 'rm -rf "$TMP"' EXIT
 
 VERSION=$("$EXE" --version | head -n 1)
 VERSION=${VERSION#* }
+# The JVM build's launcher is a script whose header scripts/v3c.sh writes;
+# the native build is a binary. Cases with an output.jvm use it for the JVM
+# build, as the JVM's parser bounds differ from the native ones.
+IS_JVM=0
+if head -n 2 "$EXE" 2>/dev/null | grep -q 'for the JVM target'; then
+    IS_JVM=1
+fi
 HEADER_RE=$'^Content-Length: ([0-9]+)\r\n\r\n'
 
 # expand <file>: prints the expected output in <file> with @VERSION@
@@ -70,6 +80,10 @@ feed() {
 run_case() {
     local c=$1 ok=1 want got pat n
     local -a args=()
+    local want_out="$c/output"
+    if [ "$IS_JVM" -eq 1 ] && [ -f "$c/output.jvm" ]; then
+        want_out="$c/output.jvm"
+    fi
     if [ ! -f "$c/status" ]; then
         echo "  status: missing"
         return 1
@@ -79,7 +93,7 @@ run_case() {
     got=$?
     read -r want < "$c/status"
     [ "$got" -eq "$want" ] || { ok=0; echo "  exit: expected $want, got $got"; }
-    if ! expand "$c/output" > "$TMP/want"; then
+    if ! expand "$want_out" > "$TMP/want"; then
         ok=0
     elif ! cmp -s "$TMP/want" "$TMP/out"; then
         ok=0

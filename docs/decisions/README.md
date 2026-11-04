@@ -20,5 +20,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0014](0014-compatibility-and-support-policy.md) | Supported Virgil, library, and editor combinations | Accepted |
 | [0015](0015-gc-global-register-allocation.md) | Compile the runtime's GC with the global register allocator | Accepted |
 | [0016](0016-performance-budgets.md) | Adopt the performance budgets | Accepted |
+| [0017](0017-jvm-parser-stack-guard.md) | Bound the parser's recursion on the JVM target by frame depth | Accepted |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.

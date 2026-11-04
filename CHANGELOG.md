@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The [performance budgets](docs/performance-budgets.md) are now adopted: the maintainer adopted the proposal's numbers, reference environments, and enforcement policy on 2026-11-03, exactly as proposed, with advisory enforcement and no CI gate enabled. The thresholds of [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) are not in the adopted table, and enabling its gate needs the maintainer's separate approval of its resource-policy file ([ADR-0016](docs/decisions/0016-performance-budgets.md), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)).
 - The scheduled benchmark comparison now reports [resource checks](docs/benchmarks.md#resource-checks): per-scenario worker allocation, RESULT bytes, in-handle worker collections, and semispace room, checked against a proposed resource-policy file with explicit compatibility metadata and pending absolute baselines. The policy's thresholds aren't approved, so the checks report and never fail the job until the maintainer approves the policy and switches the workflow to enforce them ([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)).
 
+### Fixed
+
+- On the [JVM target](docs/development.md#the-jvm-target), deeply nested documents no longer end the server with `StackOverflowError`: the parser's [stack guard](docs/aeneas-crash-paths.md) now reads the thread's frame depth and stops a parse at 512 frames of recursion, far below where the JVM's default 1 MB thread stack overflows, with the same `nesting too deep; parsing stopped here` diagnostic as native ([ADR-0017](docs/decisions/0017-jvm-parser-stack-guard.md), [#461](https://github.com/SaltedTan/virgil-language-server/issues/461)).
+
 ## [0.1.0-alpha.6] - 2026-11-03
 
 ### Added

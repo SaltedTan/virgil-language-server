@@ -102,6 +102,9 @@ import java.util.regex.Pattern;
  *     system property, which a launcher sets, or else the jar's path.
  * <li>{@code memory}: two little-endian longs, the maximum heap size and the
  *     heap in use, in bytes.
+ * <li>{@code stack}: one little-endian long, the current thread's stack depth
+ *     in frames, including this command's own frames. The parser's JVM stack
+ *     guard compares depths from two calls, so the constant overhead cancels.
  * </ul>
  *
  * <p>{@code System.read} and {@code System.write} use the same descriptor
@@ -977,6 +980,14 @@ public class V3S_System {
         Runtime r = Runtime.getRuntime();
         return longs(r.maxMemory(), r.totalMemory() - r.freeMemory());
     }
+    static byte[] stack() {
+        // Thread.getStackTrace() caps at 1,024 frames; the parser's JVM stack
+        // guard stays inside that cap, as src/os/jvm/HostRuntime.v3 describes.
+        long depth = Thread.currentThread().getStackTrace().length;
+        byte[] r = new byte[8];
+        for (int i = 0; i < 8; i++) r[i] = (byte) (depth >>> (8 * i));
+        return r;
+    }
 
     // Parsing and dispatching commands.
     static final class Commands {
@@ -1063,6 +1074,7 @@ public class V3S_System {
                 case "random": count(a, 0); return random();
                 case "executable": count(a, 0); return executable();
                 case "memory": count(a, 0); return memory();
+                case "stack": count(a, 0); return stack();
                 default: throw new Failure(ENOSYS);
             }
         }
