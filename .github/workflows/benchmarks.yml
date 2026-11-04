@@ -75,6 +75,19 @@ jobs:
         run: |
           python3 tooling/scripts/bench-report.py results/comparison.json --baseline > results/baseline.md
           cat results/baseline.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Check resources
+        if: hashFiles('results/comparison.json') != ''
+        env:
+          # report: never fails. Set to enforce only after the maintainer approves
+          # test/benchmarks/resource-policy.json (#347).
+          RESOURCE_CHECKS: report
+        run: |
+          status=0
+          python3 tooling/scripts/bench-report.py results/comparison.json --annotations \
+            --resources tooling/test/benchmarks/resource-policy.json --mode "$RESOURCE_CHECKS" \
+            > results/resources.md || status=$?
+          cat results/resources.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:

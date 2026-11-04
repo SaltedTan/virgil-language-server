@@ -490,6 +490,13 @@ can run in CI or scheduled runs as-is:
   semantic diagnostic records 865, 867, and 868 bytes), so a constant
   length is not a valid check.
 
+The [resource checks](benchmarks.md#resource-checks) of the scheduled
+comparison check worker allocation, RESULT bytes, and worker collections
+under a proposed policy of
+[#347](https://github.com/SaltedTan/virgil-language-server/issues/347). They
+report only, and never fail the job, until the maintainer approves that
+policy.
+
 **Calibrated absolute reference-run checks** compare p50/p95 latency and RSS
 against the targets above. They are meaningful only on the reference host
 (i7-14700KF, CPU 12, pinned, warm file caches, the recorded build and
