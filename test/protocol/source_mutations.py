@@ -236,16 +236,24 @@ JAVA_FRAME = re.compile(r"^\s+at (?P<name>[^\s(]+)\([^)]*\)$", re.M)
 # Aeneas gives each Virgil type a mangled Java name, such as V3C_MethodEnv; a
 # closure's suffix starts at the first "$".
 JAVA_NAME = re.compile(r"^V3[A-Z]_")
+JVM_MATCH_FRAME_LIMIT = 128
+JVM_DISPLAY_FRAME_LIMIT = 6
 JVM_STACK_FRAMES = {
     # Rows 13 and 25 must show repeated frames from the recursion documented
     # for each path, rather than merely any Java StackOverflowError.
-    "crash-path row 13": {
-        "Parser.parseExpr()", "Parser.parseTupleExpr()", "Parser.parseList()",
-        "TypeChecker.visitTuple()", "TypeChecker.visitApp()",
-    },
-    "crash-path row 25": {
-        "BinOpExpr.range()", "VarExpr.range()", "AppExpr.range()", "IndexExpr.range()",
-    },
+    "crash-path row 13": (
+        ("TypeChecker.visitApp()", "TypeChecker.typeCheckExpr()", "TypeChecker.typeCheckArgs()",
+         "TypeChecker.visitApp()"),
+        ("Parser.parseTupleExpr()", "Parser$DparseExpr.invoke()", "Parser.parseList()",
+         "Parser.parseTupleExpr()"),
+    ),
+    "crash-path row 25": (
+        ("BinOpExpr.range()", "BinOpExpr.range()"),
+        ("AppExpr.range()", "AppExpr.range()"),
+        ("IndexExpr.range()", "IndexExpr.range()"),
+        ("VarExpr.range()", "VarExpr.range()"),
+        ("TypeChecker.lookupBinding()", "TypeChecker.lookupBinding()", "TypeChecker.lookupBinding()"),
+    ),
 }
 
 # The Java exceptions that the JVM target raises for the traps in
@@ -1118,6 +1126,7 @@ def worker_deaths(log, windows, jvm=False):
                     if any(known["source"](c) for c in code):
                         death["known"] = known["known"]
                         break
+            death.pop("_match_frames", None)
             deaths.append(death)
         if end is None:
             break
@@ -1133,14 +1142,26 @@ def matches(death, known, jvm=False):
         # does, so require repeated frames from the row's documented recursion.
         if not jvm:
             return top is None
-        recursive = JVM_STACK_FRAMES.get(known["known"], set())
-        return sum(frame["function"] in recursive for frame in death["frames"]) >= 2
+        frames = death.get("_match_frames", death["frames"])
+        return any(_contains_frame_cycle(frames, cycle)
+                   for cycle in JVM_STACK_FRAMES.get(known["known"], ()))
     if top is None:
         return False
     if jvm:
         # A Java frame names the method but not its source file or line.
         return top["function"] == known["function"]
     return top["function"] == known["function"] and top["file"].endswith(known["file"])
+
+
+def _contains_frame_cycle(frames, cycle):
+    """Whether the bounded JVM trace contains {cycle} in order."""
+    position = 0
+    for frame in frames:
+        if frame["function"] == cycle[position]:
+            position += 1
+            if position == len(cycle):
+                return True
+    return False
 
 
 def java_function(name):
@@ -1170,7 +1191,7 @@ def segment_deaths(log, jvm=False):
                         frames = nested["frames"]
                         continue
                     frame = JAVA_FRAME.match(line)
-                    if frame and len(frames) < 6:
+                    if frame and len(frames) < JVM_MATCH_FRAME_LIMIT:
                         frames.append({"function": java_function(frame["name"]), "file": None,
                                        "line": None, "column": None})
                 traces.append(trace)
@@ -1181,7 +1202,7 @@ def segment_deaths(log, jvm=False):
             trace = traces[0] if len(traces) == 1 else None
             exception = trace["exception"] if trace else None
             trap = JVM_TRAPS.get(exception) if unambiguous and m["status"] == "exit status 1" else None
-            frames = trace["frames"][:6] if trace else []
+            frames = trace["frames"][:JVM_DISPLAY_FRAME_LIMIT] if trace else []
         else:
             traps = list(TRAP.finditer(log, previous, m.start()))
             exception = None
@@ -1190,10 +1211,11 @@ def segment_deaths(log, jvm=False):
             trap = trap["trap"] if trap else None
         previous = m.end()
         death = {"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
-                 "trap": trap, "exception": exception, "frames": frames[:6], "known": None}
+                 "trap": trap, "exception": exception, "frames": frames[:JVM_DISPLAY_FRAME_LIMIT], "known": None}
         if jvm:
             death["causes"] = trace["causes"] if trace else []
             death["exceptions"] = traces
+            death["_match_frames"] = trace["frames"] if trace else []
         deaths.append(death)
     return deaths
 

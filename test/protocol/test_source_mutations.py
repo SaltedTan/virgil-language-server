@@ -414,6 +414,12 @@ class WorkerDeaths(unittest.TestCase):
         lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
         return "\n".join(lines) + "\n"
 
+    def jvm_captured_overflow(self, frames):
+        lines = ['Exception in thread "main" java.lang.StackOverflowError']
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        lines += ["", "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1"]
+        return "\n".join(lines) + "\n"
+
     def test_known_signature_needs_its_source(self):
         deaths = sm.worker_deaths(self.TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])])
         self.assertEqual([(d["pid"], d["trap"], d["known"]) for d in deaths], [(7, "!NullCheckException", "crash-path row 1")])
@@ -465,8 +471,9 @@ class WorkerDeaths(unittest.TestCase):
         chain = "def f() { var x = a" + ".b" * 1000 + "; }"
         # A Java stack overflow must show the documented recursion and source.
         self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr",
-            "V3C_Parser.parseExpr"), deep), ["crash-path row 13"])
+            "java.lang.StackOverflowError", "V3C_Parser.parseList", "V3C_Parser.parseTupleExpr",
+            "V3D_Parser$DparseExpr.invoke", "V3C_Parser.parseList", "V3C_Parser.parseTupleExpr",
+            "V3D_Parser$DparseExpr.invoke"), deep), ["crash-path row 13"])
         self.assertEqual(self.jvm_known(self.jvm_trace(
             "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
             "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
@@ -482,23 +489,48 @@ class WorkerDeaths(unittest.TestCase):
                                  ["!HeapOverflow"] if exception.endswith("OutOfMemoryError") else [None])
                 self.assertEqual([d["known"] for d in deaths], [None])
 
-    def test_jvm_stack_overflow_requires_documented_recursive_frames(self):
-        deep = "def f() { var x = %s; }" % ("(" * 1000 + "1" + ")" * 1000)
-        chain = "def f() { var x = a" + ".b" * 1000 + "; }"
-        row6_with_unrelated_nesting = (
-            "class S<T> {} class A extends S<A> {} class B extends S<B> {} "
-            "component Mutant { def f(a: A, b: B) { var xs = [a, b]; var x = %s; } }"
-            % ("(" * 1000 + "1" + ")" * 1000)
+    def test_jvm_row13_stack_overflow_matches_captured_recursive_frames(self):
+        # These frame excerpts are trimmed from the 1 MB-stack captures in
+        # review2/live-calls1000.log and live-parens4000.log.
+        calls = "component M { def g(x: int) -> int { return x; } def f() { var x = %s; } }" % (
+            "g(" * 1000 + "1" + ")" * 1000
         )
-        self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr",
-            "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr"), deep), ["crash-path row 13"])
-        self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
-            "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
-        self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3K_TypeSystem.unify0", "V3K_TypeSystem.mergeLists",
-            "V3K_TypeSystem.unify0", "V3K_TypeSystem.mergeLists"), row6_with_unrelated_nesting), [None])
+        call_frames = [
+            "V3C_MethodEnv.lookupComponentMember", "V3C_MethodEnv.lookupComponentExprMember",
+            "V3C_MethodEnv.lookupExprMember", "V3C_MethodEnv.lookupVar", "V3C_TypeChecker.lookupBinding",
+            "V3C_TypeChecker.visitApp", "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs", "V3C_TypeChecker.visitApp",
+            "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs", "V3C_TypeChecker.visitApp",
+            "V3C_AppExpr.accept$LType$CType$R", "V3C_TypeChecker.typeCheckExpr",
+            "V3C_TypeChecker.typeCheckArgs",
+        ]
+        with self.subTest(shape="nested calls"):
+            self.assertEqual(self.jvm_known(self.jvm_captured_overflow(call_frames), calls), ["crash-path row 13"])
+
+        # This excerpt is from live-parens4000.log; the first repeated parser
+        # cycle only completes beyond the six frames kept for display.
+        parens = "def f() { var x = %s; }" % ("(" * 4000 + "1" + ")" * 4000)
+        parse_frames = [
+            "V3C_Parser.skipToNextToken", "V3C_AnalysisParseSkipper.skip",
+            "V3D_AnalysisParseSkipper$Dskip.invoke", "V3C_ParserState.advance1",
+            "V3C_Parser.parseList$LExpr$R", "V3C_Parser.parseTupleExpr", "V3C_Parser.parseTerm",
+            "V3C_Parser.parseSubExpr", "V3C_Parser.parseExpr",
+            "V3D_Parser$DparseExpr.invoke", "V3C_Parser.parseList$LExpr$R",
+            "V3C_Parser.parseTupleExpr", "V3C_Parser.parseTerm", "V3C_Parser.parseSubExpr",
+            "V3C_Parser.parseExpr", "V3D_Parser$DparseExpr.invoke",
+            "V3C_Parser.parseList$LExpr$R", "V3C_Parser.parseTupleExpr",
+            "V3C_Parser.parseTerm", "V3C_Parser.parseSubExpr", "V3C_Parser.parseExpr",
+        ]
+        with self.subTest(shape="nested parentheses"):
+            self.assertEqual(self.jvm_known(self.jvm_captured_overflow(parse_frames), parens), ["crash-path row 13"])
+
+    def test_jvm_row25_verification_stack_overflow_matches_captured_frames(self):
+        # The source and repeated lookupBinding frames are trimmed from
+        # review2/live-members2000.log and members2000.v3.
+        members = "class A { def a: A; } component M { def f(a: A) { %s; } }" % ("a" + ".a" * 2000)
+        lookup_frames = ["V3C_TypeChecker.lookupBinding"] * 8
+        self.assertEqual(self.jvm_known(self.jvm_captured_overflow(lookup_frames), members), ["crash-path row 25"])
 
     def test_jvm_interval_with_multiple_exceptions_is_unclassified(self):
         source = "def f() -> int { return 0i + b; }"
