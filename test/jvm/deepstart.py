@@ -17,12 +17,14 @@ Run from the repository root, after `make jvm`:
 
   python3 test/jvm/deepstart.py build/jvm-target/virgil-lsp.jar
 
-The wrapper is compiled with the JDK's javac, from the JAVA the Makefile
-exports; set JAVA to a JDK if `java` is a JRE.
+The wrapper is compiled with JAVAC, defaulting to the compiler module of
+JAVA (default: java); set JAVA to a JDK if `java` is a JRE.
 """
 
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -52,10 +54,9 @@ def frame(msg):
 
 def main(jar):
     jar = Path(jar).resolve()
-    java = subprocess.run(["java", "-version"], capture_output=True).returncode == 0 and "java" or None
-    # The Makefile exports JAVA; use it to find a javac.
-    env_java = subprocess.run(["sh", "-c", "echo $JAVA"], capture_output=True, text=True).stdout.strip()
-    javac = [env_java, "-m", "jdk.compiler/com.sun.tools.javac.Main"] if env_java else ["javac"]
+    java = shlex.split(os.environ.get("JAVA", "java"))
+    javac = (shlex.split(os.environ["JAVAC"]) if "JAVAC" in os.environ
+             else java + ["-m", "jdk.compiler/com.sun.tools.javac.Main"])
     with tempfile.TemporaryDirectory(prefix="virgil-jvm-deepstart-") as directory:
         d = Path(directory)
         (d / "DeepStart.java").write_text(WRAPPER)
@@ -66,8 +67,7 @@ def main(jar):
                         "params": {"textDocument": {"uri": "u", "languageId": "virgil", "version": 1, "text": text}}})
                + frame({"jsonrpc": "2.0", "id": 2, "method": "shutdown"})
                + frame({"jsonrpc": "2.0", "method": "exit"}))
-        java_bin = env_java.split()[-1] if env_java else "java"
-        p = subprocess.run([java_bin, "-cp", str(d) + ":" + str(jar), "DeepStart", "--stdio"],
+        p = subprocess.run(java + ["-cp", str(d) + ":" + str(jar), "DeepStart", "--stdio"],
                            input=inp, capture_output=True, timeout=120)
         stderr = p.stderr.decode("utf-8", "replace")
         stdout = p.stdout.decode("utf-8", "replace")
