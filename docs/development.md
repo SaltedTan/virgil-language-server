@@ -2,11 +2,11 @@
 
 ## Prerequisites
 
-- Linux x86-64, or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). WSL 2 on Windows is best effort.
+- For native builds: Linux x86-64, or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). WSL 2 on Windows is best effort.
 - `git`, `make`, `bash`, `curl`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
-- Only for the JVM target: a JDK, version 9 or later, for `make test-jvm-runtime`, which compiles the target's runtime class for Java 8 and runs its tests. `make` and `make test` don't need one. The JDK needs the `jdk.compiler` module, which the Makefile runs as `java -m jdk.compiler/com.sun.tools.javac.Main`, so no `javac` on `PATH` is needed; set `JAVA` or `JAVAC` to use another one.
+- Only for the [JVM target](#the-jvm-target): a JDK, version 9 or later, for `make jvm`, `make test-jvm`, and `make test-jvm-runtime`, which compile the target's runtime class for Java 8, and for running the jars. `make` and `make test` don't need one. The JDK needs the `jdk.compiler` module, which the Makefile runs as `java -m jdk.compiler/com.sun.tools.javac.Main`, so no `javac` on `PATH` is needed; set `JAVA` or `JAVAC` to use another one.
 - Optional: the [VS Code development client's prerequisites](../clients/vscode/README.md#setup).
 
 ## Build and test
@@ -26,7 +26,7 @@ On SIGTERM, SIGHUP, or SIGINT, the suite runner stops starting suites and forwar
 
 `make test` and `make test-unit` leave the build directory removable with a plain `rm -rf` or `git worktree remove`, even after a failing test or an interrupt, with no `make clean` or `chmod` first. Two fixture directories are unreadable only while the unit tests run; the [project fixtures](../test/fixtures/projects/README.md) describe how.
 
-Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:
+Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). By default, `scripts/v3c.sh` selects the native host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:
 
 | Variable | Purpose |
 | --- | --- |
@@ -34,6 +34,32 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 | `VIRGIL_V3C` | Use a specific Aeneas binary, e.g. a bootstrapped `bin/current/x86-64-linux/Aeneas` |
 | `V3C_TARGET` | Force a target such as `x86-64-darwin`. The `Makefile` also uses it to choose `src/os/<target>/`. |
 | `WORKER_HEAP` | The analysis worker's heap for `make` and release packaging, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
+
+### The JVM target
+
+The JVM target is a development build of the server and worker as Java jars, for the JVM fallback on Apple Silicon without Rosetta ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)). It is not shipped: the bundled darwin-arm64 runtime and package are [#464](https://github.com/SaltedTan/virgil-language-server/issues/464). Host detection never selects it; `V3C_TARGET=jvm` does.
+
+```sh
+make jvm        # builds build/jvm-target/virgil-lsp and virgil-lsp-worker, with their jars
+make test-jvm   # runtime tests, JVM build, and smoke test
+python3 test/jvm/smoke.py --unicode-build  # build and smoke-test Unicode launcher paths
+make V3C_TARGET=jvm all build/jvm-target/stall/virgil-lsp-worker   # what the server suites need
+```
+
+`make jvm` compiles the same sources and build information as `make`, with `src/os/jvm/` in place of the native target's directory, through `scripts/v3c.sh`, which runs the host's pinned Aeneas with its `jar` target, or the pinned `bin/stable/jar` Aeneas on a host without a native target. Each executable is a jar, which also holds the runtime classes from `src/os/jvm/V3S_System.java`, and a launcher script of the same name. A launcher runs its jar on the JDK of `JAVA` at build time (default `java`), by absolute path, since the server starts its worker with an empty environment. It reports its own resolved path as the executable, so the server finds the worker launcher beside it. The launchers pass `-Xss16m`, and the worker's also passes `-Xmx` from `WORKER_HEAP`. Those values are provisional, from the feasibility probe, until [#463](https://github.com/SaltedTan/virgil-language-server/issues/463) measures the JVM's memory and decides them.
+
+`V3C_TARGET=jvm` builds other executables in `build/jvm-target` by default, and the suites that take a server path, listed in [Tests](#tests), run against `build/jvm-target/virgil-lsp`. `make V3C_TARGET=jvm test` doesn't work yet: the unit tests measure allocation with the native collector's counters. `test/protocol/coordinates.py` also starts the worker directly on inherited descriptors 3 and 4, which the JVM bridge doesn't support; the [runtime header](../src/os/jvm/V3S_System.java) describes the supported child descriptor layout.
+
+The JVM build differs from the native one in these ways:
+
+- The parser has [no JVM stack guard](aeneas-crash-paths.md), so `diagnostics-deep-nesting` fails its native expectation.
+- A crash reports a Java exception, such as `NullPointerException` with exit status 1, rather than Virgil's `!NullCheckException` with status 255, so the crash-text assertions in `test/cli/run.sh` and `test/protocol/worker.py` fail ([#462](https://github.com/SaltedTan/virgil-language-server/issues/462)).
+- The worker's heap size and live heap come from the JVM's `Runtime.maxMemory()` and `totalMemory() - freeMemory()` after `System.gc()`, so its restart threshold is approximate and `retain-probe` cannot satisfy its native heap assertions ([#463](https://github.com/SaltedTan/virgil-language-server/issues/463)). The Linux budgets stay those of the native build.
+- `BENCH=1` fails for the JVM target, which has no collection counts, allocation totals, or thread CPU times for the benchmark probes.
+
+The [native size accounting](testing-notes/jvm-native-size.md) records the
+112/176-byte comparison for this change and the source-path alignment that can
+make the same comparison report 120/176 bytes.
 
 [Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow, including the [editor tests that each release runs on its own files](releasing.md#how-the-workflow-works).
 
@@ -181,6 +207,7 @@ custom `BUILD`).
 | `clients/vscode/` | Type-check, lifecycle regression tests with a simulated extension host, and the regression tests of the Extension Host and Remote-SSH test runners, run by CI job `vscode-client` on Linux, which also packages the VSIX and uploads it as an artifact ([coverage](manual-testing.md#what-the-automated-tests-cover)), and a [manual checklist](../clients/vscode/README.md#manual-checklist) | See [client development commands](../clients/vscode/README.md#development); not run by `make test` |
 | `clients/vscode/test/e2e/` | The VS Code client in a real Extension Host, locally and through Remote-SSH | See the [Extension Host test](../clients/vscode/README.md#extension-host-test) and [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test) for coverage, commands, and requirements, and [automated editor coverage](manual-testing.md#what-the-automated-tests-cover) for CI platforms; not run by `make test` |
 | `test/jvm/V3SSystemTest.java` | The JVM target's runtime class, `src/os/jvm/V3S_System.java`, called directly: command dispatch and failure reporting, descriptor reads, writes, and the end of input, child processes over pipes with the worker's descriptor layout, exit statuses, kill, alarms, polling deadlines, directory entries and metadata without following symlinks, and the other host operations. Each test must leave no descriptor, child, or runtime thread behind. It also compares the results, failures, and side effects of methods copied from upstream with the compiled pinned copy, and checks that every class the runtime compiles to is named for `V3S_System`. Not part of `make test`; it needs a JDK | `make test-jvm-runtime`, or `make test-jvm-runtime ARGS='children'` for the tests whose names contain a word |
+| `test/jvm/smoke.py` | The JVM build's server launcher, through initialize, two analyses of a file with a type error, which only the worker reports, shutdown, and exit. The worker must be a JVM process of its own, a child of the server's that ends with it; standard output must hold only framed messages, and standard error no Java exception. Prints the times it took. Not part of `make test`; it needs a JDK | `make test-jvm`, or `python3 test/jvm/smoke.py build/jvm-target/virgil-lsp` after `make jvm` |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). `test/fixtures/projects/` holds whole repositories with project files. | — |
 
 The [manual test matrix](manual-testing.md) covers the editor and platform combinations that these tests don't. [Known limitations](known-limitations.md) lists what the alpha doesn't do yet.

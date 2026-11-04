@@ -2,7 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 VIRGIL ?= vendor/virgil
+# Host detection never selects the JVM target; V3C_TARGET=jvm does, and then
+# builds into a directory of its own by default. See "The JVM target" below.
+ifeq ($(V3C_TARGET),jvm)
+BUILD  ?= build/jvm-target
+else
 BUILD  ?= build
+endif
 V3C    := scripts/v3c.sh
 # Flags for every executable. The pinned runtime's unrolled GC clearing and
 # copying loops still benefit from the global register allocator at the default
@@ -33,6 +39,25 @@ V3C_TARGET := $(shell scripts/v3c.sh -print-target 2>/dev/null)
 endif
 export V3C_TARGET
 OS_SRC      = $(sort $(wildcard src/os/$(V3C_TARGET)/*.v3))
+
+# The JVM target's runtime class and the JDK that compiles it and runs the
+# jars. JVM_DEPS is a prerequisite of every executable, and empty for native
+# targets, which need no JDK.
+JAVA        ?= java
+JAVAC       ?= $(JAVA) -m jdk.compiler/com.sun.tools.javac.Main
+JAVAC_FLAGS  = -source 8 -target 8 -encoding UTF-8 -Xlint:all -Xlint:-options -Werror
+JVM_RT_SRC   = $(sort $(wildcard src/os/jvm/*.java))
+JVM_RT       = $(BUILD)/jvm/rt
+# The JVM target's own build directory when a native one builds it.
+JVM_BUILD   ?= $(BUILD)/jvm-target
+ifeq ($(V3C_TARGET),jvm)
+JVM_DEPS     = $(JVM_RT)/V3S_System.class
+JVM_BUILD    = $(BUILD)
+export JVM_RT JAVA
+ifeq ($(BENCH),1)
+$(error BENCH=1 needs a native target: the JVM target has no collection counts or allocation totals for the benchmark probes)
+endif
+endif
 
 # src/main.v3 and src/worker/WorkerMain.v3 hold the entry points of the server
 # and the analysis worker, and must be passed first.
@@ -135,18 +160,18 @@ buildinfo: check-virgil
 	@mkdir -p $(BUILD)/gen
 	@scripts/gen-buildinfo.sh $(BUILDINFO)
 
-$(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB)
+$(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB) $(JVM_DEPS)
 	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=virgil-lsp \
 	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The server starts this executable from its own directory.
-$(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
+$(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB) $(JVM_DEPS)
 	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The real worker, with deterministic stalls enabled only for tests. Share the
 # normal worker's sources, heap and build info so the server accepts its hello.
-$(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
+$(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB) $(JVM_DEPS)
 	@mkdir -p $(BUILD)/stall
 	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -redef-field=WorkerStall.enabled=true \
 	  -heap-size=$(WORKER_HEAP) -output=$(BUILD)/stall -program-name=virgil-lsp-worker \
@@ -155,17 +180,17 @@ $(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LI
 project-fixtures:
 	python3 test/fixtures/projects/prepare.py $(BUILD)
 
-$(BUILD)/unit-tests: buildinfo project-fixtures $(TEST_SRC) $(SERVER_LIB)
+$(BUILD)/unit-tests: buildinfo project-fixtures $(TEST_SRC) $(SERVER_LIB) $(JVM_DEPS)
 	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=unit-tests \
 	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 
 # A separate process is essential: prior analyses could hide the initial static
 # cache roots in the heap baseline. The probe also accepts source-file arguments.
-$(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB)
+$(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB) $(JVM_DEPS)
 	$(V3C) $(V3C_FLAGS) $(BENCH_FLAGS) -output=$(BUILD) -program-name=retain-probe \
 	  test/analysis/RetainProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
-$(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LIB)
+$(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(JVM_DEPS)
 	$(V3C) $(V3C_FLAGS) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
@@ -211,13 +236,7 @@ test-lazyvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 # Not part of `make test`: they need a JDK, which only the JVM target does.
 # The class is built for Java 8, the level of upstream's rt/jvm/Makefile. The
 # default JAVAC needs JDK 9 or later; set JAVA or JAVAC to use another JDK.
-JAVA        ?= java
-JAVAC       ?= $(JAVA) -m jdk.compiler/com.sun.tools.javac.Main
-JAVAC_FLAGS  = -source 8 -target 8 -encoding UTF-8 -Xlint:all -Xlint:-options -Werror
-JVM_RT_SRC   = $(sort $(wildcard src/os/jvm/*.java))
-JVM_RT       = $(BUILD)/jvm/rt
-
-.PHONY: jvm-runtime test-jvm-runtime
+.PHONY: jvm-runtime test-jvm-runtime jvm test-jvm
 # Every class file in $(JVM_RT) belongs in each jar, not only V3S_System.class.
 jvm-runtime: $(JVM_RT)/V3S_System.class
 
@@ -234,6 +253,23 @@ test-jvm-runtime: jvm-runtime check-virgil
 	  -Dv3s.runtime.classes=$(JVM_RT) \
 	  -Dv3s.upstream.classes=$(BUILD)/jvm/upstream \
 	  V3SSystemTest $(ARGS) </dev/null
+
+# The JVM target, for development: `make jvm` builds the server and worker
+# from the same sources and build information as `make`, as jars with
+# launchers, in $(JVM_BUILD). `make V3C_TARGET=jvm <target>` builds or runs
+# any other target for it, such as `test`, in build/jvm-target by default.
+# test-jvm runs the runtime's tests, then starts the JVM server, which starts
+# its JVM worker, for an initialize/shutdown exchange. Neither is part of
+# `make test`, and both need a JDK.
+ifeq ($(V3C_TARGET),jvm)
+jvm: all
+else
+jvm:
+	$(MAKE) --no-print-directory V3C_TARGET=jvm BUILD=$(JVM_BUILD) all
+endif
+
+test-jvm: test-jvm-runtime jvm
+	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp
 
 # scripts/package-release.sh records the worker heap in its build manifest.
 print-worker-heap:

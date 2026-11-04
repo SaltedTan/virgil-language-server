@@ -1,0 +1,50 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The JVM target's version of src/os/x86-64-linux/HostRuntime.v3. The JVM has
+// no stack pointer or semispace heap, so some members only approximate the
+// native ones; see each. Commands reach src/os/jvm/V3S_System.java as
+// src/os/jvm/HostOs.v3 describes.
+component HostRuntime {
+	// The JVM exposes no stack pointer, so the mark never moves and the
+	// parser's stack guard never stops a parse: deep enough nesting ends the
+	// process with StackOverflowError instead (#461).
+	def stackMark() -> long {
+		return 0;
+	}
+	def stackFree(base: long) -> long {
+		return 1L << 62;
+	}
+	// The JVM's maximum heap, Runtime.maxMemory(), which -Xmx sets. It can be
+	// somewhat less than -Xmx, as the collector reserves space of its own.
+	def heapBytes() -> long {
+		return memory().0;
+	}
+	// System.gc(), which the JVM may treat as a hint.
+	def forceGC() {
+		System.fileOpen("\x01gc", false);
+	}
+	// Runtime.totalMemory() - freeMemory(): an approximation of the live heap
+	// after forceGC(), which can include garbage the collector kept.
+	def heapUsed() -> long {
+		return memory().1;
+	}
+	// The JVM target has no collection counts or allocation totals, so it
+	// can't run the benchmark probes; the Makefile refuses BENCH=1 for it.
+	def gcCount() -> int {
+		return unsupported();
+	}
+	def allocatedBytes() -> long {
+		return unsupported();
+	}
+
+	private def memory() -> (long, long) {
+		var r = System.fileLoad("\x01memory");
+		if (r == null || r.length != 17 || r[0] != 0) System.error("HostRuntimeError", "the JVM runtime's memory reply is malformed");
+		return (long.view(Ref<Layout_u64>.at(r, 1).val), long.view(Ref<Layout_u64>.at(r, 9).val));
+	}
+	private def unsupported() -> int {
+		System.error("HostRuntimeError", "benchmark probes are not supported on the JVM target");
+		return 0;
+	}
+}

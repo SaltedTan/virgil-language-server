@@ -84,8 +84,8 @@ component AnalysisRetainProbe {
 	}
 
 	def liveBytes() -> long {
-		RiGc.forceGC();
-		return Semispace.fromSpaceUsed();
+		HostRuntime.forceGC();
+		return HostRuntime.heapUsed();
 	}
 
 	def report(label: string, bytes: long) {

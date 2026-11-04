@@ -16,11 +16,11 @@ component BenchProbe {
 	private var parseWork: BenchParseWork;
 
 	def now() -> int { return if(enabled, System.ticksUs()); }
-	def gcCount() -> int { return if(enabled, GcStats.gc_count); }
+	def gcCount() -> int { return if(enabled, HostRuntime.gcCount()); }
 	def allocated() -> long {
-		return if(enabled, GcStats.allocated_bytes + Semispace.fromSpaceAllocated());
+		return if(enabled, HostRuntime.allocatedBytes());
 	}
-	def heap() -> long { return if(enabled, Semispace.fromSpaceUsed()); }
+	def heap() -> long { return if(enabled, HostRuntime.heapUsed()); }
 	def server(id: int, name: string, value: long) {
 		if (enabled) sample("server", id, name, value);
 	}
