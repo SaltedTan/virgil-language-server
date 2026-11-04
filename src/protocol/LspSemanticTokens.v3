@@ -19,9 +19,10 @@ component LspSemanticLegend {
 	def PROPERTY = 9;
 	def FUNCTION = 10;
 	def METHOD = 11;
-	def MODIFIERS = ["declaration", "readonly"];
+	def MODIFIERS = ["declaration", "readonly", "defaultLibrary"];
 	def DECLARATION = 1;
 	def READONLY = 2;
+	def DEFAULT_LIBRARY = 4;
 
 	// The token type of {d}'s name, or -1 for a declaration that gets no
 	// token: a constructor, which the keyword "new" spells, and an index
@@ -43,8 +44,8 @@ component LspSemanticLegend {
 			CONSTRUCTOR => return -1;
 		}
 	}
-	// The modifiers of every token of {d}: READONLY for a local, parameter,
-	// or field that nothing may assign. A declaration's name adds DECLARATION.
+	// Modifiers from declaration metadata only. The cursor adds the
+	// declaration-site and source-path modifiers.
 	def modifiers(d: AnalysisDeclaration) -> int {
 		match (d.kind) {
 			LOCAL, PARAMETER, FIELD => return if(d.flagged(), READONLY);
@@ -134,7 +135,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (file == null) {
 			data = LspTokenData.new(0);
 		} else {
-			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens), line = 0, character = 0;
+			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens, libraryPrefix(), projectPrefix(at.ctx)), line = 0, character = 0;
 			data = LspTokenData.new(c.bound());
 			while (c.next()) {
 				data.put(c.line - line, if(c.line == line, c.character - character, c.character), c.length, c.tokenType, c.modifiers);
@@ -237,7 +238,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 			}
 			var hash = SEED;
 			if (file != null) {
-				var c = LspTokenCursor.new(snapshot, i, file, effective, LspAnalysisCapture.currentText(store, snapshot, i, effective), maxTokens);
+				var c = LspTokenCursor.new(snapshot, i, file, effective, LspAnalysisCapture.currentText(store, snapshot, i, effective), maxTokens, libraryPrefix(), projectPrefix(ctx));
 				while (c.next()) {
 					hash = hashInt(hashInt(hashInt(hash, c.line), c.character), c.length);
 					hash = hashInt(hashInt(hash, c.tokenType), c.modifiers);
@@ -270,6 +271,24 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		send(pending.sendBy("workspace/semanticTokens/refresh", JsonRpcParams.Absent, System.ticksMs() + 10000, refreshed));
 	}
 	private def refreshed(reply: JsonRpcReply) { refreshing = false; refresh(); }
+	// The prefix of a library file's path, the Virgil root's lib/ directory,
+	// or null without a root: a name whose declaration is in a file under it,
+	// and not under the active project's root, gets the DEFAULT_LIBRARY
+	// modifier.
+	private def libraryPrefix() -> string {
+		var root = projects.virgilRoot;
+		return if(root != null, ProjectFiles.join(root, "lib/"), null);
+	}
+	// The prefix of the active project's root directory, the directory of its
+	// project file, or null without a project: a project inside the library
+	// keeps its own names unmarked, so its root is excluded from the library
+	// rule.
+	private def projectPrefix(ctx: ProjectContext) -> string {
+		if (ctx == null || ctx.config == null) return null;
+		var path = DocumentUri.filePath(ctx.config.uri);
+		if (path == null) return null;
+		return ProjectFiles.join(ProjectFiles.parent(path), "");
+	}
 	def close() { refreshSupport = false; dirty = false; baselines = OrderedStringMap<LspTokenFingerprint>.new(); }
 }
 
@@ -304,7 +323,7 @@ class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: 
 // text, as definition maps ranges; positions are its LSP lines and UTF-16
 // characters. Allocates nothing per token.
 class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnapshotFile,
-		effective: Array<byte>, current: Array<byte>, limit: int) {
+		effective: Array<byte>, current: Array<byte>, limit: int, libraryPrefix: string, projectPrefix: string) {
 	private var site: int;
 	private var use: int;
 	private var last: int;
@@ -330,15 +349,17 @@ class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnaps
 		var sites = file.firstSite + file.siteCount, uses = file.targets.length;
 		while (count < limit && (site < sites || use < uses)) {
 			var useBegin = if(use < uses, file.occurrenceBegin(use), int.max);
-			var d: AnalysisDeclaration, begin: int, end: int, declaration = false;
+			var d: AnalysisDeclaration, di: int, begin: int, end: int, declaration = false;
 			if (site < sites && snapshot.declarations[site].range.beginOffset <= useBegin) {
+				di = site;
 				d = snapshot.declarations[site++];
 				begin = d.range.beginOffset;
 				end = d.range.endOffset;
 				declaration = true;
 				if (useBegin == begin && file.occurrenceEnd(use) == end) use++;
 			} else {
-				d = snapshot.declarations[file.target(use)];
+				di = file.target(use);
+				d = snapshot.declarations[di];
 				begin = useBegin;
 				end = file.occurrenceEnd(use++);
 				if ((d.kind == AnalysisDeclKind.CLASS || d.kind == AnalysisDeclKind.COMPONENT)
@@ -360,7 +381,14 @@ class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnaps
 			character = start;
 			length = positions.character - start;
 			tokenType = t;
-			modifiers = if(declaration, LspSemanticLegend.DECLARATION) | LspSemanticLegend.modifiers(d);
+			var mod = LspSemanticLegend.modifiers(d);
+			if (libraryPrefix != null) {
+				var p = snapshot.declarationPath(di);
+				if (p != null && Strings.startsWith(p, libraryPrefix)
+					&& (projectPrefix == null || !Strings.startsWith(p, projectPrefix)))
+					mod |= LspSemanticLegend.DEFAULT_LIBRARY;
+			}
+			modifiers = if(declaration, LspSemanticLegend.DECLARATION) | mod;
 			count++;
 			return true;
 		}

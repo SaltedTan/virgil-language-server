@@ -60,7 +60,7 @@ CAPABILITIES = {
     "foldingRangeProvider": True,
     "selectionRangeProvider": True,
     "semanticTokensProvider": {"full": True, "legend": {
-        "tokenModifiers": ["declaration", "readonly"],
+        "tokenModifiers": ["declaration", "readonly", "defaultLibrary"],
         "tokenTypes": ["namespace", "class", "enum", "enumMember", "struct", "type", "typeParameter",
                        "parameter", "variable", "property", "function", "method"]}},
     "hoverProvider": True,

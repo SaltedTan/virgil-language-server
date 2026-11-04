@@ -360,6 +360,19 @@ for name in ["Main.v3", "Library.v3"]:
     '{"version":1,"projects":[{"name":"d","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# LspSemanticTokensTest:request_default_library. A project inside the
+# Virgil root's lib/ depends on another of its directories.
+semantic_token_library = root / "semantic-token-library" / "virgil" / "lib"
+(semantic_token_library / "app").mkdir(parents=True, exist_ok=True)
+(semantic_token_library / "util").mkdir(parents=True, exist_ok=True)
+(semantic_token_library / "app" / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"app","sources":["Main.v3"],"virgilDependencies":["lib/util/*.v3"]}]}',
+    encoding="utf-8",
+)
+(semantic_token_library / "app" / "Main.v3").write_text(
+    "component Main { def f(k: Kind) { } }\n", encoding="utf-8"
+)
+(semantic_token_library / "util" / "Kind.v3").write_text("class Kind { }\n", encoding="utf-8")
 # ProjectFiles:load writes the files it reads itself.
 (root / "file-loads").mkdir(exist_ok=True)
 # LspHoverTest writes and changes the sources itself.
