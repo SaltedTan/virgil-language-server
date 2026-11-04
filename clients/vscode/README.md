@@ -279,7 +279,42 @@ The test keeps its state out of the user's: VS Code's user data and extensions, 
 
 The `vscode-remote-ssh-linux` job of [`editor-test-suites.yml`](../../.github/workflows/editor-test-suites.yml) runs it three times on Linux, with the `linux-x64` platform VSIX and `--bundled`, so the host uses only the VSIX's own server, and uploads the output directory and the test's output as the `vscode-remote-ssh-linux` artifact: every Monday in the weekly `editor-tests.yml`, on a VSIX that it packages, and in the [release workflow](../../docs/releasing.md#how-the-workflow-works), on each release's own VSIX, which publishes only if the test passes.
 
-Of checklist step 17, the suite's checks of a restart and a configuration change during a server's recovery, of a write to a dead server, and of the crash limit run on the host too, but not the Extension Host test's third launch, which closes the window during the recovery: as step 6 above says, VS Code sometimes quits before it tells the remote extension host to terminate, so the extension need not deactivate, and whether the recovered server gets `shutdown` and `exit` isn't deterministic. The test also doesn't cover what VS Code shows, as for the Extension Host test; a macOS client, whose Remote-SSH check is deferred ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)); Remote-SSH's default connection modes, with the local server and the exec server; or a host that is another machine, user, or architecture.
+Of checklist step 17, the suite's checks of a restart and a configuration change during a server's recovery, of a write to a dead server, and of the crash limit run on the host too, but not the Extension Host test's third launch, which closes the window during the recovery: as step 6 above says, VS Code sometimes quits before it tells the remote extension host to terminate, so the extension need not deactivate, and whether the recovered server gets `shutdown` and `exit` isn't deterministic. The test also doesn't cover what VS Code shows, as for the Extension Host test; Remote-SSH's default connection modes, with the local server and the exec server; or a host of another user or architecture. Only the [run from a Mac](#remote-ssh-test-from-a-mac), by hand, covers a macOS client and a host that is another machine.
+
+### Remote-SSH test from a Mac
+
+[`test/e2e/remote-ssh/mac-client.sh`](test/e2e/remote-ssh/mac-client.sh) runs the same test with a Mac as the client and the Linux machine that runs the script as the host ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)). It is a prototype and runs by hand only: no workflow or schedule runs it, and no release requires it. The script starts [`host.cjs`](test/e2e/remote-ssh/host.cjs), which provisions the test's own SSH server on an address that the Mac reaches. It copies the host's description and the run's key to the Mac, runs `run.cjs --target` there over SSH, then takes the host down and copies the results back.
+
+It needs:
+
+- on the Linux host: Node.js, `tar`, the OpenSSH server at `/usr/sbin/sshd`, an address that the Mac reaches, such as the host's Tailscale address, and SSH and `scp` access to the Mac without a prompt;
+- on the Mac: Apple Silicon, a user logged in at the console, since VS Code opens its windows on that user's display; Node.js and Python 3 in `/opt/homebrew/bin`, where the script looks first; `ssh` and `tar`; and access to the Visual Studio Marketplace and VS Code's update service;
+- a study directory on the Mac with a copy of this directory and the fixture, after `npm ci`, and the VSIX files.
+
+For example, from `clients/vscode` on the Linux host, with the Mac reachable as `mac`, the host at `100.64.0.1`, and the Mac at `100.64.0.2`:
+
+```sh
+git -C ../.. archive HEAD clients/vscode test/e2e/nvim/fixture \
+  | ssh mac 'mkdir -p virgil-rssh/repo && tar -x -f - -C virgil-rssh/repo'
+ssh mac 'cd virgil-rssh/repo/clients/vscode && PATH=/opt/homebrew/bin:$PATH npm ci'
+scp virgil-lsp-vscode-0.1.5-linux-x64.vsix virgil-lsp-vscode-0.1.5-darwin-arm64.vsix mac:virgil-rssh/
+test/e2e/remote-ssh/mac-client.sh --mac mac --study /Users/me/virgil-rssh --listen 100.64.0.1 \
+  --host-name linux-host --allow-from 100.64.0.2 --vsix virgil-lsp-vscode-0.1.5-linux-x64.vsix \
+  --client-vsix virgil-lsp-vscode-0.1.5-darwin-arm64.vsix --work-dir ~/vrs --out mac-results
+```
+
+`--host-name` is the host's name or address as the Mac reaches it, and `--work-dir` an existing directory with a short path on the host, for the host's files. The SSH server accepts only the run's key, and only from the `--allow-from` address. `--vsix` and `--client-vsix` are relative to the study directory. `--client-vsix` installs that VSIX in the client's own extensions too, as a Mac user who has the extension locally would have it. The other options are `run.cjs`'s. The exit status is `run.cjs`'s, but 3 if the Mac can't be reached or the host's teardown can't confirm that nothing of the run is left. `--out` gets the Mac's results, with `manifest.json`, which adds the host's teardown, and the host's and the SSH server's logs.
+
+What a run does to the Mac:
+
+- **Files.** It keeps its files in the study directory: VS Code 1.142.0 in `repo/clients/vscode/.vscode-test`, each run's user data, extensions, home, keys, and SSH configuration in `w/`, and its results in `results/`. SSH uses only the run's configuration and key, with no agent or keychain, and VS Code gets `--use-mock-keychain`. It doesn't read or change `~/.ssh`, `~/.vscode`, or `~/Library/Application Support/Code`.
+- **Windows.** Each launch opens a VS Code window on the current Space, for about 6 seconds without a folder, and about 24 seconds with the fixture. A second VS Code shows in the Dock and the application switcher while it runs.
+- **Focus.** VS Code makes itself the front application when its window opens, and no setting or flag stops that. [`focus.cjs`](test/e2e/remote-ssh/focus.cjs) watches LaunchServices' notifications, and when the test's VS Code, identified by its app bundle's path, comes to the front, it activates the previous application again with `open -a`. That needs no Automation or Accessibility permission. Focus is away for about 30 to 50 ms, once per launch, so a key pressed at that moment can still reach the test's window. The manifest records each launch's `focus`.
+- **LaunchServices.** Starting VS Code registers its app and its helper apps with LaunchServices, under the bundle identifier of the user's own VS Code. The teardown unregisters every record under the test's app bundle with `lsregister -u`. The run is an infrastructure failure unless `lsregister -dump` then lists none.
+- **Preferences.** The test's VS Code has the bundle identifier of `/Applications/Visual Studio Code.app`, so both use the defaults domain `com.microsoft.VSCode`. Each launch changes it: StoreKit, which Electron links, records `SKPurchaseIntentUpdatesLastChecked` as the app starts. Before the run's first VS Code launch, [`prefs.cjs`](test/e2e/remote-ssh/prefs.cjs) saves the domain with `defaults export`. After the teardown has stopped the test's VS Code, it exports the domain again. It then puts back only the keys that the run changed: each changed or removed key's old value with `defaults import`, and `defaults delete` for each key that the run added. It never touches the domain's file. It succeeds only if a last export equals the saved copy, compared as parsed property lists. Otherwise the run is an infrastructure failure. If the user's own VS Code was running at the start or at the end of the run, it may have changed the domain too. The guard then leaves the domain as it is, and the manifest records a warning with the keys that the run changed. The manifest's `teardown.preferences` records the outcome (`restored`, `unchanged`, `skipped`, or `failed`) and the keys, never their values. The exports stay on the Mac, readable only by the user, in `w/vrp-*`.
+- **Processes.** The teardown stops the run's processes on the Mac, by PID and start time, and `host.cjs` stops the SSH server and its sessions on the host. If the script gets SIGINT or SIGTERM, it sends SIGTERM to `run.cjs` on the Mac, by the PID that it recorded, and that teardown, with the LaunchServices and preferences steps, still runs.
+
+The run doesn't check a Mac with no one logged in, with the screen locked, or asleep.
 
 ## Manual checklist
 

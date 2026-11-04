@@ -21,7 +21,10 @@
 // describes (see external.cjs), and host.cjs takes it down. The client then
 // runs on macOS, on the logged-in user's display, without Xvfb. --client-vsix
 // installs a VSIX, such as the darwin-arm64 one, in the client's extensions
-// too, as a Mac user who has the extension locally would have it.
+// too, as a Mac user who has the extension locally would have it. The
+// client's teardown also unregisters the test's VS Code from LaunchServices
+// and puts back the keys of VS Code's preferences domain that the run
+// changed (see external.cjs and prefs.cjs).
 //
 // Exit status: 0 if every check passed, 1 if a check failed (the suite, the
 // remote installation, or a language server left running), 2 for bad
@@ -44,6 +47,7 @@ const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, proc
 const external = require('./external.cjs');
 const focus = require('./focus.cjs');
 const localhost = require('./localhost.cjs');
+const prefs = require('./prefs.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
 // and the members of its extension pack, which VS Code's CLI would otherwise
@@ -1239,12 +1243,18 @@ async function test(run) {
   // Provisioning takes seconds, so an interrupt waits for it; the teardown
   // then stops what it started.
   const target = values.target !== undefined
-    ? external.create({ file: values.target, work: run.work, sockets: run.sockets, app: run.clientApp })
+    ? external.create({ file: values.target, work: run.work, sockets: run.sockets, app: run.clientApp, workDir: values.workDir })
     : localhost.create({
       work: run.work, sockets: run.sockets, env: run.env, marker: run.marker, sshd: values.sshd,
       log: (line) => console.log(line),
     });
   run.target = target;
+  // A macOS client's VS Code shares the user's preferences domain; the
+  // teardown puts back what the run changed (see prefs.cjs).
+  if (target.savePreferences !== undefined) {
+    const saved = infrastructure('save the client\'s VS Code preferences', () => target.savePreferences());
+    console.log(`-- saved ${prefs.DOMAIN} in ${saved}, to put back what the run changes`);
+  }
   try {
     await target.start();
   } catch (error) {
@@ -1595,6 +1605,18 @@ async function main() {
     const port = run.target.details.port === undefined || teardown.portClosed === null ? '' : `, and port ${run.target.details.port} is closed`;
     const side = teardown.side === 'client' ? ' on the client' : '';
     console.log(`-- teardown: stopped ${teardown.stopped.length} processes of the run${side}; none left${port}`);
+  }
+  const preferences = teardown?.preferences;
+  if (preferences !== undefined) {
+    const keys = prefs.describe(preferences);
+    if (preferences.outcome === 'restored') console.log(`-- preferences: put back ${preferences.domain}: ${keys}`);
+    else if (preferences.outcome === 'unchanged') console.log(`-- preferences: the run left ${preferences.domain} unchanged`);
+    else if (preferences.outcome === 'skipped') {
+      // The user's VS Code may have changed the domain too.
+      preferences.warning = `${preferences.domain} was left as it is, because the user's VS Code ran during the run; `
+        + `the run's changes: ${keys}; the exports are in ${preferences.exports}`;
+      run.note(`warning: ${preferences.warning}`);
+    }
   }
   try {
     publishLogs(run);

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the Remote-SSH test's prototype macOS client (#186): the external
-// target that run.cjs --target reads, and the platform checks of run.cjs and
-// host.cjs.
+// target that run.cjs --target reads, the platform checks of run.cjs and
+// host.cjs, and the focus and preferences guards.
 
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
@@ -108,4 +108,114 @@ test('the focus guard reads LaunchServices notifications and app information', (
   assert.ok(!focus.within('/Applications/Visual Studio Code.app', app));
   assert.ok(!focus.within(`${app} 2`, app));
   assert.ok(!focus.within(null, app));
+});
+
+// Tagged values, as prefs.cjs's Python gives them.
+const tagged = {
+  string: (value) => ({ string: value }),
+  integer: (value) => ({ integer: String(value) }),
+  real: (value) => ({ real: String(value) }),
+  bool: (value) => ({ bool: value }),
+  data: (value) => ({ data: Buffer.from(value).toString('base64') }),
+  date: (value) => ({ date: value }),
+  dict: (value) => ({ dict: value }),
+  array: (...values) => ({ array: values }),
+};
+
+test('the preferences guard puts back only the keys that the run changed, added, or removed', () => {
+  const prefs = require('./e2e/remote-ssh/prefs.cjs');
+  const before = {
+    kept: tagged.string('same'),
+    checked: tagged.real('1793750000.5'),
+    window: tagged.dict({ frame: tagged.string('0 0 800 600'), screens: tagged.array(tagged.integer(1), tagged.integer(2)) }),
+    blob: tagged.data('\u0000\u0001'),
+    when: tagged.date('2026-11-04T01:02:03'),
+    gone: tagged.bool(true),
+  };
+  const after = {
+    // Key order doesn't matter.
+    window: tagged.dict({ screens: tagged.array(tagged.integer(1), tagged.integer(3)), frame: tagged.string('0 0 800 600') }),
+    kept: tagged.string('same'),
+    checked: tagged.real('1793758126.25'),
+    blob: tagged.data('\u0000\u0002'),
+    when: tagged.date('2026-11-04T02:00:00'),
+    fresh: tagged.integer(7),
+  };
+  const plan = prefs.restorePlan(before, after);
+  assert.deepEqual(plan.changed, ['blob', 'checked', 'when', 'window']);
+  assert.deepEqual(plan.added, ['fresh']);
+  assert.deepEqual(plan.removed, ['gone']);
+  assert.deepEqual(plan.remove, ['fresh']);
+  assert.deepEqual(Object.keys(plan.put), ['blob', 'checked', 'gone', 'when', 'window']);
+  assert.ok(!Object.hasOwn(plan.put, 'kept'), 'an unchanged key is left alone');
+  assert.ok(prefs.same(prefs.applyPlan(after, plan), before));
+  assert.equal(prefs.describe(plan), 'changed blob, checked, when, window; added fresh; removed gone');
+  // A value's type counts, not only its text.
+  assert.deepEqual(prefs.compare({ n: tagged.integer(1) }, { n: tagged.real('1') }).changed, ['n']);
+  assert.deepEqual(prefs.compare(before, structuredClone(before)), { changed: [], added: [], removed: [] });
+  assert.equal(prefs.describe(prefs.compare(before, before)), 'no keys');
+});
+
+test('the preferences guard deletes every key of a domain that didn\'t exist before the run', () => {
+  const prefs = require('./e2e/remote-ssh/prefs.cjs');
+  // defaults export gives an empty dictionary for a domain that doesn't exist.
+  const after = { SKPurchaseIntentUpdatesLastChecked: tagged.real('1793758126.25'), nested: tagged.dict({ a: tagged.bool(false) }) };
+  const plan = prefs.restorePlan({}, after);
+  assert.deepEqual(plan.added, ['SKPurchaseIntentUpdatesLastChecked', 'nested']);
+  assert.deepEqual(plan.put, {});
+  assert.deepEqual(prefs.applyPlan(after, plan), {});
+});
+
+test('the preferences guard\'s Python keeps each value\'s type through a property list', { skip: spawnSync('python3', ['-I', '-c', '']).status === 0 ? false : 'python3 is not on PATH' }, (t) => {
+  const prefs = require('./e2e/remote-ssh/prefs.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-prefs-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const value = {
+    s: tagged.string('ünïcode "quoted" <tag>'),
+    i: tagged.integer('18446744073709551615'),
+    r: tagged.real('0.1'),
+    whole: tagged.real('2.0'),
+    b: tagged.bool(false),
+    d: tagged.data('\u0000ÿ binary'),
+    t: tagged.date('2026-11-04T01:02:03'),
+    a: tagged.array(tagged.dict({ deep: tagged.array(tagged.integer(-1)) }), tagged.string('x')),
+    empty: tagged.dict({}),
+  };
+  const file = path.join(root, 'domain.plist');
+  const python = (args, input) => spawnSync('python3', ['-I', '-c', prefs.PYTHON, ...args], { encoding: 'utf8', input });
+  const write = python(['write', file], JSON.stringify({ dict: value }));
+  assert.equal(write.status, 0, write.stderr);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(file, 'utf8'), /<real>2\.0<\/real>/);
+  const read = python(['read', file]);
+  assert.equal(read.status, 0, read.stderr);
+  const back = JSON.parse(read.stdout).dict;
+  assert.ok(prefs.same(back, value), JSON.stringify(back));
+  assert.notEqual(python(['write', file], '{"dict":{}}').status, 0, 'never overwrites a file');
+});
+
+test('the preferences guard restores a domain through defaults', { skip: process.platform === 'darwin' ? false : 'macOS only' }, (t) => {
+  // A domain given by its path, in a temporary directory, never VS Code's.
+  const prefs = require('./e2e/remote-ssh/prefs.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-prefs-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const domain = path.join(root, 'domain');
+  const run = (...args) => assert.equal(spawnSync('defaults', args).status, 0, args.join(' '));
+  run('write', domain, 'kept', '-string', 'same');
+  run('write', domain, 'changed', '-float', '1.5');
+  run('write', domain, 'nested', '-dict', 'a', '-int', '1', 'b', '-int', '2');
+  run('write', domain, 'gone', '-data', '0001');
+  const options = { workDir: root, app: path.join(root, 'Test.app'), domain, bundleId: 'org.virgil-lsp.test.none', userApp: path.join(root, 'User.app') };
+  const state = prefs.save(options);
+  run('write', domain, 'changed', '-float', '2.5');
+  run('write', domain, 'nested', '-dict', 'a', '-int', '1');
+  run('delete', domain, 'gone');
+  run('write', domain, 'fresh', '-date', '2026-11-04 01:02:03 +0000');
+  const result = prefs.restore(state);
+  assert.equal(result.outcome, 'restored', result.error);
+  assert.deepEqual([result.changed, result.added, result.removed], [['changed', 'nested'], ['fresh'], ['gone']]);
+  assert.equal(prefs.restore(prefs.save(options)).outcome, 'unchanged');
+  for (const name of ['before.plist', 'after.plist', 'restore.plist', 'check.plist']) {
+    assert.equal(fs.statSync(path.join(state.dir, name)).mode & 0o777, 0o600, name);
+  }
 });

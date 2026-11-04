@@ -22,12 +22,16 @@
 // VS Code shares. So the teardown also unregisters every LaunchServices record
 // under the test's app bundle, the app's and each nested helper's, since
 // lsregister -u on the app leaves the helpers registered, and fails unless
-// lsregister -dump then lists none.
+// lsregister -dump then lists none. Last, it puts back the keys of VS Code's
+// preferences domain, which the user's VS Code shares too, that the run
+// changed (see prefs.cjs); savePreferences saves the domain before the
+// run's first VS Code launch.
 
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { processInfo, signalProcesses } = require('../processes.cjs');
+const prefs = require('./prefs.cjs');
 
 const STOP_TIMEOUT_MS = 5000;
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
@@ -72,9 +76,10 @@ function unregister(app) {
   return { unregistered, left: registrations(app) };
 }
 
-function create({ file, work, sockets, app }) {
+function create({ file, work, sockets, app, workDir }) {
   const descriptor = readDescriptor(file);
   const ssh = path.join(work, 'ssh');
+  let preferences;
   const target = {
     mode: 'external',
     alias: descriptor.alias,
@@ -120,7 +125,11 @@ function create({ file, work, sockets, app }) {
   LogLevel ERROR
 `, { mode: 0o600 });
     },
-    teardown: () => teardown({ work, sockets, app }),
+    savePreferences: () => {
+      preferences = prefs.save({ workDir, app });
+      return preferences.dir;
+    },
+    teardown: () => teardown({ work, sockets, app, preferences }),
   };
   return target;
 }
@@ -160,10 +169,15 @@ function runProcesses({ work, sockets }) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function failed(result, message) {
+  result.ok = false;
+  result.error = result.error === undefined ? message : `${result.error}; ${message}`;
+}
+
 // Stops the client's processes of the run that are left, as localhost.cjs's
 // teardown does: SIGSTOP until a look finds no new one, then SIGKILL. The
 // host's own teardown is host.cjs's.
-async function teardown({ work, sockets, app }) {
+async function teardown({ work, sockets, app, preferences }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null, side: 'client' };
   const key = (p) => `${p.pid}@${p.start}`;
   try {
@@ -189,19 +203,24 @@ async function teardown({ work, sockets, app }) {
       await sleep(200);
     }
   } catch (error) {
-    result.ok = false;
-    result.error = `could not list the run's processes: ${error.message}`;
+    failed(result, `could not list the run's processes: ${error.message}`);
   }
   if (app !== undefined && process.platform === 'darwin') {
     try {
       result.launchServices = unregister(app);
       if (result.launchServices.left.length > 0) {
-        result.ok = false;
-        result.error = `LaunchServices still has ${result.launchServices.left.join(', ')}`;
+        failed(result, `LaunchServices still has ${result.launchServices.left.join(', ')}`);
       }
     } catch (error) {
-      result.ok = false;
-      result.error = `could not unregister ${app} from LaunchServices: ${error.message}`;
+      failed(result, `could not unregister ${app} from LaunchServices: ${error.message}`);
+    }
+  }
+  // After the processes, so that the test's VS Code can no longer write the
+  // domain.
+  if (preferences !== undefined) {
+    result.preferences = prefs.restore(preferences);
+    if (result.preferences.outcome === 'failed') {
+      failed(result, `could not put back ${prefs.DOMAIN}: ${result.preferences.error}`);
     }
   }
   return result;

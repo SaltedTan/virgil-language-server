@@ -14,7 +14,8 @@
 #     --allow-from ADDR --vsix MAC-PATH [--client-vsix MAC-PATH] --out DIR [--work-dir DIR] [--repeat N] [--keep-work]
 #
 # SSH-ALIAS is how this machine reaches the Mac; DIR is the study directory on
-# the Mac, which holds repo/, w/, and results/; MAC-PATH is relative to DIR.
+# the Mac, which holds repo/, and gets w/ and results/; MAC-PATH is relative
+# to DIR. See the README's "Remote-SSH test from a Mac".
 # The results, with the Mac's manifest and the host's teardown, go in --out
 # here. The exit status is run.cjs's, made 3 if the host's teardown could not
 # confirm that nothing is left, or if the Mac could not be reached.
@@ -96,7 +97,7 @@ if [ "$status" -eq 0 ]; then
   # SSH runs in the background, so that a trap runs while it does: bash
   # runs traps only between commands, and wait is interruptible.
   ssh -o BatchMode=yes -o ServerAliveInterval=30 "$mac" "export PATH=/opt/homebrew/bin:\$PATH TMPDIR='$study/tmp' npm_config_cache='$study/npm-cache'
-    mkdir -p \"\$TMPDIR\" && cd '$study/repo/clients/vscode' && echo \$\$ > '$mac_pidfile' && exec node test/e2e/remote-ssh/run.cjs \
+    mkdir -p \"\$TMPDIR\" '$study/w' '$study/results' && cd '$study/repo/clients/vscode' && echo \$\$ > '$mac_pidfile' && exec node test/e2e/remote-ssh/run.cjs \
       --target '$mac_bundle/target.json' --vsix '$study/$vsix' --bundled $client_args $keep_work --repeat '$repeat' \
       --out '$study/results/$stamp' --work-dir '$study/w'" > "$out/mac-run.log" 2>&1 < /dev/null &
   ssh_pid=$!
