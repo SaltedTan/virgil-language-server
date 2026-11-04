@@ -142,7 +142,7 @@ if [ "$JVM" -eq 1 ]; then
     expect "analyze contains a verifier crash" 1 "" \
         'analysis worker [0-9]+ crashed during an analysis; it ended with exit status 1' -- \
         analyze "$A/worker-crash/main.v3"
-    check_stream stderr "$TMP/err" '^Exception in thread "main" java\.lang\.NullPointerException: ' && \
+    check_stream stderr "$TMP/err" '^Exception in thread "main" java\.lang\.NullPointerException(: |$)' && \
         check_stream stderr "$TMP/err" '^[[:space:]]+at V3C_TypeChecker\.TryRepresentationChangeOfLiteral\(' && \
         check_stream stderr "$TMP/err" 'error: analysis run 1 failed: the analysis worker crashed \(exit status 1\)$'
 else
