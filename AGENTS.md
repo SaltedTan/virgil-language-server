@@ -33,7 +33,7 @@ git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-serv
 git submodule update --init --recursive
 ```
 
-The pinned submodule supplies Virgil, so no separate compiler install is needed. See the [prerequisites](docs/development.md#prerequisites).
+Development hosts are Linux x86-64, or an Apple Silicon Mac with Rosetta 2; WSL 2 on Windows is best effort. The pinned submodule supplies Virgil, so no separate compiler install is needed. See the [prerequisites](docs/development.md#prerequisites).
 
 ## Build and test
 
