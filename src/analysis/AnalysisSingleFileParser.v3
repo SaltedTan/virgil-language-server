@@ -86,7 +86,7 @@ class AnalysisParseErrors extends ErrorGen {
 class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, coordinates: AnalysisTokenCoordinates) {
 	// Measure parser stack use from here rather than charging the caller's
 	// frames to it. Available stack and compiled frame sizes affect the cutoff.
-	private def stackBase = AnalysisSingleFileParser.stackPointer();
+	private def stackBase = HostRuntime.stackMark();
 	private def stackLimit = AnalysisSingleFileParser.stackLimit(stackBase);
 	private def chains = AnalysisChainCounter.new();
 	// Where the token that the parser is consuming starts.
@@ -103,7 +103,7 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 		if (coordinates != null) coordinates.record(p);
 		if (!errors.stopped) {
 			// Every level of parser recursion consumes a token, and so skips.
-			if (stackBase - AnalysisSingleFileParser.stackPointer() > stackLimit) {
+			if (stackBase - HostRuntime.stackMark() > stackLimit) {
 				errors.stop(p, "nesting too deep; parsing stopped here");
 			} else if (tokenEnd > tokenStart && chains.add(p.input, tokenStart, tokenEnd) > AnalysisSingleFileParser.CHAIN_LIMIT) {
 				errors.stop(p, "expression too long; parsing stopped here");
@@ -509,13 +509,10 @@ component AnalysisSingleFileParser {
 		if (file.synthetic != null) file.synthetic.members = Lists.reverse(file.synthetic.members);
 		return file;
 	}
-	def stackPointer() -> Pointer {
-		return CiRuntime.callerSp();
-	}
-	// The stack that parsing from {base} may use: STACK_LIMIT, unless less is
-	// left above CHAIN_STACK, STACK_RESERVE, and the native runtime's red zone.
-	def stackLimit(base: Pointer) -> long {
-		var free = base - RiRuntime.stackRedZoneEnd - CHAIN_STACK - STACK_RESERVE;
+	// The stack that parsing from the mark {base} may use: STACK_LIMIT, unless
+	// less is left above CHAIN_STACK, STACK_RESERVE, and the runtime's red zone.
+	def stackLimit(base: long) -> long {
+		var free = HostRuntime.stackFree(base) - CHAIN_STACK - STACK_RESERVE;
 		return if(free < STACK_LIMIT, free, STACK_LIMIT);
 	}
 }

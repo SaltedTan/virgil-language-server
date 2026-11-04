@@ -30,7 +30,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 
 	// Returns the process exit status.
 	def run() -> int {
-		var heapBytes = long.!(CiRuntime.HEAP_END - CiRuntime.HEAP_START);
+		var heapBytes = HostRuntime.heapBytes();
 		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, heapBytes))) return 1;
 		// The collection after the previous send, reported against the next
 		// request; negative until there is one.
@@ -55,13 +55,13 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			// a retention leak would grow. Exclude the result being sent.
 			var gcStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 			if (BenchProbe.enabled) gcCpu.start();
-			RiGc.forceGC();
+			HostRuntime.forceGC();
 			if (BenchProbe.enabled) {
 				gcCpu.stop();
 				BenchProbe.worker(analyses, "force_gc_us", long.view(BenchProbe.now() - gcStart));
 				gcCpu.report(analyses, false);
 			}
-			var liveBytes = Semispace.fromSpaceUsed() - result.data.length;
+			var liveBytes = HostRuntime.heapUsed() - result.data.length;
 			if (BenchProbe.enabled) {
 				BenchProbe.worker(analyses, "live_after_gc_bytes", liveBytes);
 			}
@@ -73,7 +73,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			result = null;
 			var gcAfterSendStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 			if (BenchProbe.enabled) gcCpu.start();
-			RiGc.forceGC();
+			HostRuntime.forceGC();
 			if (BenchProbe.enabled) {
 				gcCpu.stop();
 				gcAfterSendUs = BenchProbe.now() - gcAfterSendStart;

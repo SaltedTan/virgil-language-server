@@ -981,14 +981,14 @@ class AnalysisReport(print: bool) {
 	// Writes and clears {buf}.
 	def write(buf: StringBuilder) {
 		for (i < buf.length) hash = (hash ^ buf.buf[i]) * 0x100000001b3ul;
-		if (print && buf.length > 0) System.out.putr(buf.buf[0 ..+ buf.length]);
+		if (print && buf.length > 0) System.write(1, buf.buf[0 ..+ buf.length]);
 		bytes += long.view(buf.length);
 		buf.reset();
 	}
 	// Writes {s} without copying it.
 	def puts(s: string) -> this {
 		for (i < s.length) hash = (hash ^ s[i]) * 0x100000001b3ul;
-		if (print && s.length > 0) System.out.puts(s);
+		if (print && s.length > 0) System.write(1, s);
 		bytes += long.view(s.length);
 	}
 	// Writes {fmt} rendered with {a} and {b}.

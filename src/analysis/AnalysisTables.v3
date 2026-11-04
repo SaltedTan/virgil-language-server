@@ -487,17 +487,17 @@ component AnalysisTables {
 		// and a last block of the bytes that remain and, in its top byte, the
 		// message's length. {length} must not pass the end of {bytes}. The
 		// rounds are written out: a method returning the four words as a tuple
-		// made hashing more than twice as slow. A word is one load, which is
-		// little-endian and may be unaligned on the x86-64 targets; nothing
-		// allocates, so the array cannot move, between taking its address and
-		// loading. This makes hashing a path cost what the polynomial did.
+		// made hashing more than twice as slow. A word is one little-endian
+		// load, which may be unaligned on the x86-64 targets, after a bounds
+		// check; a layout reference also compiles for the JVM target, which has
+		// no pointers. This makes hashing a path cost what the polynomial did.
 		var end = length - (length & 7), m = prefix;
 		for (i = start; i <= end; i += 8) {
 			if (i == end) {
 				m = u64.view(length - start) << 56;
 				for (j = end; j < length; j++) m |= u64.view(bytes[j]) << byte.view(8 * (j - end));
 			} else if (i >= 0) {
-				m = (Pointer.atContents(bytes) + i).load<u64>();
+				m = Ref<Layout_u64>.at(bytes, i).val;
 			}
 			v3 ^= m;
 			v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32);

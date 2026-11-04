@@ -1,0 +1,37 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Operations on the native runtime's stack, heap, and memory that code outside
+// src/os/ needs. Each target supplies this component: this is the x86-64 Linux
+// version, src/os/x86-64-darwin/HostRuntime.v3 is the same, and
+// src/os/jvm/HostRuntime.v3 approximates what the JVM can't do.
+component HostRuntime {
+	// A mark of the current stack position, in bytes. The stack grows down,
+	// so {base - stackMark()} is the stack used since {base} was taken.
+	def stackMark() -> long {
+		return CiRuntime.callerSp() - Pointer.NULL;
+	}
+	// The bytes between the mark {base} and the runtime's stack red zone.
+	def stackFree(base: long) -> long {
+		return base - (RiRuntime.stackRedZoneEnd - Pointer.NULL);
+	}
+	// The size of the heap, as -heap-size set it.
+	def heapBytes() -> long {
+		return long.!(CiRuntime.HEAP_END - CiRuntime.HEAP_START);
+	}
+	def forceGC() {
+		RiGc.forceGC();
+	}
+	// The bytes in use in the heap, which are all live just after forceGC().
+	def heapUsed() -> long {
+		return Semispace.fromSpaceUsed();
+	}
+	// The number of collections so far; for benchmark probes only.
+	def gcCount() -> int {
+		return GcStats.gc_count;
+	}
+	// The bytes allocated so far; for benchmark probes only.
+	def allocatedBytes() -> long {
+		return GcStats.allocated_bytes + Semispace.fromSpaceAllocated();
+	}
+}
