@@ -11,9 +11,22 @@ component HostRuntime {
 	def stackMark() -> long {
 		return CiRuntime.callerSp() - Pointer.NULL;
 	}
+	// A fresh mark for a parse's base: the current stack position, sampled now
+	// rather than from a later reading, so each parse measures from its own
+	// start. On native this is the same pointer stackMark() returns.
+	def stackBase() -> long {
+		return CiRuntime.callerSp() - Pointer.NULL;
+	}
 	// The bytes between the mark {base} and the runtime's stack red zone.
 	def stackFree(base: long) -> long {
 		return base - (RiRuntime.stackRedZoneEnd - Pointer.NULL);
+	}
+	// The cap on the range() levels that AnalysisChainCounter estimates,
+	// sized for this target's compiled range() frames: 8,192 levels at 72
+	// bytes each, the x86-64 measurement behind
+	// AnalysisSingleFileParser.CHAIN_LIMIT.
+	def chainLimit() -> int {
+		return 8192;
 	}
 	// The size of the heap, as -heap-size set it.
 	def heapBytes() -> long {
