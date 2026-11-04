@@ -11,7 +11,11 @@ component HostRuntime {
 	// virtual positions: minus the current thread's frame depth times
 	// STACK_SCALE. The parser compares two marks, which gives the frames that
 	// parsing used, and its existing STACK_LIMIT of 1 MiB then stops a parse
-	// at STACK_LIMIT / STACK_SCALE = 512 frames of recursion.
+	// at STACK_LIMIT / STACK_SCALE = 512 frames of recursion, or earlier when
+	// a parse starts deep: stackFree() returns the headroom below the 1,024-
+	// frame cap, so a parse that starts too deep leaves too little headroom to
+	// measure and the guard fires early (failing closed) rather than
+	// overflowing the thread's stack.
 	//
 	// stackBase() samples the depth fresh, once, where a parse starts, so
 	// each parse measures from its own start rather than a later reading;
@@ -34,6 +38,11 @@ component HostRuntime {
 	// calls. Between samples the depth can grow by at most one level per
 	// token, which the limit's margin above covers.
 	def STACK_SAMPLE = 128;
+	// The cap on the frames that getStackTrace() reports, which bounds the
+	// reading, not the guard: a parse that starts deeper than this leaves too
+	// little headroom to measure, so stackFree() returns a small headroom and
+	// the guard fires early (failing closed) rather than overflowing.
+	def STACK_CAP = 1024;
 
 	private var stackCalls: int;
 	private var stackDepth: long;
@@ -54,18 +63,25 @@ component HostRuntime {
 		if (stackCalls % STACK_SAMPLE == 0) stackDepth = frameDepth();
 		return -stackDepth * STACK_SCALE;
 	}
-	// The virtual bytes left below the mark {base}: effectively unlimited, so
-	// that the parser's stack limit stays at STACK_LIMIT.
+	// The virtual bytes left below the mark {base}: the headroom below the
+	// 1,024-frame cap of getStackTrace(), scaled by STACK_SCALE. A parse that
+	// starts deep leaves little headroom to measure, so the parser's limit
+	// shrinks to fit it and the guard fires early (failing closed) rather than
+	// overflowing the thread's stack. A shallow base leaves the limit at
+	// STACK_LIMIT, unchanged.
 	def stackFree(base: long) -> long {
-		return 1L << 62;
+		var baseDepth = -base / STACK_SCALE;
+		var headroom = STACK_CAP - baseDepth;
+		if (headroom < 0) headroom = 0;
+		return headroom * STACK_SCALE;
 	}
 	// The cap on the range() levels that AnalysisChainCounter estimates. The
 	// frame guard can't see range()'s recursion, which builds out of sight of
 	// the token skips, so this bounds it: on x86-64 Linux with JDK 25's
-	// default 1 MiB thread stack, a chain of 1+ operators overflows at about
-	// 6,500 to 7,000 levels (two range() frames each, about 155 bytes per
-	// level), so 2,048 levels leaves a three-fold margin in levels and keeps
-	// the recursion to about 320 KiB of the 1 MiB stack.
+	// default 1 MiB thread stack, a chain of 1+ operators uses about 52 bytes
+	// per level and overflows at about 20,000 levels (about 12,000 under
+	// -Xint), so 2,048 levels leaves a margin of at least six-fold in levels
+	// and keeps the recursion to about 104 KiB of the 1 MiB stack.
 	def chainLimit() -> int {
 		return 2048;
 	}

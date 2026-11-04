@@ -270,6 +270,7 @@ endif
 
 test-jvm: test-jvm-runtime jvm
 	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp
+	python3 test/jvm/deepstart.py $(JVM_BUILD)/virgil-lsp.jar
 
 # scripts/package-release.sh records the worker heap in its build manifest.
 print-worker-heap:
