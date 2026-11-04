@@ -373,3 +373,106 @@ process.exit(spawnSync('cp', process.argv.slice(2), { env: { ...process.env, PAT
     });
   }
 });
+
+
+test('host.cjs tears down its listening target after publication and cleanup failures', { skip: process.platform !== 'linux' }, async (t) => {
+  const { processInfo, signalProcesses, zombie } = require('./e2e/processes.cjs');
+  const net = require('node:net');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-host-failures-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const daemon = path.join(root, 'sshd');
+  fs.writeFileSync(daemon, `#!${process.execPath}
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { processInfo } = require(${JSON.stringify(path.join(__dirname, 'e2e/processes.cjs'))});
+if (process.argv.includes('-t')) process.exit(0);
+const file = process.argv[process.argv.indexOf('-f') + 1];
+const config = new Map(fs.readFileSync(file, 'utf8').split('\\n').map((line) => {
+  const at = line.indexOf(' ');
+  return [line.slice(0, at), line.slice(at + 1)];
+}));
+const server = net.createServer((socket) => socket.end('SSH-2.0-host-cleanup-test\\r\\n'));
+server.listen(Number(config.get('Port')), config.get('ListenAddress'), () => {
+  fs.writeFileSync(path.join(process.env.HOST_TEST_ROOT, 'server.json'), JSON.stringify({
+    ...processInfo(process.pid), port: server.address().port,
+  }));
+});
+`, { mode: 0o700 });
+  const preload = path.join(root, 'faults.cjs');
+  fs.writeFileSync(preload, `
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.env.HOST_TEST_ROOT;
+const scenario = process.env.HOST_TEST_SCENARIO;
+const bundle = path.join(root, 'bundle');
+let bundleDirectories = 0;
+for (const name of ['mkdirSync', 'copyFileSync', 'chmodSync', 'writeFileSync', 'rmSync']) {
+  const operation = fs[name];
+  fs[name] = (...args) => {
+    const file = String(args[name === 'copyFileSync' ? 1 : 0]);
+    if (name === 'mkdirSync' && file === bundle) bundleDirectories++;
+    const removal = name === 'rmSync' && ['vrsh-', 'vrss-'].some((prefix) => path.basename(file).startsWith(prefix));
+    if (file === bundle || file.startsWith(bundle + '/') || removal) {
+      fs.appendFileSync(path.join(root, 'operations.jsonl'), JSON.stringify({ name, file }) + '\\n');
+    }
+    const fail = (scenario === 'publication-directory' && name === 'mkdirSync' && file === bundle)
+      || (scenario === 'publication-key' && name === 'copyFileSync' && file === path.join(bundle, 'client'))
+      || (scenario === 'publication-mode' && name === 'chmodSync' && file === path.join(bundle, 'client'))
+      || (scenario === 'publication-descriptor' && name === 'writeFileSync' && file === path.join(bundle, 'target.json'))
+      || (scenario === 'evidence-directory' && name === 'mkdirSync' && file === bundle && bundleDirectories === 2)
+      || (['evidence-manifest', 'multiple'].includes(scenario) && name === 'writeFileSync' && file === path.join(bundle, 'host-teardown.json'))
+      || (scenario === 'evidence-log' && name === 'copyFileSync' && file === path.join(bundle, 'sshd.log'))
+      || (['remove-work', 'multiple'].includes(scenario) && name === 'rmSync' && path.basename(file).startsWith('vrsh-'))
+      || (scenario === 'remove-sockets' && name === 'rmSync' && path.basename(file).startsWith('vrss-'));
+    if (fail) throw new Error('injected ' + scenario + ' failure');
+    return operation(...args);
+  };
+}
+`);
+  for (const scenario of ['ordinary', 'startup', 'publication-directory', 'publication-key', 'publication-mode',
+    'publication-descriptor', 'evidence-directory', 'evidence-manifest', 'evidence-log', 'remove-work', 'remove-sockets', 'multiple']) {
+    await t.test(scenario, async (tt) => {
+      const workDir = path.join(root, scenario);
+      fs.mkdirSync(workDir);
+      const serverFile = path.join(workDir, 'server.json');
+      tt.after(() => {
+        if (fs.existsSync(serverFile)) signalProcesses([JSON.parse(fs.readFileSync(serverFile, 'utf8'))], 'SIGKILL');
+      });
+      const result = spawnSync(process.execPath, ['--require', preload, path.join(dir, 'host.cjs'),
+        '--listen', '127.0.0.1', '--host-name', 'test-host', '--bundle', path.join(workDir, 'bundle'),
+        '--work-dir', workDir, '--sshd', scenario === 'startup' ? path.join(root, 'missing-sshd') : daemon], {
+        encoding: 'utf8', input: '', timeout: 15000,
+        env: { ...process.env, HOST_TEST_ROOT: workDir, HOST_TEST_SCENARIO: scenario },
+      });
+      assert.equal(result.status, scenario === 'ordinary' ? 0 : 3, result.stdout + result.stderr);
+      if (scenario !== 'startup') {
+        const server = JSON.parse(fs.readFileSync(serverFile, 'utf8'));
+        const current = processInfo(server.pid);
+        assert.ok(current === undefined || current.start !== server.start || zombie(current), `pid ${server.pid} survived`);
+        const open = await new Promise((resolve) => {
+          const socket = net.connect(server.port, '127.0.0.1');
+          socket.once('connect', () => { socket.destroy(); resolve(true); });
+          socket.once('error', () => resolve(false));
+          socket.setTimeout(1000, () => { socket.destroy(); resolve(true); });
+        });
+        assert.equal(open, false, 'the target must no longer listen');
+      }
+      const operations = fs.readFileSync(path.join(workDir, 'operations.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+      const removals = operations.filter(({ name }) => name === 'rmSync');
+      assert.equal(removals.length, 2, 'both directory removals must be attempted');
+      for (const { file } of removals) {
+        const retained = (['remove-work', 'multiple'].includes(scenario) && path.basename(file).startsWith('vrsh-'))
+          || (scenario === 'remove-sockets' && path.basename(file).startsWith('vrss-'));
+        assert.equal(fs.existsSync(file), retained, file);
+      }
+      assert.ok(operations.some(({ name, file }) => name === 'writeFileSync' && path.basename(file) === 'host-teardown.json'));
+      if (scenario !== 'startup') assert.ok(operations.some(({ name, file }) => name === 'copyFileSync' && path.basename(file) === 'sshd.log'));
+      if (!['publication-directory', 'evidence-manifest', 'multiple'].includes(scenario)) {
+        const evidence = JSON.parse(fs.readFileSync(path.join(workDir, 'bundle', 'host-teardown.json'), 'utf8'));
+        assert.equal(evidence.ok, true);
+        assert.equal(evidence.portClosed, scenario === 'startup' ? null : true);
+      }
+    });
+  }
+});

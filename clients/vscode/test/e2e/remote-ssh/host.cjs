@@ -72,49 +72,60 @@ async function main() {
   });
   let stopping;
   const stop = () => {
-    stopping ??= (async () => {
+    return stopping ??= (async () => {
       const result = await target.teardown().catch((error) => ({ ok: false, stopped: [], left: [], portClosed: null, error: error.message }));
-      fs.mkdirSync(values.bundle, { recursive: true });
-      fs.writeFileSync(path.join(values.bundle, 'host-teardown.json'), `${JSON.stringify(result, null, 2)}\n`);
-      for (const [name, file] of target.logs) if (fs.existsSync(file)) fs.copyFileSync(file, path.join(values.bundle, name));
+      let status = result.ok ? (process.exitCode ?? 0) : 3;
+      const attempt = (operation) => {
+        try {
+          operation();
+        } catch (error) {
+          status = 3;
+          console.error(`INFRA: host cleanup: ${error.message}`);
+        }
+      };
+      attempt(() => fs.mkdirSync(values.bundle, { recursive: true }));
+      attempt(() => fs.writeFileSync(path.join(values.bundle, 'host-teardown.json'), `${JSON.stringify(result, null, 2)}\n`));
+      for (const [name, file] of target.logs) {
+        attempt(() => { if (fs.existsSync(file)) fs.copyFileSync(file, path.join(values.bundle, name)); });
+      }
       console.log(`-- host teardown: ${result.ok ? `stopped ${result.stopped.length} processes of the run; none left, and port ${target.details.port} is closed` : `could not confirm that nothing is left: ${JSON.stringify(result)}`}`);
       if (result.ok) {
-        fs.rmSync(work, { recursive: true, force: true });
-        fs.rmSync(sockets, { recursive: true, force: true });
+        for (const dir of [work, sockets]) attempt(() => fs.rmSync(dir, { recursive: true, force: true }));
       } else {
         console.log(`work directory kept: ${work}`);
       }
-      process.exit(result.ok ? 0 : 3);
+      process.exit(status);
     })();
   };
   for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(name, stop);
   try {
     await target.start();
+    fs.mkdirSync(values.bundle, { recursive: true, mode: 0o700 });
+    fs.copyFileSync(path.join(work, 'ssh', 'client'), path.join(values.bundle, 'client'));
+    fs.chmodSync(path.join(values.bundle, 'client'), 0o600);
+    const descriptor = {
+      alias: target.alias,
+      hostName: values.hostName,
+      address: values.listen,
+      port: target.details.port,
+      user: target.details.user,
+      hostKey: target.hostKey,
+      hostKeySha256: target.details.hostKeySha256,
+      sshd: target.details.sshd,
+      allowFrom: values.allowFrom ?? null,
+      root: target.root,
+      marker,
+      // The node that run.cjs runs its process scans with on this machine
+      // before the VS Code Server is installed.
+      node: process.execPath,
+    };
+    fs.writeFileSync(path.join(values.bundle, 'target.json'), `${JSON.stringify(descriptor, null, 2)}\n`);
   } catch (error) {
     console.log(`INFRA: could not provision the host: ${error.message}`);
-    stop();
+    process.exitCode = 3;
+    await stop();
     return;
   }
-  fs.mkdirSync(values.bundle, { recursive: true, mode: 0o700 });
-  fs.copyFileSync(path.join(work, 'ssh', 'client'), path.join(values.bundle, 'client'));
-  fs.chmodSync(path.join(values.bundle, 'client'), 0o600);
-  const descriptor = {
-    alias: target.alias,
-    hostName: values.hostName,
-    address: values.listen,
-    port: target.details.port,
-    user: target.details.user,
-    hostKey: target.hostKey,
-    hostKeySha256: target.details.hostKeySha256,
-    sshd: target.details.sshd,
-    allowFrom: values.allowFrom ?? null,
-    root: target.root,
-    marker,
-    // The node that run.cjs runs its process scans with on this machine
-    // before the VS Code Server is installed.
-    node: process.execPath,
-  };
-  fs.writeFileSync(path.join(values.bundle, 'target.json'), `${JSON.stringify(descriptor, null, 2)}\n`);
   console.log(`READY ${values.bundle}`);
   process.stdin.on('end', stop).on('close', stop).on('error', stop);
   process.stdin.resume();
