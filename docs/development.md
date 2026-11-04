@@ -42,6 +42,7 @@ The JVM target is a development build of the server and worker as Java jars, for
 ```sh
 make jvm        # builds build/jvm-target/virgil-lsp and virgil-lsp-worker, with their jars
 make test-jvm   # runtime tests, JVM build, and smoke test
+python3 test/jvm/smoke.py --unicode-build  # build and smoke-test Unicode launcher paths
 make V3C_TARGET=jvm all build/jvm-target/stall/virgil-lsp-worker   # what the server suites need
 ```
 

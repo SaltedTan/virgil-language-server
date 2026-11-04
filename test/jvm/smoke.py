@@ -14,6 +14,11 @@ standard output. Every receive has a deadline.
 Run from the repository root, after `make jvm`:
 
   python3 test/jvm/smoke.py build/jvm-target/virgil-lsp
+
+To build in a Unicode directory and check both launchers with an empty
+environment:
+
+  python3 test/jvm/smoke.py --unicode-build
 """
 
 import json
@@ -49,15 +54,15 @@ def workers(server):
             if parent == server and "virgil-lsp-worker.jar" in args]
 
 
-def main():
-    exe = Path(sys.argv[1]).resolve()
+def main(exe, **popen):
+    exe = Path(exe).resolve()
     times = {}
     with tempfile.TemporaryDirectory(prefix="virgil-jvm-smoke-") as directory:
         path = Path(directory) / "main.v3"
         path.write_text(SOURCE)
         uri = path.as_uri()
         start = time.monotonic()
-        s = Session(exe)
+        s = Session(exe, **popen)
         try:
             s.initialize()
             times["initialize_s"] = round(time.monotonic() - start, 3)
@@ -106,4 +111,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--unicode-build"]:
+        Path("build").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="jvm-π-", dir="build") as directory:
+            subprocess.run(["make", "-j2", "V3C_TARGET=jvm", f"BUILD={directory}", "all"],
+                           check=True)
+            main(Path(directory) / "virgil-lsp")
+            main(Path(directory) / "virgil-lsp", env={})
+    else:
+        main(sys.argv[1])
