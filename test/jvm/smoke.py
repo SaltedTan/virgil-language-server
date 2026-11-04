@@ -59,11 +59,11 @@ def main():
         start = time.monotonic()
         s = Session(exe)
         try:
+            s.initialize()
+            times["initialize_s"] = round(time.monotonic() - start, 3)
             server_args = processes()[s.proc.pid][1]
             assert "java" in server_args and "virgil-lsp.jar" in server_args, server_args
 
-            s.initialize()
-            times["initialize_s"] = round(time.monotonic() - start, 3)
             s.send("initialized", {}, request=False)
 
             analyzed = time.monotonic()

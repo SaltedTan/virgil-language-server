@@ -261,8 +261,12 @@ test-jvm-runtime: jvm-runtime check-virgil
 # test-jvm runs the runtime's tests, then starts the JVM server, which starts
 # its JVM worker, for an initialize/shutdown exchange. Neither is part of
 # `make test`, and both need a JDK.
+ifeq ($(V3C_TARGET),jvm)
+jvm: all
+else
 jvm:
 	$(MAKE) --no-print-directory V3C_TARGET=jvm BUILD=$(JVM_BUILD) all
+endif
 
 test-jvm: test-jvm-runtime jvm
 	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp

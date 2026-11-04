@@ -78,7 +78,12 @@ jvm_compile() {
         echo "error: the JDK or output path contains a single quote" >&2
         exit 1 ;;
     esac
-    "$VIRGIL_V3C" -target=jar -jvm.rt-path="$JVM_RT" "${args[@]}"
+    if [ "$VIRGIL_V3C" = "$VIRGIL/bin/stable/jar/Aeneas" ]; then
+        "$java_home/bin/java" -client -Xms900m -Xmx900m -XX:+UseSerialGC \
+            -jar "$VIRGIL_V3C.jar" -target=jar -jvm.rt-path="$JVM_RT" "${args[@]}"
+    else
+        "$VIRGIL_V3C" -target=jar -jvm.rt-path="$JVM_RT" "${args[@]}"
+    fi
     # Aeneas copies only V3S_System.class, and the runtime's nested classes
     # are needed too.
     python3 -I - "$jar" "$JVM_RT" <<'PY'
