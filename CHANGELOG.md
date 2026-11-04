@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- JVM launchers set a UTF-8 locale so the server and its worker can open their jars in build directories with non-ASCII names, including when started with an empty environment.
-
 ### Added
 
 - An opt-in [Remote-SSH test from a Mac](clients/vscode/README.md#remote-ssh-test-from-a-mac), with the maintainer's Mac as the VS Code client and a Linux host, run by hand only. It adds no schedule, CI job, or release requirement; [#186](https://github.com/SaltedTan/virgil-language-server/issues/186) remains open.
