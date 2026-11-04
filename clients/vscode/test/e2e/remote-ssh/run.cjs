@@ -1089,6 +1089,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     console.log(`-- focus: the test's VS Code was in front ${episodes.length} time(s), for ${frontMs} ms in all`
       + `${unreturned > 0 ? `, ${unreturned} time(s) until it exited` : ''}${errors.length > 0 ? `; ${errors.join('; ')}` : ''}`);
     for (const error of errors) run.note(`${name}: focus guard: ${error}`);
+    if (record.focus.cleanupOk === false) run.record(infra(`${name}: the focus guard cleanup failed`));
   }
   run.checkpoint();
   if (firstSample?.error !== undefined) throw firstSample.error;
@@ -1643,6 +1644,11 @@ async function main() {
     ...run.errors.map((error) => error.message),
   ];
   if (teardown !== undefined && !teardown.ok) reasons.push('the teardown could not confirm that nothing of the run is left');
+  const preferenceReason = prefs.notRestoredReason(preferences);
+  if (preferenceReason !== undefined) {
+    reasons.push(preferenceReason);
+    console.log(`PREFERENCES NOT RESTORED: ${preferenceReason}`);
+  }
   const summary = () => [
     ...run.manifest.launches.map((l) => {
       const host = hostStopped(l.remoteExtensionHost);

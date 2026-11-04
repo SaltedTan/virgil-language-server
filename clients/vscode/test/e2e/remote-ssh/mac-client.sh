@@ -82,6 +82,12 @@ fi
 cat "$out/host.log"
 
 status=0
+evidence_reasons=()
+evidence_failure() {
+  echo "INFRA: $1" >&2
+  evidence_reasons+=("$1")
+  if [ "$status" -eq 0 ]; then status=3; fi
+}
 mac_bundle="$study/bundles/$stamp"
 if ! ssh -o BatchMode=yes "$mac" "mkdir -p '$mac_bundle' && chmod 700 '$mac_bundle'" \
   || ! scp -q "$bundle/target.json" "$bundle/client" "$mac:$mac_bundle/"; then
@@ -114,33 +120,62 @@ if [ "$status" -eq 0 ]; then
     status=3
   fi
   ssh -o BatchMode=yes "$mac" "rm -rf '$mac_bundle' '$mac_pidfile'" || true
-  scp -q -r "$mac:$study/results/$stamp" "$out/mac" || echo "INFRA: could not copy the results from $mac"
+  scp -q -r "$mac:$study/results/$stamp" "$out/mac" || evidence_failure 'could not copy the Mac results'
 fi
 
 stop_host
 host_status=$?
 tail -n +2 "$out/host.log" | grep -v '^READY ' || true
-cp "$bundle"/host-teardown.json "$bundle"/sshd.log "$out/" 2>/dev/null
+cp "$bundle"/host-teardown.json "$bundle"/sshd.log "$out/" 2>/dev/null || evidence_failure 'could not copy the host evidence'
 rm -rf "$bundle"
-if [ "$host_status" -ne 0 ] && { [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; }; then status=3; fi
+if [ "$host_status" -ne 0 ]; then evidence_failure 'the host teardown failed'; fi
+[ -f "$out/mac/manifest.json" ] || evidence_failure 'the Mac wrote no manifest'
+[ -f "$out/host-teardown.json" ] || evidence_failure 'the host wrote no teardown evidence'
 [ -n "$interrupted" ] && status=$interrupted
 
 # The combined manifest: the Mac's, with the host's teardown and the result
 # that it makes.
-node - "$out" "$status" "$started" <<'EOF'
+if assembled_status=$(node - "$out" "$status" "$started" "$here" "${evidence_reasons[@]}" <<'EOF'
 const fs = require('node:fs');
 const path = require('node:path');
-const [out, status, started] = process.argv.slice(2);
+const [out, status, started, here, ...reasons] = process.argv.slice(2);
 const file = path.join(out, 'mac', 'manifest.json');
-const manifest = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { result: null, reasons: ['the Mac wrote no manifest'] };
+const manifest = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { result: null, reasons: [] };
 const teardown = path.join(out, 'host-teardown.json');
 manifest.hostTeardown = fs.existsSync(teardown) ? JSON.parse(fs.readFileSync(teardown, 'utf8')) : null;
 manifest.macResult = manifest.result ?? null;
-manifest.exitStatus = Number(status);
-manifest.result = { 0: 'PASS', 1: 'FAIL', 2: 'USAGE', 3: 'INFRA', 129: 'INTERRUPTED', 130: 'INTERRUPTED', 143: 'INTERRUPTED' }[status] ?? 'INFRA';
-if (manifest.hostTeardown?.ok !== true) (manifest.reasons ??= []).push('the host teardown could not confirm that nothing of the run is left');
+manifest.reasons ??= [];
+manifest.reasons.push(...reasons);
+if (manifest.hostTeardown?.ok !== true) manifest.reasons.push('the host teardown could not confirm that nothing of the run is left');
+const preferenceReason = require(path.join(here, 'prefs.cjs')).notRestoredReason(manifest.teardown?.preferences);
+if (preferenceReason !== undefined) {
+  if (!manifest.reasons.includes(preferenceReason)) manifest.reasons.push(preferenceReason);
+  console.error(`PREFERENCES NOT RESTORED: ${preferenceReason}`);
+}
+manifest.exitStatus = Number(status) === 0 && (reasons.length > 0 || manifest.hostTeardown?.ok !== true || manifest.teardown?.preferences?.outcome === 'failed') ? 3 : Number(status);
+manifest.result = { 0: 'PASS', 1: 'FAIL', 2: 'USAGE', 3: 'INFRA', 129: 'INTERRUPTED', 130: 'INTERRUPTED', 143: 'INTERRUPTED' }[manifest.exitStatus] ?? 'INFRA';
 manifest.wallSeconds = Math.round(Date.now() / 1000 - Number(started));
 fs.writeFileSync(path.join(out, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`results: ${out}\nRESULT: ${manifest.result} in ${manifest.wallSeconds} s`);
+console.log(manifest.exitStatus);
 EOF
+); then
+  status=$assembled_status
+else
+  evidence_failure 'could not assemble the combined manifest'
+  result=INFRA
+  case $status in 1) result=FAIL ;; 2) result=USAGE ;; 129|130|143) result=INTERRUPTED ;; esac
+  {
+    printf '{"result":"%s","exitStatus":%s,"reasons":[' "$result" "$status"
+    separator=''
+    for reason in "${evidence_reasons[@]}"; do
+      printf '%s"%s"' "$separator" "$reason"
+      separator=,
+    done
+    printf ']}\n'
+  } > "$out/manifest.json" || echo 'INFRA: could not write the combined manifest' >&2
+fi
+result=INFRA
+case $status in 0) result=PASS ;; 1) result=FAIL ;; 2) result=USAGE ;; 129|130|143) result=INTERRUPTED ;; esac
+echo "results: $out"
+echo "RESULT: $result in $(($(date +%s) - started)) s"
 exit "$status"

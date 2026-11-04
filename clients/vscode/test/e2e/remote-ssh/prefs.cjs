@@ -241,4 +241,10 @@ function describe({ changed, added, removed }) {
   return parts.map(([kind, keys]) => `${kind} ${keys.join(', ')}`).join('; ') || 'no keys';
 }
 
-module.exports = { DOMAIN, PYTHON, applyPlan, compare, describe, restore, restorePlan, same, save };
+function notRestoredReason(preferences) {
+  if (!['failed', 'skipped'].includes(preferences?.outcome)) return undefined;
+  const keys = [...new Set([...preferences.changed, ...preferences.added, ...preferences.removed])].sort();
+  return `the VS Code preferences were not restored: ${keys.join(', ') || 'unknown keys'}`;
+}
+
+module.exports = { DOMAIN, PYTHON, applyPlan, compare, describe, notRestoredReason, restore, restorePlan, same, save };

@@ -26,6 +26,7 @@
 
 const { execFile, spawn } = require('node:child_process');
 const path = require('node:path');
+const { signalProcesses, startGroup } = require('../processes.cjs');
 
 const ASN = /^ASN:0x[0-9a-f]+-0x[0-9a-f]+:$/;
 
@@ -123,19 +124,44 @@ async function start({ app, log = () => {} }) {
 // once it listens. stop() closes its input and resolves with its result.
 function spawnGuard({ app, work, log = () => {} }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [__filename, app, work], { stdio: ['pipe', 'pipe', 'inherit'] });
+    let ended;
+    let ready = false;
+    const exited = new Promise((done) => { ended = done; });
+    const child = startGroup(process.execPath, [__filename, app, work], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      onExit: () => {
+        ended();
+        if (!ready) resolve({ stop });
+      },
+    });
     let pending = '';
     let result;
-    let ready = false;
-    const exited = new Promise((done) => child.on('close', done));
-    const stop = async () => {
+    let stopping;
+    const stop = () => stopping ??= (async () => {
+      child.look();
       child.stdin.end();
-      const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
-      await exited;
+      let timer;
+      await Promise.race([exited, new Promise((done) => { timer = setTimeout(done, 5000); })]);
       clearTimeout(timer);
-      return result ?? { episodes: [], frontMs: 0, unreturned: 0, errors: ['the focus guard exited without a result'] };
-    };
-    child.on('error', () => {});
+      const cleanupErrors = [];
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const snapshot = child.look();
+        if (snapshot?.empty) break;
+        if (snapshot === undefined || Date.now() >= deadline) {
+          cleanupErrors.push('the focus guard cleanup could not confirm that no processes remain');
+          child.detach();
+          break;
+        }
+        signalProcesses(snapshot.processes, 'SIGKILL');
+        await new Promise((done) => setTimeout(done, 100));
+      }
+      if (cleanupErrors.length === 0 && !await child.release()) cleanupErrors.push('the focus guard keeper did not exit');
+      const report = result ?? { episodes: [], frontMs: 0, unreturned: 0, errors: ['the focus guard exited without a result'] };
+      report.cleanupOk = cleanupErrors.length === 0;
+      report.errors.push(...cleanupErrors);
+      return report;
+    })();
     child.stdin.on('error', () => {});
     child.stdout.on('data', (data) => {
       pending += data;
@@ -151,9 +177,6 @@ function spawnGuard({ app, work, log = () => {} }) {
           log(line);
         }
       }
-    });
-    void exited.then(() => {
-      if (!ready) resolve({ stop: async () => ({ episodes: [], frontMs: 0, unreturned: 0, errors: ['the focus guard did not start'] }) });
     });
   });
 }

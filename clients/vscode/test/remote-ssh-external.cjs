@@ -41,21 +41,28 @@ function bundle(t, value) {
   return { file: path.join(root, 'bundle', 'target.json'), work: path.join(root, 'work'), sockets: path.join(root, 'sockets') };
 }
 
-test('an external target pins the host key and uses only the bundle\'s key, in the work directory', async (t) => {
+test('an external target pins the host key and uses only the bundle\'s key, in the work directory', {
+  skip: spawnSync('ssh', ['-V']).error?.code === 'ENOENT' ? 'ssh is not on PATH' : false,
+}, async (t) => {
   const { file, work, sockets } = bundle(t, descriptor());
   const target = external.create({ file, work, sockets });
   await target.start();
   assert.equal(target.mode, 'external');
   assert.equal(target.root, '/home/someone/w/vrsh-abc/remote');
   assert.equal(target.node, '/usr/bin/node');
-  const config = fs.readFileSync(target.sshConfig, 'utf8');
-  assert.match(config, /^Host virgil-remote-ssh-test\n {2}HostName pc-ubuntu\n {2}Port 40000\n {2}User someone\n/);
-  assert.match(config, new RegExp(`IdentityFile "${work}/ssh/client"`));
-  assert.match(config, new RegExp(`UserKnownHostsFile "${work}/ssh/known_hosts"`));
-  for (const line of ['IdentitiesOnly yes', 'IdentityAgent none', 'BatchMode yes', 'StrictHostKeyChecking yes', 'GlobalKnownHostsFile /dev/null']) {
-    assert.ok(config.includes(`  ${line}\n`), line);
+  const resolved = spawnSync('ssh', ['-G', '-F', target.sshConfig, target.alias], { encoding: 'utf8' });
+  assert.equal(resolved.status, 0, resolved.stderr);
+  const config = new Map();
+  for (const line of resolved.stdout.trim().split('\n')) {
+    const at = line.indexOf(' ');
+    const key = line.slice(0, at);
+    config.set(key, [...(config.get(key) ?? []), line.slice(at + 1)]);
   }
-  assert.doesNotMatch(config, /~|\.ssh\/(config|id_)/);
+  for (const [key, value] of Object.entries({
+    hostname: 'pc-ubuntu', port: '40000', user: 'someone', identityfile: path.join(work, 'ssh', 'client'),
+    identitiesonly: 'yes', userknownhostsfile: path.join(work, 'ssh', 'known_hosts'), globalknownhostsfile: '/dev/null',
+    batchmode: 'yes', identityagent: 'none', stricthostkeychecking: 'true',
+  })) assert.deepEqual(config.get(key), [value], key);
   assert.equal(fs.readFileSync(path.join(work, 'ssh', 'known_hosts'), 'utf8'), `[pc-ubuntu]:40000 ${descriptor().hostKey}\n`);
   assert.equal(fs.statSync(path.join(work, 'ssh', 'client')).mode & 0o777, 0o600);
 });
@@ -217,5 +224,152 @@ test('the preferences guard restores a domain through defaults', { skip: process
   assert.equal(prefs.restore(prefs.save(options)).outcome, 'unchanged');
   for (const name of ['before.plist', 'after.plist', 'restore.plist', 'check.plist']) {
     assert.equal(fs.statSync(path.join(state.dir, name)).mode & 0o777, 0o600, name);
+  }
+});
+
+test('the focus guard stops its listener and descendants after delayed notifications', { skip: process.platform !== 'linux' }, async (t) => {
+  const focus = require('./e2e/remote-ssh/focus.cjs');
+  const { processInfo, signalProcesses, zombie } = require('./e2e/processes.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-focus-'));
+  const pids = path.join(root, 'pids.jsonl');
+  const originalPath = process.env.PATH;
+  const originalPids = process.env.FOCUS_TEST_PIDS;
+  const originalDelay = process.env.FOCUS_TEST_DELAY;
+  t.after(() => {
+    for (const line of fs.readFileSync(pids, 'utf8').trim().split('\n')) {
+      const identity = JSON.parse(line);
+      signalProcesses([identity], 'SIGKILL');
+    }
+    process.env.PATH = originalPath;
+    if (originalDelay === undefined) delete process.env.FOCUS_TEST_DELAY;
+    else process.env.FOCUS_TEST_DELAY = originalDelay;
+    if (originalPids === undefined) delete process.env.FOCUS_TEST_PIDS;
+    else process.env.FOCUS_TEST_PIDS = originalPids;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.writeFileSync(pids, '');
+  fs.writeFileSync(path.join(root, 'lsappinfo'), `#!${process.execPath}
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const { processInfo } = require(${JSON.stringify(path.join(__dirname, 'e2e/processes.cjs'))});
+const record = (pid) => fs.appendFileSync(process.env.FOCUS_TEST_PIDS, JSON.stringify(processInfo(pid)) + '\\n');
+record(process.pid);
+if (process.argv[2] === 'listen') {
+  process.on('SIGTERM', () => {});
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  record(child.pid);
+  if (process.env.FOCUS_TEST_DELAY === '1') for (let i = 0; i < 3; i++) console.log('Notification: kLSNotifyBecameFrontmost "LSASN"=ASN:0x0-0x1:');
+}
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
+  process.env.PATH = `${root}:${originalPath}`;
+  process.env.FOCUS_TEST_PIDS = pids;
+  for (const delay of ['0', '1']) {
+    fs.writeFileSync(pids, '');
+    process.env.FOCUS_TEST_DELAY = delay;
+    const guard = await focus.spawnGuard({ app: path.join(root, 'Test.app'), work: root });
+    const result = await guard.stop();
+    assert.equal(result.cleanupOk, true, JSON.stringify(result));
+    if (delay === '1') {
+      assert.ok(result.errors.includes('the focus guard exited without a result'), 'queued lookups forced the stop timeout');
+    } else {
+      assert.deepEqual(result.errors, []);
+    }
+    const identities = fs.readFileSync(pids, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(identities.length >= (delay === '1' ? 3 : 2), 'the listener and its descendants ran');
+    for (const identity of identities) {
+      const current = processInfo(identity.pid);
+      assert.ok(current === undefined || current.start !== identity.start || zombie(current), `pid ${identity.pid} survived`);
+    }
+  }
+});
+
+test('unrestored preference reasons report key names for failures and skips', () => {
+  const { notRestoredReason } = require('./e2e/remote-ssh/prefs.cjs');
+  for (const outcome of ['failed', 'skipped']) {
+    assert.equal(notRestoredReason({ outcome, changed: ['z'], added: ['a'], removed: ['b'] }),
+      'the VS Code preferences were not restored: a, b, z');
+  }
+  for (const outcome of ['restored', 'unchanged']) assert.equal(notRestoredReason({ outcome }), undefined);
+  assert.equal(notRestoredReason(undefined), undefined);
+});
+
+test('the Mac driver reports evidence failures without overriding FAIL or interrupts', { skip: process.platform !== 'linux' }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-mac-driver-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin);
+  const tool = (name, source) => fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n${source}`, { mode: 0o700 });
+  tool('node', `
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0].endsWith('/host.cjs')) {
+  const bundle = args[args.indexOf('--bundle') + 1];
+  fs.mkdirSync(bundle);
+  for (const name of ['client', 'target.json']) fs.writeFileSync(path.join(bundle, name), '{}');
+  console.log('READY ' + bundle);
+  process.stdin.resume();
+  process.stdin.on('end', () => {
+    fs.writeFileSync(path.join(bundle, 'host-teardown.json'), '{"ok":true}');
+    fs.writeFileSync(path.join(bundle, 'sshd.log'), 'host log');
+  });
+} else {
+  if (process.env.DRIVER_SCENARIO === 'assembly') process.exit(1);
+  const result = spawnSync(process.execPath, args, { input: fs.readFileSync(0), stdio: ['pipe', 'inherit', 'inherit'] });
+  process.exit(result.status);
+}
+`);
+  tool('ssh', `process.exit(process.argv.at(-1).includes('exec node') ? Number(process.env.DRIVER_STATUS) : 0);`);
+  tool('scp', `
+const fs = require('node:fs');
+const path = require('node:path');
+if (!process.argv.includes('-r')) process.exit(0);
+if (process.env.DRIVER_SCENARIO === 'transfer') process.exit(1);
+const out = process.argv.at(-1);
+fs.mkdirSync(out);
+if (process.env.DRIVER_SCENARIO === 'missing') process.exit(0);
+const preference = process.env.DRIVER_SCENARIO;
+const status = Number(process.env.DRIVER_STATUS);
+fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({
+  result: status === 0 ? 'PASS' : 'FAIL', reasons: [],
+  teardown: { preferences: { outcome: preference, changed: ['SKPurchaseIntentUpdatesLastChecked'], added: [], removed: [] } },
+}));
+`);
+  tool('cp', `
+const { spawnSync } = require('node:child_process');
+if (process.env.DRIVER_SCENARIO === 'copy') process.exit(1);
+process.exit(spawnSync('cp', process.argv.slice(2), { env: { ...process.env, PATH: process.env.DRIVER_ORIGINAL_PATH } }).status);
+`);
+  for (const [scenario, status, expected, reason] of [
+    ['ok', 0, 0],
+    ['transfer', 0, 3, 'could not copy the Mac results'],
+    ['copy', 0, 3, 'could not copy the host evidence'],
+    ['missing', 0, 3, 'the Mac wrote no manifest'],
+    ['assembly', 0, 3, 'could not assemble the combined manifest'],
+    ['transfer', 1, 1, 'could not copy the Mac results'],
+    ['assembly', 130, 130, 'could not assemble the combined manifest'],
+    ['copy', 143, 143, 'could not copy the host evidence'],
+    ['failed', 1, 1, 'the VS Code preferences were not restored: SKPurchaseIntentUpdatesLastChecked'],
+    ['failed', 0, 3, 'the VS Code preferences were not restored: SKPurchaseIntentUpdatesLastChecked'],
+    ['skipped', 0, 0, 'the VS Code preferences were not restored: SKPurchaseIntentUpdatesLastChecked'],
+  ]) {
+    await t.test(`${scenario}, Mac status ${status}`, () => {
+      const out = path.join(root, `${scenario}-${status}`);
+      const result = spawnSync('bash', [path.join(dir, 'mac-client.sh'), '--mac', 'test-mac', '--study', '/study',
+        '--listen', '127.0.0.1', '--host-name', 'test-host', '--allow-from', '127.0.0.1', '--vsix', 'test.vsix',
+        '--work-dir', root, '--out', out], {
+        encoding: 'utf8', timeout: 15000,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DRIVER_ORIGINAL_PATH: process.env.PATH,
+          DRIVER_SCENARIO: scenario, DRIVER_STATUS: String(status) },
+      });
+      assert.equal(result.status, expected, result.stdout + result.stderr);
+      const manifest = JSON.parse(fs.readFileSync(path.join(out, 'manifest.json'), 'utf8'));
+      assert.equal(manifest.exitStatus, expected);
+      assert.equal(manifest.result, { 0: 'PASS', 1: 'FAIL', 3: 'INFRA', 130: 'INTERRUPTED', 143: 'INTERRUPTED' }[expected]);
+      if (reason !== undefined) assert.ok(manifest.reasons.includes(reason), JSON.stringify(manifest));
+      if (['failed', 'skipped'].includes(scenario)) assert.match(result.stdout + result.stderr, /^PREFERENCES NOT RESTORED:/m);
+    });
   }
 });
