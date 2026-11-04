@@ -207,6 +207,34 @@ test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 test-lazyvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	test/e2e/lazyvim/run.sh $(BUILD)/virgil-lsp
 
+# The JVM target's runtime class, src/os/jvm/V3S_System.java, and its tests.
+# Not part of `make test`: they need a JDK, which only the JVM target does.
+# The class is built for Java 8, the level of upstream's rt/jvm/Makefile. The
+# default JAVAC needs JDK 9 or later; set JAVA or JAVAC to use another JDK.
+JAVA        ?= java
+JAVAC       ?= $(JAVA) -m jdk.compiler/com.sun.tools.javac.Main
+JAVAC_FLAGS  = -source 8 -target 8 -encoding UTF-8 -Xlint:all -Xlint:-options -Werror
+JVM_RT_SRC   = $(sort $(wildcard src/os/jvm/*.java))
+JVM_RT       = $(BUILD)/jvm/rt
+
+.PHONY: jvm-runtime test-jvm-runtime
+# Every class file in $(JVM_RT) belongs in each jar, not only V3S_System.class.
+jvm-runtime: $(JVM_RT)/V3S_System.class
+
+$(JVM_RT)/V3S_System.class: $(JVM_RT_SRC)
+	rm -rf $(JVM_RT) && mkdir -p $(JVM_RT)
+	$(JAVAC) $(JAVAC_FLAGS) -d $(JVM_RT) $(JVM_RT_SRC)
+
+# Pass ARGS to run only the tests whose names contain one of its words.
+test-jvm-runtime: jvm-runtime check-virgil
+	rm -rf $(BUILD)/jvm/upstream $(BUILD)/jvm/test && mkdir -p $(BUILD)/jvm/upstream $(BUILD)/jvm/test
+	$(JAVAC) -source 8 -target 8 -nowarn -Xlint:-options -d $(BUILD)/jvm/upstream $(VIRGIL)/rt/jvm/src/V3S_System.java
+	$(JAVAC) $(JAVAC_FLAGS) -cp $(JVM_RT) -d $(BUILD)/jvm/test test/jvm/V3SSystemTest.java
+	$(JAVA) -cp $(JVM_RT):$(BUILD)/jvm/test -Djava.io.tmpdir=$${TMPDIR:-/tmp} \
+	  -Dv3s.runtime.classes=$(JVM_RT) \
+	  -Dv3s.upstream.classes=$(BUILD)/jvm/upstream \
+	  V3SSystemTest $(ARGS) </dev/null
+
 # scripts/package-release.sh records the worker heap in its build manifest.
 print-worker-heap:
 	@echo '$(WORKER_HEAP)'

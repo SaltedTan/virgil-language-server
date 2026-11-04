@@ -63,6 +63,7 @@ Before running a suite directly, build the executables it expects. The [Tests](d
 - Use focused tests while working, such as `make test-unit ARGS='Thing:*'`.
 - Run `make test` before opening a pull request.
 - Run the client checks when anything under `clients/vscode/` changes.
+- Run `make test-jvm-runtime` when `src/os/jvm/` or `test/jvm/` changes. It needs a JDK, as the [prerequisites](docs/development.md#prerequisites) say.
 - Run `make test-nvim` when `editors/nvim/` or behavior the Neovim smoke test checks changes, and `make test-lazyvim` when the LazyVim configuration or a feature its test drives changes; the [LazyVim test](test/e2e/lazyvim/README.md) lists what it covers.
 
 If you skip a check, name it and say why: the tool is missing, there is no display, there is no network access, or the suite is not relevant. Don't leave the impression that a skipped check passed.

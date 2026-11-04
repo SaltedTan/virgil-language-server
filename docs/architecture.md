@@ -21,7 +21,7 @@ flowchart TD
 | --- | --- | --- |
 | `src/main.v3` | Command-line entry point | Present |
 | `src/worker/` | Analysis worker: its entry point (`WorkerMain.v3`), the supervisor that runs it, framing, and the message codec ([ADR-0004](decisions/0004-analysis-worker-process.md)) | Present |
-| `src/os/<target>/` | System calls the Virgil `System` component lacks (pipes, process creation, polling), one file per target | Present for `x86-64-linux` and `x86-64-darwin` |
+| `src/os/<target>/` | System calls the Virgil `System` component lacks (pipes, process creation, polling), one file per target | Present for `x86-64-linux` and `x86-64-darwin`. `src/os/jvm/V3S_System.java` is the runtime class for Virgil's JVM target, which carries those operations for it; its header describes the commands. |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes, syntax folding ranges, and selection chains. | Adapter and server-owned snapshots present |
 | `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers including semicolon code actions (`LspCodeActions.v3`), watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
@@ -30,10 +30,10 @@ flowchart TD
 
 ## Build model
 
-Virgil is a whole-program compiler. Every source file is passed to the compiler at once and shares one global namespace. The `virgil-lsp` executable is compiled from:
+Virgil is a whole-program compiler. Every Virgil source file is passed to the compiler at once and shares one global namespace. The `virgil-lsp` executable is compiled from:
 
 1. `src/main.v3` (passed first, because the first component with a `main` method becomes the entry point);
-2. the rest of `src/`, except `src/worker/WorkerMain.v3` and the `src/os/` directories of other targets;
+2. the rest of the Virgil sources under `src/`, except `src/worker/WorkerMain.v3` and the `src/os/` directories of other targets;
 3. a generated `build/gen/BuildInfo.v3` with the version and revisions;
 4. `vendor/virgil/aeneas/src/*/*.v3` and the libraries listed in `vendor/virgil/aeneas/DEPS`;
 5. `vendor/virgil/lib/file/json/JsonParser.v3`, which the server uses but Aeneas does not.
