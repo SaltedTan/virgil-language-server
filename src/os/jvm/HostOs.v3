@@ -1,0 +1,179 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The JVM target's version of src/os/x86-64-linux/HostOs.v3, with the same
+// members. A Virgil program on the JVM can call only the fixed System
+// methods, so each host operation is a command to this target's runtime
+// class, src/os/jvm/V3S_System.java, whose header documents them: an int
+// command through System.fileOpen(name, false), and a byte command through
+// System.fileLoad(name), whose reply is a status byte and then the payload.
+// System.read and System.write use the runtime's descriptor table. Failures
+// are negated Linux errno values on every host, so the constants below are
+// Linux's. See docs/decisions/0004-analysis-worker-process.md.
+component HostOs {
+	def EINTR = -4;
+	def ELOOP = -40;
+	def EAGAIN = -11;
+	def SIGKILL = 9;
+	// Bits of a poll descriptor's events and revents.
+	def POLLIN = 0x1;
+	def POLLOUT = 0x4;
+	def POLLERR = 0x8;
+	def POLLHUP = 0x10;
+	def POLLNVAL = 0x20;
+	// The runtime numbers the descriptors it creates from here, as natively.
+	def MIN_FD = 10;
+	private def EIO = -5;
+
+	// Returns a pipe's read and write descriptors, or a negated errno as the
+	// first value. The runtime makes the write end the read end plus one.
+	def pipe() -> (int, int) {
+		var r = run(command("pipe"));
+		if (r < 0) return (r, -1);
+		return (r, r + 1);
+	}
+	def openNull() -> int {
+		return run(command("null"));
+	}
+	def openRead(path: string) -> int {
+		return run(command("openRead").putc('\x00').puts(path));
+	}
+	def setNonblocking(fd: int) -> bool {
+		return run(command("nonblock").putc('\x00').putd(fd)) >= 0;
+	}
+	def close(fd: int) {
+		run(command("close").putc('\x00').putd(fd));
+	}
+	// Returns the bytes read, 0 at the end of the input, or a negated errno.
+	def read(fd: int, buf: Range<byte>) -> int {
+		return System.read(fd, buf);
+	}
+	// Returns the bytes written or a negated errno.
+	def write(fd: int, buf: Range<byte>) -> int {
+		return System.write(fd, buf);
+	}
+	// As natively: {count} pairs in {fds}, the descriptor, then events in the
+	// low and revents in the high 16 bits. The reply has a revents byte for
+	// each descriptor.
+	def poll(fds: Array<int>, count: int, timeoutMs: int) -> int {
+		var b = command("poll").putc('\x00').putd(timeoutMs);
+		for (i < count) b.putc('\x00').putd(fds[2 * i]).putc('\x00').putd(fds[2 * i + 1] & 0xFFFF);
+		var r = query(b);
+		if (r.length == 0) return EIO;
+		if (r[0] != 0) return -int.view(r[0]);
+		if (r.length != count + 1) return EIO;
+		var ready = 0;
+		for (i < count) {
+			var revents = int.view(r[i + 1]);
+			fds[2 * i + 1] = (fds[2 * i + 1] & 0xFFFF) | (revents << 16);
+			if (revents != 0) ready++;
+		}
+		return ready;
+	}
+	// Returns 0 if {path} (NUL-terminated) names a file this process may execute.
+	def checkExecutable(path: Array<byte>) -> int {
+		return run(command("access").putc('\x00').puts(strip(path)));
+	}
+	// Starts {args[0]} (each NUL-terminated) with an empty environment; in the
+	// child, descriptor i becomes {fds[i]}. The runtime accepts only the
+	// descriptors the worker needs: a null descriptor, standard error, and one
+	// read end and one write end of unconnected pipes. Returns the child's
+	// process ID or a negated errno.
+	def spawn(args: Array<Array<byte>>, fds: Array<int>) -> int {
+		var b = command("spawn").putc('\x00').putd(fds.length);
+		for (fd in fds) b.putc('\x00').putd(fd);
+		for (a in args) b.putc('\x00').puts(strip(a));
+		return run(b);
+	}
+	def kill(pid: int, signal: int) -> int {
+		return run(command("kill").putc('\x00').putd(pid).putc('\x00').putd(signal));
+	}
+	// Waits for {pid} to exit and stores its wait status in {status[0]}.
+	def wait(pid: int, status: Array<int>) -> int {
+		var r = run(command("wait").putc('\x00').putd(pid));
+		if (r < 0) return r;
+		status[0] = r;
+		return pid;
+	}
+	// Ends this process as SIGALRM would after {ms} milliseconds, unless
+	// called again first; 0 cancels.
+	def setAlarm(ms: int) {
+		run(command("alarm").putc('\x00').putd(ms));
+	}
+	// The JVM already ignores SIGPIPE: a write to a closed pipe fails with EPIPE.
+	def ignoreSigpipe() { }
+	// Two words from the runtime's SecureRandom, or, if that fails, from the time.
+	def randomWords() -> (u64, u64) {
+		var r = query(command("random"));
+		if (r.length != 17 || r[0] != 0) return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), 0);
+		return (Ref<Layout_u64>.at(r, 1).val, Ref<Layout_u64>.at(r, 9).val);
+	}
+	// False on this target, as on Darwin: the JVM has no per-thread readings.
+	def threadMetricsSupported = false;
+	def threadCpuTimeUs() -> long {
+		return -1;
+	}
+	def threadContextSwitches() -> (long, long) {
+		return (-1, -1);
+	}
+	// The path that the launcher passes as the virgil.lsp.executable system
+	// property, which it resolves as the kernel would, or else the jar's path.
+	def executablePath() -> string {
+		var r = query(command("executable"));
+		if (r.length < 2 || r[0] != 0) return null;
+		return Arrays.range(r, 1, r.length);
+	}
+
+	// Directory traversal never follows symlinks, including intermediate components.
+	def openDirectoryRoot(absolute: bool) -> int {
+		return run(command("openDirectory").putc('\x00').puts(if(absolute, "/", ".")));
+	}
+	def openChild(fd: int, name: string, directory: bool) -> int {
+		return run(command("openAt").putc('\x00').putd(fd).putc('\x00').puts(name).putc('\x00').putc(if(directory, '1', '0')));
+	}
+	def fileMetadata(fd: int) -> (int, long) {
+		return metadata(query(command("stat").putc('\x00').putd(fd)));
+	}
+	def childMetadata(fd: int, name: string) -> (int, long) {
+		return metadata(query(command("statAt").putc('\x00').putd(fd).putc('\x00').puts(name)));
+	}
+	// The runtime returns linux_dirent64 records on every host.
+	def readDirectory(fd: int, buf: Array<byte>) -> int {
+		var r = query(command("readDirectory").putc('\x00').putd(fd).putc('\x00').putd(buf.length));
+		if (r.length == 0) return EIO;
+		if (r[0] != 0) return -int.view(r[0]);
+		var n = r.length - 1;
+		if (n > buf.length) return EIO;
+		for (i < n) buf[i] = r[i + 1];
+		return n;
+	}
+	def directoryNameOffset = 19;
+	def directoryTypeOffset = 18;
+	def directoryRecordOffset = 16;
+
+	// A metadata reply: the file type bits of st_mode and the size, or a
+	// negated errno and -1.
+	private def metadata(r: Array<byte>) -> (int, long) {
+		if (r.length == 0) return (EIO, -1L);
+		if (r[0] != 0) return (-int.view(r[0]), -1L);
+		if (r.length != 17) return (EIO, -1L);
+		return (int.view(Ref<Layout_u64>.at(r, 1).val), long.view(Ref<Layout_u64>.at(r, 9).val));
+	}
+	// The bytes of {z} before its terminating NUL.
+	private def strip(z: Array<byte>) -> string {
+		var n = z.length;
+		while (n > 0 && z[n - 1] == 0) n--;
+		return Arrays.range(z, 0, n);
+	}
+	private def command(op: string) -> StringBuilder {
+		return StringBuilder.new().putc('\x01').puts(op);
+	}
+	private def run(b: StringBuilder) -> int {
+		return System.fileOpen(b.toString(), false);
+	}
+	// A byte command's reply, or an empty array if there was none.
+	private def query(b: StringBuilder) -> Array<byte> {
+		var r = System.fileLoad(b.toString());
+		return if(r == null, Array<byte>.new(0), r);
+	}
+}
