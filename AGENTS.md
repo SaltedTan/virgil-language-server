@@ -14,7 +14,7 @@ The Virgil Language Server provides an LSP server for the Virgil programming lan
 | `src/worker/` | The analysis worker's entry point and supervisor, its framing, and the message codec. |
 | `src/documents/` | URI normalization, versioned overlays, and position mapping. |
 | `src/workspace/` | Project files, bounded glob expansion, workspace discovery, diagnostic ownership, and configuration revisions. |
-| `src/os/<target>/` | System calls that the Virgil `System` component lacks, one file per target. |
+| `src/os/<target>/` | System calls that the Virgil `System` component lacks, one directory per target. |
 | `src/Log.v3` | Logging to standard error. |
 | `test/` | Virgil unit tests, protocol and CLI transcripts, diagnostics, release checks, editor tests under `test/e2e/`, and fixtures. |
 | `clients/vscode/` | The TypeScript VS Code extension. |
@@ -33,7 +33,7 @@ git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-serv
 git submodule update --init --recursive
 ```
 
-Development hosts are Linux x86-64, or an Apple Silicon Mac with Rosetta 2; WSL 2 on Windows is best effort. The pinned submodule supplies Virgil, so no separate compiler install is needed. See the [prerequisites](docs/development.md#prerequisites).
+The pinned submodule supplies Virgil, so no separate compiler install is needed. See the [prerequisites](docs/development.md#prerequisites).
 
 ## Build and test
 
