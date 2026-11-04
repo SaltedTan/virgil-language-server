@@ -19,15 +19,16 @@ component HostRuntime {
 	//
 	// stackBase() samples the depth fresh, once, where a parse starts, so
 	// each parse measures from its own start rather than a later reading;
-	// stackMark() samples every STACK_SAMPLE calls, so a token never triggers
-	// a full stack walk on its own. The first mark after a base is therefore
+	// stackMark() samples every STACK_SAMPLE calls, avoiding a full stack
+	// walk on every token. The first mark after a base is therefore
 	// up to STACK_SAMPLE tokens late, and the guard's first check sees a depth
 	// up to the descent of those tokens: on x86-64 Linux with JDK 25's default
 	// 1 MiB thread stack, a fresh deep-bracket parse takes its first
 	// measurement at 768 frames (about 124 brackets, six frames per level),
 	// where the unguarded parse overflows at about 960 brackets (about
-	// 5,800 frames). The margin covers the interpreter's larger frames, which compiled code replaces, and the shipped
-	// darwin-arm64 target, which is untested. A parse that reaches the limit
+	// 5,800 frames). The margin covers the interpreter's larger frames, which
+	// compiled code replaces, and the planned darwin-arm64 target, which is
+	// untested. A parse that reaches the limit
 	// reports "nesting too deep" and stops; nothing catches StackOverflowError,
 	// and no larger -Xss is needed. The range() recursion the frame guard
 	// can't see is bounded separately by chainLimit(); see
@@ -56,8 +57,7 @@ component HostRuntime {
 		return -stackDepth * STACK_SCALE;
 	}
 	// A mark of the current stack position, in virtual bytes. The depth is
-	// sampled every STACK_SAMPLE calls, so a token never triggers a full
-	// stack walk on its own.
+	// sampled every STACK_SAMPLE calls; intervening calls reuse the last depth.
 	def stackMark() -> long {
 		stackCalls++;
 		if (stackCalls % STACK_SAMPLE == 0) stackDepth = frameDepth();

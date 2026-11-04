@@ -481,7 +481,8 @@ component AnalysisSingleFileParser {
 	def STACK_LIMIT = 1024 * 1024;
 	// Stack always left free, in case parsing starts deep in the stack.
 	def STACK_RESERVE = 64 * 1024;
-	// Cap the range() levels that AnalysisChainCounter estimates. Recursion
+	// Native cap on the range() levels that AnalysisChainCounter estimates;
+	// HostRuntime.chainLimit() selects the target's bound. Native recursion
 	// uses at most CHAIN_FRAME bytes of stack per counted level (a binary
 	// operator; measured on x86-64), and real code stays far below the limit.
 	def CHAIN_LIMIT = 8192;
