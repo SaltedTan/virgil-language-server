@@ -26,7 +26,7 @@ component HostRuntime {
 	// bytes each, the x86-64 measurement behind
 	// AnalysisSingleFileParser.CHAIN_LIMIT.
 	def chainLimit() -> int {
-		return 8192;
+		return AnalysisSingleFileParser.CHAIN_LIMIT;
 	}
 	// The size of the heap, as -heap-size set it.
 	def heapBytes() -> long {
