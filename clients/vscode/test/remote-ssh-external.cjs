@@ -90,3 +90,22 @@ test('host.cjs requires its address, host name, and bundle', { skip: process.pla
   assert.equal(result.status, 2);
   assert.match(result.stderr, /--host-name is required/);
 });
+
+test('the focus guard reads LaunchServices notifications and app information', () => {
+  const focus = require('./e2e/remote-ssh/focus.cjs');
+  const line = 'Notification: kLSNotifyBecameFrontmost time=11/04/2026 00:20:21.675 dataRef={ "ApplicationType"="Foreground", '
+    + '"CFBundleIdentifier"="com.microsoft.VSCode", "LSASN"=ASN:0x0-0x7f8af83:, "LSFrontApplicationSeed"=13526, '
+    + '"LSOtherASN"=ASN:0x0-0x7f57f50: } affectedASN="Code" ASN:0x0-0x7f8af83:  context=0';
+  assert.deepEqual(focus.parseNotification(line), { asn: 'ASN:0x0-0x7f8af83:', other: 'ASN:0x0-0x7f57f50:' });
+  assert.equal(focus.parseNotification(line.replace('BecameFrontmost', 'LostFrontmost')), undefined);
+  const info = '"T3 Code (Nightly)" ASN:0x0-0x7f57f50: (in front) \n    bundleID="com.t3tools.t3code"\n'
+    + '    bundle path="/Applications/T3 Code (Nightly).app"\n    executable path="/Applications/T3 Code (Nightly).app/Contents/MacOS/T3"\n';
+  assert.deepEqual(focus.parseInfo(info), { name: 'T3 Code (Nightly)', bundlePath: '/Applications/T3 Code (Nightly).app', bundleId: 'com.t3tools.t3code' });
+  // Only the test's own copy counts, never the user's VS Code of the same bundle identifier.
+  const app = '/Users/u/study/.vscode-test/vscode-darwin-arm64-1.142.0/Visual Studio Code.app';
+  assert.ok(focus.within(app, app));
+  assert.ok(focus.within(`${app}/Contents/Frameworks/Code Helper.app`, app));
+  assert.ok(!focus.within('/Applications/Visual Studio Code.app', app));
+  assert.ok(!focus.within(`${app} 2`, app));
+  assert.ok(!focus.within(null, app));
+});

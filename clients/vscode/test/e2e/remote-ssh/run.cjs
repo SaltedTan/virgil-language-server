@@ -42,6 +42,7 @@ const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electro
 const { VSCODE_VERSION, attempt, isolatedEnv, windowError } = require('../run.cjs');
 const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, runOwned, startGroup } = require('../processes.cjs');
 const external = require('./external.cjs');
+const focus = require('./focus.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -1050,8 +1051,12 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   let exit;
   let sampling;
   let firstSample;
+  let guard;
   try {
     infrastructure(`write launches/${name}.log`, () => fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`));
+    // On a macOS client, VS Code takes the user's focus when its window
+    // opens; the guard gives it back (see focus.cjs).
+    if (run.clientApp !== undefined) guard = await focus.spawnGuard({ app: run.clientApp, work: run.work, log: (line) => console.log(`-- ${line}`) });
     exit = await runGroup(executable, args, {
       env: run.env, timeout, signal: run.signal,
       onExit: () => {
@@ -1069,11 +1074,18 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       },
     });
   } finally {
+    if (guard !== undefined) record.focus = await guard.stop();
     firstSample = await sampling;
     infrastructure(`close launches/${name}.log`, () => fs.closeSync(log));
   }
   record.seconds = exit.seconds;
   record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
+  if (record.focus !== undefined) {
+    const { episodes, frontMs, unreturned, errors } = record.focus;
+    console.log(`-- focus: the test's VS Code was in front ${episodes.length} time(s), for ${frontMs} ms in all`
+      + `${unreturned > 0 ? `, ${unreturned} time(s) until it exited` : ''}${errors.length > 0 ? `; ${errors.join('; ')}` : ''}`);
+    for (const error of errors) run.note(`${name}: focus guard: ${error}`);
+  }
   run.checkpoint();
   if (firstSample?.error !== undefined) throw firstSample.error;
   if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
@@ -1208,6 +1220,8 @@ async function test(run) {
     + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.bundled ? 'the VSIX bundle' : values.archive ?? values.server}`);
 
   const executable = await downloadVSCode(run);
+  // A macOS client's app bundle: executable is its Contents/MacOS/Code.
+  if (values.target !== undefined) run.clientApp = path.resolve(executable, '../../..');
   // On macOS, the executable is Contents/MacOS/<name> in the app bundle.
   const resources = process.platform === 'darwin' ? path.join(path.dirname(executable), '..', 'Resources') : path.join(path.dirname(executable), 'resources');
   const product = JSON.parse(fs.readFileSync(path.join(resources, 'app/product.json'), 'utf8'));
@@ -1225,7 +1239,7 @@ async function test(run) {
   // Provisioning takes seconds, so an interrupt waits for it; the teardown
   // then stops what it started.
   const target = values.target !== undefined
-    ? external.create({ file: values.target, work: run.work, sockets: run.sockets })
+    ? external.create({ file: values.target, work: run.work, sockets: run.sockets, app: run.clientApp })
     : localhost.create({
       work: run.work, sockets: run.sockets, env: run.env, marker: run.marker, sshd: values.sshd,
       log: (line) => console.log(line),

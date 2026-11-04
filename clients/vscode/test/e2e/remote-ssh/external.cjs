@@ -16,6 +16,13 @@
 // found by name. Each is identified by its PID and start time (see
 // processInfo in ../processes.cjs), and signals go only to a process that
 // still has both (see signalProcesses).
+//
+// Starting VS Code, or opening its bundle, registers it and its helper apps
+// with LaunchServices, under VS Code's own bundle identifier, which the user's
+// VS Code shares. So the teardown also unregisters every LaunchServices record
+// under the test's app bundle, the app's and each nested helper's, since
+// lsregister -u on the app leaves the helpers registered, and fails unless
+// lsregister -dump then lists none.
 
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -23,6 +30,7 @@ const path = require('node:path');
 const { processInfo, signalProcesses } = require('../processes.cjs');
 
 const STOP_TIMEOUT_MS = 5000;
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 
 function quoted(value) {
   if (/["\\\n]/.test(value)) throw new Error(`unsupported character in ${value}`);
@@ -45,7 +53,26 @@ function readDescriptor(file) {
   return descriptor;
 }
 
-function create({ file, work, sockets }) {
+// The paths of LaunchServices records at or under app, an app bundle.
+function registrations(app) {
+  const dump = spawnSync(LSREGISTER, ['-dump'], { encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024 });
+  if (dump.error !== undefined || dump.status !== 0) throw new Error(`lsregister -dump failed: ${dump.error?.message ?? dump.stderr}`);
+  const found = new Set();
+  for (const [, file] of dump.stdout.matchAll(/^path:\s+(.*?) \(0x[0-9a-f]+\)$/gm)) {
+    if (file === app || file.startsWith(`${app}/`)) found.add(file);
+  }
+  return [...found].sort();
+}
+
+// Unregisters every LaunchServices record under app; returns what it
+// unregistered and what is still registered.
+function unregister(app) {
+  const unregistered = registrations(app);
+  for (const file of unregistered) spawnSync(LSREGISTER, ['-u', file]);
+  return { unregistered, left: registrations(app) };
+}
+
+function create({ file, work, sockets, app }) {
   const descriptor = readDescriptor(file);
   const ssh = path.join(work, 'ssh');
   const target = {
@@ -93,7 +120,7 @@ function create({ file, work, sockets }) {
   LogLevel ERROR
 `, { mode: 0o600 });
     },
-    teardown: () => teardown({ work, sockets }),
+    teardown: () => teardown({ work, sockets, app }),
   };
   return target;
 }
@@ -136,7 +163,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Stops the client's processes of the run that are left, as localhost.cjs's
 // teardown does: SIGSTOP until a look finds no new one, then SIGKILL. The
 // host's own teardown is host.cjs's.
-async function teardown({ work, sockets }) {
+async function teardown({ work, sockets, app }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null, side: 'client' };
   const key = (p) => `${p.pid}@${p.start}`;
   try {
@@ -165,7 +192,19 @@ async function teardown({ work, sockets }) {
     result.ok = false;
     result.error = `could not list the run's processes: ${error.message}`;
   }
+  if (app !== undefined && process.platform === 'darwin') {
+    try {
+      result.launchServices = unregister(app);
+      if (result.launchServices.left.length > 0) {
+        result.ok = false;
+        result.error = `LaunchServices still has ${result.launchServices.left.join(', ')}`;
+      }
+    } catch (error) {
+      result.ok = false;
+      result.error = `could not unregister ${app} from LaunchServices: ${error.message}`;
+    }
+  }
   return result;
 }
 
-module.exports = { create, readDescriptor, runProcesses, teardown };
+module.exports = { create, readDescriptor, registrations, runProcesses, teardown, unregister };
