@@ -77,11 +77,14 @@ component HostRuntime {
 	}
 	// The cap on the range() levels that AnalysisChainCounter estimates. The
 	// frame guard can't see range()'s recursion, which builds out of sight of
-	// the token skips, so this bounds it: on x86-64 Linux with JDK 25's
-	// default 1 MiB thread stack, a chain of 1+ operators uses about 52 bytes
-	// per level and overflows at about 20,000 levels (about 12,000 under
-	// -Xint), so 2,048 levels leaves a margin of at least six-fold in levels
-	// and keeps the recursion to about 104 KiB of the 1 MiB stack.
+	// the token skips, so this bounds it. On the JVM, the case that matters is a
+	// cold server (the first didOpen, with the parse interpreted or only partly
+	// compiled): on x86-64 Linux with JDK 25's default 1 MiB thread stack, a
+	// chain of 1+ operators then overflows at about 8,000 levels (about 131
+	// bytes per level, measured on the default stack with the limit raised). A
+	// warmed-up, JIT-compiled server overflows later, and the interpreter
+	// (-Xint) in between. 2,048 levels use at most about 268 KiB of the 1 MiB
+	// stack, leaving at least a four-fold margin to the cold-start overflow.
 	def chainLimit() -> int {
 		return 2048;
 	}
