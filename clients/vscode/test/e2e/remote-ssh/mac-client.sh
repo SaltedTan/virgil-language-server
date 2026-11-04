@@ -54,8 +54,13 @@ exec 7> "$hold"
 rm -f "$hold"
 mac_pidfile="$study/results/$stamp.pid"
 stop_host() {
+  local host_wait_status
   exec 7>&-
-  wait "$host_pid"
+  while :; do
+    wait "$host_pid"
+    host_wait_status=$?
+    kill -0 "$host_pid" 2>/dev/null || return "$host_wait_status"
+  done
 }
 interrupted=
 # shellcheck disable=SC2329 # Invoked by the traps below.
@@ -69,6 +74,7 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
 for _ in $(seq 100); do
+  [ -n "$interrupted" ] && break
   grep -q '^READY ' "$out/host.log" && break
   kill -0 "$host_pid" 2>/dev/null || break
   sleep 0.2
@@ -76,6 +82,10 @@ done
 if ! grep -q '^READY ' "$out/host.log"; then
   cat "$out/host.log"
   stop_host
+  if [ -n "$interrupted" ]; then
+    echo "RESULT: INTERRUPTED (the host was not provisioned)"
+    exit "$interrupted"
+  fi
   echo "RESULT: INFRA (the host was not provisioned)"
   exit 3
 fi
@@ -89,16 +99,18 @@ evidence_failure() {
   if [ "$status" -eq 0 ]; then status=3; fi
 }
 mac_bundle="$study/bundles/$stamp"
-if ! ssh -o BatchMode=yes "$mac" "mkdir -p '$mac_bundle' && chmod 700 '$mac_bundle'" \
-  || ! scp -q "$bundle/target.json" "$bundle/client" "$mac:$mac_bundle/"; then
-  echo "INFRA: could not copy the target's bundle to $mac"
-  status=3
+if [ -z "$interrupted" ]; then
+  if ! ssh -o BatchMode=yes "$mac" "mkdir -p '$mac_bundle' && chmod 700 '$mac_bundle'"; then
+    evidence_failure 'could not prepare the Mac bundle'
+  elif [ -z "$interrupted" ]; then
+    scp -q "$bundle/target.json" "$bundle/client" "$mac:$mac_bundle/" || evidence_failure 'could not copy the target bundle to the Mac'
+  fi
 fi
 rm -f "$bundle/client"
 
-if [ "$status" -eq 0 ]; then
-  client_args=
-  [ -n "$client_vsix" ] && client_args="--client-vsix '$study/$client_vsix'"
+client_args=
+[ -n "$client_vsix" ] && client_args="--client-vsix '$study/$client_vsix'"
+if [ "$status" -eq 0 ] && [ -z "$interrupted" ]; then
   # The Mac's PATH for a non-interactive SSH session lacks Homebrew's node.
   # SSH runs in the background, so that a trap runs while it does: bash
   # runs traps only between commands, and wait is interruptible.
