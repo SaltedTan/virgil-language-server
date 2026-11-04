@@ -366,6 +366,9 @@ public class V3SSystemTest {
                 V3S_System.puts(bytes("puts\n"));
                 write(4, "fd0=" + r0 + " fd1=" + w1 + " fd2=" + w2 + " fd5=" + r5);
                 System.exit(0);
+            } else if (mode.equals("environment")) {
+                write(4, new java.util.TreeSet<String>(System.getenv().keySet()).toString());
+                System.exit(0);
             } else if (mode.equals("sleep")) {
                 Thread.sleep(60000);
                 System.exit(0);
@@ -575,6 +578,13 @@ public class V3SSystemTest {
             cmd("close", w.requests);
             cmd("close", w.results);
             eq(7 << 8, cmd("wait", w.pid), "wait status");
+        });
+        test("children: the child's environment holds only the descriptor layout", () -> {
+            Worker w = start("environment");
+            eq("[" + V3S_System.LAYOUT_ENV + "]", text(readFully(w.results, -1, 20000)), "environment");
+            cmd("close", w.requests);
+            cmd("close", w.results);
+            eq(0, cmd("wait", w.pid), "wait status");
         });
         test("children: kill and wait", () -> {
             Worker w = start("sleep");

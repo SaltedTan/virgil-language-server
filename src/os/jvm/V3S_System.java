@@ -644,9 +644,10 @@ public class V3S_System {
     // descriptor given a pipe's read end reads the process's standard input,
     // the one given a pipe's write end writes its standard output, a null
     // descriptor reads as empty, and one given standard error writes the
-    // inherited standard error. The child's environment is otherwise this
-    // process's, as a launcher script needs PATH. A program that can't be
-    // started is reported here, not by an exit status of 127.
+    // inherited standard error. As ADR-0004 says of the native worker, the
+    // child's environment is otherwise empty, so a launcher names its java by
+    // an absolute path. A program that can't be started is reported here, not
+    // by an exit status of 127.
     static final class Spawn {
         static int run(int[] layout, List<String> argv) {
             if (argv.isEmpty() || layout.length > MIN_FD) return -EINVAL;
@@ -673,6 +674,7 @@ public class V3S_System {
             ProcessBuilder pb = new ProcessBuilder(argv);
             StringBuilder s = new StringBuilder();
             for (int i = 0; i < kinds.length; i++) s.append(i == 0 ? "" : ",").append(kinds[i]);
+            pb.environment().clear();
             pb.environment().put(LAYOUT_ENV, s.toString());
             pb.redirectError(ProcessBuilder.Redirect.INHERIT);
             File devNull = new File("/dev/null");
