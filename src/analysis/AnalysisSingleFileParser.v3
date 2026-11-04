@@ -86,9 +86,10 @@ class AnalysisParseErrors extends ErrorGen {
 class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, coordinates: AnalysisTokenCoordinates) {
 	// Measure parser stack use from here rather than charging the caller's
 	// frames to it. Available stack and compiled frame sizes affect the cutoff.
-	private def stackBase = HostRuntime.stackMark();
+	private def stackBase = HostRuntime.stackBase();
 	private def stackLimit = AnalysisSingleFileParser.stackLimit(stackBase);
 	private def chains = AnalysisChainCounter.new();
+	private def chainLimit = HostRuntime.chainLimit();
 	// Where the token that the parser is consuming starts.
 	private var tokenStart: int;
 
@@ -105,7 +106,7 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 			// Every level of parser recursion consumes a token, and so skips.
 			if (stackBase - HostRuntime.stackMark() > stackLimit) {
 				errors.stop(p, "nesting too deep; parsing stopped here");
-			} else if (tokenEnd > tokenStart && chains.add(p.input, tokenStart, tokenEnd) > AnalysisSingleFileParser.CHAIN_LIMIT) {
+			} else if (tokenEnd > tokenStart && chains.add(p.input, tokenStart, tokenEnd) > chainLimit) {
 				errors.stop(p, "expression too long; parsing stopped here");
 			}
 		}
@@ -480,7 +481,8 @@ component AnalysisSingleFileParser {
 	def STACK_LIMIT = 1024 * 1024;
 	// Stack always left free, in case parsing starts deep in the stack.
 	def STACK_RESERVE = 64 * 1024;
-	// Cap the range() levels that AnalysisChainCounter estimates. Recursion
+	// Native cap on the range() levels that AnalysisChainCounter estimates;
+	// HostRuntime.chainLimit() selects the target's bound. Native recursion
 	// uses at most CHAIN_FRAME bytes of stack per counted level (a binary
 	// operator; measured on x86-64), and real code stays far below the limit.
 	def CHAIN_LIMIT = 8192;

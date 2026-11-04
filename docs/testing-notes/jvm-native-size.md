@@ -78,3 +78,45 @@ and `make -o buildinfo all` so revision generation cannot replace it. Use
 boundaries when a file-size delta differs. These options report generated
 output without changing the executable. Account for metadata and alignment
 before treating a different total as additional product code.
+
+## The #461 parser guard
+
+The #461 parser guard adds `HostRuntime.stackBase()` and
+`HostRuntime.chainLimit()` and a `chainLimit` field to `AnalysisParseSkipper`,
+which the parser reads on every token skip. Built from this worktree path with
+identical generated `BuildInfo.v3` bytes and the pinned compiler, the increases
+are:
+
+| Program | Before (`7fc31757`) | After (`ee982913`) | Increase |
+| --- | ---: | ---: | ---: |
+| `virgil-lsp` | 978616 | 978704 | 88 |
+| `virgil-lsp-worker` | 918888 | 918976 | 88 |
+
+`-print-size` accounts for the emitted method bytes; a dash means the method is
+absent. The two new methods and the skipper's changes are:
+
+| Method | Server before / after | Worker before / after |
+| --- | ---: | ---: |
+| `HostRuntime.stackBase` | — / 10 | — / 10 |
+| `HostRuntime.chainLimit` | — / 6 | — / 6 |
+| `AnalysisParseSkipper.new` | 89 / 100 | 89 / 100 |
+| `AnalysisParseSkipper.skip` | 416 / 422 | 416 / 422 |
+
+The method code grows by 33 bytes in each program: 16 for the two new methods
+and 17 for the skipper (11 in `new`, 6 in `skip`); the skipper's `chainLimit`
+field itself is data, not method code. With method alignment and the runtime's
+per-method metadata, the complete regions change by:
+
+| Region | Server | Worker |
+| --- | ---: | ---: |
+| Machine code, including method alignment | 40 | 40 |
+| GC stack maps | 4 | 4 |
+| Source points | 4 | 4 |
+| Source methods | 16 | 16 |
+| Source strings, aligned to four bytes | 20 | 24 |
+| Exception entries | 4 | 0 |
+| **Total** | **88** | **88** |
+
+GC roots, extended GC maps, and initialized data are unchanged. The native
+cutoffs are unchanged: deep nesting still stops at column 1854, and long chains
+still stop at 8,192 levels.

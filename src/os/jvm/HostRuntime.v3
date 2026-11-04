@@ -6,14 +6,87 @@
 // native ones; see each. Commands reach src/os/jvm/V3S_System.java as
 // src/os/jvm/HostOs.v3 describes.
 component HostRuntime {
-	// The JVM exposes no stack pointer, so the mark never moves and the
-	// parser's stack guard never stops a parse: deep enough nesting ends the
-	// process with StackOverflowError instead (#461).
-	def stackMark() -> long {
-		return 0;
+	// A Java program can read its stack only as a count of frames, and
+	// Thread.getStackTrace() caps that count at 1,024, so the marks are
+	// virtual positions: minus the current thread's frame depth times
+	// STACK_SCALE. The parser compares two marks, which gives the frames that
+	// parsing used, and its existing STACK_LIMIT of 1 MiB then stops a parse
+	// at STACK_LIMIT / STACK_SCALE = 512 frames of recursion, or earlier when
+	// a parse starts deep: stackFree() returns the headroom below the 1,024-
+	// frame cap, so a parse that starts too deep leaves too little headroom to
+	// measure and the guard fires early (failing closed) rather than
+	// overflowing the thread's stack.
+	//
+	// stackBase() samples the depth fresh, once, where a parse starts, so
+	// each parse measures from its own start rather than a later reading;
+	// stackMark() samples every STACK_SAMPLE calls, avoiding a full stack
+	// walk on every token. The first mark after a base is therefore
+	// up to STACK_SAMPLE tokens late, and the guard's first check sees a depth
+	// up to the descent of those tokens: on x86-64 Linux with JDK 25's default
+	// 1 MiB thread stack, a fresh deep-bracket parse takes its first
+	// measurement at 768 frames (about 124 brackets, six frames per level),
+	// where the unguarded parse overflows at about 960 brackets (about
+	// 5,800 frames). The margin covers the interpreter's larger frames, which
+	// compiled code replaces, and the planned darwin-arm64 target, which is
+	// untested. A parse that reaches the limit
+	// reports "nesting too deep" and stops; nothing catches StackOverflowError,
+	// and no larger -Xss is needed. The range() recursion the frame guard
+	// can't see is bounded separately by chainLimit(); see
+	// docs/aeneas-crash-paths.md.
+	def STACK_SCALE = 2048;
+	// The parser calls stackMark once per token, and reading the frame depth
+	// costs about a microsecond per frame, so sample it every this many
+	// calls. Between samples the depth can grow by at most one level per
+	// token, which the limit's margin above covers.
+	def STACK_SAMPLE = 128;
+	// The cap on the frames that getStackTrace() reports, which bounds the
+	// reading, not the guard: a parse that starts deeper than this leaves too
+	// little headroom to measure, so stackFree() returns a small headroom and
+	// the guard fires early (failing closed) rather than overflowing.
+	def STACK_CAP = 1024;
+
+	private var stackCalls: int;
+	private var stackDepth: long;
+
+	// A fresh mark of the current stack position, in virtual bytes, for a
+	// parse's base: it samples the depth now, so the parse measures from its
+	// own start. The stack grows down, so {base - stackMark()} is the frames
+	// used since {base} was taken, times STACK_SCALE.
+	def stackBase() -> long {
+		stackDepth = frameDepth();
+		return -stackDepth * STACK_SCALE;
 	}
+	// A mark of the current stack position, in virtual bytes. The depth is
+	// sampled every STACK_SAMPLE calls; intervening calls reuse the last depth.
+	def stackMark() -> long {
+		stackCalls++;
+		if (stackCalls % STACK_SAMPLE == 0) stackDepth = frameDepth();
+		return -stackDepth * STACK_SCALE;
+	}
+	// The virtual bytes left below the mark {base}: the headroom below the
+	// 1,024-frame cap of getStackTrace(), scaled by STACK_SCALE. A parse that
+	// starts deep leaves little headroom to measure, so the parser's limit
+	// shrinks to fit it and the guard fires early (failing closed) rather than
+	// overflowing the thread's stack. A shallow base leaves the limit at
+	// STACK_LIMIT, unchanged.
 	def stackFree(base: long) -> long {
-		return 1L << 62;
+		var baseDepth = -base / STACK_SCALE;
+		var headroom = STACK_CAP - baseDepth;
+		if (headroom < 0) headroom = 0;
+		return headroom * STACK_SCALE;
+	}
+	// The cap on the range() levels that AnalysisChainCounter estimates. The
+	// frame guard can't see range()'s recursion, which builds out of sight of
+	// the token skips, so this bounds it. On x86-64 Linux with JDK 25's default
+	// 1 MiB thread stack, the lowest overflow observed is a chain of 8,000
+	// levels (in BinOpExpr.range(), during review, under native's 8,192
+	// limit), about 131 bytes per level. A fresh server per run with one
+	// didOpen and the limit raised to 40,000 saw no overflow up to 20,000
+	// levels for five chain shapes, so the point depends on JIT state and the
+	// path into range(). 2,048 levels is sized from the lower figure: about a
+	// four-fold margin, and at most about 268 KiB of the stack.
+	def chainLimit() -> int {
+		return 2048;
 	}
 	// The JVM's maximum heap, Runtime.maxMemory(), which -Xmx sets. It can be
 	// somewhat less than -Xmx, as the collector reserves space of its own.
@@ -38,6 +111,11 @@ component HostRuntime {
 		return unsupported();
 	}
 
+	private def frameDepth() -> long {
+		var r = System.fileLoad("\x01stack");
+		if (r == null || r.length != 9 || r[0] != 0) System.error("HostRuntimeError", "the JVM runtime's stack reply is malformed");
+		return long.view(Ref<Layout_u64>.at(r, 1).val);
+	}
 	private def memory() -> (long, long) {
 		var r = System.fileLoad("\x01memory");
 		if (r == null || r.length != 17 || r[0] != 0) System.error("HostRuntimeError", "the JVM runtime's memory reply is malformed");

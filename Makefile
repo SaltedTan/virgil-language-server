@@ -258,9 +258,9 @@ test-jvm-runtime: jvm-runtime check-virgil
 # from the same sources and build information as `make`, as jars with
 # launchers, in $(JVM_BUILD). `make V3C_TARGET=jvm <target>` builds or runs
 # any other target for it, such as `test`, in build/jvm-target by default.
-# test-jvm runs the runtime's tests, then starts the JVM server, which starts
-# its JVM worker, for an initialize/shutdown exchange. Neither is part of
-# `make test`, and both need a JDK.
+# test-jvm runs the runtime's tests, the JVM server/worker smoke test, and
+# the parser guard's deep-start regression on the default JVM thread stack.
+# Neither the JVM build nor its tests are part of `make test`; both need a JDK.
 ifeq ($(V3C_TARGET),jvm)
 jvm: all
 else
@@ -270,6 +270,7 @@ endif
 
 test-jvm: test-jvm-runtime jvm
 	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp
+	JAVA='$(JAVA)' JAVAC='$(JAVAC)' python3 test/jvm/deepstart.py $(JVM_BUILD)/virgil-lsp.jar
 
 # scripts/package-release.sh records the worker heap in its build manifest.
 print-worker-heap:
