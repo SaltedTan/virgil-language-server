@@ -53,7 +53,7 @@ make V3C_TARGET=jvm all build/jvm-target/stall/virgil-lsp-worker   # what the se
 The JVM build differs from the native one in these ways:
 
 - The parser has [no JVM stack guard](aeneas-crash-paths.md), so `diagnostics-deep-nesting` fails its native expectation.
-- A worker that closes during analysis is classified as crashed from the protocol state, not from its exit status; startup failures are classified separately. The JVM prints Java's exception class and stack trace, such as `java.lang.NullPointerException` with exit status 1, rather than Virgil's `!NullCheckException` with status 255. Status 1 alone cannot identify the cause: `System.error` and a deliberate `System.exit(1)` also produce it. The JVM checks assert the exact exception and status, and the source-mutation harness maps only its explicit Java exception table to documented Virgil traps ([#462](https://github.com/SaltedTan/virgil-language-server/issues/462)).
+- Crash-text checks support the JVM's Java exception output; see the [JVM crash mappings and exit-status limits](aeneas-crash-paths.md) for the matching rules ([#462](https://github.com/SaltedTan/virgil-language-server/issues/462)).
 - The worker's heap size and live heap come from the JVM's `Runtime.maxMemory()` and `totalMemory() - freeMemory()` after `System.gc()`, so its restart threshold is approximate and `retain-probe` cannot satisfy its native heap assertions ([#463](https://github.com/SaltedTan/virgil-language-server/issues/463)). The Linux budgets stay those of the native build.
 - `BENCH=1` fails for the JVM target, which has no collection counts, allocation totals, or thread CPU times for the benchmark probes.
 

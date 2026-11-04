@@ -397,11 +397,9 @@ source of the failed analysis must meet, from a row of the
 [Aeneas crash paths](../../docs/aeneas-crash-paths.md): row 1's `0i` literal at
 either trap site, rows 2, 7, and 17, and a stack overflow, which prints no
 frames natively, after nesting at least 1,000 levels (row 13) or a chain of at
-least 1,000 links (row 25). On the JVM target, the harness maps the death's
-Java exception class through an explicit table to the same traps, and matches
-the innermost frame by its class and method because the jars carry no source
-file or line; an exception outside the table fails the case. The conditions
-count only executable tokens: a lexer pass drops comments, strings, and
+least 1,000 links (row 25). See the crash-path reference for
+[JVM exception mappings and frame-matching rules](../../docs/aeneas-crash-paths.md).
+The conditions count only executable tokens: a lexer pass drops comments, strings, and
 characters first, so 1,000 `(` in a comment are no nesting. A result over the
 worker's decoded
 [result budget](../../docs/decisions/0004-analysis-worker-process.md#restart-policy)
