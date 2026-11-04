@@ -247,6 +247,14 @@ class ResourceTest(unittest.TestCase):
         self.assertEqual(result.stdout, text)
         self.assertEqual(result.stderr.count("::warning title=Resource check::"), 1)
 
+    def test_result_bytes_are_reported_only_and_pending_is_always_a_warning(self):
+        set_worker(self.result, 1, "aeneas", "fresh_analysis", "result_bytes", lambda v: v * 3)
+        _, verdicts, _ = self.check(policy=approved(self.policy), enforce=True)
+        self.assertEqual(verdicts, [("warn", "absolute baseline pending")])
+        for field, value in (("result_bytes_increase", 0.05), ("pending_baseline", "fail")):
+            with self.assertRaisesRegex(ValueError, "unsupported resource-policy fields"):
+                report.load_policy({**self.policy, field: value})
+
     def test_increased_allocation_would_fail_and_fails_only_when_enforced(self):
         set_worker(self.result, 1, "aeneas", "fresh_analysis", "allocated_bytes", lambda v: v * 106 // 100)
         for build, value in ((0, 1_000_000), (1, 1_050_000), (0, 2_000_000), (1, 2_100_001)):

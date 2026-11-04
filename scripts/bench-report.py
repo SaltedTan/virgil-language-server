@@ -137,8 +137,12 @@ def load_policy(policy):
             if scenario in groups or scenario in policy["excluded"]:
                 raise ValueError(f"scenario {scenario} is in more than one group or exclusion")
             groups[scenario] = group
-    if policy["pending_baseline"] not in SEVERITIES or not policy["headroom_warning_bytes"] >= 0:
-        raise ValueError("invalid pending-baseline severity or headroom")
+    if not policy["headroom_warning_bytes"] >= 0:
+        raise ValueError("invalid headroom")
+    unknown = {"result_bytes_increase", "pending_baseline"} & set(policy)
+    if unknown:
+        raise ValueError(f"unsupported resource-policy fields: {', '.join(sorted(unknown))}; "
+                         "RESULT bytes are reported only, and a pending baseline is always a warning")
     return groups
 
 
@@ -310,8 +314,7 @@ def resources(result, policy, enforce=False):
     else:
         text = ("absolute baseline pending: no approved baseline matches the new build's metadata; "
                 "adopt one with the baseline procedure in docs/benchmarks.md#resource-checks")
-        if policy["pending_baseline"] != "report":
-            verdicts.append((policy["pending_baseline"], text))
+        verdicts.append(("warn", text))
         lines += ["Absolute baseline: **pending**. No approved baseline matches the new build's metadata, "
                   "so the new build has no absolute check.", ""]
     lines += ["Worker allocation and RESULT bytes are the median (min–max) over measured transactions; "
@@ -339,10 +342,6 @@ def resources(result, policy, enforce=False):
                     threshold = group["allocation_increase"]
                     if over(allocated[0]["median"], allocated[1]["median"], threshold):
                         found.append(("fail", f"{case}: worker allocation {relative:+.2%}, over the {threshold:.0%} limit"))
-                    limit = policy["result_bytes_increase"]
-                    grown = results[1]["median"] / results[0]["median"] - 1
-                    if over(results[0]["median"], results[1]["median"], limit):
-                        found.append(("fail", f"{case}: RESULT bytes {grown:+.2%}, over the {limit:.0%} limit"))
                     if gcs[0] == 0 and gcs[1] > 0 and group["new_worker_gc"] != "report":
                         found.append((group["new_worker_gc"],
                                       f"{case}: {gcs[1]} new in-handle worker collections; the base had none"))

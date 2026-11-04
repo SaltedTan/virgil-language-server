@@ -48,8 +48,6 @@
     "typing_burst": "Cancelled transactions; not in the scheduled options.",
     "refresh_analysis": "Not in the scheduled options."
   },
-  "result_bytes_increase": null,
   "headroom_warning_bytes": 2097152,
-  "pending_baseline": "warn",
   "baselines": []
 }
