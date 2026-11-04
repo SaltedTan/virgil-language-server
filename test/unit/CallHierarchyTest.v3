@@ -120,7 +120,7 @@ class CallProgram {
 		snapshot.recordDocumentVersions(versions);
 	}
 	def at(i: int) -> LspSnapshotPosition {
-		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options);
+		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options, null);
 	}
 	// The reply to prepareCallHierarchy at {needle} plus {skip} in source {i},
 	// with the byte before looked up as a request's position is.
@@ -576,8 +576,8 @@ def excluded_bodies(t: Tester) {
 	t.assert(snapshot.degraded(), "the body is substituted");
 	var i = snapshot.documentIndex(s.uri("A.v3")), j = snapshot.documentIndex(s.uri("B.v3"));
 	var a = s.text(snapshot, "A.v3"), b = s.text(snapshot, "B.v3");
-	var atA = LspSnapshotPosition.new(s.store, snapshot, i, a, PositionMap.new(current, PositionEncoding.UTF16), []);
-	var atB = LspSnapshotPosition.new(s.store, snapshot, j, b, PositionMap.new(other, PositionEncoding.UTF16), []);
+	var atA = LspSnapshotPosition.new(s.store, snapshot, i, a, PositionMap.new(current, PositionEncoding.UTF16), [], null);
+	var atB = LspSnapshotPosition.new(s.store, snapshot, j, b, PositionMap.new(other, PositionEncoding.UTF16), [], null);
 	var key = LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, _, _);
 	var bound = LspReferences.MAX_LOCATIONS, bytes = LspReferences.MAX_REPLY_BYTES;
 	var calls = fun (at: LspSnapshotPosition, text: Array<byte>, needle: string, name: string, incoming: bool) -> Array<JsonValue> {
@@ -637,7 +637,7 @@ def excluded_constructor_body(t: Tester) {
 		s.open("A.v3", 1, old);
 		s.settle();
 		var snapshot = s.context().snapshot, i = snapshot.documentIndex(s.uri("A.v3"));
-		var at = LspSnapshotPosition.new(s.store, snapshot, i, s.text(snapshot, "A.v3"), PositionMap.new(old, PositionEncoding.UTF16), []);
+		var at = LspSnapshotPosition.new(s.store, snapshot, i, s.text(snapshot, "A.v3"), PositionMap.new(old, PositionEncoding.UTF16), [], null);
 		var prepared = list(hierarchy.answer(at, indexOf(old, "new()")).1);
 		t.asserti(1, prepared.length);
 		if (prepared.length != 1) {
@@ -661,7 +661,7 @@ def excluded_constructor_body(t: Tester) {
 		}
 		var text = s.text(snapshot, "A.v3"), map = PositionMap.new(current, PositionEncoding.UTF16);
 		t.assert_eq(!repair, Strings.equal(old, text));
-		at = LspSnapshotPosition.new(s.store, snapshot, i, text, map, []);
+		at = LspSnapshotPosition.new(s.store, snapshot, i, text, map, [], null);
 		t.asserti(0, list(outgoing(at, snapshot.effectiveOffset(i, indexOf(current, "new()"))).1).length);
 		var bound = LspReferences.MAX_LOCATIONS, bytes = LspReferences.MAX_REPLY_BYTES;
 		var toSeed = list(hierarchy.calls(at, indexOf(text, "seed()"),

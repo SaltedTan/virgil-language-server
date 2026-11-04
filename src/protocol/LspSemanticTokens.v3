@@ -23,15 +23,6 @@ component LspSemanticLegend {
 	def DECLARATION = 1;
 	def READONLY = 2;
 	def DEFAULT_LIBRARY = 4;
-	// The bit of the {i}th modifier in MODIFIERS, which is 1 << i.
-	def modifier(i: int) -> int {
-		match (i) {
-			0 => return DECLARATION;
-			1 => return READONLY;
-			2 => return DEFAULT_LIBRARY;
-			_ => return 0;
-		}
-	}
 
 	// The token type of {d}'s name, or -1 for a declaration that gets no
 	// token: a constructor, which the keyword "new" spells, and an index
@@ -144,8 +135,7 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (file == null) {
 			data = LspTokenData.new(0);
 		} else {
-			var owners = projects.owners([at.path()]);
-			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens, libraryPrefix(), projectPrefix(if(owners.length > 0, owners[0], null))), line = 0, character = 0;
+			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens, libraryPrefix(), projectPrefix(at.ctx)), line = 0, character = 0;
 			data = LspTokenData.new(c.bound());
 			while (c.next()) {
 				data.put(c.line - line, if(c.line == line, c.character - character, c.character), c.length, c.tokenType, c.modifiers);

@@ -103,7 +103,7 @@ class HierarchyProgram {
 		snapshot.recordDocumentVersions(versions);
 	}
 	def at(i: int) -> LspSnapshotPosition {
-		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options);
+		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options, null);
 	}
 	// The reply to prepareTypeHierarchy at {needle} plus {skip} in source {i},
 	// with the byte before looked up as a request's position is.
