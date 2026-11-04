@@ -30,10 +30,10 @@ flowchart TD
 
 ## Build model
 
-Virgil is a whole-program compiler. Every source file is passed to the compiler at once and shares one global namespace. The `virgil-lsp` executable is compiled from:
+Virgil is a whole-program compiler. Every Virgil source file is passed to the compiler at once and shares one global namespace. The `virgil-lsp` executable is compiled from:
 
 1. `src/main.v3` (passed first, because the first component with a `main` method becomes the entry point);
-2. the rest of `src/`, except `src/worker/WorkerMain.v3` and the `src/os/` directories of other targets;
+2. the rest of the Virgil sources under `src/`, except `src/worker/WorkerMain.v3` and the `src/os/` directories of other targets;
 3. a generated `build/gen/BuildInfo.v3` with the version and revisions;
 4. `vendor/virgil/aeneas/src/*/*.v3` and the libraries listed in `vendor/virgil/aeneas/DEPS`;
 5. `vendor/virgil/lib/file/json/JsonParser.v3`, which the server uses but Aeneas does not.
