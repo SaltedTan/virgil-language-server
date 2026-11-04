@@ -477,8 +477,10 @@ class WorkerDeaths(unittest.TestCase):
         self.assertEqual(self.jvm_known(self.jvm_trace(
             "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
             "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
-        self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_Verifier.verify"), "def f() {}"), [None])
+        for source in (deep, chain):
+            with self.subTest(source=source):
+                self.assertEqual(self.jvm_known(self.jvm_trace(
+                    "java.lang.StackOverflowError", "V3C_Verifier.verify"), source), [None])
         # An exception outside the table, including a deliberate System.error,
         # is never accepted as a documented trap.
         for exception in ("java.lang.OutOfMemoryError", "java.lang.Exception", "java.lang.IllegalStateException"):
@@ -488,6 +490,14 @@ class WorkerDeaths(unittest.TestCase):
                 self.assertEqual([d["trap"] for d in deaths],
                                  ["!HeapOverflow"] if exception.endswith("OutOfMemoryError") else [None])
                 self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_stack_overflow_requires_documented_recursive_frames(self):
+        source = ("class S<T> {} class A extends S<A> {} class B extends S<B> {} "
+                  "component M { def f(a: A, b: B) { var xs = [a, b]; } "
+                  "def g() { var x = %s; } }") % ("(" * 1000 + "1" + ")" * 1000)
+        frames = ["V3C_TypeSystem.unify0", "V3C_TypeSystem.mergeLists"] * 8
+        self.assertEqual(self.known(self.OVERFLOW, source), ["crash-path row 13"])
+        self.assertEqual(self.jvm_known(self.jvm_captured_overflow(frames), source), [None])
 
     def test_jvm_row13_stack_overflow_matches_captured_recursive_frames(self):
         # These frame excerpts are trimmed from the 1 MB-stack captures in
