@@ -231,10 +231,22 @@ FRAME = re.compile(r"^\tin (?P<function>\S+) \[(?P<file>.+?) @ (?P<line>\d+):(?P
 # trap: its class, an optional detail, and one "at class.method(source)" line
 # for each frame, with no source file or line for these jars (#462).
 JAVA_EXCEPTION = re.compile(r'^Exception in thread "[^"]*" (?P<exception>[A-Za-z_$][\w.$]*)(?::|$)', re.M)
+JAVA_CAUSE = re.compile(r"^Caused by: (?P<exception>[A-Za-z_$][\w.$]*)(?::|$)", re.M)
 JAVA_FRAME = re.compile(r"^\s+at (?P<name>[^\s(]+)\([^)]*\)$", re.M)
 # Aeneas gives each Virgil type a mangled Java name, such as V3C_MethodEnv; a
 # closure's suffix starts at the first "$".
 JAVA_NAME = re.compile(r"^V3[A-Z]_")
+JVM_STACK_FRAMES = {
+    # Rows 13 and 25 must show repeated frames from the recursion documented
+    # for each path, rather than merely any Java StackOverflowError.
+    "crash-path row 13": {
+        "Parser.parseExpr()", "Parser.parseTupleExpr()", "Parser.parseList()",
+        "TypeChecker.visitTuple()", "TypeChecker.visitApp()",
+    },
+    "crash-path row 25": {
+        "BinOpExpr.range()", "VarExpr.range()", "AppExpr.range()", "IndexExpr.range()",
+    },
+}
 
 # The Java exceptions that the JVM target raises for the traps in
 # KNOWN_WORKER_FAILURES, and for the heap overflow beside them. This is an
@@ -1118,8 +1130,11 @@ def matches(death, known, jvm=False):
         return False
     if known["function"] is None:
         # A native stack overflow prints no frames; a JVM StackOverflowError
-        # does, so there the trap and the source condition identify the row.
-        return top is None or jvm
+        # does, so require repeated frames from the row's documented recursion.
+        if not jvm:
+            return top is None
+        recursive = JVM_STACK_FRAMES.get(known["known"], set())
+        return sum(frame["function"] in recursive for frame in death["frames"]) >= 2
     if top is None:
         return False
     if jvm:
@@ -1139,11 +1154,34 @@ def segment_deaths(log, jvm=False):
     deaths, previous = [], 0
     for m in DEATH.finditer(log):
         if jvm:
-            trace = list(JAVA_EXCEPTION.finditer(log, previous, m.start()))
-            exception = trace[-1]["exception"] if trace else None
-            trap = JVM_TRAPS.get(exception) if m["status"] == "exit status 1" else None
-            frames = [{"function": java_function(f["name"]), "file": None, "line": None, "column": None}
-                      for f in JAVA_FRAME.finditer(log, trace[-1].end(), m.start())] if trace else []
+            segment = log[previous:m.start()]
+            traces = []
+            headers = list(JAVA_EXCEPTION.finditer(segment))
+            for index, header in enumerate(headers):
+                end = headers[index + 1].start() if index + 1 < len(headers) else len(segment)
+                block = segment[header.end():end]
+                trace = {"exception": header["exception"], "frames": [], "causes": []}
+                frames = trace["frames"]
+                for line in block.splitlines():
+                    cause = JAVA_CAUSE.match(line)
+                    if cause:
+                        nested = {"exception": cause["exception"], "frames": []}
+                        trace["causes"].append(nested)
+                        frames = nested["frames"]
+                        continue
+                    frame = JAVA_FRAME.match(line)
+                    if frame and len(frames) < 6:
+                        frames.append({"function": java_function(frame["name"]), "file": None,
+                                       "line": None, "column": None})
+                traces.append(trace)
+            # Multiple uncaught exceptions in one worker interval cannot be
+            # attributed to one analysis failure. A cause chain is kept with
+            # its exception, but is likewise ambiguous for trap classification.
+            unambiguous = len(traces) == 1 and not traces[0]["causes"]
+            trace = traces[0] if len(traces) == 1 else None
+            exception = trace["exception"] if trace else None
+            trap = JVM_TRAPS.get(exception) if unambiguous and m["status"] == "exit status 1" else None
+            frames = trace["frames"][:6] if trace else []
         else:
             traps = list(TRAP.finditer(log, previous, m.start()))
             exception = None
@@ -1151,8 +1189,12 @@ def segment_deaths(log, jvm=False):
             frames = [f.groupdict() for f in FRAME.finditer(trap["frames"])] if trap else []
             trap = trap["trap"] if trap else None
         previous = m.end()
-        deaths.append({"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
-                       "trap": trap, "exception": exception, "frames": frames[:6], "known": None})
+        death = {"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
+                 "trap": trap, "exception": exception, "frames": frames[:6], "known": None}
+        if jvm:
+            death["causes"] = trace["causes"] if trace else []
+            death["exceptions"] = traces
+        deaths.append(death)
     return deaths
 
 

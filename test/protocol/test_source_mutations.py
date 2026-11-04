@@ -409,6 +409,11 @@ class WorkerDeaths(unittest.TestCase):
         return ("\n".join(lines) + "\n\n"
                 "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
 
+    def jvm_exception(self, exception, *frames):
+        lines = ['Exception in thread "main" %s: detail' % exception]
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        return "\n".join(lines) + "\n"
+
     def test_known_signature_needs_its_source(self):
         deaths = sm.worker_deaths(self.TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])])
         self.assertEqual([(d["pid"], d["trap"], d["known"]) for d in deaths], [(7, "!NullCheckException", "crash-path row 1")])
@@ -458,11 +463,13 @@ class WorkerDeaths(unittest.TestCase):
             "java.lang.ArrayIndexOutOfBoundsException", "V3C_MethodEnv.lookupInfix"), duplicate), [None])
         deep = "def f() { var x = %s; }" % ("(" * 1000 + "1" + ")" * 1000)
         chain = "def f() { var x = a" + ".b" * 1000 + "; }"
-        # A Java stack overflow prints frames, but the trap and source identify the row.
+        # A Java stack overflow must show the documented recursion and source.
         self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_Verifier.verify"), deep), ["crash-path row 13"])
+            "java.lang.StackOverflowError", "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr",
+            "V3C_Parser.parseExpr"), deep), ["crash-path row 13"])
         self.assertEqual(self.jvm_known(self.jvm_trace(
-            "java.lang.StackOverflowError", "V3C_Verifier.verify"), chain), ["crash-path row 25"])
+            "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
+            "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
         self.assertEqual(self.jvm_known(self.jvm_trace(
             "java.lang.StackOverflowError", "V3C_Verifier.verify"), "def f() {}"), [None])
         # An exception outside the table, including a deliberate System.error,
@@ -474,6 +481,49 @@ class WorkerDeaths(unittest.TestCase):
                 self.assertEqual([d["trap"] for d in deaths],
                                  ["!HeapOverflow"] if exception.endswith("OutOfMemoryError") else [None])
                 self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_stack_overflow_requires_documented_recursive_frames(self):
+        deep = "def f() { var x = %s; }" % ("(" * 1000 + "1" + ")" * 1000)
+        chain = "def f() { var x = a" + ".b" * 1000 + "; }"
+        row6_with_unrelated_nesting = (
+            "class S<T> {} class A extends S<A> {} class B extends S<B> {} "
+            "component Mutant { def f(a: A, b: B) { var xs = [a, b]; var x = %s; } }"
+            % ("(" * 1000 + "1" + ")" * 1000)
+        )
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr",
+            "V3C_Parser.parseExpr", "V3C_Parser.parseTupleExpr"), deep), ["crash-path row 13"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_BinOpExpr.range", "V3C_BinOpExpr.range",
+            "V3C_BinOpExpr.range"), chain), ["crash-path row 25"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3K_TypeSystem.unify0", "V3K_TypeSystem.mergeLists",
+            "V3K_TypeSystem.unify0", "V3K_TypeSystem.mergeLists"), row6_with_unrelated_nesting), [None])
+
+    def test_jvm_interval_with_multiple_exceptions_is_unclassified(self):
+        source = "def f() -> int { return 0i + b; }"
+        oom = self.jvm_exception("java.lang.OutOfMemoryError", "V3S_System$Input.run")
+        npe = self.jvm_exception("java.lang.NullPointerException", "V3C_MethodEnv.lookupInfix")
+        death = ("virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
+        for traces in ((oom, npe), (npe, oom)):
+            with self.subTest(first=traces[0].splitlines()[0]):
+                deaths = sm.worker_deaths(("".join(traces) + death).encode(), [(None, [source])], jvm=True)
+                self.assertEqual([(d["exception"], d["trap"], d["known"]) for d in deaths], [(None, None, None)])
+                self.assertEqual([item["exception"] for item in deaths[0]["exceptions"]],
+                                 [trace.split(" ", 4)[4].split(":", 1)[0] for trace in traces])
+
+    def test_jvm_cause_frames_are_kept_separate_and_unclassified(self):
+        log = (self.jvm_exception("java.lang.NullPointerException")
+               + "Caused by: java.lang.IllegalStateException: unrelated\n"
+               + "\tat V3C_MethodEnv.lookupInfix(Unknown Source)\n\n"
+               + "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
+        deaths = sm.worker_deaths(log.encode(), [(None, ["def f() -> int { return 0i + b; }"])], jvm=True)
+        self.assertEqual([d["known"] for d in deaths], [None])
+        self.assertEqual(deaths[0]["frames"], [])
+        self.assertEqual(deaths[0]["exception"], "java.lang.NullPointerException")
+        self.assertEqual(deaths[0]["causes"][0]["exception"], "java.lang.IllegalStateException")
+        self.assertEqual(deaths[0]["causes"][0]["frames"][0]["function"], "MethodEnv.lookupInfix()")
+        self.assertEqual(deaths[0]["exceptions"][0]["causes"], deaths[0]["causes"])
 
     def test_jvm_trap_mapping_requires_observed_exit_status(self):
         for status in ("exit status 0", "exit status 255", "signal 9"):
