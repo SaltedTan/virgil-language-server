@@ -31,8 +31,10 @@ import source_mutations as sm  # noqa: E402
 from reply_shapes import ReplyValidator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = ROOT / "build/virgil-lsp"
-STALL = ROOT / "build/stall/virgil-lsp-worker"
+# The built server under test. Set VIRGIL_LSP_EXE to run this suite against
+# another build, such as build/jvm-target/virgil-lsp (#462).
+EXE = Path(os.environ.get("VIRGIL_LSP_EXE", ROOT / "build/virgil-lsp"))
+STALL = EXE.parent / "stall/virgil-lsp-worker"
 SEED = 20261028
 SEEDS, INPUTS = sm.load_seeds()
 LIMITS = sm.resolve_limits({})
@@ -387,8 +389,25 @@ class WorkerDeaths(unittest.TestCase):
     OVERFLOW = ("!StackOverflow\n\nvirgil-lsp: warning: analysis worker 8 crashed during an analysis; "
                 "it ended with exit status 255\n")
 
+    # What the JVM target's runtime prints for the same verifier crash as TRACE.
+    JVM_TRACE = ('Exception in thread "main" java.lang.NullPointerException: Cannot read field "typeCon" '
+                 'because "<local6>" is null\n'
+                 "\tat V3C_MethodEnv.lookupInfix(Unknown Source)\n"
+                 "\tat V3C_TypeChecker.visitBinOp(Unknown Source)\n\n"
+                 "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1; "
+                 "snapshot 3 is kept\n")
+
     def known(self, log, *texts):
         return [d["known"] for d in sm.worker_deaths(log.encode(), [(None, list(texts))])]
+
+    def jvm_known(self, log, *texts):
+        return [d["known"] for d in sm.worker_deaths(log.encode(), [(None, list(texts))], jvm=True)]
+
+    def jvm_trace(self, exception, *frames):
+        lines = ['Exception in thread "main" %s: detail' % exception]
+        lines += ["\tat %s(Unknown Source)" % frame for frame in frames]
+        return ("\n".join(lines) + "\n\n"
+                "virgil-lsp: warning: analysis worker 7 crashed during an analysis; it ended with exit status 1\n")
 
     def test_known_signature_needs_its_source(self):
         deaths = sm.worker_deaths(self.TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])])
@@ -417,6 +436,63 @@ class WorkerDeaths(unittest.TestCase):
         self.assertEqual([d["known"] for d in sm.worker_deaths(log, windows[::-1][:1] + [(None, [])])], [None])
         self.assertEqual([d["known"] for d in sm.worker_deaths(log, [(0, ["1 + 1"]), (None, ["0i + b"])])],
                          ["crash-path row 1"])
+
+    def test_jvm_exception_maps_to_its_documented_trap(self):
+        deaths = sm.worker_deaths(self.JVM_TRACE.encode(), [(None, ["def f() -> int { return 0i + 1; }"])], jvm=True)
+        self.assertEqual([(d["pid"], d["exception"], d["trap"], d["known"], d["status"]) for d in deaths],
+                         [(7, "java.lang.NullPointerException", "!NullCheckException", "crash-path row 1",
+                           "exit status 1")])
+        self.assertEqual(deaths[0]["frames"][0]["function"], "MethodEnv.lookupInfix()")
+        self.assertIsNone(deaths[0]["frames"][0]["file"])
+        # The source condition still has the last word, as for a native trap.
+        self.assertEqual(self.jvm_known(self.JVM_TRACE, "def f() -> int { return 0i32 + 1; }"), [None])
+        # The same trace has no Virgil trap for the native parser.
+        self.assertEqual(self.known(self.JVM_TRACE, "0i"), [None])
+
+    def test_jvm_trap_table_is_explicit(self):
+        duplicate = "type T { case A; }\ntype T { case B; }\n"
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.ArrayIndexOutOfBoundsException", "V3C_MethodEnv.lookupVariantCaseMember"), duplicate),
+            ["crash-path row 7"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.ArrayIndexOutOfBoundsException", "V3C_MethodEnv.lookupInfix"), duplicate), [None])
+        deep = "def f() { var x = %s; }" % ("(" * 1000 + "1" + ")" * 1000)
+        chain = "def f() { var x = a" + ".b" * 1000 + "; }"
+        # A Java stack overflow prints frames, but the trap and source identify the row.
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_Verifier.verify"), deep), ["crash-path row 13"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_Verifier.verify"), chain), ["crash-path row 25"])
+        self.assertEqual(self.jvm_known(self.jvm_trace(
+            "java.lang.StackOverflowError", "V3C_Verifier.verify"), "def f() {}"), [None])
+        # An exception outside the table, including a deliberate System.error,
+        # is never accepted as a documented trap.
+        for exception in ("java.lang.OutOfMemoryError", "java.lang.Exception", "java.lang.IllegalStateException"):
+            with self.subTest(exception):
+                deaths = sm.worker_deaths(self.jvm_trace(exception, "V3C_Verifier.verify").encode(),
+                                          [(None, ["0i"])], jvm=True)
+                self.assertEqual([d["trap"] for d in deaths],
+                                 ["!HeapOverflow"] if exception.endswith("OutOfMemoryError") else [None])
+                self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_trap_mapping_requires_observed_exit_status(self):
+        for status in ("exit status 0", "exit status 255", "signal 9"):
+            with self.subTest(status=status):
+                log = self.JVM_TRACE.replace("exit status 1", status)
+                deaths = sm.worker_deaths(log.encode(), [(None, ["def f() { return 0i; }"])], jvm=True)
+                self.assertEqual([d["exception"] for d in deaths], ["java.lang.NullPointerException"])
+                self.assertEqual([d["trap"] for d in deaths], [None])
+                self.assertEqual([d["known"] for d in deaths], [None])
+
+    def test_jvm_target_does_not_confuse_native_shell_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = Path(directory) / "native-wrapper"
+            native.write_text("#!/bin/sh\nexec /path/to/native-server \"$@\"\n")
+            jvm = Path(directory) / "jvm-launcher"
+            jvm.write_text("#!/bin/sh\n# Generated by scripts/v3c.sh for the JVM target; do not edit.\n"
+                           "exec /path/to/java -jar /path/to/server.jar \"$@\"\n")
+            self.assertFalse(sm.jvm_target(native))
+            self.assertTrue(sm.jvm_target(jvm))
 
     def test_error_objects(self):
         self.assertIsNone(sm.error_problem({"code": -32803, "message": "no"}))

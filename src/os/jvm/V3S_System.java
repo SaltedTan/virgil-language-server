@@ -75,7 +75,13 @@ import java.util.regex.Pattern;
  * <li>{@code wait pid}: waits for a child to end and returns its wait status:
  *     the exit status times 256, or the signal number. Java collapses normal
  *     exits 129–159 and signal exits, so those values mean signal (status - 128);
- *     the server worker never exits normally in that range.
+ *     the server worker never exits normally in that range. An uncaught Java
+ *     exception ends a process with exit status 1, and so do a deliberate
+ *     {@code System.exit(1)} and {@code System.error}, which throws. The status
+ *     therefore can't identify the failure's cause. The server classifies a
+ *     worker failure from protocol state and deadlines, not this status; it
+ *     reports the status as context (see {@code AnalysisSupervisor} and issue
+ *     #462).
  * <li>{@code alarm ms}: halts this process as if by SIGALRM (exit status 142)
  *     after {@code ms} milliseconds, unless called again first; 0 cancels.
  * <li>{@code gc}: runs the collector.

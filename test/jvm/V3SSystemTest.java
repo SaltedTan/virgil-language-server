@@ -337,6 +337,14 @@ public class V3SSystemTest {
 
     // The child side: runs with the descriptor layout that spawn gave it.
     static final class Child {
+        // Keeps an intentionally uncaught exception out of the test's stderr.
+        // The JVM still ends the process with status 1.
+        static void silenceUncaught() {
+            Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                public void uncaughtException(Thread t, Throwable e) { }
+            });
+        }
+
         static void run(String[] args) throws Exception {
             String mode = args[1];
             byte[] buf = new byte[65536];
@@ -349,6 +357,12 @@ public class V3SSystemTest {
             } else if (mode.equals("write")) {
                 write(4, args[2]);
                 System.exit(Integer.parseInt(args[3]));
+            } else if (mode.equals("error")) {
+                silenceUncaught();
+                V3S_System.error(bytes("HostRuntimeError"), bytes("deliberate"));
+            } else if (mode.equals("throw")) {
+                silenceUncaught();
+                throw new NullPointerException("uncaught");
             } else if (mode.equals("flood")) {
                 int size = Integer.parseInt(args[2]);
                 for (int at = 0; at < size; at += buf.length) {
@@ -686,6 +700,18 @@ public class V3SSystemTest {
             cmd("close", w.requests);
             cmd("close", w.results);
             eq(7 << 8, cmd("wait", w.pid), "wait status");
+        });
+        test("children: System.error, an uncaught exception, and exit 1 all report status 1", () -> {
+            // Java reports an uncaught exception as exit status 1, like
+            // System.exit(1), and V3S_System.error throws as well, so wait
+            // can't tell them apart. The server classifies a worker failure
+            // from protocol state, not this number (#462).
+            for (Worker w : new Worker[] {start("write", "", "1"), start("error"), start("throw")}) {
+                eq("", text(readFully(w.results, -1, 20000)), "output");
+                cmd("close", w.requests);
+                cmd("close", w.results);
+                eq(1 << 8, cmd("wait", w.pid), "wait status");
+            }
         });
         test("children: JVM exit values 129–159 conventionally mean signals", () -> {
             for (int status : new int[] {128, 129, 137, 142, 159, 160, 255}) {

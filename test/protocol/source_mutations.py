@@ -34,7 +34,7 @@ import traceback
 import reply_shapes
 from reply_shapes import ReplyValidator, ShapeError, UnsupportedModelPath
 from shape_model import MODEL_SHA256
-from worker import Session
+from worker import Session, jvm_target
 
 ROOT = Path(__file__).resolve().parents[2]
 SEEDS = ROOT / "test/fixtures/repair/cases"
@@ -227,6 +227,28 @@ DEATH = re.compile(r"^virgil-lsp: warning: analysis worker (?P<pid>\d+) (?P<what
                    r"(?P<status>.+?)(?:; snapshot (?P<kept>\d+) is kept)?$", re.M)
 TRAP = re.compile(r"^(?P<trap>![A-Za-z]+)\n(?P<frames>(?:\tin [^\n]*\n)*)", re.M)
 FRAME = re.compile(r"^\tin (?P<function>\S+) \[(?P<file>.+?) @ (?P<line>\d+):(?P<column>\d+)\]$", re.M)
+# The JVM target's runtime prints an uncaught Java exception instead of a Virgil
+# trap: its class, an optional detail, and one "at class.method(source)" line
+# for each frame, with no source file or line for these jars (#462).
+JAVA_EXCEPTION = re.compile(r'^Exception in thread "[^"]*" (?P<exception>[A-Za-z_$][\w.$]*)(?::|$)', re.M)
+JAVA_FRAME = re.compile(r"^\s+at (?P<name>[^\s(]+)\([^)]*\)$", re.M)
+# Aeneas gives each Virgil type a mangled Java name, such as V3C_MethodEnv; a
+# closure's suffix starts at the first "$".
+JAVA_NAME = re.compile(r"^V3[A-Z]_")
+
+# The Java exceptions that the JVM target raises for the traps in
+# KNOWN_WORKER_FAILURES, and for the heap overflow beside them. This is an
+# explicit table, not a pattern for any exception: an unlisted class, including
+# the java.lang.Exception that V3S_System.error throws, stays unclassified and
+# fails the case. Java uncaught exceptions must also have their observed exit
+# status 1; another status cannot establish one of these trap mappings. See
+# docs/aeneas-crash-paths.md and #462.
+JVM_TRAPS = {
+    "java.lang.NullPointerException": "!NullCheckException",  # rows 1, 2, and 17
+    "java.lang.ArrayIndexOutOfBoundsException": "!BoundsCheckException",  # row 7
+    "java.lang.StackOverflowError": "!StackOverflow",  # rows 13 and 25
+    "java.lang.OutOfMemoryError": "!HeapOverflow",  # row 16
+}
 
 
 def executable(text):
@@ -260,7 +282,9 @@ CRASHED = "crashed during an analysis"
 # Contained worker failures that the documentation records, each by a narrow
 # signature: the supervisor's log text, the trap and its innermost frame, and a
 # condition on the executable tokens of a source that the failed analysis had.
-# A worker's stack overflow prints no frames. Any other worker failure fails the case as a worker failure.
+# A native worker's stack overflow prints no frames. On the JVM target, the
+# death's Java exception is mapped through JVM_TRAPS first, and its frames have
+# no file or line. Any other worker failure fails the case as a worker failure.
 KNOWN_WORKER_FAILURES = (
     {"known": "crash-path row 1", "what": CRASHED, "trap": "!NullCheckException",
      "function": "TypeChecker.TryRepresentationChangeOfLiteral()", "file": "aeneas/src/vst/Verifier.v3",
@@ -1064,19 +1088,20 @@ def error_problem(error):
     return None
 
 
-def worker_deaths(log, windows):
+def worker_deaths(log, windows, jvm=False):
     """Each worker death in {log}, the server's stderr bytes, with its trap and
     the documented failure it matches. {windows} pairs the end of each stretch
     of the log, or None for the rest, with the texts of the source state that
-    every analysis in that stretch had."""
+    every analysis in that stretch had. With {jvm}, the deaths carry the JVM
+    target's Java exception class, mapped to the native trap it stands for."""
     deaths, start = [], 0
     for end, texts in windows:
         segment = log[start:end].decode(errors="replace")
         start = end
         code = None
-        for death in segment_deaths(segment):
+        for death in segment_deaths(segment, jvm):
             for known in KNOWN_WORKER_FAILURES:
-                if matches(death, known):
+                if matches(death, known, jvm):
                     code = code if code is not None else [executable(t) for t in texts]
                     if any(known["source"](c) for c in code):
                         death["known"] = known["known"]
@@ -1087,24 +1112,47 @@ def worker_deaths(log, windows):
     return deaths
 
 
-def matches(death, known):
+def matches(death, known, jvm=False):
     top = death["frames"][0] if death["frames"] else None
     if death["what"] != known["what"] or death["trap"] != known["trap"]:
         return False
     if known["function"] is None:
-        return top is None
-    return top is not None and top["function"] == known["function"] and top["file"].endswith(known["file"])
+        # A native stack overflow prints no frames; a JVM StackOverflowError
+        # does, so there the trap and the source condition identify the row.
+        return top is None or jvm
+    if top is None:
+        return False
+    if jvm:
+        # A Java frame names the method but not its source file or line.
+        return top["function"] == known["function"]
+    return top["function"] == known["function"] and top["file"].endswith(known["file"])
 
 
-def segment_deaths(log):
+def java_function(name):
+    """A Java frame's class and method as a Virgil signature: V3C_MethodEnv.lookupInfix
+    becomes MethodEnv.lookupInfix()."""
+    owner, _, method = name.rpartition(".")
+    return "%s.%s()" % (JAVA_NAME.sub("", owner), method.split("$")[0])
+
+
+def segment_deaths(log, jvm=False):
     deaths, previous = [], 0
     for m in DEATH.finditer(log):
-        traps = list(TRAP.finditer(log, previous, m.start()))
+        if jvm:
+            trace = list(JAVA_EXCEPTION.finditer(log, previous, m.start()))
+            exception = trace[-1]["exception"] if trace else None
+            trap = JVM_TRAPS.get(exception) if m["status"] == "exit status 1" else None
+            frames = [{"function": java_function(f["name"]), "file": None, "line": None, "column": None}
+                      for f in JAVA_FRAME.finditer(log, trace[-1].end(), m.start())] if trace else []
+        else:
+            traps = list(TRAP.finditer(log, previous, m.start()))
+            exception = None
+            trap = traps[-1] if traps else None
+            frames = [f.groupdict() for f in FRAME.finditer(trap["frames"])] if trap else []
+            trap = trap["trap"] if trap else None
         previous = m.end()
-        trap = traps[-1] if traps else None
-        frames = [f.groupdict() for f in FRAME.finditer(trap["frames"])] if trap else []
         deaths.append({"pid": int(m["pid"]), "what": m["what"], "status": m["status"],
-                       "trap": trap["trap"] if trap else None, "frames": frames[:6], "known": None})
+                       "trap": trap, "exception": exception, "frames": frames[:6], "known": None})
     return deaths
 
 
@@ -1143,7 +1191,9 @@ def run_case(record, exe, run_deadline, work, validator, worker_timeout_ms=WORKE
     states = [list(state.values()) for state in source_states(record)]
     ends = s.boundaries if s else []
     windows = list(zip(ends, states)) + [(None, states[min(len(ends), len(states) - 1)])]
-    result["worker_deaths"] = worker_deaths(log, windows)
+    jvm = jvm_target(exe)
+    result["jvm"] = jvm
+    result["worker_deaths"] = worker_deaths(log, windows, jvm)
     result["messages"] = s.messages if s else []
     result["unchecked_shapes"] = s.unchecked if s else []
     failed = log.count(FAILED_ANALYSIS.encode())
