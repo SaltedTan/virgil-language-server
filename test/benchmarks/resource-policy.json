@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "status": "proposed",
+  "approval": null,
+  "issue": "https://github.com/SaltedTan/virgil-language-server/issues/347",
+  "note": "Starting values from #347, proposed and not approved. Until the maintainer approves this file and sets the workflow's RESOURCE_CHECKS to enforce, the scheduled comparison reports these verdicts and never fails on them. See docs/benchmarks.md#resource-checks.",
+  "options": {
+    "error_result": false,
+    "typing_burst": false,
+    "inlay_refresh": false,
+    "first_semantic": false,
+    "parse_work": false
+  },
+  "projects": ["small", "util", "aeneas"],
+  "groups": [
+    {
+      "name": "clean_analysis",
+      "scenarios": ["fresh_analysis", "reused_analysis"],
+      "required": true,
+      "allocation_increase": 0.05,
+      "new_worker_gc": "fail",
+      "note": "Whole-program analyses with no diagnostics. A median worker allocation more than 5% above the base's fails, and so does an in-handle worker collection where the base had none."
+    },
+    {
+      "name": "query_analysis",
+      "scenarios": ["completion_miss", "rename", "semantic_diagnostic"],
+      "required": true,
+      "allocation_increase": 0.05,
+      "new_worker_gc": "warn",
+      "note": "Analyses with a scope query, a rename's preflight, or one expected diagnostic. The allocation rule is the same; a new in-handle collection warns, as these are not the reviewed clean scenarios."
+    },
+    {
+      "name": "diagnostic_heavy",
+      "scenarios": ["error_analysis"],
+      "required": false,
+      "allocation_increase": null,
+      "new_worker_gc": "report",
+      "note": "The error-result workload (#240). #347 asks for its own reviewed allowance and proposes none, so it is reported only. The scheduled comparison doesn't run it: its options leave error_result off."
+    }
+  ],
+  "excluded": {
+    "completion_hit": "Answered from the cached analysis; no worker transaction.",
+    "definition": "No worker transaction.",
+    "hover": "No worker transaction.",
+    "references": "No worker transaction.",
+    "prepareRename": "No worker transaction.",
+    "syntax_diagnostic": "The server's own parse; no worker transaction.",
+    "typing_burst": "Cancelled transactions; not in the scheduled options.",
+    "refresh_analysis": "Not in the scheduled options."
+  },
+  "headroom_warning_bytes": 2097152,
+  "baselines": []
+}

@@ -835,7 +835,8 @@ def main():
     affinity = pin_cpu(args.cpu)
     executables = [p.resolve() for p in args.exe or [ROOT / "build/virgil-lsp"]]
     result = {"schema": 1, "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "command": [sys.executable, *sys.argv], "server_revision": corpus.git_revision(ROOT, "rev-parse", "HEAD"),
+              "command": [sys.executable, *sys.argv], "root": str(ROOT),
+              "server_revision": corpus.git_revision(ROOT, "rev-parse", "HEAD"),
               "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
