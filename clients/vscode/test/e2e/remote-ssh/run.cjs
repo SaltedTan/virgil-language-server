@@ -9,12 +9,22 @@
 //
 //   node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH]
 //     [--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work]
-//     [--sshd PATH]
+//     [--sshd PATH | --target FILE [--client-vsix PATH]]
 //
 // localhost.cjs provisions the host: an SSH server of the test's own on
 // 127.0.0.1, under the same user, with its own keys, and a private X display.
 // Everything after provisioning reaches the host only through SSH, and
 // bootstrap.cjs runs the suite there. See the README's "Remote-SSH test".
+//
+// With --target, a prototype for a macOS client (#186), the host is one that
+// host.cjs provisioned on another machine, which the bundle's target.json
+// describes (see external.cjs), and host.cjs takes it down. The client then
+// runs on macOS, on the logged-in user's display, without Xvfb. --client-vsix
+// installs a VSIX, such as the darwin-arm64 one, in the client's extensions
+// too, as a Mac user who has the extension locally would have it. The
+// client's teardown also unregisters the test's VS Code from LaunchServices
+// and puts back the keys of VS Code's preferences domain that the run
+// changed (see external.cjs and prefs.cjs).
 //
 // Exit status: 0 if every check passed, 1 if a check failed (the suite, the
 // remote installation, or a language server left running), 2 for bad
@@ -34,7 +44,10 @@ const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, attempt, isolatedEnv, windowError } = require('../run.cjs');
 const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, runOwned, startGroup } = require('../processes.cjs');
+const external = require('./external.cjs');
+const focus = require('./focus.cjs');
 const localhost = require('./localhost.cjs');
+const prefs = require('./prefs.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
 // and the members of its extension pack, which VS Code's CLI would otherwise
@@ -97,7 +110,7 @@ function infrastructure(what, step) {
 class UsageError extends Error {}
 
 const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH] '
-  + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH]';
+  + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH | --target FILE [--client-vsix PATH]]';
 
 function options() {
   let parsed;
@@ -113,13 +126,18 @@ function options() {
         repeat: { type: 'string', default: '1' },
         'work-dir': { type: 'string' },
         'keep-work': { type: 'boolean', default: false },
-        sshd: { type: 'string', default: '/usr/sbin/sshd' },
+        sshd: { type: 'string' },
+        target: { type: 'string' },
+        'client-vsix': { type: 'string' },
       },
     }).values;
   } catch (error) {
     throw new UsageError(error.message);
   }
-  if (process.platform !== 'linux') throw new UsageError('the Remote-SSH test runs on Linux only');
+  if (parsed.target === undefined && process.platform !== 'linux') throw new UsageError('the Remote-SSH test runs on Linux only, or on macOS with --target');
+  if (parsed.target !== undefined && process.platform !== 'darwin') throw new UsageError('--target is a prototype for a macOS client, and runs on macOS only');
+  if (parsed.target !== undefined && parsed.sshd !== undefined) throw new UsageError('give --sshd or --target, not both');
+  if (parsed.target === undefined && parsed['client-vsix'] !== undefined) throw new UsageError('--client-vsix needs --target');
   // npm runs scripts in clients/vscode; relative arguments are relative to
   // where npm was started.
   const cwd = process.env.INIT_CWD ?? process.cwd();
@@ -133,8 +151,12 @@ function options() {
     out: resolve(parsed.out),
     workDir: resolve(parsed['work-dir']) ?? os.tmpdir(),
     keepWork: parsed['keep-work'],
-    sshd: parsed.sshd,
+    sshd: parsed.sshd ?? '/usr/sbin/sshd',
+    target: resolve(parsed.target),
+    clientVsix: resolve(parsed['client-vsix']),
   };
+  if (values.target !== undefined && !fs.existsSync(values.target)) throw new UsageError(`no target description at ${values.target}`);
+  if (values.clientVsix !== undefined && !fs.existsSync(values.clientVsix)) throw new UsageError(`no VSIX at ${values.clientVsix}`);
   if (values.vsix === undefined) throw new UsageError('--vsix is required');
   if (!fs.existsSync(values.vsix)) throw new UsageError(`no VSIX at ${values.vsix}; package the extension first`);
   if (values.server !== undefined && values.archive !== undefined) throw new UsageError('give --server or --archive, not both');
@@ -382,7 +404,7 @@ class Run {
         'Checklist step 17\'s window close during a recovery: VS Code sometimes quits before it tells the remote extension host to terminate, '
           + 'so the extension need not deactivate',
         'What VS Code shows: the status bar, views, popups, notifications, prompts, and the suggestion list',
-        'A macOS client: Remote-SSH from a Mac to Linux is checked separately',
+        ...(values.target === undefined ? ['A macOS client: Remote-SSH from a Mac to Linux is checked separately'] : []),
       ],
       launches: [],
     };
@@ -433,7 +455,10 @@ class Run {
 
   // Copies the names in localDir into remoteDir on the target, through tar.
   async upload(localDir, names, remoteDir) {
-    const archive = await runGroup('tar', ['-c', '-h', '-f', '-', '-C', localDir, '--', ...names], {
+    // macOS's bsdtar would add its extended attributes and resource forks,
+    // which GNU tar on the host warns about.
+    const darwin = process.platform === 'darwin' ? ['--no-xattrs', '--no-mac-metadata'] : [];
+    const archive = await runGroup('tar', ['-c', '-h', ...darwin, '-f', '-', '-C', localDir, '--', ...names], {
       env: this.env, timeout: SSH_TIMEOUT_MS, signal: this.signal,
     });
     this.checkpoint();
@@ -455,6 +480,22 @@ function repository() {
 }
 
 function osDetails() {
+  if (process.platform === 'darwin') {
+    const read = (command, args) => {
+      try {
+        return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        return null;
+      }
+    };
+    const product = read('sw_vers', ['-productName']);
+    const version = read('sw_vers', ['-productVersion']);
+    return {
+      name: product === null ? null : `${product} ${version} (${read('sw_vers', ['-buildVersion'])})`,
+      kernel: `${os.type()} ${os.release()} ${os.machine()}`,
+      cpu: read('sysctl', ['-n', 'machdep.cpu.brand_string']),
+    };
+  }
   const release = fs.existsSync('/etc/os-release') ? fs.readFileSync('/etc/os-release', 'utf8') : '';
   const cpu = fs.existsSync('/proc/cpuinfo') ? /^model name\s*:\s*(.*)$/m.exec(fs.readFileSync('/proc/cpuinfo', 'utf8'))?.[1] : undefined;
   return {
@@ -919,10 +960,11 @@ async function stopForRetry(run, layout) {
   const errors = run.errors.length;
   await collectLogs(run);
   if (run.errors.length !== errors) throw infra('could not keep the failed launch logs before retrying');
-  // The target is this machine and user. Its copy of the runner's Node is
-  // available over SSH even when the probe failed before installing the
-  // VS Code Server (and therefore before layout.serverNode exists).
-  const scanner = { ...layout, serverNode: process.execPath };
+  // On localhost, the target is this machine and user. Its copy of the
+  // runner's Node is available over SSH even when the probe failed before
+  // installing the VS Code Server (and therefore before layout.serverNode
+  // exists). An external target names its own.
+  const scanner = { ...layout, serverNode: run.target.node ?? process.execPath };
   const deadline = Date.now() + KILL_WAIT_MS;
   for (;;) {
     run.checkpoint();
@@ -997,6 +1039,9 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     '--skip-release-notes',
     '--no-sandbox',
     '--disable-gpu-sandbox',
+    // Chromium's and Electron's safe storage then use a mock keychain, never
+    // the user's login keychain.
+    ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
   ];
   const logFile = path.join(run.evidence, 'launches', `${name}.log`);
   const log = infrastructure(`open launches/${name}.log`, () => {
@@ -1010,8 +1055,12 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   let exit;
   let sampling;
   let firstSample;
+  let guard;
   try {
     infrastructure(`write launches/${name}.log`, () => fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`));
+    // On a macOS client, VS Code takes the user's focus when its window
+    // opens; the guard gives it back (see focus.cjs).
+    if (run.clientApp !== undefined) guard = await focus.spawnGuard({ app: run.clientApp, work: run.work, log: (line) => console.log(`-- ${line}`) });
     exit = await runGroup(executable, args, {
       env: run.env, timeout, signal: run.signal,
       onExit: () => {
@@ -1029,11 +1078,19 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       },
     });
   } finally {
+    if (guard !== undefined) record.focus = await guard.stop();
     firstSample = await sampling;
     infrastructure(`close launches/${name}.log`, () => fs.closeSync(log));
   }
   record.seconds = exit.seconds;
   record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
+  if (record.focus !== undefined) {
+    const { episodes, frontMs, unreturned, errors } = record.focus;
+    console.log(`-- focus: the test's VS Code was in front ${episodes.length} time(s), for ${frontMs} ms in all`
+      + `${unreturned > 0 ? `, ${unreturned} time(s) until it exited` : ''}${errors.length > 0 ? `; ${errors.join('; ')}` : ''}`);
+    for (const error of errors) run.note(`${name}: focus guard: ${error}`);
+    if (record.focus.cleanupOk === false) run.record(infra(`${name}: the focus guard cleanup failed`));
+  }
   run.checkpoint();
   if (firstSample?.error !== undefined) throw firstSample.error;
   if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
@@ -1168,7 +1225,11 @@ async function test(run) {
     + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.bundled ? 'the VSIX bundle' : values.archive ?? values.server}`);
 
   const executable = await downloadVSCode(run);
-  const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
+  // A macOS client's app bundle: executable is its Contents/MacOS/Code.
+  if (values.target !== undefined) run.clientApp = path.resolve(executable, '../../..');
+  // On macOS, the executable is Contents/MacOS/<name> in the app bundle.
+  const resources = process.platform === 'darwin' ? path.join(path.dirname(executable), '..', 'Resources') : path.join(path.dirname(executable), 'resources');
+  const product = JSON.parse(fs.readFileSync(path.join(resources, 'app/product.json'), 'utf8'));
   run.manifest.client = {
     os: osDetails(),
     node: process.version,
@@ -1182,11 +1243,19 @@ async function test(run) {
   run.manifest.client.ssh = { path: sshPath, version: sshVersion.stderr.trim() };
   // Provisioning takes seconds, so an interrupt waits for it; the teardown
   // then stops what it started.
-  const target = localhost.create({
-    work: run.work, sockets: run.sockets, env: run.env, marker: run.marker, sshd: values.sshd,
-    log: (line) => console.log(line),
-  });
+  const target = values.target !== undefined
+    ? external.create({ file: values.target, work: run.work, sockets: run.sockets, app: run.clientApp, workDir: values.workDir })
+    : localhost.create({
+      work: run.work, sockets: run.sockets, env: run.env, marker: run.marker, sshd: values.sshd,
+      log: (line) => console.log(line),
+    });
   run.target = target;
+  // A macOS client's VS Code shares the user's preferences domain; the
+  // teardown puts back what the run changed (see prefs.cjs).
+  if (target.savePreferences !== undefined) {
+    const saved = infrastructure('save the client\'s VS Code preferences', () => target.savePreferences());
+    console.log(`-- saved ${prefs.DOMAIN} in ${saved}, to put back what the run changes`);
+  }
   try {
     await target.start();
   } catch (error) {
@@ -1203,6 +1272,11 @@ async function test(run) {
   run.connected = true;
   run.manifest.target = { mode: target.mode, alias: target.alias, root: target.root, ...target.details, os: { name, kernel } };
   console.log(`-- connected over SSH to ${target.details.user}@${target.details.host}:${target.details.port}: ${name}, ${kernel}`);
+  if (target.mode === 'external') {
+    const hop = await run.remote('printf "%s\\n" "$SSH_CONNECTION"');
+    run.manifest.target.sshConnection = hop.stdout.trim();
+    console.log(`-- SSH connection (client address, port, server address, port): ${run.manifest.target.sshConnection}`);
+  }
 
   // Remote-SSH on the client, from the Marketplace, with VS Code's own CLI.
   run.clientExtensions = path.join(run.work, 'client', 'extensions');
@@ -1226,6 +1300,18 @@ async function test(run) {
   const expected = REMOTE_SSH.map(({ id, version }) => `${id}-${version}`).sort();
   if (JSON.stringify(installed) !== JSON.stringify(expected)) {
     throw infra(`VS Code's CLI installed ${installed.join(', ')}, not ${expected.join(', ')}`);
+  }
+  if (values.clientVsix !== undefined) {
+    const local = await runGroup(cli, [
+      `--user-data-dir=${installUserData}`, `--extensions-dir=${run.clientExtensions}`, '--install-extension', values.clientVsix,
+    ], { env: run.env, timeout: INSTALL_TIMEOUT_MS, signal: run.signal });
+    infrastructure('write client-vsix-install.log', () => fs.writeFileSync(path.join(run.evidence, 'client-vsix-install.log'), local.stdout.toString() + local.stderr));
+    run.checkpoint();
+    if (!succeeded(local)) throw new Failure('fail', `installing ${values.clientVsix} on the client ${outcome(local)}; see client-vsix-install.log`);
+    const listedLocally = fs.readdirSync(run.clientExtensions).filter((name) => name.toLowerCase().startsWith(`${EXTENSION_ID}-`));
+    run.manifest.client.vsix = { path: values.clientVsix, sha256: sha256(values.clientVsix), installed: listedLocally };
+    if (listedLocally.length !== 1) throw new Failure('fail', `the client's extensions have ${listedLocally.join(', ') || 'no'} ${EXTENSION_ID}`);
+    console.log(`-- installed ${path.basename(values.clientVsix)} on the client too, as ${listedLocally[0]}`);
   }
   run.settings = clientSettings(target, sshPath);
   run.manifest.client.settings = run.settings;
@@ -1376,19 +1462,30 @@ function publishLogs(run) {
 // Checks the prerequisites, and makes the run's directories and environment.
 function prepare(run) {
   const { values } = run;
-  for (const tool of ['ssh', 'ssh-keygen', 'Xvfb', 'tar']) {
-    if (findOnPath(tool) === undefined) throw infra(`${tool} is not on PATH; the Remote-SSH test needs OpenSSH's client and server, Xvfb, and tar`);
+  const externalTarget = values.target !== undefined;
+  const tools = externalTarget ? ['ssh', 'tar', 'python3'] : ['ssh', 'ssh-keygen', 'Xvfb', 'tar'];
+  for (const tool of tools) {
+    if (findOnPath(tool) === undefined) {
+      throw infra(`${tool} is not on PATH; the Remote-SSH test needs ${externalTarget ? 'OpenSSH\'s client, tar, and Python 3' : 'OpenSSH\'s client and server, Xvfb, and tar'}`);
+    }
   }
-  try {
-    fs.accessSync(values.sshd, fs.constants.X_OK);
-  } catch {
-    throw infra(`no SSH server at ${values.sshd}; install OpenSSH's server, or pass --sshd`);
+  if (!externalTarget) {
+    try {
+      fs.accessSync(values.sshd, fs.constants.X_OK);
+    } catch {
+      throw infra(`no SSH server at ${values.sshd}; install OpenSSH's server, or pass --sshd`);
+    }
+  } else {
+    // The host's sessions have the marker that host.cjs gave them.
+    run.marker = infrastructure('read the target description', () => external.readDescriptor(values.target).marker);
   }
   // VS Code's state, the SSH keys, the remote's files, and the evidence until
   // it is redacted go in a work directory; Unix sockets, whose paths must be
-  // short, in /tmp.
-  run.work = fs.mkdtempSync(path.join(values.workDir, 'virgil-remote-ssh-'));
-  run.sockets = fs.mkdtempSync('/tmp/vrs-');
+  // short, in /tmp. On a macOS client, both go in the work directory given,
+  // with short names: a Unix socket path there has at most 103 bytes, and
+  // VS Code's main socket is in each launch's user data.
+  run.work = fs.mkdtempSync(path.join(values.workDir, externalTarget ? 'vrs-' : 'virgil-remote-ssh-'));
+  run.sockets = fs.mkdtempSync(externalTarget ? path.join(values.workDir, 's-') : '/tmp/vrs-');
   console.log(`work directory: ${run.work}`);
   run.evidence = path.join(run.work, 'evidence');
   fs.mkdirSync(run.evidence);
@@ -1409,6 +1506,11 @@ function prepare(run) {
     [markerName]: markerValue,
     // Inside WSL, bin/code asks for confirmation unless this is set.
     DONT_PROMPT_WSL_INSTALL: '1',
+    // On macOS, CoreFoundation's home, for files that it keeps under
+    // ~/Library, and bsdtar without resource forks. cfprefsd ignores
+    // CFFIXED_USER_HOME, even with CFPREFERENCES_AVOID_DAEMON, so VS Code's
+    // defaults domain, com.microsoft.VSCode, is still the user's (#186).
+    ...(process.platform === 'darwin' ? { CFFIXED_USER_HOME: home, COPYFILE_DISABLE: '1' } : {}),
   });
   for (const name of ['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY']) {
     delete run.env[name];
@@ -1500,8 +1602,22 @@ async function main() {
       + `${teardown.left.map((p) => `\n   ${p.unidentified ? `pid ${p.pid}: could not be identified` : `pid ${p.pid}: ${p.command}`}`).join('')}`
       + `${teardown.portClosed === false ? `\n   port ${run.target.details.port} is still open` : ''}`);
   } else if (teardown !== undefined) {
-    const port = run.target.details.port === undefined ? '' : `, and port ${run.target.details.port} is closed`;
-    console.log(`-- teardown: stopped ${teardown.stopped.length} processes of the run; none left${port}`);
+    // An external target's port is host.cjs's to close.
+    const port = run.target.details.port === undefined || teardown.portClosed === null ? '' : `, and port ${run.target.details.port} is closed`;
+    const side = teardown.side === 'client' ? ' on the client' : '';
+    console.log(`-- teardown: stopped ${teardown.stopped.length} processes of the run${side}; none left${port}`);
+  }
+  const preferences = teardown?.preferences;
+  if (preferences !== undefined) {
+    const keys = prefs.describe(preferences);
+    if (preferences.outcome === 'restored') console.log(`-- preferences: put back ${preferences.domain}: ${keys}`);
+    else if (preferences.outcome === 'unchanged') console.log(`-- preferences: the run left ${preferences.domain} unchanged`);
+    else if (preferences.outcome === 'skipped') {
+      // The user's VS Code may have changed the domain too.
+      preferences.warning = `${preferences.domain} was left as it is, because the user's VS Code ran during the run; `
+        + `the run's changes: ${keys}; the exports are in ${preferences.exports}`;
+      run.note(`warning: ${preferences.warning}`);
+    }
   }
   try {
     publishLogs(run);
@@ -1528,6 +1644,11 @@ async function main() {
     ...run.errors.map((error) => error.message),
   ];
   if (teardown !== undefined && !teardown.ok) reasons.push('the teardown could not confirm that nothing of the run is left');
+  const preferenceReason = prefs.notRestoredReason(preferences);
+  if (preferenceReason !== undefined) {
+    reasons.push(preferenceReason);
+    console.log(`PREFERENCES NOT RESTORED: ${preferenceReason}`);
+  }
   const summary = () => [
     ...run.manifest.launches.map((l) => {
       const host = hostStopped(l.remoteExtensionHost);
