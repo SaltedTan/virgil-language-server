@@ -4075,7 +4075,7 @@ scenario's phase probes. Peak RSS is the largest `peak_rss_bytes` over each
 block's processes, the median (p10–p90) of the six blocks; it is set by the
 full Aeneas analysis and is unchanged at every level.
 
-Util and small follow the same pattern at their scale, each candidate against
+Util follows the same pattern at its scale, each candidate against
 the variant-1 base measured in its own run. Util's fresh analysis was 15.401
 ms on variant 1 and 12.922 (0.839) on variant 2, 16.765 and 12.513 (0.746)
 on variant 3, and 16.024 and 15.740 (0.982) on variant 4; its reused analysis
@@ -4085,9 +4085,14 @@ collection after sending was 758 µs (2.627) against variant 1's 288.5 µs, the
 one large memory-side difference in any run. That is the collector without
 its global register allocator, as for Aeneas above, where variant 4's
 collection took 1.8 ms more CPU at the median, in the direction
-[ADR-0015](decisions/0015-gc-global-register-allocation.md) measured. Small's latencies moved by under
-15% in every case, within this host's layout noise, and its peak RSS was 13.9
-MB (server) and 0.94 MB (worker) in every variant.
+[ADR-0015](decisions/0015-gc-global-register-allocation.md) measured. Small also
+showed larger relative gains: in `opt450-o3.json`, reused analysis went from
+0.1752 to 0.1348 ms (0.769, about 23% faster) and hover from 0.0551 to
+0.0410 ms (0.744, about 26% faster). These sub-millisecond operations are
+more layout-sensitive; the comparisons do not establish that all their changes
+are layout noise. Server peak RSS remained about 13.9 MB, but worker peak RSS
+in `opt450-o2.json` fell from 942,080 to 749,568 bytes, using the median of
+each block's maximum as above.
 
 **Confirming the larger gains.** Variants 2 and 3 beat variant 1 on Aeneas
 analysis by more than the 7% layout-noise threshold, so each was rebuilt, with
@@ -4119,12 +4124,15 @@ directories with a byte-identical `BuildInfo.v3`:
 **Correctness.** With the normal-heap compiler, `make test` for d4 ran the
 compiler out of memory compiling the large `unit-tests` program at `-O4`
 (`!HeapOverflow`), as `-O3` did with the stable compiler. With the 4 GiB heap,
-d4's `make test` ran all suites; two unit tests failed, both deep-nesting
+d4's `make test` built every executable, then stopped at the unit tests
+(1186 passed, 2 failed), so the other suites did not run at `-O4`. Both
+failures were deep-nesting
 verification: `AnalysisCallQuery:scaling` (its fixture no longer verifies:
 "nesting too deep") and `OccurrenceCollector:nested_call_scaling` (the
 analysis is not verified). At `-O3` with the 4 GiB heap, `unit-tests` built and
-ran with the same two failures, so round 1's `-O3` failure was the compiler's
-heap, not the level. The two failures are the same class as the `-O2`
+ran with 1186 passed and the same 2 failed; that follow-up ran only the unit
+tests, so the other suites did not run at `-O3` either. Round 1's `-O3` build
+failure was the compiler's heap, not the level. The two failures are the same class as the `-O2`
 deep-nesting finding above: at a higher level the in-process parser and
 verifier spend their stack budget differently, so fixtures that verify at the
 default level stop verifying.
@@ -4150,11 +4158,15 @@ candidate's median over d1's in the same run.
 | peak RSS, server (bytes) | 210,604,032 | 210,575,360 | 1.000 | 210,472,960 | 0.999 |
 | peak RSS, worker (bytes) | 196,818,944 | 196,335,616 | 0.998 | 196,603,904 | 0.999 |
 
-Util and small follow the same pattern: d4's util fresh analysis was 11.971 ms
+Util follows the same pattern: d4's util fresh analysis was 11.971 ms
 (0.713) against d1's 16.786 and d2's 13.331 (0.838), and its reused 9.591
-(0.726) against 13.213 and 11.222 (0.840); small moved by under 15% in every
-case, within this host's layout noise, with peak RSS of 13.9 MB (server) and
-about 0.9 MB (worker) in every variant. d4's collection after sending was
+(0.726) against 13.213 and 11.222 (0.840). In `opt450-d4.json`, small's reused
+analysis went from 0.1760 to 0.1341 ms (0.762, about 24% faster) and hover
+from 0.0550 to 0.0404 ms (0.734, about 27% faster). These sub-millisecond
+operations are more layout-sensitive. Server peak RSS remained about 13.9 MB;
+worker peak RSS was 944,128 bytes for d4 against d1's 882,688 in that run,
+and 749,568 for d2 against d1's 878,592 in `opt450-d2.json`, using the
+median of each block's maximum. d4's collection after sending was
 unchanged, as d2's was, because the collector already uses the global
 allocator.
 
