@@ -273,25 +273,44 @@ def translated(pid):
     return bool(int.from_bytes(buf.raw[32:36], "little") & 0x00020000)
 
 
-def jvm_processes(root):
+def process_args(pid):
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        mib = (ctypes.c_int * 3)(1, 49, pid)
+        size = ctypes.c_size_t()
+        if libc.sysctl(mib, 3, None, ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+            return []
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+            return []
+        argc_size = ctypes.sizeof(ctypes.c_int)
+        argc = ctypes.c_int.from_buffer_copy(buf.raw[:argc_size]).value
+        args = buf.raw[argc_size:size.value].split(b"\0", 1)[1].lstrip(b"\0")
+        return [os.fsdecode(arg) for arg in args.split(b"\0")[:argc]]
+    try:
+        return [os.fsdecode(arg) for arg in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[:-1]]
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return []
+
+
+def jvm_processes(root, java, jars):
     """{pid: role} for the server and worker JVMs below process {root}."""
-    rows = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
-    children, commands = {}, {}
+    rows = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True).stdout
+    children = {}
     for row in rows.splitlines():
-        fields = row.split(None, 2)
-        if len(fields) == 3:
+        fields = row.split()
+        if len(fields) == 2:
             children.setdefault(int(fields[1]), []).append(int(fields[0]))
-            commands[int(fields[0])] = fields[2]
     found, todo = {}, [root]
     while todo:
         pid = todo.pop()
         todo.extend(children.get(pid, []))
-        command = commands.get(pid, "")
-        if "-jar" in command and Path(command.split()[0]).name == "java":
-            if "virgil-lsp-worker.jar" in command:
-                found[pid] = "worker"
-            elif "virgil-lsp.jar" in command:
-                found[pid] = "server"
+        command = process_args(pid)
+        if command and command[0] == java and "-jar" in command[:-1]:
+            jar = command[command.index("-jar") + 1]
+            for role, path in jars.items():
+                if jar == str(path):
+                    found[pid] = role
     return found
 
 
@@ -346,7 +365,7 @@ def cold_session(config, files):
     return times
 
 
-def boundary_session(config, project, files, args):
+def boundary_session(config, project, files, args, jars):
     """One server driven past the worker's analysis limit; see the module comment."""
     limit = args.max_analyses or DEFAULT_MAX_ANALYSES
     options = [f"--worker-max-analyses={args.max_analyses}"] if args.max_analyses else []
@@ -368,12 +387,12 @@ def boundary_session(config, project, files, args):
             if result["generation"] != i or result["diagnostics"]:
                 fail(f"analysis {i} of {project} failed: {json.dumps(result)[:500]}")
             record["analyses"].append(round(elapsed, 3))
-            for pid, role in jvm_processes(s.proc.pid).items():
+            for pid, role in jvm_processes(s.proc.pid, config["java"], jars).items():
                 record["processes"].setdefault(str(pid), {"role": role, "translated": translated(pid)})
             if args.nmt and i == limit - 1:
                 record["nmt"] = {role: {"pid": pid, "native_memory": jcmd(args.jcmd, pid, "VM.native_memory", "summary"),
                                         "heap_info": jcmd(args.jcmd, pid, "GC.heap_info")}
-                                 for pid, role in jvm_processes(s.proc.pid).items()}
+                                 for pid, role in jvm_processes(s.proc.pid, config["java"], jars).items()}
         s.shutdown()
         logs = s.logs()
     except BaseException:
@@ -469,6 +488,7 @@ def main():
     pinned, _ = corpus.validate(strict=not args.smoke)
     launcher = parse_launcher(args.exe.resolve())
     worker = parse_launcher(args.exe.resolve().with_name("virgil-lsp-worker"))
+    jars = {"server": launcher["jar"], "worker": worker["jar"]}
     java = resolve(args.java or launcher["java"], "java")
     if args.jcmd:
         args.jcmd = resolve(args.jcmd, "jcmd")
@@ -481,6 +501,8 @@ def main():
         parts = spec_text.split("|")
         if len(parts) not in (3, 4) or not re.fullmatch(r"[A-Za-z0-9_.-]+", parts[0]):
             parser.error(f"bad --config {spec_text!r}")
+        if any(c["name"] == parts[0] for c in configs):
+            parser.error(f"duplicate --config name {parts[0]!r}")
         nmt = ["-XX:NativeMemoryTracking=summary"] if args.nmt else []
         configs.append({"name": parts[0], "server_options": parts[1].split() + nmt,
                         "worker_options": parts[2].split() + nmt, "java": resolve(parts[3], "java") if len(parts) == 4 else java})
@@ -536,7 +558,7 @@ def main():
                         result["cold"].append({"config": c["name"], "project": project, "block": block,
                                                "first_ms": first, "second_ms": second})
                 for c in order if args.boundary else []:
-                    session = boundary_session(c, project, files, args)
+                    session = boundary_session(c, project, files, args, jars)
                     session["block"] = block
                     result["sessions"].append(session)
                 print(f"block {block + 1}, {project}: done", file=sys.stderr)
