@@ -234,9 +234,9 @@ def resolve(command, what):
     return os.path.abspath(found)
 
 
-def flags_in_effect(java, options):
+def flags_in_effect(java, options, env=None):
     out = subprocess.run([java, *options, "-XX:+PrintFlagsFinal", "-version"], capture_output=True,
-                         text=True, check=True).stdout
+                         text=True, check=True, env=env).stdout
     found = {}
     for line in out.splitlines():
         fields = line.split()
@@ -381,6 +381,8 @@ def boundary_session(config, project, files, args, jars):
         s.initialize()
         s.send("initialized", {}, request=False)
         for i in range(1, args.analyses + 1):
+            if i == args.analyses:
+                workers = 1 + len(REPLACED.findall(s.logs()))
             start = time.perf_counter()
             result = s.result(s.analyze(uris), TIMEOUT)
             elapsed = (time.perf_counter() - start) * 1000
@@ -417,7 +419,7 @@ def boundary_session(config, project, files, args, jars):
         "first_ms": a[0],
         "warm_ms": summary(a[warm_from:limit]),
         "after_restart_ms": a[limit:limit + 5],
-        "workers": 1 + len(record["replacements"]),
+        "workers": workers,
     }
     return record
 
@@ -529,7 +531,7 @@ def main():
                         (c["dir"] / kind / extra).parent.mkdir(exist_ok=True)
                         shutil.copyfile(source, c["dir"] / kind / extra)
             c["flags"] = {"server": flags_in_effect(c["java"], c["server_options"]),
-                          "worker": flags_in_effect(c["java"], c["worker_options"])}
+                          "worker": flags_in_effect(c["java"], c["worker_options"], env={})}
             c["runtime"] = runtime_info(c["java"])
         if args.prepare:
             for c in configs:
