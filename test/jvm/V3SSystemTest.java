@@ -37,6 +37,7 @@ public class V3SSystemTest {
             return;
         }
         scratch = Files.createTempDirectory("v3s-test");
+        if (osDescriptorCount() < 0) System.out.println("note: OS descriptor leak check skipped (/proc/self/fd unavailable)");
         register();
         int run = 0, failed = 0;
         try {
@@ -72,6 +73,7 @@ public class V3SSystemTest {
     // it failed.
     static String runOne(Body body) {
         int descriptors = V3S_System.descriptorCount(), children = V3S_System.childCount();
+        int osDescriptors = osDescriptorCount();
         int threads = runtimeThreads().size();
         String failure = null;
         try {
@@ -83,8 +85,16 @@ public class V3SSystemTest {
         }
         V3S_System.forcePathDirectoryFallback = false;
         V3S_System.pathFallbackBeforeOpenForTest = null;
+        V3S_System.pathFallbackAfterOpenForTest = null;
+        V3S_System.pathFallbackBeforeEntryTypeForTest = null;
+        V3S_System.pathFallbackAfterStatForTest = null;
+        V3S_System.nullPathFallbackFileKeyForTest = false;
         if (failure == null && V3S_System.descriptorCount() != descriptors) {
             failure = "leaked " + (V3S_System.descriptorCount() - descriptors) + " descriptors";
+        }
+        int osDescriptorsAfter = osDescriptorCount();
+        if (failure == null && osDescriptors >= 0 && osDescriptorsAfter != osDescriptors) {
+            failure = "leaked " + (osDescriptorsAfter - osDescriptors) + " OS file descriptors";
         }
         if (failure == null && V3S_System.childCount() != children) {
             failure = "left " + (V3S_System.childCount() - children) + " children unwaited";
@@ -137,6 +147,18 @@ public class V3SSystemTest {
 
     static void check(boolean condition, String what) {
         if (!condition) throw new AssertionError(what);
+    }
+
+    static int osDescriptorCount() {
+        Path descriptors = Paths.get("/proc/self/fd");
+        if (!Files.isDirectory(descriptors)) return -1;
+        int count = 0;
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(descriptors)) {
+            for (Path ignored : entries) count++;
+        } catch (IOException e) {
+            throw new RuntimeException("cannot inspect /proc/self/fd", e);
+        }
+        return count;
     }
 
     static void eq(Object expected, Object actual, String what) {
@@ -1059,6 +1081,214 @@ public class V3SSystemTest {
             parseDirents(payload("readDirectory", fd, 8192), entries);
             eq("{b.v3=8}", entries.toString(), "its entries");
             cmd("close", fd);
+        });
+
+        directoryTest("directories: a deleted entry has unknown type and listing continues", () -> {
+            Path d = Files.createDirectory(scratch.resolve("deleted-entry"));
+            file(d.resolve("first"), "first");
+            file(d.resolve("second"), "second");
+            int dir = cmd("openDirectory", d);
+            final Path[] vanished = new Path[1];
+            V3S_System.pathFallbackBeforeEntryTypeForTest = entry -> {
+                try {
+                    vanished[0] = entry.getFileName();
+                    Files.delete(d.resolve(entry));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            TreeMap<String, Integer> entries = new TreeMap<String, Integer>();
+            parseDirents(payload("readDirectory", dir, 8192), entries);
+            check(vanished[0] != null, "an entry was consumed");
+            String removed = vanished[0].toString();
+            String remaining = removed.equals("first") ? "second" : "first";
+            eq(V3S_System.DT_UNKNOWN, entries.get(removed), "deleted entry type");
+            eq(V3S_System.DT_REG, entries.get(remaining), "remaining entry type");
+            eq(2, entries.size(), "listing continues after the deleted entry");
+            eq(0, payload("readDirectory", dir, 8192).length, "end of directory");
+            cmd("close", dir);
+        });
+
+        test("directories: path fallback refuses a symlink swapped in before file open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path parent = Files.createDirectory(scratch.resolve("fallback-file-symlink-race"));
+            Path child = file(parent.resolve("child.v3"), "inside");
+            Path target = file(scratch.resolve("fallback-file-target"), "outside");
+            int dir = cmd("openDirectory", parent);
+            V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                try {
+                    Files.delete(child);
+                    Files.createSymbolicLink(child, target);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            int fd = cmd("openAt", dir, "child.v3", 0);
+            check(fd < 0, "a raced symlink was refused: " + fd);
+            cmd("close", dir);
+        });
+
+        test("directories: path fallback detects parent replacement after root open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-root-after-open"));
+            Path moved = scratch.resolve("fallback-root-after-open-moved");
+            V3S_System.pathFallbackAfterOpenForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createDirectory(path);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openDirectory", path), "replaced root refused");
+        });
+        test("directories: path fallback detects parent replacement after file open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-file-after-open"));
+            file(path.resolve("child.v3"), "inside");
+            Path moved = scratch.resolve("fallback-file-after-open-moved");
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackAfterOpenForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createDirectory(path);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openAt", dir, "child.v3", 0), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback detects parent replacement after child open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-child-after-open"));
+            Files.createDirectory(path.resolve("child"));
+            Path moved = scratch.resolve("fallback-child-after-open-moved");
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackAfterOpenForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createDirectory(path);
+                    Files.move(moved.resolve("child"), path.resolve("child"));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openAt", dir, "child", 1), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback checks the parent immediately before file open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-file-pre-open"));
+            file(path.resolve("child.v3"), "inside");
+            Path moved = scratch.resolve("fallback-file-pre-open-moved");
+            Path outside = Files.createDirectory(scratch.resolve("fallback-file-pre-open-outside"));
+            file(outside.resolve("child.v3"), "outside");
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createSymbolicLink(path, outside);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            V3S_System.pathFallbackAfterOpenForTest = () -> {
+                try {
+                    Files.delete(path);
+                    Files.move(moved, path);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openAt", dir, "child.v3", 0), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback checks the parent immediately before child open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-dir-pre-open"));
+            Files.createDirectory(path.resolve("child"));
+            Path moved = scratch.resolve("fallback-dir-pre-open-moved");
+            Path outside = Files.createDirectory(scratch.resolve("fallback-dir-pre-open-outside"));
+            Files.createDirectory(outside.resolve("child"));
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createSymbolicLink(path, outside);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            V3S_System.pathFallbackAfterOpenForTest = () -> {
+                try {
+                    Files.delete(path);
+                    Files.move(moved, path);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openAt", dir, "child", 1), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback checks the parent after stat", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-stat-after-read"));
+            Path moved = scratch.resolve("fallback-stat-after-read-moved");
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackAfterStatForTest = () -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createDirectory(path);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(V3S_System.ESTALE, failure("stat", dir), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback checks the parent for an empty listing", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-empty-listing"));
+            Path moved = scratch.resolve("fallback-empty-listing-moved");
+            int dir = cmd("openDirectory", path);
+            Files.move(path, moved);
+            Files.createDirectory(path);
+            eq(V3S_System.ESTALE, failure("readDirectory", dir, 8192), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback checks the parent during listing", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-listing-parent"));
+            file(path.resolve("entry"), "entry");
+            Path moved = scratch.resolve("fallback-listing-parent-moved");
+            int dir = cmd("openDirectory", path);
+            V3S_System.pathFallbackBeforeEntryTypeForTest = entry -> {
+                try {
+                    Files.move(path, moved);
+                    Files.createDirectory(path);
+                    file(path.resolve(entry), "replacement");
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(V3S_System.ESTALE, failure("readDirectory", dir, 8192), "replaced parent refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback fails closed when a file key is unavailable", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-null-file-key"));
+            int dir = cmd("openDirectory", path);
+            V3S_System.nullPathFallbackFileKeyForTest = true;
+            eq(V3S_System.ENOTSUP, failure("stat", dir), "missing file key");
+            V3S_System.nullPathFallbackFileKeyForTest = false;
+            cmd("close", dir);
+        });
+        test("directories: path fallback fails closed when the root key disappears after open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path path = Files.createDirectory(scratch.resolve("fallback-null-root-key"));
+            V3S_System.pathFallbackAfterOpenForTest = () -> V3S_System.nullPathFallbackFileKeyForTest = true;
+            eq(-V3S_System.ENOTSUP, cmd("openDirectory", path), "missing root key after open");
         });
 
         test("directories: path fallback refuses a symlink swapped in before directory open", () -> {
