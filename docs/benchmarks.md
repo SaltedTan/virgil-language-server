@@ -3965,6 +3965,230 @@ loop, where the build without it moved from 46.6 to 39.4 ms. That prototype
 is one of the two in
 [titzer/virgil#826](https://github.com/titzer/virgil/issues/826).
 
+## Optimization levels (2026-11-05)
+
+Measured on 2026-11-05 for [#450](https://github.com/SaltedTan/virgil-language-server/issues/450)
+on the i7-14700KF host of the [reference baseline](#reference-baseline), at
+`5d5da316` with pinned Virgil `b86f43f1` and the default 384 MiB worker heap.
+Every executable is normally compiled at Aeneas's default optimization level
+with one exception: the `Makefile`'s `V3C_FLAGS` (`-global-regalloc=RiGc.*`)
+turns the global register allocator on for the runtime's garbage collector
+only ([ADR-0015](decisions/0015-gc-global-register-allocation.md)). This
+measures building the server and worker at `-O2`, `-O3`, and `-O4` instead,
+to see whether a higher level is worth adopting. No build setting changed.
+
+**The flags.** The build compiles with the pin's prebuilt stable compiler,
+`vendor/virgil/bin/stable/x86-64-linux/Aeneas` (`III-12.1989`, built
+2026-09-29), not with the pin's Aeneas sources. That compiler has `-O0` to
+`-O3` but no `-O4`: `-O4` arrived in the sources with
+[titzer/virgil#825](https://github.com/titzer/virgil/pull/825), after the
+stable release, and the stable compiler ignores options it doesn't know.
+Compiled with `-O4`, `-O9`, or `-bogusopt`, a small test program was
+byte-identical to the one built with no flags. **Variant 4 is therefore the
+default level without `-global-regalloc=RiGc.*`, not `-O4`.** It is kept below
+because that is still a useful comparison: it shows what the collector flag of
+[ADR-0015](decisions/0015-gc-global-register-allocation.md) buys. Measuring a
+real `-O4` needs either a compiler bootstrapped from the pin's sources or a
+later stable release.
+
+The levels select a single optimization level, not independent passes, and
+at level 2 and above the compiler applies the global register allocator to
+every method, including the collector's. The same program built at `-O2` with
+and without `-global-regalloc=RiGc.*` was byte-identical, so variants 2 and 3
+omit the flag. The four variants, all from the same commit, were built in
+equal-length directories:
+
+| Variant | `V3C_FLAGS` | Effective level |
+| --- | --- | --- |
+| 1 (today) | `-global-regalloc=RiGc.*` | default (`-O1`), global allocator for `RiGc` only |
+| 2 | `-O2` | `-O2` |
+| 3 | `-O3` | `-O3` |
+| 4 | `-O4` | default (`-O1`), no global allocator: the stable compiler ignores `-O4` |
+
+The generated `BuildInfo.v3` was byte-identical across the four directories
+(`cmp`); only `benchmark-build.json`'s recorded `commands` differ, in their
+flags. The benchmark builds added `BENCH=1`:
+
+```sh
+make BUILD=build/o1 V3C_FLAGS='-global-regalloc=RiGc.*' all
+make BUILD=build/o2 V3C_FLAGS=-O2 all
+make BUILD=build/o3 V3C_FLAGS=-O3 all
+make BUILD=build/o4 V3C_FLAGS=-O4 all
+make BUILD=build/oN V3C_FLAGS='<flags>' BENCH=1 all bench-metadata
+```
+
+**Correctness.** `make test` was run per variant, one at a time, so every
+executable it builds used that variant's flags. Variant 1 passed all 44
+suites. Variant 2 failed one suite, `test/protocol/run.sh`, and only in
+its expectation of where a guard stops, not in behavior: the
+`diagnostics-deep-nesting` transcripts expect the single-file parser's
+"nesting too deep" diagnostic at character 1854, and at `-O2` it comes at 2307.
+The parser stops when its recursion has used `STACK_LIMIT`, 1 MiB of stack
+(`src/analysis/AnalysisSingleFileParser.v3`, row 13 of the
+[crash paths](aeneas-crash-paths.md)); `-O2`'s smaller frames fit more levels
+into that budget, so the cutoff moves later while the guard still holds. It is
+deterministic and reproduced on a rerun. Adopting `-O2` would mean updating
+that expectation. Variant 3's server and worker built, but `make test` could
+not run: compiling the large `unit-tests` program at `-O3` ran the stable
+compiler itself out of memory (`!HeapOverflow: insufficient space after GC` in
+`MachLowering.ptrStoreCommon`). Variant 4 passed all 44 suites.
+
+**Size and build time.** Sizes are in bytes; build time is the median of three
+clean `all` builds, under the benchmark lock on hardware thread 12.
+
+| Variant | Server | Worker | Build time |
+| --- | ---: | ---: | ---: |
+| 1 | 978,704 | 918,976 | 0.74 s |
+| 2 | 860,968 | 785,216 | 0.94 s |
+| 3 | 1,036,088 | 959,264 | 1.74 s |
+| 4 | 979,168 | 919,440 | 0.74 s |
+
+**Speed and memory.** Each of variants 2 to 4 was compared against variant 1
+with `scripts/bench-lsp.py`, six alternating process blocks, two warmups, and
+five measured operations, for the small, util, and Aeneas projects, under the
+shared benchmark lock on hardware thread 12, with `--require-probes`. Each
+cell is the **median (p10–p90)** of 30 measured operations, in milliseconds
+unless noted; the ratio is the candidate's median over variant 1's, in the
+same run. The Variant-1 column is the base as measured in the variant-2 run;
+each candidate's ratio is its median over the base measured in its own run,
+which agrees with the shown base within about 1.5%. Aeneas, the largest
+project, follows.
+
+| Metric | Variant 1 | Variant 2 | ratio | Variant 3 | ratio | Variant 4 | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fresh analysis | 359.072 (348.684–369.584) | 309.777 (297.603–323.954) | 0.863 | 297.877 (283.837–314.739) | 0.817 | 365.329 (354.783–377.068) | 1.005 |
+| reused analysis | 311.385 (297.450–327.716) | 262.098 (252.786–272.375) | 0.842 | 250.960 (235.941–267.729) | 0.818 | 309.417 (294.773–328.090) | 0.987 |
+| result encode, worker (µs) | 53,797 (52,285–61,394) | 46,660 (45,938–50,216) | 0.867 | 46,840 (43,275–51,766) | 0.872 | 54,089 (51,856–60,637) | 0.960 |
+| result decode, server (µs) | 23,032 (21,513–25,335) | 20,134 (19,364–22,568) | 0.874 | 19,993 (19,145–22,735) | 0.849 | 26,303 (23,680–29,175) | 1.113 |
+| definition | 0.183 (0.161–0.233) | 0.137 (0.129–0.823) | 0.750 | 0.136 (0.125–0.164) | 0.696 | 0.206 (0.166–0.219) | 1.129 |
+| hover | 0.171 (0.145–0.193) | 0.116 (0.112–0.125) | 0.676 | 0.117 (0.109–0.123) | 0.741 | 0.178 (0.146–0.207) | 1.128 |
+| completion miss | 120.170 (116.921–124.569) | 104.372 (99.351–111.331) | 0.869 | 91.284 (86.289–97.134) | 0.773 | 115.543 (113.225–120.577) | 0.979 |
+| completion hit | 6.641 (3.170–18.986) | 5.906 (2.784–19.537) | 0.889 | 5.955 (3.059–16.784) | 0.855 | 6.926 (4.854–23.058) | 0.992 |
+| semantic diagnostic | 512.983 (495.373–526.810) | 460.321 (450.857–481.415) | 0.897 | 444.439 (436.101–456.837) | 0.871 | 510.478 (500.565–530.911) | 1.011 |
+| worker collect after send, wall (µs) | 20,203 (19,231–21,113) | 20,237 (19,279–20,639) | 1.002 | 20,230 (19,073–21,488) | 1.010 | 23,984 (21,495–24,643) | 1.180 |
+| worker collect after send, CPU (µs) | 10,298 (10,136–10,471) | 10,300 (10,171–10,639) | 1.000 | 10,264 (9,977–10,939) | 1.013 | 12,062 (11,711–12,565) | 1.161 |
+| peak RSS, server (bytes) | 210,604,032 | 210,599,936 | 1.000 | 210,538,496 | 1.000 | 210,604,032 | 1.000 |
+| peak RSS, worker (bytes) | 196,880,384 | 196,603,904 | 0.999 | 196,399,104 | 0.998 | 196,878,336 | 1.000 |
+
+The result encode/decode and collection rows are the `reused_analysis`
+scenario's phase probes. Peak RSS is the largest `peak_rss_bytes` over each
+block's processes, the median (p10–p90) of the six blocks; it is set by the
+full Aeneas analysis and is unchanged at every level.
+
+Util and small follow the same pattern at their scale, each candidate against
+the variant-1 base measured in its own run. Util's fresh analysis was 15.401
+ms on variant 1 and 12.922 (0.839) on variant 2, 16.765 and 12.513 (0.746)
+on variant 3, and 16.024 and 15.740 (0.982) on variant 4; its reused analysis
+was 13.195 and 11.302 (0.857) on variant 2, 13.805 and 10.082 (0.730) on
+variant 3, and 13.050 and 13.535 (1.037) on variant 4. Variant 4's util worker
+collection after sending was 758 µs (2.627) against variant 1's 288.5 µs, the
+one large memory-side difference in any run. That is the collector without
+its global register allocator, as for Aeneas above, where variant 4's
+collection took 1.8 ms more CPU at the median, in the direction
+[ADR-0015](decisions/0015-gc-global-register-allocation.md) measured. Small's latencies moved by under
+15% in every case, within this host's layout noise, and its peak RSS was 13.9
+MB (server) and 0.94 MB (worker) in every variant.
+
+**Confirming the larger gains.** Variants 2 and 3 beat variant 1 on Aeneas
+analysis by more than the 7% layout-noise threshold, so each was rebuilt, with
+variant 1, into fresh equal-length directories (`build/f1`/`build/f2` and
+`build/g1`/`build/g3`, byte-identical `BuildInfo.v3`) and the Aeneas and util
+analysis scenarios rerun. The gains held: variant 2's fresh Aeneas analysis
+went from 367.549 to 306.465 ms (0.834) and its reused from 307.664 to
+257.793 (0.838); variant 3's fresh went from 359.651 to 291.946 (0.812) and
+its reused from 306.573 to 244.314 (0.797). Both are real, not layout noise.
+
+**`-O4` with a compiler built from the pin's sources.** The stable compiler
+has no `-O4`, so a dev Aeneas was built from the pin's sources
+(`vendor/virgil` at `b86f43f1`, Aeneas `III-13.2009`) with
+`scripts/v3c.sh -heap-size=<N> -output=<dir> -program-name=Aeneas
+vendor/virgil/aeneas/src/*/*.v3` plus the files in `vendor/virgil/aeneas/DEPS`,
+twice: with the compiler's normal 800 MiB heap (the upstream bootstrap
+default) and with a large 4 GiB heap. Both built in about 2.5 s, list `-O4`
+in `-help`, and a small program built at `-O4` differs in bytes from one built
+at `-O3` or with no flag, unlike the stable compiler. Three variants were then
+built with that compiler (`VIRGIL_V3C` pointing at it), in equal-length
+directories with a byte-identical `BuildInfo.v3`:
+
+| Variant | `V3C_FLAGS` | Server | Worker | Build time |
+| --- | --- | ---: | ---: | ---: |
+| d1 (today) | `-global-regalloc=RiGc.*` | 978,704 | 918,976 | 0.73 s |
+| d2 | `-O2` | 860,848 | 785,160 | 0.97 s |
+| d4 | `-O4` | 1,002,736 | 934,336 | 1.89 s |
+
+**Correctness.** With the normal-heap compiler, `make test` for d4 ran the
+compiler out of memory compiling the large `unit-tests` program at `-O4`
+(`!HeapOverflow`), as `-O3` did with the stable compiler. With the 4 GiB heap,
+d4's `make test` ran all suites; two unit tests failed, both deep-nesting
+verification: `AnalysisCallQuery:scaling` (its fixture no longer verifies:
+"nesting too deep") and `OccurrenceCollector:nested_call_scaling` (the
+analysis is not verified). At `-O3` with the 4 GiB heap, `unit-tests` built and
+ran with the same two failures, so round 1's `-O3` failure was the compiler's
+heap, not the level. The two failures are the same class as the `-O2`
+deep-nesting finding above: at a higher level the in-process parser and
+verifier spend their stack budget differently, so fixtures that verify at the
+default level stop verifying.
+
+**Speed and memory.** d4 and d2 were each compared against d1 with
+`scripts/bench-lsp.py`, as above. Aeneas follows; each cell is the median
+(p10–p90) of 30 operations, in milliseconds unless noted, and the ratio is the
+candidate's median over d1's in the same run.
+
+| Metric | d1 | d4 | ratio | d2 | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fresh analysis | 364.732 (353.372–372.993) | 285.983 (276.963–298.812) | 0.784 | 299.425 (294.603–308.438) | 0.817 |
+| reused analysis | 312.410 (302.220–328.991) | 237.811 (228.958–250.881) | 0.761 | 259.165 (249.198–274.550) | 0.832 |
+| result encode, worker (µs) | 57,508 (52,974–61,502) | 45,444 (43,592–48,470) | 0.790 | 48,285 (46,088–52,364) | 0.861 |
+| result decode, server (µs) | 23,108 (21,582–26,743) | 19,089 (17,916–22,759) | 0.826 | 21,112 (19,709–24,185) | 0.915 |
+| definition | 0.191 (0.163–0.210) | 0.128 (0.121–0.166) | 0.669 | 0.133 (0.129–0.150) | 0.741 |
+| hover | 0.171 (0.146–0.191) | 0.108 (0.103–0.118) | 0.630 | 0.116 (0.112–0.125) | 0.717 |
+| completion miss | 120.117 (116.799–124.805) | 88.122 (85.234–93.223) | 0.734 | 100.689 (96.989–106.560) | 0.834 |
+| completion hit | 6.970 (5.936–18.573) | 5.944 (4.243–16.188) | 0.853 | 5.934 (4.725–18.852) | 0.859 |
+| semantic diagnostic | 507.078 (495.800–523.171) | 436.552 (427.375–446.754) | 0.861 | 455.916 (447.808–472.582) | 0.892 |
+| worker collect after send, wall (µs) | 20,188 (19,523–21,452) | 20,028 (19,141–21,406) | 0.992 | 20,102 (19,378–21,177) | 0.995 |
+| worker collect after send, CPU (µs) | 10,292 (10,043–10,897) | 10,192 (9,891–10,520) | 0.990 | 10,212 (9,964–10,494) | 0.998 |
+| peak RSS, server (bytes) | 210,604,032 | 210,575,360 | 1.000 | 210,472,960 | 0.999 |
+| peak RSS, worker (bytes) | 196,818,944 | 196,335,616 | 0.998 | 196,603,904 | 0.999 |
+
+Util and small follow the same pattern: d4's util fresh analysis was 11.971 ms
+(0.713) against d1's 16.786 and d2's 13.331 (0.838), and its reused 9.591
+(0.726) against 13.213 and 11.222 (0.840); small moved by under 15% in every
+case, within this host's layout noise, with peak RSS of 13.9 MB (server) and
+about 0.9 MB (worker) in every variant. d4's collection after sending was
+unchanged, as d2's was, because the collector already uses the global
+allocator.
+
+**Confirming the `-O4` gain.** d4 beat d2 on Aeneas analysis by more than the
+7% layout-noise threshold (reused 0.761 against 0.832), so d1, d2, and d4
+were rebuilt into fresh equal-length directories (`build/e1`/`build/e2`/
+`build/e4`, byte-identical `BuildInfo.v3`) and the Aeneas analysis scenarios
+rerun. The gap held: d4's fresh analysis was 280.620 ms (0.770) against d2's
+308.861 (0.849), and its reused 235.902 (0.761) against 260.300 (0.831).
+`-O4` is genuinely faster than `-O2`, not layout noise.
+
+**This compiler is not the one the build uses.** The dev Aeneas was built from
+the pin's sources for measurement only; the build still compiles with the
+pin's prebuilt stable compiler, which has no `-O4`. `-O4` cannot be adopted
+until the build uses a compiler that has it, a later stable release or a pin
+bump that changes `scripts/v3c.sh`.
+
+**Result.** `-O2` and `-O3` make Aeneas analysis 16 to 20% faster and the
+server and worker no larger in memory, and the collection after sending is
+unchanged because the collector already uses the global allocator. A real
+`-O4`, measured with a compiler built from the pin's sources, is faster still
+(about 22% on Aeneas analysis, and about 8 to 9% ahead of `-O2`), with the
+same unchanged memory and collection. None is a drop-in change. At `-O2`, the
+deep-nesting transcripts' expected cutoff moves, and the stack guard's
+per-level constants, such as `CHAIN_FRAME`, were measured at the default level
+and would need rechecking. At `-O3` and `-O4`, two deep-nesting unit tests stop
+verifying, and the compiler needs a larger heap to build the unit tests.
+`-O4` cannot be adopted until the build uses a compiler that has it, a later
+stable release or a pin bump that changes `scripts/v3c.sh`. The raw output is
+kept under
+`/home/sean-tan/.t3/scratch-virgil/opt-levels-450/results/` (the
+`opt450-oN.json` and `opt450-dN.json` comparisons, the `confirm-oN.json` and
+`confirm-dN.json` reruns, and the build logs); it is not in the repository.
+
 ## Memory soak
 
 [`scripts/bench-memory-soak.py`](../scripts/bench-memory-soak.py) qualifies
