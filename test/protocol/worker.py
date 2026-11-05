@@ -426,20 +426,40 @@ def inheritance_cycles(exe, work):
             s.close()
 
 
+def chain_project(work, operators, observer):
+    """The two-file project both chain cases analyze: Other.v3 observes
+    while Chain.v3 holds the chain."""
+    root = work / ("chain-" + str(operators))
+    root.mkdir()
+    chain, other = root / "Chain.v3", root / "Other.v3"
+    chain.write_text("component C { var b = 0; def chain = c" + "+1" * operators + "; }\n")
+    other.write_text(observer)
+    (root / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": [
+        {"name": "chain", "sources": ["Other.v3", "Chain.v3"]}]}))
+    return root, chain, other
+
+
 def long_error_chains(exe, work):
     # One unresolved operator after another is an error each (#393). The
     # file gets its first 100 and a notice of the rest, and the project stays
     # analyzed: the other file still has definitions and hover. It comes
-    # first, since Aeneas checks nothing after its error limit.
+    # first, since Aeneas checks nothing after its error limit. The JVM
+    # target bounds range() chains at jvm_chain_limit levels, where native
+    # stops at 8,192 (HostRuntime.chainLimit() in src/os/jvm/HostRuntime.v3):
+    # below the bound its type-error case uses a smaller count, and over it
+    # the parse stops with a ParseError, which leaves the project without an
+    # analysis, so the other file's queries return null.
+    jvm = jvm_target(exe)
+    jvm_chain_limit = 2048  # HostRuntime.chainLimit() in src/os/jvm/HostRuntime.v3
     observer = "def target() -> int { return 42; }\ndef use() -> int { return target(); }\n"
-    for operators in (3000, 8000):
-        root = work / ("chain-" + str(operators))
-        root.mkdir()
-        chain, other = root / "Chain.v3", root / "Other.v3"
-        chain.write_text("component C { var b = 0; def chain = c" + "+1" * operators + "; }\n")
-        other.write_text(observer)
-        (root / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": [
-            {"name": "chain", "sources": ["Other.v3", "Chain.v3"]}]}))
+    if jvm:
+        error_chains = (jvm_chain_limit - 500,)
+        over_chains = (jvm_chain_limit + 1000,)
+    else:
+        error_chains = (3000, 8000)
+        over_chains = ()
+    for operators in error_chains:
+        root, chain, other = chain_project(work, operators, observer)
         s = Session(exe)
         try:
             s.result(s.send("initialize", {"rootUri": root.as_uri()}))
@@ -471,6 +491,48 @@ def long_error_chains(exe, work):
             assert len(diagnostics) == 100, len(diagnostics)
             assert diagnostics[-1]["omitted"] == operators + 1 - 100, diagnostics[-1]
             assert all("omitted" not in d for d in diagnostics[:-1]), diagnostics
+            assert not any("failed" in message.lower() or "too large" in message.lower()
+                           for message in s.logs().splitlines()), s.logs()
+            s.shutdown()
+        finally:
+            s.close()
+    # Over the bound the parse stops before the chain ends: the file's only
+    # diagnostic is that ParseError, and with nothing analyzed the other
+    # file's queries return null.
+    for operators in over_chains:
+        root, chain, other = chain_project(work, operators, observer)
+        s = Session(exe)
+        try:
+            s.result(s.send("initialize", {"rootUri": root.as_uri()}))
+            s.send("textDocument/didOpen", {"textDocument": {
+                "uri": other.as_uri(), "languageId": "virgil", "version": 1, "text": observer}}, request=False)
+            query = {"textDocument": {"uri": other.as_uri()}, "position": {"line": 1, "character": 27}}
+            assert s.result(s.send("textDocument/definition", query)) is None, s.transcript
+            assert s.result(s.send("textDocument/hover", query)) is None, s.transcript
+            lists = [m["params"]["diagnostics"] for direction, m in s.transcript
+                     if direction == "recv" and m.get("method") == "textDocument/publishDiagnostics"
+                     and m["params"]["uri"] == chain.as_uri()]
+            assert lists, s.transcript
+            published = lists[-1]
+            assert len(published) == 1, published
+            stopped = published[0]
+            assert stopped["code"] == "ParseError", stopped
+            assert stopped["message"] == "expression too long; parsing stopped here", stopped
+            assert stopped["severity"] == 1 and stopped["source"] == "aeneas", stopped
+            assert stopped["range"]["start"] == stopped["range"]["end"], stopped
+            # The stop lands inside the chain, at the bound, not past the
+            # chain's end: the prefix "component C { var b = 0; def chain = c"
+            # is 38 bytes, and each "+1" is 2.
+            column = stopped["range"]["start"]["character"]
+            assert 38 < column < 38 + 2 * operators, stopped
+            snapshot = s.result(s.send("virgil-lsp/analyze", {"uri": other.as_uri()}))
+            diagnostics = snapshot["diagnostics"]
+            assert len(diagnostics) == 1, diagnostics
+            assert diagnostics[0]["kind"] == "ParseError", diagnostics
+            assert diagnostics[0]["path"] == str(chain), diagnostics
+            assert snapshot["documentVersions"] == [
+                {"uri": other.as_uri(), "version": 1, "current": True},
+                {"uri": chain.as_uri(), "version": None, "current": True}], snapshot
             assert not any("failed" in message.lower() or "too large" in message.lower()
                            for message in s.logs().splitlines()), s.logs()
             s.shutdown()
