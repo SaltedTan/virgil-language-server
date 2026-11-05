@@ -49,14 +49,18 @@ import java.util.regex.Pattern;
  * process racing the server can swap a checked regular file for a FIFO before
  * open; that open can block until a writer appears, before channel validation.
  *
- * <p>JVM limitation: when a provider does not supply a
+ * <p>JVM limitation: on macOS, where the provider does not supply a
  * {@link SecureDirectoryStream}, directory operations use canonical paths and
  * {@code fileKey()} identity checks instead of descriptor-relative operations.
- * The checks reject a parent or child directory that has been replaced, but
- * Java has no atomic path-relative, no-follow directory open: a raced symlink
- * can be opened briefly before its post-open identity check rejects it, and a
- * replacement can race between a check and the path operation. Regular-file
- * opens have the same check/open window (and FIFO blocking risk) as above.
+ * A check detects a replaced directory only if the replacement is still in
+ * place when the check runs. Java has no atomic path-relative, no-follow
+ * directory open, so a local process can swap a directory or ancestor for a
+ * symlink during an operation and restore it before the next check; that
+ * operation can then use a path outside the opened tree. The fallback can
+ * similarly open a child symlink briefly, and regular-file opens have the
+ * check/open window (and FIFO blocking risk) described above. Linux continues
+ * to use {@code SecureDirectoryStream} and is not subject to this fallback
+ * limitation.
  *
  * <p>Int commands:
  * <ul>
@@ -67,11 +71,14 @@ import java.util.regex.Pattern;
  *     symlinks; EISDIR for a directory, EINVAL for other kinds of file.
  * <li>{@code openDirectory path}: a directory, following symlinks.
  * <li>{@code openAt fd name directory}: the entry {@code name} of directory
- *     {@code fd}, never following a symlink, as openat with O_NOFOLLOW (and
- *     O_DIRECTORY if {@code directory} is 1): ELOOP for a symlink, or ENOTDIR
- *     if a directory was asked for. Regular files and directories are opened
- *     at once; other kinds of file are not opened when the metadata check
- *     identifies them. See the JVM check/open race limitation above.
+ *     {@code fd}, checking the final component for a symlink as with openat
+ *     O_NOFOLLOW (and O_DIRECTORY if {@code directory} is 1): ELOOP for a
+ *     symlink, or ENOTDIR if a directory was asked for. Regular files and
+ *     directories are opened at once; other kinds of file are not opened when
+ *     the metadata check identifies them. The macOS path fallback can return
+ *     ESTALE (116) when an identity check finds a replaced directory. See the
+ *     JVM limitations above; a symlink swapped in and restored between checks
+ *     can still redirect a fallback operation.
  * <li>{@code nonblock fd}, {@code close fd}: 0.
  * <li>{@code access path}: 0 if {@code path} is executable.
  * <li>{@code spawn n fd0 .. fd(n-1) arg0 arg1 ..}: starts {@code arg0} with the
@@ -103,9 +110,12 @@ import java.util.regex.Pattern;
  *     timeout waits indefinitely, and a negative descriptor is ignored.
  * <li>{@code stat fd}, {@code statAt fd name}: two little-endian longs, the
  *     file type bits of st_mode and the size; {@code statAt} doesn't follow a
- *     symlink.
+ *     symlink. The macOS path fallback can return ESTALE (116) when an
+ *     identity check finds a replaced directory.
  * <li>{@code readDirectory fd size}: at most {@code size} bytes of
- *     linux_dirent64 records, without "." and ".."; empty at the end.
+ *     linux_dirent64 records, without "." and ".."; empty at the end. The
+ *     macOS path fallback can return ESTALE (116) when an identity check
+ *     finds a replaced directory.
  * <li>{@code random}: 16 random bytes.
  * <li>{@code executable}: this program's path: the {@code virgil.lsp.executable}
  *     system property, which a launcher sets, or else the jar's path.
@@ -157,6 +167,10 @@ public class V3S_System {
     // Package-private test controls; the fallback is selected automatically when needed.
     static boolean forcePathDirectoryFallback;
     static Runnable pathFallbackBeforeOpenForTest;
+    static Runnable pathFallbackAfterOpenForTest;
+    static java.util.function.Consumer<Path> pathFallbackBeforeEntryTypeForTest;
+    static Runnable pathFallbackAfterStatForTest;
+    static boolean nullPathFallbackFileKeyForTest;
     static int nextSyntheticPid = 1 << 30;
     static Timer alarm;
     static java.security.SecureRandom random;
@@ -439,6 +453,7 @@ public class V3S_System {
             if (status < 0) return new long[] {status, -1};
             try {
                 BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                runPathFallbackAfterStatForTest();
                 status = checkFallbackDirectory(this);
                 return status < 0 ? new long[] {status, -1} : new long[] {kind(a), a.size()};
             } catch (Exception e) {
@@ -701,20 +716,25 @@ public class V3S_System {
         }
         return add(new DirEnd((SecureDirectoryStream<Path>) stream));
     }
+    // On macOS, path identity checks detect changes only while they remain in
+    // place at a check; restoring a swapped directory before the next check
+    // can redirect this open, unlike the Linux SecureDirectoryStream path.
     static int openFallbackDirectory(Path path) throws IOException {
         Path resolved = path.toRealPath();
         BasicFileAttributes before = Files.readAttributes(resolved, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!before.isDirectory()) return -ENOTDIR;
-        Object key = before.fileKey();
+        Object key = pathFallbackFileKey(before);
         if (key == null) return -ENOTSUP;
         DirectoryStream<Path> listing = Files.newDirectoryStream(resolved);
         try {
+            runPathFallbackAfterOpenForTest();
             BasicFileAttributes after = Files.readAttributes(resolved, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (!after.isDirectory() || after.fileKey() == null) {
+            Object afterKey = pathFallbackFileKey(after);
+            if (!after.isDirectory() || afterKey == null) {
                 listing.close();
-                return after.fileKey() == null ? -ENOTSUP : -ESTALE;
+                return afterKey == null ? -ENOTSUP : -ESTALE;
             }
-            if (!key.equals(after.fileKey())) {
+            if (!key.equals(afterKey)) {
                 listing.close();
                 return -ESTALE;
             }
@@ -729,16 +749,36 @@ public class V3S_System {
         if (directory.fileKey == null) return -ENOTSUP;
         try {
             BasicFileAttributes a = Files.readAttributes(directory.path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (a.fileKey() == null) return -ENOTSUP;
-            return a.isDirectory() && directory.fileKey.equals(a.fileKey()) ? 0 : -ESTALE;
+            Object key = pathFallbackFileKey(a);
+            if (key == null) return -ENOTSUP;
+            return a.isDirectory() && directory.fileKey.equals(key) ? 0 : -ESTALE;
         } catch (Exception e) {
             return -errno(e);
         }
     }
 
+    static Object pathFallbackFileKey(BasicFileAttributes attributes) {
+        return nullPathFallbackFileKeyForTest ? null : attributes.fileKey();
+    }
+
     static void runPathFallbackHook() {
         Runnable hook = pathFallbackBeforeOpenForTest;
         pathFallbackBeforeOpenForTest = null;
+        if (hook != null) hook.run();
+    }
+    static void runPathFallbackAfterOpenForTest() {
+        Runnable hook = pathFallbackAfterOpenForTest;
+        pathFallbackAfterOpenForTest = null;
+        if (hook != null) hook.run();
+    }
+    static void runPathFallbackBeforeEntryTypeForTest(Path name) {
+        java.util.function.Consumer<Path> hook = pathFallbackBeforeEntryTypeForTest;
+        pathFallbackBeforeEntryTypeForTest = null;
+        if (hook != null) hook.accept(name);
+    }
+    static void runPathFallbackAfterStatForTest() {
+        Runnable hook = pathFallbackAfterStatForTest;
+        pathFallbackAfterStatForTest = null;
         if (hook != null) hook.run();
     }
 
@@ -774,9 +814,11 @@ public class V3S_System {
     }
     // JVM limitation: a local process racing the server can replace the checked
     // regular file with a FIFO; open can block until a writer appears, before
-    // the opened channel's size and seekability can be checked. With the path
-    // fallback, directory opens also have a check/open race; a post-open
-    // identity check rejects a replacement before returning its descriptor.
+    // the opened channel's size and seekability can be checked. On macOS, the
+    // path fallback's checks detect a directory replacement only while it is
+    // still present at a check. A swap of a directory or ancestor restored
+    // before the next check can go undetected, so an open may use a path
+    // outside the opened tree. Linux uses SecureDirectoryStream instead.
     static int openAt(int fd, String name, boolean directory) throws IOException {
         if (name.isEmpty() || name.indexOf('/') >= 0) return -EINVAL;
         End e = get(fd);
@@ -798,35 +840,44 @@ public class V3S_System {
             } catch (Exception ex) {
                 return -errno(ex);
             }
-            if (!checked.isDirectory() || checked.fileKey() == null) return checked.fileKey() == null ? -ENOTSUP : -ENOTDIR;
+            Object checkedKey = pathFallbackFileKey(checked);
+            if (!checked.isDirectory() || checkedKey == null) return checkedKey == null ? -ENOTSUP : -ENOTDIR;
             runPathFallbackHook();
             parent = checkFallbackDirectory(d);
             if (parent < 0) return parent;
             DirectoryStream<Path> listing = Files.newDirectoryStream(d.path.resolve(p));
             try {
-                BasicFileAttributes after = Files.readAttributes(d.path.resolve(p), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                runPathFallbackAfterOpenForTest();
+                BasicFileAttributes after;
+                try {
+                    after = Files.readAttributes(d.path.resolve(p), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                } catch (IOException | RuntimeException ex) {
+                    parent = checkFallbackDirectory(d);
+                    if (parent < 0) {
+                        listing.close();
+                        return parent;
+                    }
+                    throw ex;
+                }
                 parent = checkFallbackDirectory(d);
                 if (parent < 0) {
                     listing.close();
                     return parent;
                 }
-                if (after.isSymbolicLink()) {
-                    listing.close();
-                    return -ENOTDIR;
-                }
                 if (!after.isDirectory()) {
                     listing.close();
                     return -ENOTDIR;
                 }
-                if (after.fileKey() == null) {
+                Object afterKey = pathFallbackFileKey(after);
+                if (afterKey == null) {
                     listing.close();
                     return -ENOTSUP;
                 }
-                if (!checked.fileKey().equals(after.fileKey())) {
+                if (!checkedKey.equals(afterKey)) {
                     listing.close();
                     return -ESTALE;
                 }
-                return add(new DirEnd(listing, d.path.resolve(p), checked.fileKey()));
+                return add(new DirEnd(listing, d.path.resolve(p), checkedKey));
             } catch (IOException | RuntimeException ex) {
                 try { listing.close(); } catch (IOException ignored) { }
                 throw ex;
@@ -843,6 +894,7 @@ public class V3S_System {
                 options.add(StandardOpenOption.READ);
                 options.add(LinkOption.NOFOLLOW_LINKS);
                 SeekableByteChannel channel = Files.newByteChannel(d.path.resolve(p), options);
+                runPathFallbackAfterOpenForTest();
                 parent = checkFallbackDirectory(d);
                 if (parent < 0) {
                     try { channel.close(); } catch (IOException ignored) { }
@@ -1071,8 +1123,22 @@ public class V3S_System {
         return longs(m[0], m[1]);
     }
     static int dtype(DirEnd directory, Path name) throws Failure {
-        long k = metadata(directory, name)[0];
-        if (directory.stream == null && k < 0) throw new Failure((int) -k);
+        long k;
+        if (directory.stream != null) {
+            k = metadata(directory, name)[0];
+        } else {
+            int status = checkFallbackDirectory(directory);
+            if (status < 0) throw new Failure(-status);
+            try {
+                BasicFileAttributes a = Files.readAttributes(directory.path.resolve(name),
+                    BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                k = kind(a);
+            } catch (Exception e) {
+                k = DT_UNKNOWN;
+            }
+            status = checkFallbackDirectory(directory);
+            if (status < 0) throw new Failure(-status);
+        }
         return k == S_IFDIR ? DT_DIR : k == S_IFREG ? DT_REG : k == S_IFLNK ? DT_LNK : DT_UNKNOWN;
     }
     // linux_dirent64: d_ino (8 bytes), d_off (8), d_reclen (2), d_type (1),
@@ -1085,20 +1151,17 @@ public class V3S_System {
         DirEnd d = (DirEnd) e;
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
+            if (d.stream == null) {
+                int status = checkFallbackDirectory(d);
+                if (status < 0) throw new Failure(-status);
+            }
             while (true) {
-                if (d.stream == null) {
-                    int status = checkFallbackDirectory(d);
-                    if (status < 0) throw new Failure(-status);
-                }
                 byte[] rec = d.pending;
                 d.pending = null;
                 if (rec == null) {
                     if (!d.entries.hasNext()) break;
                     Path p = d.entries.next();
-                    if (d.stream == null) {
-                        int status = checkFallbackDirectory(d);
-                        if (status < 0) throw new Failure(-status);
-                    }
+                    runPathFallbackBeforeEntryTypeForTest(p.getFileName());
                     byte[] name = p.getFileName().toString().getBytes(StandardCharsets.UTF_8);
                     int len = (19 + name.length + 1 + 7) & ~7;
                     rec = ByteBuffer.allocate(len).order(ByteOrder.LITTLE_ENDIAN)
