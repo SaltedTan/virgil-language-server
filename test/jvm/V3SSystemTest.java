@@ -92,15 +92,15 @@ public class V3SSystemTest {
         if (failure == null && V3S_System.descriptorCount() != descriptors) {
             failure = "leaked " + (V3S_System.descriptorCount() - descriptors) + " descriptors";
         }
-        int osDescriptorsAfter = osDescriptorCount();
-        if (failure == null && osDescriptors >= 0 && osDescriptorsAfter != osDescriptors) {
-            failure = "leaked " + (osDescriptorsAfter - osDescriptors) + " OS file descriptors";
-        }
         if (failure == null && V3S_System.childCount() != children) {
             failure = "left " + (V3S_System.childCount() - children) + " children unwaited";
         }
         if (failure == null && !runtimeThreadsEnd(threads, 5000)) {
             failure = "left runtime threads running: " + runtimeThreads();
+        }
+        int osDescriptorsAfter = osDescriptorCount();
+        if (failure == null && osDescriptors >= 0 && osDescriptorsAfter != osDescriptors) {
+            failure = "leaked " + (osDescriptorsAfter - osDescriptors) + " OS file descriptors";
         }
         if (failure != null) reset(threads);
         return failure;
