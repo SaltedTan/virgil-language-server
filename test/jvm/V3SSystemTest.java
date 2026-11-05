@@ -81,6 +81,8 @@ public class V3SSystemTest {
             t.printStackTrace(new PrintWriter(w));
             failure = w.toString().trim();
         }
+        V3S_System.forcePathDirectoryFallback = false;
+        V3S_System.pathFallbackBeforeOpenForTest = null;
         if (failure == null && V3S_System.descriptorCount() != descriptors) {
             failure = "leaked " + (V3S_System.descriptorCount() - descriptors) + " descriptors";
         }
@@ -419,6 +421,35 @@ public class V3SSystemTest {
         tests.put(name, body);
     }
 
+    static void directoryTest(String name, Body body) {
+        boolean secure = hasSecureDirectoryStream();
+        test(name, () -> runDirectoryMode(body, !secure));
+        if (secure) test(name + " [path fallback]", () -> runDirectoryMode(body, true));
+    }
+
+    static void runDirectoryMode(Body body, boolean fallback) throws Exception {
+        V3S_System.forcePathDirectoryFallback = fallback;
+        if (fallback) {
+            Path parent = scratch;
+            scratch = Files.createTempDirectory(parent, "path-fallback-");
+            try {
+                body.run();
+            } finally {
+                scratch = parent;
+            }
+        } else {
+            body.run();
+        }
+    }
+
+    static boolean hasSecureDirectoryStream() {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(scratch)) {
+            return stream instanceof SecureDirectoryStream<?>;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     static void register() {
         // Command dispatch and failure reporting.
         test("dispatch: unknown commands report ENOSYS", () -> {
@@ -554,35 +585,38 @@ public class V3SSystemTest {
             }
         });
 
-        test("directories: openAt rejects a FIFO swapped in after metadata", () -> {
-            Path dir = Files.createDirectory(scratch.resolve("fifo-open-race"));
-            Path source = file(dir.resolve("source"), "regular");
-            Path fifo = dir.resolve("fifo");
-            Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).inheritIO().start();
-            eq(0, mkfifo.waitFor(), "create FIFO");
-            try (FileChannel writer = FileChannel.open(fifo, StandardOpenOption.READ, StandardOpenOption.WRITE);
-                    DirectoryStream<Path> listing = Files.newDirectoryStream(dir)) {
-                check(writer.isOpen(), "FIFO has a writer before the raced open");
-                SecureDirectoryStream<Path> stream = (SecureDirectoryStream<Path>) listing;
-                @SuppressWarnings("unchecked")
-                SecureDirectoryStream<Path> swapping = (SecureDirectoryStream<Path>) java.lang.reflect.Proxy.newProxyInstance(
-                    V3SSystemTest.class.getClassLoader(), new Class<?>[] {SecureDirectoryStream.class},
-                    (proxy, method, args) -> {
-                        if (method.getName().equals("newByteChannel")) {
-                            Files.move(source, dir.resolve("original"));
-                            Files.move(fifo, source);
-                        }
-                        try {
-                            return method.invoke(stream, args);
-                        } catch (InvocationTargetException e) {
-                            throw e.getCause();
-                        }
-                    });
-                int fd = V3S_System.add(new V3S_System.DirEnd(swapping));
-                eq(-V3S_System.EINVAL, cmd("openAt", fd, "source", 0), "raced FIFO rejected after open");
-                cmd("close", fd);
-            }
-        });
+        // This proxy requires SecureDirectoryStream; the path fallback is covered below.
+        if (hasSecureDirectoryStream()) {
+            test("directories: openAt rejects a FIFO swapped in after metadata", () -> {
+                Path dir = Files.createDirectory(scratch.resolve("fifo-open-race"));
+                Path source = file(dir.resolve("source"), "regular");
+                Path fifo = dir.resolve("fifo");
+                Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).inheritIO().start();
+                eq(0, mkfifo.waitFor(), "create FIFO");
+                try (FileChannel writer = FileChannel.open(fifo, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                        DirectoryStream<Path> listing = Files.newDirectoryStream(dir)) {
+                    check(writer.isOpen(), "FIFO has a writer before the raced open");
+                    SecureDirectoryStream<Path> stream = (SecureDirectoryStream<Path>) listing;
+                    @SuppressWarnings("unchecked")
+                    SecureDirectoryStream<Path> swapping = (SecureDirectoryStream<Path>) java.lang.reflect.Proxy.newProxyInstance(
+                        V3SSystemTest.class.getClassLoader(), new Class<?>[] {SecureDirectoryStream.class},
+                        (proxy, method, args) -> {
+                            if (method.getName().equals("newByteChannel")) {
+                                Files.move(source, dir.resolve("original"));
+                                Files.move(fifo, source);
+                            }
+                            try {
+                                return method.invoke(stream, args);
+                            } catch (InvocationTargetException e) {
+                                throw e.getCause();
+                            }
+                        });
+                    int fd = V3S_System.add(new V3S_System.DirEnd(swapping));
+                    eq(-V3S_System.EINVAL, cmd("openAt", fd, "source", 0), "raced FIFO rejected after open");
+                    cmd("close", fd);
+                }
+            });
+        }
 
         // Descriptor reads and writes, and the end of input.
         test("descriptors: a file reads to its end, then 0 every time", () -> {
@@ -725,7 +759,11 @@ public class V3SSystemTest {
         });
         test("children: the child's environment holds only the descriptor layout", () -> {
             Worker w = start("environment");
-            eq("[" + V3S_System.LAYOUT_ENV + "]", text(readFully(w.results, -1, 20000)), "environment");
+            TreeSet<String> expected = new TreeSet<String>();
+            expected.add(V3S_System.LAYOUT_ENV);
+            // macOS adds this variable to child JVMs even when the parent environment is cleared.
+            if (System.getProperty("os.name").equals("Mac OS X")) expected.add("__CF_USER_TEXT_ENCODING");
+            eq(expected.toString(), text(readFully(w.results, -1, 20000)), "environment");
             cmd("close", w.requests);
             cmd("close", w.results);
             eq(0, cmd("wait", w.pid), "wait status");
@@ -829,7 +867,7 @@ public class V3SSystemTest {
         });
 
         // Directory entries and file metadata.
-        test("directories: entries and their types", () -> {
+        directoryTest("directories: entries and their types", () -> {
             Path d = tree("entries");
             int fd = cmd("openDirectory", d);
             check(fd >= V3S_System.MIN_FD, "openDirectory: " + fd);
@@ -839,7 +877,7 @@ public class V3SSystemTest {
             eq(expectedEntries(), entries, "entries");
             cmd("close", fd);
         });
-        test("directories: a small buffer spreads entries over several reads", () -> {
+        directoryTest("directories: a small buffer spreads entries over several reads", () -> {
             Path d = tree("small");
             int fd = cmd("openDirectory", d);
             eq(V3S_System.EINVAL, failure("readDirectory", fd, 16), "a buffer too small for one entry");
@@ -856,7 +894,7 @@ public class V3SSystemTest {
             eq(expectedEntries(), entries, "entries");
             cmd("close", fd);
         });
-        test("directories: openAt never follows a symlink", () -> {
+        directoryTest("directories: openAt never follows a symlink", () -> {
             Path d = tree("openat");
             int dir = cmd("openDirectory", d);
             int fd = cmd("openAt", dir, "a.v3", 0);
@@ -889,7 +927,7 @@ public class V3SSystemTest {
             }
             cmd("close", dir);
         });
-        test("directories: openAt stays anchored after parent replacement", () -> {
+        directoryTest("directories: openAt stays anchored after parent replacement", () -> {
             Path original = tree("anchored-open");
             Path moved = scratch.resolve("anchored-open-moved");
             Path replacement = tree("anchored-open-replacement");
@@ -898,6 +936,11 @@ public class V3SSystemTest {
             int dir = cmd("openDirectory", original);
             Files.move(original, moved);
             Files.createSymbolicLink(original, replacement);
+            if (V3S_System.forcePathDirectoryFallback) {
+                eq(-V3S_System.ESTALE, cmd("openAt", dir, "a.v3", 0), "replaced parent refused");
+                cmd("close", dir);
+                return;
+            }
             int fd = cmd("openAt", dir, "a.v3", 0);
             eq("a = 1", text(readFully(fd, -1, 1000)), "original file");
             cmd("close", fd);
@@ -913,13 +956,18 @@ public class V3SSystemTest {
             cmd("close", dir);
         });
         for (int flag : new int[] {0, 1}) {
-            test("directories: child directory stays anchored after parent replacement, flag " + flag, () -> {
+            directoryTest("directories: child directory stays anchored after parent replacement, flag " + flag, () -> {
                 Path original = tree("anchored-child-" + flag);
                 Path replacement = tree("anchored-child-replacement-" + flag);
                 file(replacement.resolve("sub").resolve("b.v3"), "replacement");
                 int dir = cmd("openDirectory", original);
                 Files.move(original, scratch.resolve("anchored-child-moved-" + flag));
                 Files.createSymbolicLink(original, replacement);
+                if (V3S_System.forcePathDirectoryFallback) {
+                    eq(-V3S_System.ESTALE, cmd("openAt", dir, "sub", flag), "replaced parent refused");
+                    cmd("close", dir);
+                    return;
+                }
                 int sub = cmd("openAt", dir, "sub", flag);
                 int child = cmd("openAt", sub, "b.v3", 0);
                 eq("b", text(readFully(child, -1, 1000)), "original child directory");
@@ -928,27 +976,37 @@ public class V3SSystemTest {
                 cmd("close", dir);
             });
         }
-        test("metadata: statAt stays anchored after parent replacement", () -> {
+        directoryTest("metadata: statAt stays anchored after parent replacement", () -> {
             Path original = tree("anchored-statat");
             Path replacement = tree("anchored-statat-replacement");
             file(replacement.resolve("a.v3"), "replacement");
             int dir = cmd("openDirectory", original);
             Files.move(original, scratch.resolve("anchored-statat-moved"));
             Files.createSymbolicLink(original, replacement);
+            if (V3S_System.forcePathDirectoryFallback) {
+                eq(V3S_System.ESTALE, failure("statAt", dir, "a.v3"), "replaced parent refused");
+                cmd("close", dir);
+                return;
+            }
             eq("[" + V3S_System.S_IFREG + ", 5]", Arrays.toString(longs(payload("statAt", dir, "a.v3"))), "original metadata");
             eq(V3S_System.S_IFLNK, longs(payload("statAt", dir, "dlink"))[0], "symlink metadata");
             cmd("close", dir);
         });
-        test("metadata: stat uses the open directory after path replacement", () -> {
+        directoryTest("metadata: stat uses the open directory after path replacement", () -> {
             Path original = tree("anchored-stat");
             int dir = cmd("openDirectory", original);
             long[] before = longs(payload("stat", dir));
             Files.move(original, scratch.resolve("anchored-stat-moved"));
             file(original, "replacement");
+            if (V3S_System.forcePathDirectoryFallback) {
+                eq(V3S_System.ESTALE, failure("stat", dir), "replaced parent refused");
+                cmd("close", dir);
+                return;
+            }
             eq(Arrays.toString(before), Arrays.toString(longs(payload("stat", dir))), "original directory metadata");
             cmd("close", dir);
         });
-        test("directories: entry types stay anchored after parent replacement", () -> {
+        directoryTest("directories: entry types stay anchored after parent replacement", () -> {
             Path original = tree("anchored-list");
             Path replacement = Files.createDirectory(scratch.resolve("anchored-list-replacement"));
             Files.createDirectory(replacement.resolve("a.v3"));
@@ -956,6 +1014,11 @@ public class V3SSystemTest {
             int dir = cmd("openDirectory", original);
             Files.move(original, scratch.resolve("anchored-list-moved"));
             Files.createSymbolicLink(original, replacement);
+            if (V3S_System.forcePathDirectoryFallback) {
+                eq(V3S_System.ESTALE, failure("readDirectory", dir, 8192), "replaced parent refused");
+                cmd("close", dir);
+                return;
+            }
             TreeMap<String, Integer> entries = new TreeMap<String, Integer>();
             parseDirents(payload("readDirectory", dir, 8192), entries);
             eq(expectedEntries(), entries, "original entries and types");
@@ -971,7 +1034,7 @@ public class V3SSystemTest {
             eq(-V3S_System.ENOTSUP, V3S_System.openDirectory(plain), "unsupported directory provider");
             check(closed[0], "unsupported directory stream closed");
         });
-        test("metadata: stat and statAt", () -> {
+        directoryTest("metadata: stat and statAt", () -> {
             Path d = tree("stat");
             int dir = cmd("openDirectory", d);
             eq(V3S_System.S_IFDIR, longs(payload("stat", dir))[0], "the directory");
@@ -986,7 +1049,7 @@ public class V3SSystemTest {
             cmd("close", n);
             cmd("close", dir);
         });
-        test("directories: openDirectory follows symlinks, as open(2)", () -> {
+        directoryTest("directories: openDirectory follows symlinks, as open(2)", () -> {
             Path d = tree("opendir");
             eq(-V3S_System.ENOENT, cmd("openDirectory", d.resolve("missing")), "missing");
             eq(-V3S_System.ENOTDIR, cmd("openDirectory", d.resolve("a.v3")), "a file");
@@ -996,6 +1059,68 @@ public class V3SSystemTest {
             parseDirents(payload("readDirectory", fd, 8192), entries);
             eq("{b.v3=8}", entries.toString(), "its entries");
             cmd("close", fd);
+        });
+
+        test("directories: path fallback refuses a symlink swapped in before directory open", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path parent = Files.createDirectory(scratch.resolve("fallback-symlink-race"));
+            Path child = Files.createDirectory(parent.resolve("child"));
+            Path target = Files.createDirectory(scratch.resolve("fallback-symlink-target"));
+            file(target.resolve("secret"), "replacement");
+            int dir = cmd("openDirectory", parent);
+            V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                try {
+                    Files.move(child, parent.resolve("original-child"));
+                    Files.createSymbolicLink(child, target);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ENOTDIR, cmd("openAt", dir, "child", 1), "raced symlink refused");
+            cmd("close", dir);
+        });
+        test("directories: path fallback refuses a different child directory after replacement", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path parent = Files.createDirectory(scratch.resolve("fallback-directory-race"));
+            Path child = Files.createDirectory(parent.resolve("child"));
+            Path replacement = Files.createDirectory(scratch.resolve("fallback-directory-replacement"));
+            file(replacement.resolve("secret"), "replacement");
+            int dir = cmd("openDirectory", parent);
+            V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                try {
+                    Files.move(child, parent.resolve("original-child"));
+                    Files.move(replacement, child);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            eq(-V3S_System.ESTALE, cmd("openAt", dir, "child", 1), "different directory refused");
+            cmd("close", dir);
+        });
+
+        // A live writer avoids blocking; the fallback cannot keep a FIFO swapped into the
+        // path from reaching open before the post-open file-type check.
+        test("directories: openAt rejects a FIFO swapped in after metadata [path fallback]", () -> {
+            V3S_System.forcePathDirectoryFallback = true;
+            Path dir = Files.createDirectory(scratch.resolve("fifo-open-race-fallback"));
+            Path source = file(dir.resolve("source"), "regular");
+            Path fifo = dir.resolve("fifo");
+            Process mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).inheritIO().start();
+            eq(0, mkfifo.waitFor(), "create FIFO");
+            try (FileChannel writer = FileChannel.open(fifo, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+                check(writer.isOpen(), "FIFO has a writer before the raced open");
+                V3S_System.pathFallbackBeforeOpenForTest = () -> {
+                    try {
+                        Files.move(source, dir.resolve("original"));
+                        Files.move(fifo, source);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                };
+                int fd = cmd("openDirectory", dir);
+                eq(-V3S_System.EINVAL, cmd("openAt", fd, "source", 0), "raced FIFO rejected after open");
+                cmd("close", fd);
+            }
         });
 
         // The other operations that the server and the worker need.
