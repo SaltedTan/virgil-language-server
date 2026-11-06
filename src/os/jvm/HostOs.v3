@@ -124,7 +124,8 @@ component HostOs {
 		return Arrays.range(r, 1, r.length);
 	}
 
-	// Directory traversal never follows symlinks, including intermediate components.
+	// Directory traversal rejects symlinks, including intermediate components,
+	// subject to the path fallback's directory-swap races described in V3S_System.java.
 	def openDirectoryRoot(absolute: bool) -> int {
 		return run(command("openDirectory").putc('\x00').puts(if(absolute, "/", ".")));
 	}
