@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Package a universal VSIX, or a platform VSIX from a tested archive's bytes."""
+"""Package a universal VSIX, or a platform VSIX from a tested archive's bytes.
+
+The darwin-arm64-jvm target packages the JVM archive (jvm-arm64-darwin) as a
+darwin-arm64 VSIX named <name>-<version>-darwin-arm64-jvm.vsix, beside the
+default darwin-arm64 one."""
 import argparse
 import importlib.util
 import json
@@ -40,10 +44,10 @@ def main():
             file.write_bytes(data)
             file.chmod(mode)
         if files:
-            marker.write_text(json.dumps({"target": args.target}) + "\n")
+            marker.write_text(json.dumps(payload.marker(args.target)) + "\n")
         command = ["npm", "run", "package", "--", "--out", str(destination)]
         if files:
-            command += ["--target", args.target]
+            command += ["--target", payload.vscode_target(args.target)]
         subprocess.run(command, cwd=source, check=True)
         check = [str(ROOT / "scripts/check-vsix.py"), str(destination), "--target", args.target]
         if args.archive:

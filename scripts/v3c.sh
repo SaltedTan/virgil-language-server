@@ -27,6 +27,12 @@
 #   JAVA         The java command whose JDK the launcher runs (default: java).
 #                The launcher records that JDK's absolute path, since the
 #                server starts its worker with an empty environment.
+#   JVM_BUNDLED_RUNTIME
+#                Write a relocatable launcher for a package instead: it runs
+#                the jar beside its own resolved path on the java of the
+#                runtime directory that this names, relative to the same
+#                directory (such as runtime). scripts/package-release.sh sets it.
+#   JVM_LOCALE   The launcher's LC_ALL (default: the build host's UTF-8 locale).
 # -heap-size=<size> becomes the launcher's -Xmx; other arguments go to Aeneas.
 set -euo pipefail
 
@@ -41,7 +47,9 @@ fi
 
 # The JVM stack size for both programs, and the worker's heap from the
 # Makefile's WORKER_HEAP, are provisional; see docs/testing-notes/jvm-memory.md
-# for the measurements and proposal awaiting the maintainer's decision.
+# for the measurements and proposal awaiting the maintainer's decision. The
+# development launchers and the packaged ones (JVM_BUNDLED_RUNTIME) both take
+# their options from here.
 JVM_STACK=16m
 
 # Compiles a jar and writes its launcher; see the header.
@@ -74,8 +82,8 @@ jvm_compile() {
     rm -f "$jar" "$output/$name"
     local absolute
     absolute=$(cd "$output" && pwd -P)/$name.jar
-    case $java_home$absolute in *"'"*)
-        echo "error: the JDK or output path contains a single quote" >&2
+    case $java_home$absolute${JVM_BUNDLED_RUNTIME:-}${JVM_LOCALE:-} in *"'"*)
+        echo "error: the JDK, output path, runtime, or locale contains a single quote" >&2
         exit 1 ;;
     esac
     if [ "$VIRGIL_V3C" = "$VIRGIL/bin/stable/jar/Aeneas" ]; then
@@ -85,7 +93,8 @@ jvm_compile() {
         "$VIRGIL_V3C" -target=jar -jvm.rt-path="$JVM_RT" "${args[@]}"
     fi
     # Aeneas copies only V3S_System.class, and the runtime's nested classes
-    # are needed too.
+    # are needed too. Their entries get a fixed date, as Aeneas's do, so the
+    # jar is reproducible.
     python3 -I - "$jar" "$JVM_RT" <<'PY'
 import os, sys, zipfile
 jar, rt = sys.argv[1], sys.argv[2]
@@ -93,7 +102,10 @@ with zipfile.ZipFile(jar, 'a') as z:
     have = set(z.namelist())
     for f in sorted(os.listdir(rt)):
         if f.endswith('.class') and f not in have:
-            z.write(os.path.join(rt, f), f)
+            info = zipfile.ZipInfo(f, date_time=(1980, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            with open(os.path.join(rt, f), 'rb') as data:
+                z.writestr(info, data.read())
 PY
     local options="-Xss$JVM_STACK"
     if [ -n "$heap" ]; then options="$options -Xmx$heap"; fi
@@ -101,6 +113,14 @@ PY
     # Workers have no inherited locale; use a UTF-8 locale on each host.
     local jvm_locale=C.UTF-8
     if [ "$(uname -s)" = Darwin ]; then jvm_locale=en_US.UTF-8; fi
+    jvm_locale=${JVM_LOCALE:-$jvm_locale}
+    # A development launcher names the JDK and jar by absolute path; a
+    # packaged one finds them from its own directory, so the package can move.
+    local java="'$java_home/bin/java'" jar_path="'$absolute'"
+    if [ -n "${JVM_BUNDLED_RUNTIME:-}" ]; then
+        java="\"\$dir/$JVM_BUNDLED_RUNTIME/bin/java\""
+        jar_path="\"\$dir/$name.jar\""
+    fi
     # The server starts its worker with an empty environment, so the launcher
     # sets PATH only for its own commands. As /proc/self/exe does natively, the
     # executable path that it passes resolves symlinks, so the worker and
@@ -117,7 +137,7 @@ while [ -h "\$self" ]; do
     case \$link in /*) self=\$link ;; *) self=\${self%/*}/\$link ;; esac
 done
 dir=\$(cd -P "\${self%/*}" && pwd -P) || exit 1
-exec '$java_home/bin/java' $options -Dvirgil.lsp.executable="\$dir/\${self##*/}" -jar '$absolute' "\$@"
+exec $java $options -Dvirgil.lsp.executable="\$dir/\${self##*/}" -jar $jar_path "\$@"
 EOF
     chmod +x "$output/$name"
 }

@@ -6,6 +6,7 @@
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import shutil
@@ -54,11 +55,63 @@ def stage(source, destination, revision):
         path.chmod(0o755 if path.is_dir() else 0o644)
 
 
+# The JVM package's own files beside the launchers.
+JVM_JARS = ('virgil-lsp.jar', 'virgil-lsp-worker.jar')
+
+
+def jvm_runtime():
+    """scripts/jvm-runtime.py, loaded once per process and shared with
+    vsix-payload.py, so that both check against the same pin."""
+    module = sys.modules.get('virgil_lsp_jvm_runtime')
+    if module is None:
+        spec = importlib.util.spec_from_file_location('virgil_lsp_jvm_runtime',
+                                                      Path(__file__).with_name('jvm-runtime.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules['virgil_lsp_jvm_runtime'] = module
+    return module
+
+
+def check_jvm(name, manifest, entries, modes, directories):
+    """Checks a JVM archive's platform, launchers, jars, modes, and runtime.
+    Returns the runtime's paths in the archive."""
+    runtime = jvm_runtime()
+    platform = manifest.get('platform')
+    if platform not in runtime.PLATFORMS:
+        raise ValueError(f'unknown JVM platform: {platform!r}')
+    if not name.endswith(f'-jvm-{platform}'):
+        raise ValueError(f'archive name does not end with -jvm-{platform}')
+    prefix = f'{name}/runtime/'
+    files = {key[len(prefix):]: (data, modes[key]) for key, data in entries.items()
+             if key.startswith(prefix)}
+    runtime.check(platform, files, manifest.get('runtime') or {})
+    for jar in JVM_JARS:
+        if sha(entries.get(f'{name}/{jar}', b'')) != manifest['sha256'].get(jar):
+            raise ValueError(f'{jar} checksum does not match the manifest')
+    for exe in ('virgil-lsp', 'virgil-lsp-worker'):
+        text = entries[f'{name}/{exe}'].decode('utf-8', 'replace')
+        # A development launcher names its JDK and jar by absolute path.
+        if (f'exec "$dir/runtime/bin/java" ' not in text or f' -jar "$dir/{exe}.jar" ' not in text
+                or "'/" in text):
+            raise ValueError(f'{exe} is not a relocatable launcher for runtime/ and {exe}.jar')
+    for key, mode in modes.items():
+        relative = key[len(name) + 1:]
+        if not relative.startswith('runtime/'):
+            want = 0o755 if relative in ('virgil-lsp', 'virgil-lsp-worker') else 0o644
+            if mode != want:
+                raise ValueError(f'{relative} has mode {mode:o}, not {want:o}')
+    for directory, mode in directories.items():
+        if mode != 0o755:
+            raise ValueError(f'directory {directory} has mode {mode:o}, not 755')
+    return {prefix + path for path in files}
+
+
 def check_archive(archive, revision):
     name = archive.name.removesuffix('.tar.gz')
     with tarfile.open(archive, 'r:gz') as tar:
         entries = {}
-        directories = set()
+        modes = {}
+        directories = {}
         for entry in tar.getmembers():
             path = PurePosixPath(entry.name)
             if (path.is_absolute() or '..' in path.parts or not path.parts
@@ -67,9 +120,10 @@ def check_archive(archive, revision):
             if entry.name.rstrip('/') in entries or entry.name.rstrip('/') in directories:
                 raise ValueError(f"duplicate archive member: {entry.name}")
             if entry.isdir():
-                directories.add(entry.name.rstrip('/'))
+                directories[entry.name.rstrip('/')] = entry.mode & 0o777
             elif entry.isfile():
                 entries[entry.name] = tar.extractfile(entry).read()
+                modes[entry.name] = entry.mode & 0o777
             else:
                 raise ValueError(f"unexpected archive entry: {entry.name}")
         manifest = json.loads(entries[f'{name}/manifest.json'])
@@ -92,12 +146,15 @@ def check_archive(archive, revision):
             'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'manifest.json',
             'virgil-lsp', 'virgil-lsp-worker')}
         expected.update(f'{name}/virgil/{p}' for p in files)
+        if manifest.get('target') == 'jvm':
+            expected.update(f'{name}/{jar}' for jar in JVM_JARS)
+            expected.update(check_jvm(name, manifest, entries, modes, directories))
         if set(entries) != expected:
             raise ValueError('archive files do not match the expected release layout')
         allowed_dirs = {name}
         for path in expected:
             allowed_dirs.update(str(p) for p in PurePosixPath(path).parents if str(p) != '.')
-        if not directories <= allowed_dirs:
+        if not set(directories) <= allowed_dirs:
             raise ValueError('archive has unexpected directories')
         for exe in ('virgil-lsp', 'virgil-lsp-worker'):
             if sha(entries[f'{name}/{exe}']) != manifest['sha256'][exe]:
@@ -144,7 +201,7 @@ def main():
             check_archive(args.archive, args.revision)
         else:
             archive(args.stage, args.output, args.epoch)
-    except (OSError, ValueError, KeyError, tarfile.TarError) as error:
+    except (OSError, ValueError, KeyError, UnicodeDecodeError, tarfile.TarError) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
     return 0

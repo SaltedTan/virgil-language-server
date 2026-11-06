@@ -23,7 +23,7 @@ const ErrorAction = { Continue: 1, Shutdown: 2 };
 const CloseAction = { DoNotRestart: 1, Restart: 2 };
 
 // `documents` are open in the editor, so each client opens them as it starts.
-function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [], extensions = [], target, missing, platform = process.platform, arch = process.arch } = {}) {
+function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [], extensions = [], target, backend, missing, platform = process.platform, arch = process.arch } = {}) {
   const openDocuments = [...new Set([...documents, ...diffEditors.flatMap(({ original, modified }) => [original, modified])])];
   const clients = [];
   const commands = new Map();
@@ -213,7 +213,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       if (name === 'node:fs/promises') return {
         readFile: async () => {
           if (target === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-          return JSON.stringify({ target });
+          return JSON.stringify(backend === undefined ? { target } : { target, backend });
         },
         realpath: async (file) => file,
         stat: async (file) => ({ isFile: () => file !== missing }),
@@ -670,6 +670,16 @@ test('Apple Silicon bundle explains its Rosetta requirement', async () => {
   await host.activate();
   assert.equal(host.clients[0].serverOptions.command, '/extension/server/virgil-lsp');
   assert.ok(host.messages.some((m) => m.includes('requires Rosetta 2')));
+  await host.extension.deactivate();
+});
+
+test('Apple Silicon JVM bundle says that it needs no Rosetta or Java', async () => {
+  const host = extensionHost({ settings: { 'virgil.server.path': '' }, target: 'darwin-arm64', backend: 'jvm',
+    platform: 'darwin', arch: 'arm64' });
+  await host.activate();
+  assert.equal(host.clients[0].serverOptions.command, '/extension/server/virgil-lsp');
+  assert.ok(!host.messages.some((m) => m.includes('requires Rosetta 2')));
+  assert.ok(host.messages.some((m) => m.includes('bundled Java runtime') && m.includes('no Rosetta 2')));
   await host.extension.deactivate();
 });
 

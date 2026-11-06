@@ -7,6 +7,9 @@
 # CHANGELOG.md must have a "## [<version>]" section. See docs/releasing.md.
 # Usage: check-release.sh <tag> [<repository-root>]
 #        check-release.sh --archive <archive>
+#        check-release.sh --runtime-source <file>
+# --runtime-source checks that a file is the pinned source archive of the JVM
+# archive's Java runtime (scripts/jvm-runtime.json), by name and SHA-256.
 set -euo pipefail
 
 # Archive verification is also used before extraction by the smoke test.
@@ -14,6 +17,10 @@ if [ "${1:-}" = --archive ]; then
     ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     pinned=$(git -C "$ROOT" rev-parse HEAD:vendor/virgil)
     exec python3 "$ROOT/scripts/release-library.py" check "${2:?usage: check-release.sh --archive <archive>}" "$pinned"
+fi
+if [ "${1:-}" = --runtime-source ]; then
+    ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    exec python3 "$ROOT/scripts/jvm-runtime.py" check-source "${2:?usage: check-release.sh --runtime-source <file>}"
 fi
 
 TAG=${1:?usage: check-release.sh <tag> [<repository-root>]}

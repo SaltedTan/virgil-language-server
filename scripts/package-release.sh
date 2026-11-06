@@ -20,6 +20,19 @@
 # VIRGIL, VIRGIL_V3C, V3C_TARGET, and WORKER_HEAP select the build as they do
 # for make (docs/development.md). The build runs in a new temporary directory,
 # so the manifest describes exactly what is packaged.
+#
+# V3C_TARGET=jvm packages the JVM build with a bundled Java runtime instead, as
+# virgil-lsp-<version>-jvm-<platform>.tar.gz: virgil-lsp and virgil-lsp-worker
+# are launchers that run virgil-lsp.jar and virgil-lsp-worker.jar beside them
+# on runtime/, the Temurin runtime that scripts/jvm-runtime.py links from the
+# pinned JDKs (scripts/jvm-runtime.json). JVM_PLATFORM selects the platform:
+# arm64-darwin, the release asset (the default), or x86-64-linux, for testing
+# the package on a Linux host. JVM_JDK_CACHE holds the downloaded JDK archives
+# (default build/jdk-cache). The pinned host JDK compiles the runtime classes,
+# so JAVA is not used. The JVM package also writes, and prints the path of,
+# the runtime's corresponding source archive, Adoptium's own
+# OpenJDK21U-jdk-sources_<version>.tar.gz for the pinned build, under its
+# upstream name; a release attaches it beside the archive.
 set -euo pipefail
 
 usage="usage: package-release.sh [--tag <tag>] [--allow-dirty] <output-directory>"
@@ -99,13 +112,30 @@ sha256() {
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-# Standard output is left for the paths of the files written.
-make --no-print-directory BUILD="$WORK/build" WORKER_HEAP="$worker_heap" all >&2
-
 name=virgil-lsp-$version-$target
+if [ "$target" = jvm ]; then
+    jvm_platform=${JVM_PLATFORM:-arm64-darwin}
+    case $jvm_platform in
+        arm64-darwin) jvm_locale=en_US.UTF-8 ;;
+        x86-64-linux) jvm_locale=C.UTF-8 ;;
+        *) echo "error: JVM_PLATFORM '$jvm_platform' is not arm64-darwin or x86-64-linux" >&2; exit 1 ;;
+    esac
+    name=$name-$jvm_platform
+    # Standard output is left for the paths of the files written.
+    java=$(python3 scripts/jvm-runtime.py prepare "$jvm_platform" "$WORK/jdk")
+    make --no-print-directory BUILD="$WORK/build" WORKER_HEAP="$worker_heap" JAVA="$java" \
+        JVM_BUNDLED_RUNTIME=runtime JVM_LOCALE="$jvm_locale" all >&2
+else
+    make --no-print-directory BUILD="$WORK/build" WORKER_HEAP="$worker_heap" all >&2
+fi
+
 stage=$WORK/stage/$name
 mkdir -p "$stage"
 cp "$WORK/build/virgil-lsp" "$WORK/build/virgil-lsp-worker" "$stage/"
+if [ "$target" = jvm ]; then
+    cp "$WORK/build/virgil-lsp.jar" "$WORK/build/virgil-lsp-worker.jar" "$stage/"
+    cp -R "$WORK/jdk/runtime" "$stage/runtime"
+fi
 cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 python3 scripts/release-library.py stage "$virgil" "$stage/virgil" "$virgil_revision"
 
@@ -119,12 +149,47 @@ basis: it isn't tested there."
 Macs run it under Rosetta 2, which you can install with
 \`softwareupdate --install-rosetta --agree-to-license\`."
         ;;
+    jvm)
+        case $jvm_platform in
+            arm64-darwin)
+                platform="Apple Silicon (arm64) Macs, with its own Java runtime, so that it needs
+neither Rosetta 2 nor an installed Java. This is the Java (JVM) build of the
+server." ;;
+            *)
+                platform="the \`$jvm_platform\` platform, with its own Java runtime. This is the Java
+(JVM) build of the server, for testing; it is not a release asset." ;;
+        esac
+        ;;
     *)
         platform="The \`$target\` target."
         ;;
 esac
+# The JVM package's own files, listed after the others; empty otherwise.
+label=$target
+jvm_files=
+if [ "$target" = jvm ]; then
+    label=jvm-$jvm_platform
+    runtime_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
+        scripts/jvm-runtime.json)
+    source_name=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["name"])' \
+        scripts/jvm-runtime.json)
+    source_sha256=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["sha256"])' \
+        scripts/jvm-runtime.json)
+    jvm_files="
+- \`virgil-lsp\` and \`virgil-lsp-worker\` are launcher scripts. They run
+  \`virgil-lsp.jar\` and \`virgil-lsp-worker.jar\` beside them on \`runtime/\`, an
+  Eclipse Temurin $runtime_version Java runtime with only the \`java.base\` module.
+  Keep all of them together. \`runtime/legal/\` holds the runtime's license
+  notices: GPLv2 with the Classpath Exception, and the notices of the
+  libraries it includes. No Java installation is needed or used.
+- The runtime's corresponding source is attached to the same GitHub release
+  as this archive: \`$source_name\`, SHA-256
+  \`$source_sha256\`, Eclipse Adoptium's
+  source archive for this build. \`THIRD_PARTY_NOTICES.md\` gives its upstream
+  tag and release, and \`manifest.json\` records the \`jlink\` options."
+fi
 cat > "$stage/README.md" <<README
-# virgil-lsp $version ($target)
+# virgil-lsp $version ($label)
 
 The [Virgil Language Server](https://github.com/SaltedTan/virgil-language-server),
 an unofficial language server for the Virgil programming language, for
@@ -139,7 +204,7 @@ $platform
 - \`manifest.json\` records the version, the exact server and Virgil revisions,
   and how the executables were built.
 - \`LICENSE\` and \`THIRD_PARTY_NOTICES.md\` cover the server and the Virgil
-  compiler and libraries compiled into it.
+  compiler and libraries compiled into it.$jvm_files
 
 To install:
 
@@ -164,7 +229,7 @@ case $compiler in
 esac
 python3 - "$stage/manifest.json" "$version" "$tag" "$target" "$revision" "$dirty" \
     "$virgil_revision" "$worker_heap" "$compiler_path" "$(sha256 "$compiler")" \
-    "$(sha256 "$stage/virgil-lsp")" "$(sha256 "$stage/virgil-lsp-worker")" <<'PY'
+    "$(sha256 "$stage/virgil-lsp")" "$(sha256 "$stage/virgil-lsp-worker")" "${jvm_platform:-}" <<'PY'
 import json, sys
 from pathlib import Path
 import importlib.util
@@ -172,7 +237,7 @@ spec = importlib.util.spec_from_file_location("release_library", "scripts/releas
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 (out, version, tag, target, revision, dirty, virgil_revision, worker_heap,
- compiler_path, compiler_sha256, server_sha256, worker_sha256) = sys.argv[1:]
+ compiler_path, compiler_sha256, server_sha256, worker_sha256, platform) = sys.argv[1:]
 manifest = {
     "manifestVersion": 1,
     "name": "virgil-lsp",
@@ -187,6 +252,16 @@ manifest = {
     "compiler": {"path": compiler_path, "sha256": compiler_sha256},
     "sha256": {"virgil-lsp": server_sha256, "virgil-lsp-worker": worker_sha256},
 }
+if target == "jvm":
+    # The JVM package's platform, bundled runtime, and jars.
+    spec = importlib.util.spec_from_file_location("jvm_runtime", "scripts/jvm-runtime.py")
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    stage = Path(out).parent
+    manifest["platform"] = platform
+    manifest["runtime"] = runtime.metadata(platform, stage / "runtime")
+    for jar in ("virgil-lsp.jar", "virgil-lsp-worker.jar"):
+        manifest["sha256"][jar] = module.sha((stage / jar).read_bytes())
 with open(out, "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
@@ -194,8 +269,14 @@ PY
 
 chmod 755 "$stage" "$stage/virgil-lsp" "$stage/virgil-lsp-worker"
 chmod 644 "$stage/LICENSE" "$stage/THIRD_PARTY_NOTICES.md" "$stage/README.md" "$stage/manifest.json"
+if [ "$target" = jvm ]; then
+    chmod 644 "$stage/virgil-lsp.jar" "$stage/virgil-lsp-worker.jar"
+fi
 # Normalize ordering, ownership, mtimes, and the gzip header on Linux/macOS.
 python3 scripts/release-library.py archive "$stage" "$OUT/$name.tar.gz" "$(git show -s --format=%ct HEAD)"
 cp "$stage/manifest.json" "$OUT/$name.manifest.json"
 echo "$OUT/$name.tar.gz"
 echo "$OUT/$name.manifest.json"
+if [ "$target" = jvm ]; then
+    python3 scripts/jvm-runtime.py source "$OUT"
+fi
