@@ -40,8 +40,8 @@ if [ ! -x "$VIRGIL/bin/dev/sense_host" ]; then
 fi
 
 # The JVM stack size for both programs, and the worker's heap from the
-# Makefile's WORKER_HEAP, are provisional: the probe for #191 chose them, and
-# #463 measures them.
+# Makefile's WORKER_HEAP, are provisional; see docs/testing-notes/jvm-memory.md
+# for the measurements and proposal awaiting the maintainer's decision.
 JVM_STACK=16m
 
 # Compiles a jar and writes its launcher; see the header.
