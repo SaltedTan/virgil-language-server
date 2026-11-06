@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "status": "proposed",
-  "approval": null,
+  "status": "approved",
+  "approval": "Approved as proposed by the maintainer (SaltedTan) on 2026-11-06, #347",
   "issue": "https://github.com/SaltedTan/virgil-language-server/issues/347",
-  "note": "Starting values from #347, proposed and not approved. Until the maintainer approves this file and sets the workflow's RESOURCE_CHECKS to enforce, the scheduled comparison reports these verdicts and never fails on them. See docs/benchmarks.md#resource-checks.",
+  "note": "Starting values from #347, approved as proposed on 2026-11-06. The scheduled comparison enforces them. See docs/benchmarks.md#resource-checks.",
   "options": {
     "error_result": false,
     "typing_burst": false,
@@ -11,11 +11,18 @@
     "first_semantic": false,
     "parse_work": false
   },
-  "projects": ["small", "util", "aeneas"],
+  "projects": [
+    "small",
+    "util",
+    "aeneas"
+  ],
   "groups": [
     {
       "name": "clean_analysis",
-      "scenarios": ["fresh_analysis", "reused_analysis"],
+      "scenarios": [
+        "fresh_analysis",
+        "reused_analysis"
+      ],
       "required": true,
       "allocation_increase": 0.05,
       "new_worker_gc": "fail",
@@ -23,7 +30,11 @@
     },
     {
       "name": "query_analysis",
-      "scenarios": ["completion_miss", "rename", "semantic_diagnostic"],
+      "scenarios": [
+        "completion_miss",
+        "rename",
+        "semantic_diagnostic"
+      ],
       "required": true,
       "allocation_increase": 0.05,
       "new_worker_gc": "warn",
@@ -31,7 +42,9 @@
     },
     {
       "name": "diagnostic_heavy",
-      "scenarios": ["error_analysis"],
+      "scenarios": [
+        "error_analysis"
+      ],
       "required": false,
       "allocation_increase": null,
       "new_worker_gc": "report",
@@ -49,5 +62,624 @@
     "refresh_analysis": "Not in the scheduled options."
   },
   "headroom_warning_bytes": 2097152,
-  "baselines": []
+  "baselines": [
+    {
+      "approval": "by the maintainer (SaltedTan) on 2026-11-06 with #347's policy, from benchmark run 42164416033 on main",
+      "source": {
+        "revision": "f15ec42f802f0bdcc756ea2defffd3da9f98e215",
+        "started_utc": "2026-11-06T04:46:12.391438+00:00",
+        "host": "AMD EPYC 7763 64-Core Processor",
+        "samples": {
+          "blocks": 3,
+          "operations": 5,
+          "warmups": 2,
+          "error_result": false,
+          "typing_burst": false,
+          "inlay_refresh": false,
+          "first_semantic": false,
+          "parse_work": false
+        }
+      },
+      "compatibility": {
+        "virgil_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214",
+        "compiler_sha256": "5cb4a2f5e0133fd0fb7ec94f1c938da8560964bad99f1f4ba06252788efac65e",
+        "corpus_sha256": "b2204f108da69144d4d2769e562082244e78533e8f3c578fdc6cf210cd951145",
+        "target": "x86-64-linux",
+        "benchmark_probes": true,
+        "worker_heap": "384m",
+        "worker_heap_bytes": 402653184,
+        "server_heap": "runtime default (200 MiB at the pinned revision)",
+        "root_bytes": 71,
+        "build_dir_bytes": 53,
+        "options": {
+          "error_result": false,
+          "typing_burst": false,
+          "inlay_refresh": false,
+          "first_semantic": false,
+          "parse_work": false
+        }
+      },
+      "scenarios": {
+        "aeneas/completion_miss": {
+          "allocated_bytes": {
+            "min": 145550064,
+            "median": 145563280,
+            "max": 145563344
+          },
+          "result_bytes": {
+            "min": 62959,
+            "median": 62959,
+            "max": 62959
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 52489656,
+          "ceiling": {
+            "allocated_bytes": 152841444,
+            "worker_gc": null
+          }
+        },
+        "aeneas/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 188288512,
+            "median": 188288512,
+            "max": 188288512
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9945008,
+          "ceiling": {
+            "allocated_bytes": 197702938,
+            "worker_gc": 0
+          }
+        },
+        "aeneas/rename": {
+          "allocated_bytes": {
+            "min": 188114808,
+            "median": 188127576,
+            "max": 188131256
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9921752,
+          "ceiling": {
+            "allocated_bytes": 197533955,
+            "worker_gc": null
+          }
+        },
+        "aeneas/reused_analysis": {
+          "allocated_bytes": {
+            "min": 188115128,
+            "median": 188124984,
+            "max": 188128408
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9924600,
+          "ceiling": {
+            "allocated_bytes": 197531234,
+            "worker_gc": 0
+          }
+        },
+        "aeneas/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 185247296,
+            "median": 185249248,
+            "max": 185255968
+          },
+          "result_bytes": {
+            "min": 4379621,
+            "median": 4379621,
+            "max": 4379621
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 12797000,
+          "ceiling": {
+            "allocated_bytes": 194511711,
+            "worker_gc": null
+          }
+        },
+        "small/completion_miss": {
+          "allocated_bytes": {
+            "min": 64232,
+            "median": 64232,
+            "max": 64232
+          },
+          "result_bytes": {
+            "min": 284,
+            "median": 284,
+            "max": 284
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201260296,
+          "ceiling": {
+            "allocated_bytes": 67444,
+            "worker_gc": null
+          }
+        },
+        "small/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 56464,
+            "median": 56464,
+            "max": 56464
+          },
+          "result_bytes": {
+            "min": 651,
+            "median": 651,
+            "max": 651
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201268952,
+          "ceiling": {
+            "allocated_bytes": 59288,
+            "worker_gc": 0
+          }
+        },
+        "small/rename": {
+          "allocated_bytes": {
+            "min": 55440,
+            "median": 55440,
+            "max": 55440
+          },
+          "result_bytes": {
+            "min": 665,
+            "median": 665,
+            "max": 666
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201269080,
+          "ceiling": {
+            "allocated_bytes": 58212,
+            "worker_gc": null
+          }
+        },
+        "small/reused_analysis": {
+          "allocated_bytes": {
+            "min": 55384,
+            "median": 55384,
+            "max": 55384
+          },
+          "result_bytes": {
+            "min": 651,
+            "median": 651,
+            "max": 651
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201269144,
+          "ceiling": {
+            "allocated_bytes": 58154,
+            "worker_gc": 0
+          }
+        },
+        "small/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 58824,
+            "median": 58824,
+            "max": 58824
+          },
+          "result_bytes": {
+            "min": 885,
+            "median": 885,
+            "max": 886
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201265672,
+          "ceiling": {
+            "allocated_bytes": 61766,
+            "worker_gc": null
+          }
+        },
+        "util/completion_miss": {
+          "allocated_bytes": {
+            "min": 8083336,
+            "median": 8084680,
+            "max": 8084840
+          },
+          "result_bytes": {
+            "min": 4449,
+            "median": 4449,
+            "max": 4449
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 193031352,
+          "ceiling": {
+            "allocated_bytes": 8488914,
+            "worker_gc": null
+          }
+        },
+        "util/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 9799528,
+            "median": 9799528,
+            "max": 9799528
+          },
+          "result_bytes": {
+            "min": 178086,
+            "median": 178086,
+            "max": 178087
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191361552,
+          "ceiling": {
+            "allocated_bytes": 10289505,
+            "worker_gc": 0
+          }
+        },
+        "util/rename": {
+          "allocated_bytes": {
+            "min": 9749616,
+            "median": 9761840,
+            "max": 9768432
+          },
+          "result_bytes": {
+            "min": 178125,
+            "median": 178125,
+            "max": 178126
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191347736,
+          "ceiling": {
+            "allocated_bytes": 10249932,
+            "worker_gc": null
+          }
+        },
+        "util/reused_analysis": {
+          "allocated_bytes": {
+            "min": 9747704,
+            "median": 9751768,
+            "max": 9762760
+          },
+          "result_bytes": {
+            "min": 178085,
+            "median": 178085,
+            "max": 178086
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191353440,
+          "ceiling": {
+            "allocated_bytes": 10239357,
+            "worker_gc": 0
+          }
+        },
+        "util/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 9594616,
+            "median": 9598968,
+            "max": 9614952
+          },
+          "result_bytes": {
+            "min": 178318,
+            "median": 178318,
+            "max": 178318
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191501208,
+          "ceiling": {
+            "allocated_bytes": 10078917,
+            "worker_gc": null
+          }
+        }
+      }
+    },
+    {
+      "approval": "by the maintainer (SaltedTan) on 2026-11-06 with #347's policy, from benchmark run 42164416033 on main",
+      "source": {
+        "revision": "f15ec42f802f0bdcc756ea2defffd3da9f98e215",
+        "started_utc": "2026-11-06T04:46:47.714529+00:00",
+        "host": "Apple M1 (Virtual)",
+        "samples": {
+          "blocks": 3,
+          "operations": 5,
+          "warmups": 2,
+          "error_result": false,
+          "typing_burst": false,
+          "inlay_refresh": false,
+          "first_semantic": false,
+          "parse_work": false
+        }
+      },
+      "compatibility": {
+        "virgil_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214",
+        "compiler_sha256": "034965176ded68f01bc8ecf8250ed9788e9ff648a2f43451b13810142a9fd1f1",
+        "corpus_sha256": "b2204f108da69144d4d2769e562082244e78533e8f3c578fdc6cf210cd951145",
+        "target": "x86-64-darwin",
+        "benchmark_probes": true,
+        "worker_heap": "384m",
+        "worker_heap_bytes": 402653184,
+        "server_heap": "runtime default (200 MiB at the pinned revision)",
+        "root_bytes": 72,
+        "build_dir_bytes": 54,
+        "options": {
+          "error_result": false,
+          "typing_burst": false,
+          "inlay_refresh": false,
+          "first_semantic": false,
+          "parse_work": false
+        }
+      },
+      "scenarios": {
+        "aeneas/completion_miss": {
+          "allocated_bytes": {
+            "min": 145550264,
+            "median": 145563480,
+            "max": 145563544
+          },
+          "result_bytes": {
+            "min": 62959,
+            "median": 62959,
+            "max": 62959
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 52489248,
+          "ceiling": {
+            "allocated_bytes": 152841654,
+            "worker_gc": null
+          }
+        },
+        "aeneas/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 188288712,
+            "median": 188288712,
+            "max": 188288712
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9944600,
+          "ceiling": {
+            "allocated_bytes": 197703148,
+            "worker_gc": 0
+          }
+        },
+        "aeneas/rename": {
+          "allocated_bytes": {
+            "min": 188115008,
+            "median": 188127776,
+            "max": 188131456
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9921344,
+          "ceiling": {
+            "allocated_bytes": 197534165,
+            "worker_gc": null
+          }
+        },
+        "aeneas/reused_analysis": {
+          "allocated_bytes": {
+            "min": 188115328,
+            "median": 188125184,
+            "max": 188128608
+          },
+          "result_bytes": {
+            "min": 4379351,
+            "median": 4379351,
+            "max": 4379351
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 9924192,
+          "ceiling": {
+            "allocated_bytes": 197531444,
+            "worker_gc": 0
+          }
+        },
+        "aeneas/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 185247496,
+            "median": 185249448,
+            "max": 185256168
+          },
+          "result_bytes": {
+            "min": 4379622,
+            "median": 4379622,
+            "max": 4379622
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 12796592,
+          "ceiling": {
+            "allocated_bytes": 194511921,
+            "worker_gc": null
+          }
+        },
+        "small/completion_miss": {
+          "allocated_bytes": {
+            "min": 64232,
+            "median": 64232,
+            "max": 64232
+          },
+          "result_bytes": {
+            "min": 285,
+            "median": 285,
+            "max": 286
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201260288,
+          "ceiling": {
+            "allocated_bytes": 67444,
+            "worker_gc": null
+          }
+        },
+        "small/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 56464,
+            "median": 56464,
+            "max": 56472
+          },
+          "result_bytes": {
+            "min": 654,
+            "median": 654,
+            "max": 657
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201268944,
+          "ceiling": {
+            "allocated_bytes": 59288,
+            "worker_gc": 0
+          }
+        },
+        "small/rename": {
+          "allocated_bytes": {
+            "min": 55440,
+            "median": 55440,
+            "max": 55440
+          },
+          "result_bytes": {
+            "min": 667,
+            "median": 667,
+            "max": 668
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201269072,
+          "ceiling": {
+            "allocated_bytes": 58212,
+            "worker_gc": null
+          }
+        },
+        "small/reused_analysis": {
+          "allocated_bytes": {
+            "min": 55384,
+            "median": 55384,
+            "max": 55384
+          },
+          "result_bytes": {
+            "min": 651,
+            "median": 652,
+            "max": 654
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201269144,
+          "ceiling": {
+            "allocated_bytes": 58154,
+            "worker_gc": 0
+          }
+        },
+        "small/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 58824,
+            "median": 58832,
+            "max": 58832
+          },
+          "result_bytes": {
+            "min": 888,
+            "median": 889,
+            "max": 889
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 201265664,
+          "ceiling": {
+            "allocated_bytes": 61774,
+            "worker_gc": null
+          }
+        },
+        "util/completion_miss": {
+          "allocated_bytes": {
+            "min": 8083392,
+            "median": 8084736,
+            "max": 8084896
+          },
+          "result_bytes": {
+            "min": 4449,
+            "median": 4450,
+            "max": 4450
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 193031264,
+          "ceiling": {
+            "allocated_bytes": 8488973,
+            "worker_gc": null
+          }
+        },
+        "util/fresh_analysis": {
+          "allocated_bytes": {
+            "min": 9799584,
+            "median": 9799584,
+            "max": 9799584
+          },
+          "result_bytes": {
+            "min": 178088,
+            "median": 178088,
+            "max": 178088
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191361464,
+          "ceiling": {
+            "allocated_bytes": 10289564,
+            "worker_gc": 0
+          }
+        },
+        "util/rename": {
+          "allocated_bytes": {
+            "min": 9749672,
+            "median": 9761896,
+            "max": 9768488
+          },
+          "result_bytes": {
+            "min": 178126,
+            "median": 178126,
+            "max": 178127
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191347648,
+          "ceiling": {
+            "allocated_bytes": 10249991,
+            "worker_gc": null
+          }
+        },
+        "util/reused_analysis": {
+          "allocated_bytes": {
+            "min": 9747760,
+            "median": 9751824,
+            "max": 9762816
+          },
+          "result_bytes": {
+            "min": 178086,
+            "median": 178086,
+            "max": 178088
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191353352,
+          "ceiling": {
+            "allocated_bytes": 10239416,
+            "worker_gc": 0
+          }
+        },
+        "util/semantic_diagnostic": {
+          "allocated_bytes": {
+            "min": 9594680,
+            "median": 9599032,
+            "max": 9615016
+          },
+          "result_bytes": {
+            "min": 178320,
+            "median": 178321,
+            "max": 178322
+          },
+          "worker_gc_max": 0,
+          "room_bytes": 191501112,
+          "ceiling": {
+            "allocated_bytes": 10078984,
+            "worker_gc": null
+          }
+        }
+      }
+    }
+  ]
 }

@@ -1361,17 +1361,20 @@ same `comparison.json` with the resource policy in
 [`test/benchmarks/resource-policy.json`](../test/benchmarks/resource-policy.json)
 ([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)). It
 adds a "Resource checks" table to the job summary, writes it to `resources.md`
-in the artifact, and emits warning annotations. It reads only the probes; it
-uses no timing, so a timing-only change never changes its verdicts.
+in the artifact, and emits warning or error annotations. It reads only the
+probes; it uses no timing, so a timing-only change never changes its verdicts.
 
-**The policy is proposed, not approved.** Its thresholds are the starting values
-from #347, which the maintainer hasn't approved, and the step runs with
-`RESOURCE_CHECKS: report`: every verdict is reported, a would-fail verdict as
-`WOULD FAIL` with a "Resource check (would fail)" warning annotation, and the
-step never fails the job. If the check can't run at all, for example because
-the policy file is missing or malformed, report mode says so in the summary and
-a warning annotation and still exits successfully. Benchmark correctness
-failures in the "Build and compare" step still fail the job.
+**The policy is approved and enforced.** The maintainer approved #347's starting
+values as proposed on 2026-11-06, and the step runs with
+`RESOURCE_CHECKS: enforce`: a failed check fails the job, with a "Resource
+check" error annotation, and warnings stay warnings. A check that can't run at
+all, for example because the policy file is missing or malformed, also fails
+the job in enforce mode. With `RESOURCE_CHECKS: report`, every verdict is
+reported instead, a would-fail verdict as `WOULD FAIL` with a "Resource check
+(would fail)" warning annotation; the step never fails the job, and a check
+that can't run is reported in the summary and a warning annotation. Benchmark
+correctness failures in the "Build and compare" step fail the job in either
+mode.
 
 **Qualification.** Each build needs explicit compatibility metadata: the Virgil
 revision from `--version`, the compiler's SHA-256, the corpus SHA-256, the
@@ -1395,15 +1398,15 @@ differ.
 **Checks.** For each project and policy scenario, the step compares the median
 worker allocation and RESULT bytes over measured transactions, and counts
 in-handle worker collections, which exclude the explicit collections before and
-after sending. The policy's starting values:
+after sending. The policy's approved values:
 
 | Group | Scenarios | Allocation increase | New in-handle worker collection |
 | --- | --- | --- | --- |
 | `clean_analysis` | `fresh_analysis`, `reused_analysis` | Over 5%: fail | Fail, if the base had none |
 | `query_analysis` | `completion_miss`, `rename`, `semantic_diagnostic` | Over 5%: fail | Warning |
-| `diagnostic_heavy` | `error_analysis`, which the schedule doesn't run | Reported only; #347 proposes no allowance | Reported only |
+| `diagnostic_heavy` | `error_analysis`, which the schedule doesn't run | Reported only; no allowance | Reported only |
 
-RESULT bytes are reported with no limit, as #347 proposes none. The room left
+RESULT bytes are reported with no limit under the approved policy. The room left
 in the worker's semispace after handling, which is half the reported
 `worker_heap_bytes` minus the largest `heap_after_handle_bytes`, warns under
 2 MiB and never fails. A case that collected during handling shows `collected`
@@ -1434,12 +1437,17 @@ it to `baselines`; the step ignores a baseline without an approval. A pin or
 feature change that legitimately grows the result needs that review and a new
 approved baseline, not regenerated numbers to make the check pass.
 
-**Enabling the gate.** After the maintainer approves the policy, set its
-`status` to `approved` and record the approval in `approval`, then change
-`RESOURCE_CHECKS: report` to `RESOURCE_CHECKS: enforce` in the workflow. That
-one line makes a failed check fail the job, with error annotations.
-`--mode enforce` refuses a policy that isn't approved. The workflow change
-needs a human merge.
+**The gate.** The policy's `status` is `approved` and its `approval` records
+the maintainer's approval, and the workflow sets `RESOURCE_CHECKS: enforce`.
+`--mode enforce` refuses a policy that isn't approved. The policy holds two
+approved baselines, for the `x86-64-linux` and `x86-64-darwin` CI builds,
+generated with `--resource-baseline` from the scheduled workflow's
+`workflow_dispatch` run 42164416033 on `main` at `f15ec42f`, which compared
+`f15ec42f` with itself; their measurements and ceilings were not edited by
+hand. Their approval strings record the policy approval; the maintainer's
+merge of the baseline addition approves the values. Changing the thresholds,
+or setting `RESOURCE_CHECKS` back to `report`, needs the maintainer's approval,
+and the workflow change needs a human merge.
 
 **Calibration (2026-11-03).** On the reference host, three local
 `bench-compare.py` runs with the same revision as base and new
