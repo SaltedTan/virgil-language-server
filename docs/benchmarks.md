@@ -1398,15 +1398,15 @@ differ.
 **Checks.** For each project and policy scenario, the step compares the median
 worker allocation and RESULT bytes over measured transactions, and counts
 in-handle worker collections, which exclude the explicit collections before and
-after sending. The policy's starting values:
+after sending. The policy's approved values:
 
 | Group | Scenarios | Allocation increase | New in-handle worker collection |
 | --- | --- | --- | --- |
 | `clean_analysis` | `fresh_analysis`, `reused_analysis` | Over 5%: fail | Fail, if the base had none |
 | `query_analysis` | `completion_miss`, `rename`, `semantic_diagnostic` | Over 5%: fail | Warning |
-| `diagnostic_heavy` | `error_analysis`, which the schedule doesn't run | Reported only; #347 proposes no allowance | Reported only |
+| `diagnostic_heavy` | `error_analysis`, which the schedule doesn't run | Reported only; no allowance | Reported only |
 
-RESULT bytes are reported with no limit, as #347 proposes none. The room left
+RESULT bytes are reported with no limit under the approved policy. The room left
 in the worker's semispace after handling, which is half the reported
 `worker_heap_bytes` minus the largest `heap_after_handle_bytes`, warns under
 2 MiB and never fails. A case that collected during handling shows `collected`
