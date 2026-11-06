@@ -183,6 +183,16 @@ public class V3SSystemTest {
         return new String(b, StandardCharsets.UTF_8);
     }
 
+    // A TreeSet's toString, as the child's environment mode writes it.
+    static TreeSet<String> treeSet(String s) {
+        check(s.startsWith("[") && s.endsWith("]"), "not a set: " + s);
+        TreeSet<String> keys = new TreeSet<String>();
+        String body = s.substring(1, s.length() - 1);
+        if (body.isEmpty()) return keys;
+        for (String key : body.split(", ")) keys.add(key);
+        return keys;
+    }
+
     // A command name: byte 1, the operation, and each argument after a 0.
     static byte[] name(String op, Object... args) {
         ByteArrayOutputStream b = new ByteArrayOutputStream();
@@ -336,6 +346,21 @@ public class V3SSystemTest {
         argv.add("child");
         argv.addAll(Arrays.asList(mode));
         return argv.toArray(new String[0]);
+    }
+
+    // Variables that a child's own runtime adds after spawn cleared its
+    // environment, which are not inherited from this process. macOS adds
+    // __CF_USER_TEXT_ENCODING to a child JVM, and macOS JDK launchers before 18
+    // set JAVA_MAIN_CLASS_<its own pid> in the child at startup (later JDKs
+    // no longer do). Every other variable must be absent.
+    static Set<String> childRuntimeEnvironmentAdditions(int pid) {
+        Set<String> names = new HashSet<String>();
+        String host = System.getProperty("os.name");
+        if (host.equals("Mac OS X") || host.equals("Darwin")) {
+            names.add("__CF_USER_TEXT_ENCODING");
+            names.add("JAVA_MAIN_CLASS_" + pid);
+        }
+        return names;
     }
 
     static Worker start(String... mode) {
@@ -781,11 +806,17 @@ public class V3SSystemTest {
         });
         test("children: the child's environment holds only the descriptor layout", () -> {
             Worker w = start("environment");
-            TreeSet<String> expected = new TreeSet<String>();
-            expected.add(V3S_System.LAYOUT_ENV);
-            // macOS adds this variable to child JVMs even when the parent environment is cleared.
-            if (System.getProperty("os.name").equals("Mac OS X")) expected.add("__CF_USER_TEXT_ENCODING");
-            eq(expected.toString(), text(readFully(w.results, -1, 20000)), "environment");
+            TreeSet<String> got = treeSet(text(readFully(w.results, -1, 20000)));
+            check(got.remove(V3S_System.LAYOUT_ENV), "the child lacks " + V3S_System.LAYOUT_ENV + ": " + got);
+            // spawn cleared the environment, but the child's own runtime can add
+            // to it after the child starts. Allow exactly those additions, then
+            // require that nothing from this process was inherited and that no
+            // other variable appeared.
+            got.removeAll(childRuntimeEnvironmentAdditions(w.pid));
+            TreeSet<String> inherited = new TreeSet<String>(got);
+            inherited.retainAll(System.getenv().keySet());
+            check(inherited.isEmpty(), "the child inherited parent variables: " + inherited);
+            eq(new TreeSet<String>(), got, "the child's environment");
             cmd("close", w.requests);
             cmd("close", w.results);
             eq(0, cmd("wait", w.pid), "wait status");
