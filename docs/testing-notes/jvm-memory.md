@@ -288,7 +288,9 @@ The server's residuals are its peaks minus 128 MiB across the five Serial-capped
 
 ## Reproduce
 
-On the Mac, from a checkout at the measured revision with `vendor/virgil` initialized, with the jars that `make jvm` built in `build/jvm-target` and the runtime in `~/virgil-jvm-463/rt21`:
+The JSON session field `summary.workers` counts workers started to serve the requested analyses; a retirement after the final analysis does not count an unstarted replacement. In each configuration's `flags`, the server probe inherits the calling environment and the worker probe uses an empty environment, matching worker launches. Environment options such as `JAVA_TOOL_OPTIONS` therefore affect only the server probe.
+
+On the Mac, with this change's `scripts/jvm-memory.py` copied into a checkout at the measured revision, `vendor/virgil` initialized, the jars that `make jvm` built in `build/jvm-target`, and the runtime in `~/virgil-jvm-463/rt21`:
 
 ```sh
 J=~/virgil-jvm-463/rt21/bin/java
