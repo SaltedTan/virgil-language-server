@@ -52,6 +52,7 @@ import java.util.regex.Pattern;
  * <p>JVM limitation: on macOS, where the provider does not supply a
  * {@link SecureDirectoryStream}, directory operations use canonical paths and
  * {@code fileKey()} identity checks instead of descriptor-relative operations.
+ * An unavailable file key fails closed with ENOTSUP.
  * A check detects a replaced directory only if the replacement is still in
  * place when the check runs. Java has no atomic path-relative, no-follow
  * directory open, so a local process can swap a directory or ancestor for a
@@ -69,7 +70,9 @@ import java.util.regex.Pattern;
  * <li>{@code null}: a descriptor that reads as empty, as /dev/null.
  * <li>{@code openRead path}: a regular file opened for reading, following
  *     symlinks; EISDIR for a directory, EINVAL for other kinds of file.
- * <li>{@code openDirectory path}: a directory, following symlinks.
+ * <li>{@code openDirectory path}: a directory, following symlinks. The macOS
+ *     path fallback can return ESTALE (116) when an identity check finds a
+ *     replaced directory.
  * <li>{@code openAt fd name directory}: the entry {@code name} of directory
  *     {@code fd}, checking the final component for a symlink as with openat
  *     O_NOFOLLOW (and O_DIRECTORY if {@code directory} is 1): ELOOP for a
