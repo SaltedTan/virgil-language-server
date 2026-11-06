@@ -492,10 +492,10 @@ can run in CI or scheduled runs as-is:
 
 The [resource checks](benchmarks.md#resource-checks) of the scheduled
 comparison check worker allocation, RESULT bytes, and worker collections
-under a proposed policy of
-[#347](https://github.com/SaltedTan/virgil-language-server/issues/347). They
-report only, and never fail the job, until the maintainer approves that
-policy.
+under the policy of
+[#347](https://github.com/SaltedTan/virgil-language-server/issues/347), which
+the maintainer approved as proposed on 2026-11-06. They are enforced: a failed
+check fails the scheduled job.
 
 **Calibrated absolute reference-run checks** compare p50/p95 latency and RSS
 against the targets above. They are meaningful only on the reference host

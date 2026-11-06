@@ -222,18 +222,42 @@ class ResourceTest(unittest.TestCase):
                                "--resources", directory / "policy.json", "--mode", mode, "--annotations"],
                               text=True, capture_output=True)
 
-    def test_reviewed_policy_is_proposed_and_covers_the_scheduled_scenarios(self):
-        self.assertEqual((self.policy["status"], self.policy["approval"], self.policy["baselines"]), ("proposed", None, []))
+    def test_reviewed_policy_is_approved_and_covers_the_scheduled_scenarios(self):
+        # The maintainer approved the starting values as proposed (#347).
+        self.assertEqual(self.policy["status"], "approved")
+        self.assertIn("#347", self.policy["approval"])
+        report.load_policy(self.policy)
         groups = {group["name"]: group for group in self.policy["groups"]}
         self.assertEqual((groups["clean_analysis"]["allocation_increase"], groups["clean_analysis"]["new_worker_gc"]),
                          (0.05, "fail"))
         self.assertEqual(self.policy["headroom_warning_bytes"], 2 * 1024 * 1024)
         self.assertEqual(set(report.SCENARIOS), {s for g in groups.values() if g["required"] for s in g["scenarios"]}
                          | set(self.policy["excluded"]) - {"typing_burst", "refresh_analysis"})
+        proposed = {**self.policy, "status": "proposed", "approval": None}
         with self.assertRaisesRegex(ValueError, "not approved"):
-            report.resources(self.result, self.policy, enforce=True)
+            report.resources(self.result, proposed, enforce=True)
         with self.assertRaisesRegex(ValueError, "approval"):
-            report.load_policy({**self.policy, "status": "approved"})
+            report.load_policy({**self.policy, "approval": None})
+
+    def test_shipped_baselines_are_approved_generator_output_for_both_ci_targets(self):
+        # One approved baseline per CI target, each covering every required
+        # scenario of every project, with the ceilings resource_baseline() derives:
+        # the median plus the group's allowance, and no collection where a new one fails.
+        baselines = self.policy["baselines"]
+        self.assertEqual(sorted(b["compatibility"]["target"] for b in baselines), ["x86-64-darwin", "x86-64-linux"])
+        groups = report.load_policy(self.policy)
+        required = {f"{project}/{scenario}" for project in self.policy["projects"]
+                    for scenario, group in groups.items() if group["required"]}
+        for baseline in baselines:
+            self.assertTrue(baseline["approval"])
+            self.assertEqual(baseline["compatibility"]["options"], self.policy["options"])
+            self.assertEqual(set(baseline["scenarios"]), required)
+            for name, case in baseline["scenarios"].items():
+                group = groups[name.split("/", 1)[1]]
+                self.assertEqual(case["ceiling"]["allocated_bytes"],
+                                 math.ceil(case["allocated_bytes"]["median"] * (1 + group["allocation_increase"])), name)
+                self.assertEqual(case["ceiling"]["worker_gc"],
+                                 0 if group["new_worker_gc"] == "fail" and case["worker_gc_max"] == 0 else None, name)
 
     def test_same_build_reports_only_the_pending_baseline(self):
         text, verdicts, _ = self.check()
@@ -269,7 +293,7 @@ class ResourceTest(unittest.TestCase):
         result = self.cli(self.result)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("::warning title=Resource check (would fail)::aeneas/fresh_analysis: worker allocation +6.00%25", result.stderr)
-        refused = self.cli(self.result, mode="enforce")
+        refused = self.cli(self.result, {**self.policy, "status": "proposed", "approval": None}, mode="enforce")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("not approved", refused.stderr)
         enforced = self.cli(self.result, approved(self.policy), mode="enforce")

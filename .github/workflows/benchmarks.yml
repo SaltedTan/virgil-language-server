@@ -78,9 +78,10 @@ jobs:
       - name: Check resources
         if: hashFiles('results/comparison.json') != ''
         env:
-          # report: never fails. Set to enforce only after the maintainer approves
-          # test/benchmarks/resource-policy.json (#347).
-          RESOURCE_CHECKS: report
+          # enforce: a failed check fails the job. The maintainer approved
+          # test/benchmarks/resource-policy.json on 2026-11-06 (#347); report
+          # only reports and never fails.
+          RESOURCE_CHECKS: enforce
         run: |
           status=0
           python3 tooling/scripts/bench-report.py results/comparison.json --annotations \
