@@ -5,8 +5,8 @@ baselines and adopted targets for the roadmap's requirement that published
 performance budgets pass in CI or scheduled runs. The maintainer adopted the
 numbers, the reference environments, and the enforcement policy on
 2026-11-03 ([ADR-0016](decisions/0016-performance-budgets.md)). Enforcement
-is advisory: no CI gate is enabled, and no workflow, test setting, heap, or
-code changes with the adoption.
+of these latency and memory targets is advisory; no workflow, test setting,
+heap, or code changed with the adoption.
 
 | Item | Status |
 | --- | --- |

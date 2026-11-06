@@ -544,7 +544,7 @@ The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to it
 - The configuration schema and compatibility policy are stable.
 - References, safe rename, signature help, and useful completion are shipped.
 - Incomplete syntax does not routinely destroy all language intelligence, within the bounded open-body scope of [No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing), where rule 2 reads a missing `{` only where the file's indentation places it: phase 3a's [release scorecard](docs/benchmarks.md#release-scorecard) holds its floors in both modes with no wrong answers, while header and field-initializer errors and truncated files remain phase 3b.
-- Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs. The adopted performance budgets are in [docs/performance-budgets.md](docs/performance-budgets.md) ([ADR-0016](docs/decisions/0016-performance-budgets.md)); enforcement is advisory, so no CI gate is enabled.
+- Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs. The adopted performance budgets and their enforcement policy are in [docs/performance-budgets.md](docs/performance-budgets.md) ([ADR-0016](docs/decisions/0016-performance-budgets.md)).
 - Release artifacts cover the documented platform matrix and clean-install tests.
 - At least one release cycle has tested upgrades, rollback, and compatibility with newer Virgil revisions.
 

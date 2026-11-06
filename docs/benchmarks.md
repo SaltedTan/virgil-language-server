@@ -1361,8 +1361,8 @@ same `comparison.json` with the resource policy in
 [`test/benchmarks/resource-policy.json`](../test/benchmarks/resource-policy.json)
 ([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)). It
 adds a "Resource checks" table to the job summary, writes it to `resources.md`
-in the artifact, and emits warning annotations. It reads only the probes; it
-uses no timing, so a timing-only change never changes its verdicts.
+in the artifact, and emits warning or error annotations. It reads only the
+probes; it uses no timing, so a timing-only change never changes its verdicts.
 
 **The policy is approved and enforced.** The maintainer approved #347's starting
 values as proposed on 2026-11-06, and the step runs with
@@ -1443,7 +1443,9 @@ the maintainer's approval, and the workflow sets `RESOURCE_CHECKS: enforce`.
 approved baselines, for the `x86-64-linux` and `x86-64-darwin` CI builds,
 generated with `--resource-baseline` from the scheduled workflow's
 `workflow_dispatch` run 42164416033 on `main` at `f15ec42f`, which compared
-`f15ec42f` with itself; neither was edited by hand. Changing the thresholds,
+`f15ec42f` with itself; their measurements and ceilings were not edited by
+hand. Their approval strings record the policy approval; the maintainer's
+merge of the baseline addition approves the values. Changing the thresholds,
 or setting `RESOURCE_CHECKS` back to `report`, needs the maintainer's approval,
 and the workflow change needs a human merge.
 

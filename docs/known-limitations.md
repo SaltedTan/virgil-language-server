@@ -13,9 +13,9 @@ The maintainer adopted the budgets in
 [docs/performance-budgets.md](performance-budgets.md) on 2026-11-03
 ([ADR-0016](decisions/0016-performance-budgets.md)). They apply only to Linux
 x86-64 on the documented reference host (i7-14700KF, CPU 12) within the
-supported envelope; macOS/Rosetta is unmeasured. Enforcement is advisory,
-with no CI gate, so the budgets are not a release gate. No performance number
-is a guarantee.
+supported envelope; macOS/Rosetta is unmeasured. Enforcement of these latency
+and memory targets is advisory, so the budgets are not a release gate. No
+performance number is a guarantee.
 
 ## Code actions
 

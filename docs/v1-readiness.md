@@ -133,9 +133,9 @@ The performance budgets are adopted: the maintainer adopted the proposal in [per
 - the endpoints, percentiles, and sample rules of each measurement: met, 30 measured operations per cell, p50/p95, no trimming;
 - the definitions of the memory that is measured: met, the document's memory definitions and envelope;
 - a failure and retest procedure: met, the document's failure and retest procedure;
-- a run of the candidate in CI or a scheduled run, checked against the table: not met, no candidate has been checked yet, and no CI gate is enabled.
+- a run of the candidate in CI or a scheduled run, checked against the table: not met, no candidate has been checked yet.
 
-Enforcement is advisory: no CI gate is enabled, and the [weekly scheduled comparison](benchmarks.md#scheduled-comparison) is advisory; its change heuristic only produces warning annotations, so it can't satisfy the clause alone. [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) adds deterministic allocation and worker-collection [resource checks](benchmarks.md#resource-checks) to that workflow. The maintainer approved its resource-policy file as proposed on 2026-11-06, and the checks are enforced: a worker allocation more than 5% over the base or the approved baseline, or a new worker collection in a clean analysis, fails the weekly job. They check allocation, not the latency or memory targets of the adopted table, so the timing clause above stays advisory.
+Enforcement of the adopted latency and memory targets is advisory. The [weekly scheduled comparison](benchmarks.md#scheduled-comparison)'s timing heuristic only produces warning annotations, so it can't satisfy the clause alone. The workflow enforces the separately approved [resource checks](benchmarks.md#resource-checks) for worker allocation and in-handle collections. Passing those checks does not establish that the candidate meets the adopted table.
 
 The existing evidence sources:
 
