@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -494,10 +495,49 @@ class RuntimeFunctionsTest(unittest.TestCase):
                          {'A': '1', 'B': 'two words'})
 
     def test_jlink_avoids_native_stripping(self):
-        # --strip-debug runs strip-native-debug-symbols, which fails on Mach-O
-        # files when the host is Linux; CDS needs the target's java.
-        self.assertNotIn('--strip-debug', runtime.JLINK_OPTIONS)
-        self.assertNotIn('--generate-cds-archive', runtime.JLINK_OPTIONS)
+        files = runtime_fixture()
+        pin_runtime(self, files)
+        with tempfile.TemporaryDirectory(prefix='jlink test ') as temp:
+            root = Path(temp)
+            template = root / 'linked runtime'
+            work = root / 'work'
+            record = root / 'jlink.json'
+            homes = {key: work / key / PIN['jdks'][key]['home']
+                     for key in ('linux-x64', 'mac-aarch64')}
+            target = homes['mac-aarch64']
+            for name, (data, _) in files.items():
+                path = template / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                original = target / name
+                original.parent.mkdir(parents=True, exist_ok=True)
+                original.write_bytes(data)
+            (target / 'jmods').mkdir()
+            recorder = (
+                '#!/usr/bin/env python3\n'
+                'import json, shutil, sys\n'
+                'from pathlib import Path\n'
+                f'Path({str(record)!r}).write_text(json.dumps(sys.argv))\n'
+                f'shutil.copytree({str(template)!r}, sys.argv[sys.argv.index("--output") + 1])\n'
+            )
+            for home in homes.values():
+                launchers.write_script(home / 'bin/jlink', recorder)
+            release_info = ':'.join(f'{key}="{value}"' for key, value in (
+                ('IMPLEMENTOR', PIN['vendor']),
+                ('IMPLEMENTOR_VERSION', PIN['distribution'] + '-' + PIN['version']),
+                ('JAVA_RUNTIME_VERSION', PIN['runtimeVersion']),
+                ('OS_NAME', 'Darwin'), ('OS_ARCH', 'aarch64')))
+            for host_key, host in homes.items():
+                with self.subTest(host=host_key), mock.patch.object(runtime, 'host_jdk', return_value=host_key):
+                    record.unlink(missing_ok=True)
+                    self.assertEqual(runtime.link('arm64-darwin', work, root / 'cache'), host)
+                    self.assertEqual(json.loads(record.read_text()), [
+                        str(host / 'bin/jlink'), '-J-Djava.io.tmpdir=' + str(work / 'jlink-tmp'),
+                        '--module-path', str(target / 'jmods'), '--add-modules', 'java.base',
+                        '--strip-java-debug-attributes', '--no-header-files', '--no-man-pages',
+                        '--compress=zip-9', '--release-info', 'add:' + release_info,
+                        '--output', str(work / 'runtime')])
+                    self.assertEqual(runtime.runtime_files(work / 'runtime'), files)
 
 
 if __name__ == '__main__':
