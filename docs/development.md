@@ -37,7 +37,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 
 ### The JVM target
 
-The JVM target builds the server and worker as Java jars, for the JVM fallback on Apple Silicon without Rosetta ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)). The release guide covers [packaging it with a bundled Java runtime for Apple Silicon and the publication prerequisites](releasing.md#the-jvm-build-for-apple-silicon). Host detection never selects it; `V3C_TARGET=jvm` does.
+The JVM target is a development build of the server and worker as Java jars, for the JVM fallback on Apple Silicon without Rosetta ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)). `V3C_TARGET=jvm scripts/package-release.sh` packages it with a bundled Java runtime as a darwin-arm64 archive, which the release workflow doesn't build or attach yet ([The JVM build for Apple Silicon](releasing.md#the-jvm-build-for-apple-silicon)). Host detection never selects it; `V3C_TARGET=jvm` does.
 
 ```sh
 make jvm        # builds build/jvm-target/virgil-lsp and virgil-lsp-worker, with their jars
