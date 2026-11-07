@@ -8,7 +8,9 @@
 # the manifest, --version must report the manifest's version and Virgil
 # revision, and the analyze command, which needs the worker, must verify one
 # program and report the errors in another. The working program is also checked
-# through a symlink as docs/releasing.md installs it.
+# through a symlink as docs/releasing.md installs it. For a JVM archive, the
+# jars must match the manifest too, and its bundled Java runtime must run and
+# report the pinned Temurin version; the archive's platform must be the host's.
 # Usage: smoke-test-release.sh <archive>
 set -uo pipefail
 
@@ -82,21 +84,37 @@ target=$(manifest target)
 virgil_revision=$(manifest virgilRevision)
 dirty=$(manifest dirty)
 
+label=$target
+if [ "$target" = jvm ]; then label=jvm-$(manifest platform); fi
 named() {
-    [ "$name" = "virgil-lsp-$version-$target" ] ||
-        { echo "archive $name, manifest version $version and target $target"; return 1; }
+    [ "$name" = "virgil-lsp-$version-$label" ] ||
+        { echo "archive $name, manifest version $version and target $label"; return 1; }
 }
 check "archive name matches the manifest" named
 
+files=(virgil-lsp virgil-lsp-worker)
+if [ "$target" = jvm ]; then files+=(virgil-lsp.jar virgil-lsp-worker.jar); fi
 checksums() {
     local f want got
-    for f in virgil-lsp virgil-lsp-worker; do
+    for f in "${files[@]}"; do
         want=$(manifest sha256 "$f")
         got=$(sha256 "$DIR/$f")
         [ "$want" = "$got" ] || { echo "$f: manifest $want, file $got"; return 1; }
     done
 }
 check "executables match the manifest's checksums" checksums
+
+# The bundled runtime, run directly, reports the pinned release.
+bundled_java() {
+    local out want
+    want=Temurin-$(manifest runtime version)
+    out=$(run "$DIR/runtime/bin/java" -version 2>&1) || { echo "$out"; return 1; }
+    echo "$out"
+    echo "$out" | grep -qF "$want" || { echo "no $want in the output"; return 1; }
+}
+if [ "$target" = jvm ]; then
+    check "the bundled Java runtime runs and is $(manifest runtime distribution) $(manifest runtime version)" bundled_java
+fi
 
 version_output() {
     local out

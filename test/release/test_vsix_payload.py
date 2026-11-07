@@ -22,6 +22,10 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('check_vsix', ROOT / 'scripts/check-vsix.py')
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
+# The JVM runtime fixtures of test_jvm_package.py.
+spec = importlib.util.spec_from_file_location('jvm_package', Path(__file__).with_name('test_jvm_package.py'))
+jvm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jvm)
 
 
 class PayloadTests(unittest.TestCase):
@@ -48,6 +52,38 @@ class PayloadTests(unittest.TestCase):
         entries = {'extension/server/' + n: (d, m) for n, (d, m) in files.items()}
         entries['extension/server-target.json'] = (json.dumps({'target': target}).encode(), 0o644)
         entries['extension.vsixmanifest'] = (self.xml(target), 0o644)
+        return archive, entries
+
+    def jvm_fixture(self, runtime=None):
+        """A jvm-arm64-darwin archive and the entries of its darwin-arm64-jvm VSIX.
+        The standard fixture runtime is pinned in place of the real one; the
+        archive's manifest is generated from the runtime given."""
+        jvm.pin_runtime(self, jvm.runtime_fixture())
+        files = {n: (n.encode(), 0o644) for n in (
+            'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE', 'virgil/REVISION',
+            'virgil/lib/util/StringBuilder.v3', 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}
+        files.update({n: (jvm.launcher(n), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
+        runtime = jvm.runtime_fixture() if runtime is None else runtime
+        files.update({'runtime/' + n: v for n, v in runtime.items()})
+        digests = {n: hashlib.sha256(d).hexdigest() for n, (d, _) in runtime.items()}
+        host = jvm.PIN['jdks']['linux-x64']
+        manifest = {'target': 'jvm', 'platform': 'arm64-darwin',
+                    'runtime': {**jvm.runtime.metadata_from_pin('arm64-darwin'),
+                                'jlink': {'name': host['name'], 'sha256': host['sha256']},
+                                'files': digests, 'treeSha256': jvm.runtime.tree_digest(digests)},
+                    'sha256': {n: hashlib.sha256(files[n][0]).hexdigest() for n in (
+                        'virgil-lsp', 'virgil-lsp-worker', 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}}
+        files['manifest.json'] = (json.dumps(manifest).encode(), 0o644)
+        archive = self.root / 'jvm.tar.gz'
+        with tarfile.open(archive, 'w:gz') as t:
+            for name, (data, mode) in files.items():
+                member = tarfile.TarInfo('release/' + name)
+                member.size, member.mode = len(data), mode
+                t.addfile(member, io.BytesIO(data))
+        entries = {'extension/server/' + n: (d, m) for n, (d, m) in files.items()}
+        entries['extension/server-target.json'] = (
+            json.dumps({'target': 'darwin-arm64', 'backend': 'jvm'}).encode(), 0o644)
+        entries['extension.vsixmanifest'] = (self.xml('darwin-arm64'), 0o644)
         return archive, entries
 
     @staticmethod
@@ -100,6 +136,74 @@ class PayloadTests(unittest.TestCase):
                     entries['extension.vsixmanifest'] = (self.xml(None), 0o644)
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     self.check(entries, 'universal' if mutation == 'universal' else 'linux-x64', archive)
+
+    def test_jvm_target(self):
+        archive, entries = self.jvm_fixture()
+        self.check(entries, 'darwin-arm64-jvm', archive)
+        self.assertEqual(check.ROOT, str(ROOT))
+
+    def test_jvm_payload_and_metadata_mutations_are_rejected(self):
+        java = 'extension/server/runtime/bin/java'
+        for mutation in ('java', 'java-mode', 'legal', 'jar', 'extra', 'marker', 'marker-target',
+                         'vsix-target', 'default-target'):
+            with self.subTest(mutation=mutation):
+                archive, entries = self.jvm_fixture()
+                target = 'darwin-arm64-jvm'
+                if mutation == 'java':
+                    entries[java] = (jvm.X86_64_MACHO, 0o755)
+                elif mutation == 'java-mode':
+                    entries[java] = (entries[java][0], 0o644)
+                elif mutation == 'legal':
+                    del entries['extension/server/runtime/legal/java.base/LICENSE']
+                elif mutation == 'jar':
+                    entries['extension/server/virgil-lsp.jar'] = (b'changed', 0o644)
+                elif mutation == 'extra':
+                    entries['extension/server/runtime/lib/extra.dylib'] = (b'', 0o644)
+                elif mutation == 'marker':
+                    entries['extension/server-target.json'] = (b'{"target": "darwin-arm64"}', 0o644)
+                elif mutation == 'marker-target':
+                    entries['extension/server-target.json'] = (
+                        b'{"target": "darwin-arm64-jvm", "backend": "jvm"}', 0o644)
+                elif mutation == 'vsix-target':
+                    entries['extension.vsixmanifest'] = (self.xml('darwin-arm64-jvm'), 0o644)
+                elif mutation == 'default-target':
+                    # The JVM payload can't pass as the default darwin-arm64 VSIX.
+                    target = 'darwin-arm64'
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    self.check(entries, target, archive)
+
+    def test_jvm_archive_runtime_is_checked(self):
+        # A wrong-architecture or wrong-version runtime in the archive fails
+        # before any VSIX bytes are compared.
+        for runtime in ({**jvm.runtime_fixture(), 'bin/java': (jvm.X86_64_ELF, 0o755)},
+                        {**jvm.runtime_fixture(), 'release': (jvm.release_file(JAVA_VERSION='21.0.12'), 0o644)}):
+            archive, entries = self.jvm_fixture(runtime)
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.check(entries, 'darwin-arm64-jvm', archive)
+
+    def test_incomplete_runtime_with_a_regenerated_manifest_is_rejected(self):
+        # The review's case (#464): a runtime missing a library or notice, or
+        # with a text file for a library, whose manifest was generated from it.
+        for name, change in (('lib/libjli.dylib', None), ('legal/java.base/zlib.md', None),
+                             ('lib/libjava.dylib', b'not a binary')):
+            with self.subTest(name=name):
+                runtime = jvm.runtime_fixture()
+                if change is None:
+                    del runtime[name]
+                else:
+                    runtime[name] = (change, 0o644)
+                archive, entries = self.jvm_fixture(runtime)
+                err = io.StringIO()
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(err):
+                    self.check(entries, 'darwin-arm64-jvm', archive)
+                self.assertIn(name, str(raised.exception))
+
+    def test_native_archive_is_not_a_jvm_payload(self):
+        archive, entries = self.fixture('darwin-arm64')
+        entries['extension/server-target.json'] = (
+            json.dumps({'target': 'darwin-arm64', 'backend': 'jvm'}).encode(), 0o644)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.check(entries, 'darwin-arm64-jvm', archive)
 
     def test_wrong_archive_target_and_symlink_are_rejected(self):
         archive, entries = self.fixture('darwin-arm64')

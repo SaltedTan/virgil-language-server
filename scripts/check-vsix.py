@@ -339,8 +339,11 @@ def check_payload(vsix, target, archive):
         try:
             xml = ET.fromstring(z.read("extension.vsixmanifest"))
             identity = xml.find("{*}Metadata/{*}Identity")
+            spec = importlib.util.spec_from_file_location("payload", os.path.join(ROOT, "scripts/vsix-payload.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
             actual = identity.attrib.get("TargetPlatform")
-            wanted = None if target == "universal" else target
+            wanted = None if target == "universal" else module.vscode_target(target)
             if actual != wanted:
                 fail("VSIX target is %r, expected %r" % (actual, wanted))
             properties = {p.attrib.get("Id"): p.attrib.get("Value")
@@ -353,11 +356,8 @@ def check_payload(vsix, target, archive):
                 if bundled or marker in z.namelist():
                     fail("universal VSIX contains a bundled server")
                 return
-            if json.loads(z.read(marker)) != {"target": target}:
+            if json.loads(z.read(marker)) != module.marker(target):
                 fail("bundled server target differs from VSIX target")
-            spec = importlib.util.spec_from_file_location("payload", os.path.join(ROOT, "scripts/vsix-payload.py"))
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
             expected = module.payload(archive, target)
             if bundled != {"extension/server/" + n for n in expected}:
                 fail("bundled files differ from the archive's runtime payload")
@@ -376,7 +376,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("vsix")
     parser.add_argument("source", nargs="?", default=os.path.join(ROOT, "clients", "vscode"))
-    parser.add_argument("--target", choices=["universal", "linux-x64", "darwin-arm64", "darwin-x64"], default="universal")
+    parser.add_argument("--target", choices=["universal", "linux-x64", "darwin-arm64", "darwin-x64",
+                                             "darwin-arm64-jvm"], default="universal")
     parser.add_argument("--archive")
     args = parser.parse_args()
     if (args.target == "universal") != (args.archive is None):

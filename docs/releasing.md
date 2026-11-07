@@ -34,13 +34,34 @@ Each archive holds one directory, `virgil-lsp-<version>-<target>/`, with:
 | `library` | `revision`, `files` (SHA-256s keyed by path relative to `virgil/`, including `LICENSE` and `REVISION`), and `treeSha256` |
 | `workerHeap` | The analysis worker's heap size, `WORKER_HEAP` in the `Makefile` |
 | `compiler` | `path`, the Aeneas binary that compiled the executables, relative to the Virgil checkout when inside it and otherwise absolute, and its `sha256` |
-| `sha256` | The SHA-256 of `virgil-lsp` and `virgil-lsp-worker` |
+| `sha256` | The SHA-256 of `virgil-lsp` and `virgil-lsp-worker`, and in a JVM archive also of `virgil-lsp.jar` and `virgil-lsp-worker.jar` |
+| `platform` | JVM archives only: where the archive runs, `arm64-darwin` |
+| `runtime` | JVM archives only: the bundled Java runtime. `backend` (`jvm`), `vendor` (`Eclipse Adoptium`), `distribution` (`Temurin`), `version` (such as `21.0.13+9`), `javaVersion`, `os` and `arch` (`Darwin`, `aarch64`), `modules` (`["java.base"]`), `jdk` (the `name` and `sha256` of the JDK archive whose modules were linked), `source` (the `name` and `sha256` of the runtime's source archive), `jlink` (the `name` and `sha256` of the JDK that ran `jlink`, and its `options`), `files` (SHA-256s keyed by path relative to `runtime/`), and `treeSha256`, computed as for the library |
 
 The bundle tree digest is SHA-256 of LF-terminated `<sha256>  <path>` lines sorted by path relative to `virgil/`, matching the [result-event tree digest](../test/e2e/RESULTS.md#result-events) for regular files. Packaging rejects symlinks and nonregular library entries. Archives sort members and normalize ownership, mtimes to the server commit time, and the gzip header. `scripts/check-release.sh --archive <archive>` verifies the layout, entry types, bundle files and license hashes, tree digest, and pinned revision before extraction.
 
 The executables are unsigned and not notarized. Nothing is published to the VS Code Marketplace or a package manager.
 
 The VSIX files are packaged by `scripts/package-vsix.py`, using `npm run package` in `clients/vscode` ([Packaging](../clients/vscode/README.md#packaging)). Its version is the extension's own, from `clients/vscode/package.json`, which is independent of the server's `VERSION` ([versions](../clients/vscode/README.md#versions)); the release notes give both. The VSIX isn't signed: `@vscode/vsce-sign`, which vsce can use to sign packages, is a build tool that packaging never runs and that the project doesn't redistribute ([third-party notices](../THIRD_PARTY_NOTICES.md#vs-code-client-npm)).
+
+### The JVM build for Apple Silicon
+
+The JVM build runs on Apple Silicon without Rosetta 2 and without an installed Java. It has an archive and a VSIX of its own, beside the default darwin assets, which stay the Intel build. `V3C_TARGET=jvm scripts/package-release.sh <output-directory>` packages it, on a Linux x86-64 host, and `scripts/package-vsix.py darwin-arm64-jvm --archive <archive> --out <directory>` packages its VSIX. The release workflow doesn't build, test, or attach them yet ([#465](https://github.com/SaltedTan/virgil-language-server/issues/465)). Before a release publishes the JVM archive or VSIX, it must also attach the runtime's source archive, below: the notices in both say that the source is attached to the same release.
+
+| Asset | Contents |
+| --- | --- |
+| `virgil-lsp-<version>-jvm-arm64-darwin.tar.gz` and `.manifest.json` | The JVM build and its bundled Java runtime, for Apple Silicon |
+| `virgil-lsp-vscode-<extension version>-darwin-arm64-jvm.vsix` | The same files as the archive, in a VSIX for the `darwin-arm64` platform. Install it with **Extensions: Install from VSIX...** or `code --install-extension <file>`; VS Code doesn't choose it for you. |
+| `OpenJDK21U-jdk-sources_21.0.13_9.tar.gz` | The corresponding source of the bundled Java runtime: Eclipse Adoptium's own source archive for the pinned Temurin build, unchanged and under its upstream name, so that it can be checked against Adoptium's published SHA-256. `V3C_TARGET=jvm scripts/package-release.sh` writes it beside the archive, and `scripts/check-release.sh --runtime-source <file>` checks its name and SHA-256 against the pin. |
+
+The archive holds one directory, `virgil-lsp-<version>-jvm-arm64-darwin/`, with the files of a native archive, except that `virgil-lsp` and `virgil-lsp-worker` are launcher scripts, and with:
+
+- `virgil-lsp.jar` and `virgil-lsp-worker.jar`, the server and worker that the launchers run. Each launcher finds its jar and the runtime from its own resolved path, so the directory can move and its path can contain spaces. The launchers pass the same Java options as the development launchers that `make jvm` writes, from `scripts/v3c.sh`, and the worker's maximum heap from `WORKER_HEAP`.
+- `runtime/`, an [Eclipse Temurin](../THIRD_PARTY_NOTICES.md#eclipse-temurin-java-runtime-jvm-assets-only) 21 runtime with only the `java.base` module, which `scripts/jvm-runtime.py` links with `jlink` from the macOS arm64 JDK's modules. `scripts/jvm-runtime.json` pins the Temurin release, each JDK archive's SHA-256, and the source archive's, and packaging downloads them (into `JVM_JDK_CACHE`, default `build/jdk-cache`) and fails unless each matches. `jlink` on a Linux host links the same runtime, byte for byte, as on an Apple Silicon Mac, so the pin file also pins the linked runtime of each platform: every file's SHA-256, the file count, and the tree digest. A change to the pinned Temurin release, or to the `jlink` options, must update those pinned runtimes in the same change; `scripts/jvm-runtime.py pin-runtime <platform> <work-directory>` links a runtime without the comparison and prints its entry. `runtime/legal/java.base/` holds the runtime's license notices, and `runtime/release` its vendor, version, and platform. The runtime has no class-data sharing (CDS) archive, because `jlink` can make one only by running the target's `java`; the [JVM memory note](testing-notes/jvm-memory.md#startup) measured one as saving about 20 ms per JVM start.
+
+`scripts/check-release.sh --archive` also checks a JVM archive's runtime: that it holds exactly the pinned runtime's files, each with its pinned SHA-256, whatever the manifest says, so a missing, extra, or changed file is named; its modes; the `release` file's vendor, version, modules, and platform; that every native path (`bin/`, `lib/jspawnhelper`, and the platform's libraries) holds an arm64 Mach-O binary; that `legal/java.base/` holds `LICENSE`, `ASSEMBLY_EXCEPTION`, and `ADDITIONAL_LICENSE_INFO`; and that the files match the manifest. It also requires launchers that find the runtime and jars beside them, the jars' checksums, and mode 755 for the launchers and directories and 644 for every other file outside `runtime/`. `scripts/check-vsix.py --target darwin-arm64-jvm` requires the VSIX to hold exactly the archive's files, with their bytes and modes. `JVM_PLATFORM=x86-64-linux` packages the same layout with a Linux runtime, so that `scripts/smoke-test-release.sh` can test the launchers and layout on Linux; it isn't a release asset.
+
+The launchers and jars are unsigned, like the other assets, and nothing is notarized by this project. The runtime's native files keep the code signatures that Eclipse Adoptium gave them, under the Eclipse Foundation's Developer ID; jlink copies them unchanged.
 
 ## How the workflow works
 
@@ -259,6 +280,8 @@ The executables are unsigned. A web browser marks what it downloads as quarantin
 ```sh
 xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.6-x86-64-darwin
 ```
+
+The same applies to the [JVM archive](#the-jvm-build-for-apple-silicon), which needs no Rosetta 2. On macOS 27.0.1, with network access, `tar -xzf` of a quarantined JVM archive marked every extracted file as quarantined, and the server and worker still ran: Gatekeeper accepted the runtime's signed `java`, while it killed a quarantined unsigned program in the same test. This was tested with network access; offline Gatekeeper behavior was not tested. The runtime's binaries had no stapled notarization ticket. Remove the attribute as above if macOS refuses to run the JVM archive. The JVM VSIX, installed from a quarantined download with `code --install-extension` in VS Code 1.144.1, had no quarantined files.
 
 ### Editors
 

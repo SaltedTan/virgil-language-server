@@ -436,8 +436,9 @@ async function resolveServer(): Promise<string> {
   } else {
     const marker = path.join(extensionPath, 'server-target.json');
     let target: string | undefined;
+    let backend: unknown;
     try {
-      target = JSON.parse(await fs.readFile(marker, 'utf8')).target;
+      ({ target, backend } = JSON.parse(await fs.readFile(marker, 'utf8')));
       if (typeof target !== 'string') throw new Error('missing target');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -452,7 +453,11 @@ async function resolveServer(): Promise<string> {
       }
       setting = path.join(extensionPath, 'server', 'virgil-lsp');
       output.info(`Server selection: ${setting} (bundled for ${target}; no explicit ${SERVER_PATH_SETTING})`);
-      if (target === 'darwin-arm64') output.info('The bundled x86-64 server requires Rosetta 2 on Apple Silicon.');
+      if (backend === 'jvm') {
+        output.info('The bundled server runs on its bundled Java runtime; it needs no Rosetta 2 or Java installation.');
+      } else if (target === 'darwin-arm64') {
+        output.info('The bundled x86-64 server requires Rosetta 2 on Apple Silicon.');
+      }
     } else {
       setting = 'virgil-lsp';
       output.info(`Server selection: virgil-lsp on PATH (no bundle and no explicit ${SERVER_PATH_SETTING})`);

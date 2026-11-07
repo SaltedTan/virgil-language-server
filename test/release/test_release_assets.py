@@ -112,6 +112,22 @@ class ReleaseAssetsTests(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
 
+    def test_jvm_assets_do_not_stand_in_for_the_default_ones(self):
+        # The JVM archive and VSIX names (scripts/package-release.sh with
+        # V3C_TARGET=jvm, scripts/package-vsix.py darwin-arm64-jvm) never
+        # match a default asset, so they can't replace the Rosetta build.
+        for default, jvm in (
+                (f'virgil-lsp-vscode-{EXT}-darwin-arm64.vsix', f'virgil-lsp-vscode-{EXT}-darwin-arm64-jvm.vsix'),
+                (f'virgil-lsp-{VERSION}-x86-64-darwin.tar.gz', f'virgil-lsp-{VERSION}-jvm-arm64-darwin.tar.gz'),
+                (f'virgil-lsp-{VERSION}-x86-64-darwin.manifest.json',
+                 f'virgil-lsp-{VERSION}-jvm-arm64-darwin.manifest.json')):
+            with self.subTest(jvm=jvm):
+                (self.assets / default).rename(self.assets / jvm)
+                result = self.run_script()
+                (self.assets / jvm).rename(self.assets / default)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+
     def test_rejects_bad_arguments(self):
         result = subprocess.run(
             ['bash', str(SCRIPT), VERSION], capture_output=True, text=True)
