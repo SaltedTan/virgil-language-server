@@ -404,14 +404,27 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
 
 // The processes in process group pgid that run one of executables, by the
 // first argument that ps lists: the client starts virgil-lsp, and virgil-lsp
-// its worker, with an absolute path.
+// its worker, with an absolute path. The JVM build's launcher replaces itself
+// with its bundled runtime's java, so that process's arguments start with the
+// java beside the launcher's physical path instead, and name the launcher in
+// -Dvirgil.lsp.executable.
 function groupProcesses(pgid, executables) {
   const ps = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'pgid=', '-o', 'args='], { encoding: 'utf8' });
   if (ps.status !== 0) throw new Error(`ps failed: ${ps.error?.message ?? ps.stderr}`);
+  const forms = executables.map((file) => {
+    let real;
+    try {
+      real = fs.realpathSync(file);
+    } catch {
+      return { file };
+    }
+    return { file, java: `${path.join(path.dirname(real), 'runtime', 'bin', 'java')} `, property: ` -Dvirgil.lsp.executable=${real} ` };
+  });
   return ps.stdout.split('\n').flatMap((line) => {
     const [, pid, group, args] = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line) ?? [];
-    const executable = executables.find((file) => args === file || args?.startsWith(`${file} `));
-    return Number(group) === pgid && executable !== undefined ? [{ pid: Number(pid), executable }] : [];
+    const form = args === undefined ? undefined : forms.find(({ file, java, property }) => args === file
+      || args.startsWith(`${file} `) || (java !== undefined && args.startsWith(java) && args.includes(property)));
+    return Number(group) === pgid && form !== undefined ? [{ pid: Number(pid), executable: form.file }] : [];
   });
 }
 

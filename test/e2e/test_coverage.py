@@ -506,7 +506,7 @@ class CoverageTest(unittest.TestCase):
         }
         fields = [
             (server["versionText"], [{"$ref": "#/$defs/nonEmpty"}]),
-            (server["target"], [{"enum": ["x86-64-linux", "x86-64-darwin"]}]),
+            (server["target"], [{"enum": ["x86-64-linux", "x86-64-darwin", "jvm"]}]),
             (server["sha256"], [{"$ref": "#/$defs/sha256"}]),
             (server["workerSha256"], [{"$ref": "#/$defs/sha256"}]),
             (provenance["vsix"], [{"type": "null"}, vsix]),

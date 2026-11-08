@@ -114,7 +114,7 @@
             "version": {"$ref": "#/$defs/nullableString"},
             "sourceRevision": {"$ref": "#/$defs/nullableString"},
             "virgilRevision": {"$ref": "#/$defs/nullableString"},
-            "target": {"oneOf": [{"enum": ["x86-64-linux", "x86-64-darwin"]}, {"$ref": "#/$defs/unavailableProvenance"}]},
+            "target": {"oneOf": [{"enum": ["x86-64-linux", "x86-64-darwin", "jvm"]}, {"$ref": "#/$defs/unavailableProvenance"}]},
             "sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]},
             "workerSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]}
           },
