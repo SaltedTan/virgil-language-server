@@ -168,7 +168,7 @@ npm run package   # compile and package the extension as a VSIX
 npm run watch     # recompile on change
 ```
 
-CI type-checks and tests the client, and runs the Extension Host suite from source and against an installed Linux platform VSIX. The macOS Extension Host job also runs the shared process-runner tests, including real libproc scans and microsecond start times, and compiles the process-info layout assertions for both arm64 and x86-64. The release and weekly workflows package all three platform targets and the universal VSIX from their archive artifacts. They test the Linux bundle and universal fallback locally, the Darwin ARM64 package on Apple Silicon under Rosetta 2, the Linux bundle through Remote-SSH, and the README install in a clean container. Each producer records a digest before testing; consumers verify it and the release publishes those same files. Intel macOS remains best effort. See the [release workflow](../../docs/releasing.md#how-the-workflow-works).
+CI type-checks and tests the client. The macOS Extension Host job also runs the shared process-runner tests, including real libproc scans and microsecond start times, and compiles the process-info layout assertions for both arm64 and x86-64. The [automated editor coverage](../../docs/manual-testing.md#what-the-automated-tests-cover) lists the source and installed-VSIX tests in CI and the weekly and release workflows. The [release workflow](../../docs/releasing.md#how-the-workflow-works) describes how archives become VSIX packages and how producer digests keep the published files identical to the tested ones.
 
 ### Packaging
 

@@ -73,7 +73,7 @@ The tables on this page record what each release was built with and what was tes
 | Project file version | `ProjectConfig:version` |
 | Client startup | In `npm test` in `clients/vscode`: [`test/lifecycle.cjs`](../clients/vscode/test/lifecycle.cjs)'s "server selection", "a broken bundle", and "a mismatched workspace host" tests |
 
-A release adds the [release workflow's](releasing.md#how-the-workflow-works) evidence: the archive smoke test, the [Extension Host test](../clients/vscode/README.md#extension-host-test) on the `linux-x64`, `universal`, and `darwin-arm64` VSIX variants, the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), and the LazyVim test. The `darwin-x64` VSIX gets only the packaging checks.
+A release adds archive smoke tests and editor tests on its own assets through the [release workflow](releasing.md#how-the-workflow-works). The [automated editor coverage](manual-testing.md#what-the-automated-tests-cover) lists which variants get editor tests; the `darwin-x64` VSIX gets only the packaging checks.
 
 ## LSP baseline
 
