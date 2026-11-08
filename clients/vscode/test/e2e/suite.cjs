@@ -407,8 +407,11 @@ async function workspace(extension) {
   const semicolon = await open('semicolon.v3');
   const [semicolonDiagnostic] = await waitForDiagnostics('missing semicolon', semicolon);
   assert.equal(semicolonDiagnostic.message, '";" expected');
-  const fixes = await vscode.commands.executeCommand('vscode.executeCodeActionProvider',
-    semicolon.document.uri, semicolonDiagnostic.range, vscode.CodeActionKind.QuickFix.value);
+  const fixes = await waitFor('the semicolon quick fix', async () => {
+    const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider',
+      semicolon.document.uri, semicolonDiagnostic.range, vscode.CodeActionKind.QuickFix.value);
+    return actions?.length > 0 && actions;
+  });
   assert.equal(fixes.length, 1);
   const [fix] = fixes;
   assert.equal(fix.title, 'Insert missing ";"');
