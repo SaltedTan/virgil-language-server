@@ -130,7 +130,7 @@ SUITES = \
 	'python3 test/protocol/outline_parse_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/test_reply_shapes.py' \
-	'python3 test/protocol/test_source_mutations.py' \
+	'env VIRGIL_LSP_EXE=$(BUILD)/virgil-lsp python3 test/protocol/test_source_mutations.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
 	$(call native_only,'$(BUILD)/retain-probe') \
