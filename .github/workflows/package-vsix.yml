@@ -25,7 +25,7 @@ jobs:
           - target: darwin-x64
             archive: x86-64-darwin
           # The JVM build for Apple Silicon, beside the default darwin-arm64
-          # VSIX; the editor tests run it on macOS without Rosetta 2.
+          # VSIX; the editor tests run it on macOS without Rosetta translation.
           - target: darwin-arm64-jvm
             archive: jvm-arm64-darwin
           - target: universal

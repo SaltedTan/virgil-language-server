@@ -245,14 +245,14 @@ jobs:
           retention-days: 3
 
   test-macos-jvm:
-    # The JVM build on Apple Silicon without Rosetta 2, apart from test-macos,
-    # which runs the x86-64-darwin build under Rosetta 2. Rosetta 2 is never
-    # installed here, and test/jvm/native.py host checks that it is absent,
-    # so the build runs the pinned bin/stable/jar Aeneas on the pinned Temurin
-    # JDK. native.py run checks that every Java process the tests start runs
-    # that JDK's arm64 java, untranslated. Not a required check, by the
-    # maintainer's decision; see docs/compatibility.md for CI policy.
-    name: Build and test (pinned Virgil, JVM, macOS Apple Silicon without Rosetta 2)
+    # The JVM build on Apple Silicon, apart from test-macos, which runs the
+    # x86-64-darwin build under Rosetta 2. The runner has Rosetta 2 installed;
+    # native.py host requires an untranslated arm64 runner. Force the pinned
+    # jar Aeneas on the pinned Temurin JDK. native.py run rejects translation
+    # in every observed descendant and checks Java's runtime and arm64 binary.
+    # Not a required check, by the maintainer's decision; see
+    # docs/compatibility.md for CI policy.
+    name: Build and test (pinned Virgil, JVM, macOS Apple Silicon without Rosetta translation)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: macos-15
@@ -260,13 +260,16 @@ jobs:
     timeout-minutes: 30
     env:
       REQUIRE_NVIM: '1'
+      VIRGIL_V3C: ${{ github.workspace }}/vendor/virgil/bin/stable/jar/Aeneas
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
-      - name: Check that this is Apple Silicon without Rosetta 2
-        run: python3 test/jvm/native.py host
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
       - name: Install Neovim (Homebrew)
         run: brew install neovim
       - name: Fetch the pinned JDK
@@ -279,18 +282,24 @@ jobs:
         run: |
           uname -sm
           vendor/virgil/bin/dev/sense_host
-          V3C_TARGET=jvm scripts/v3c.sh -print-compiler
+          compiler=$(V3C_TARGET=jvm scripts/v3c.sh -print-compiler)
+          echo "$compiler"
+          test "$compiler" = "$GITHUB_WORKSPACE/vendor/virgil/bin/stable/jar/Aeneas"
           git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build
-        run: make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
-      - name: Test, checking every Java process
+      - name: Build, checking all observed descendants
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
+            --report "$RUNNER_TEMP/processes/build.json" -- \
+            make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
+      - name: Test, checking all observed descendants
         # The suites of make test that the JVM build supports; see
         # docs/development.md#the-jvm-target.
         run: |
           mkdir -p "$RUNNER_TEMP/processes"
           python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 100 \
             --report "$RUNNER_TEMP/processes/make-test.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test
-      - name: JVM runtime tests, smoke test, and deep-start regression, checking every Java process
+      - name: JVM runtime tests, smoke test, and deep-start regression, checking all observed descendants
         run: |
           python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 2 \
             --report "$RUNNER_TEMP/processes/test-jvm.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test-jvm
@@ -316,14 +325,15 @@ jobs:
       vsix: true
 
   jvm-archive-macos:
-    # The archive and VSIX that jvm-package packaged, on Apple Silicon without
-    # Rosetta 2, which test/jvm/native.py host checks: the archive's smoke
+    # The archive and VSIX that jvm-package packaged, on Apple Silicon with
+    # Rosetta 2 installed but no translation: the archive's smoke
     # tests, then the VS Code client's tests and the Extension Host test on
     # the installed VSIX and its bundled server. native.py run checks that
-    # every Java process runs the bundled runtime's arm64 java, untranslated.
+    # every observed descendant is untranslated and every Java process runs
+    # the bundled runtime's arm64 java.
     # Not a required check (docs/compatibility.md). It uploads the processes
     # it saw and VS Code's logs as the other Extension Host jobs do.
-    name: JVM archive and VSIX (macOS Apple Silicon without Rosetta 2)
+    name: JVM archive and VSIX (macOS Apple Silicon without Rosetta translation)
     needs: jvm-package
     if: ${{ !cancelled() && needs.jvm-package.result == 'success' }}
     runs-on: macos-15
@@ -335,8 +345,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Check that this is Apple Silicon without Rosetta 2
-        run: python3 test/jvm/native.py host
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
       - uses: actions/download-artifact@v8
         with:
           name: archive-jvm-arm64-darwin
@@ -349,7 +361,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/vsix"
           shasum -a 256 --check --strict darwin-arm64-jvm.sha256
-      - name: Smoke-test the archive, checking every Java process
+      - name: Smoke-test the archive, checking all observed descendants
         # Moved, with spaces in its path, through a symlink, with a read-only
         # library and an empty environment; see scripts/smoke-test-release.sh.
         run: |
@@ -376,7 +388,7 @@ jobs:
       - name: Lifecycle tests
         working-directory: clients/vscode
         run: npm test
-      - name: Extension Host test against the installed JVM VSIX, checking every Java process
+      - name: Extension Host test against the installed JVM VSIX, checking all observed descendants
         working-directory: clients/vscode
         run: |
           python3 ../../test/jvm/native.py run --java '*/server/runtime/bin/java' --min-java 2 \

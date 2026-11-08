@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Checks that the JVM build runs natively on Apple Silicon, without Rosetta 2.
+"""Checks that the JVM build runs on Apple Silicon without Rosetta translation.
 
   native.py host
-      Checks that this Mac is Apple Silicon with no Rosetta 2: the machine is
-      arm64, this process isn't translated (sysctl.proc_translated is 0), the
-      Rosetta runtime that its installer puts down is absent, and
-      `arch -x86_64 /usr/bin/true` fails, as an x86-64 program must without
-      Rosetta. Prints what it found.
+      Requires an arm64 machine and an untranslated runner process. Reports
+      whether the Rosetta runtime is installed and the status of
+      `arch -x86_64 /usr/bin/true`; Rosetta's presence is allowed.
 
   native.py run --java GLOB [--min-java N] [--report FILE] -- COMMAND...
-      Runs COMMAND, and while it runs records every Java process that starts:
+      Runs COMMAND, and while it runs records its observed descendants:
       its process ID, parent, executable path (proc_pidpath), command line,
       whether macOS runs it translated by Rosetta (P_TRANSLATED), and the CPU
       type of its executable's Mach-O header. It fails, after COMMAND ends, if
       COMMAND failed, if fewer than N Java processes were seen (default 1), or
-      if any was translated, had an executable that doesn't match GLOB (an
+      if any descendant was translated or its translation was unknown. Every
+      Java process must also have an executable that matches GLOB (an
       fnmatch pattern, such as '*/runtime/bin/java' for a release archive's
-      bundled runtime), or had one that isn't an arm64 Mach-O file. --report
+      bundled runtime), and is an arm64 Mach-O file. --report
       writes the records as JSON. Processes are sampled every 50 ms, so one
       that ends sooner may be missed, and one that ends while it is read is
       counted apart; the server and its worker live for the whole of a
@@ -37,7 +36,6 @@ import platform
 import subprocess
 import sys
 import threading
-import time
 
 ROSETTA_RUNTIME = "/Library/Apple/usr/libexec/oah/libRosettaRuntime"
 CPU_TYPE_ARM64 = 0x0100000C
@@ -65,15 +63,6 @@ def translated(libc, pid):
         return None
     # kinfo_proc.kp_proc.p_flag follows a 16-byte union and two pointers.
     return bool(int.from_bytes(buf.raw[32:36], "little") & 0x00020000)
-
-
-def pids(libproc):
-    count = libproc.proc_listallpids(None, 0)
-    if count <= 0:
-        return []
-    buf = (ctypes.c_int * (count + 64))()
-    count = libproc.proc_listallpids(buf, ctypes.sizeof(buf))
-    return [pid for pid in buf[:max(count, 0)] if pid > 0]
 
 
 def pidpath(libproc, pid):
@@ -107,9 +96,9 @@ def alive(pid):
     return True
 
 
-def parent(pid):
-    out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return int(out) if out.strip().isdigit() else None
+def process_parents():
+    out = subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True)
+    return {int(pid): int(ppid) for pid, ppid in (line.split() for line in out.splitlines())}
 
 
 def cpu_types(path):
@@ -155,16 +144,12 @@ def host(_args):
         problems.append("this process runs translated, or its translation is unknown")
     present = os.path.exists(ROSETTA_RUNTIME)
     print("Rosetta runtime %s: %s" % (ROSETTA_RUNTIME, "present" if present else "absent"))
-    if present:
-        problems.append("Rosetta 2 is installed: %s exists" % ROSETTA_RUNTIME)
     x86 = subprocess.run(["arch", "-x86_64", "/usr/bin/true"], capture_output=True, text=True)
     print("arch -x86_64 /usr/bin/true: status %d%s" % (
         x86.returncode, (": " + x86.stderr.strip()) if x86.stderr.strip() else ""))
-    if x86.returncode == 0:
-        problems.append("an x86-64 program ran: arch -x86_64 /usr/bin/true succeeded")
     if problems:
-        fail("this host is not Apple Silicon without Rosetta 2: " + "; ".join(problems))
-    print("Apple Silicon without Rosetta 2: x86-64 programs can't run here")
+        fail("this host is not untranslated Apple Silicon: " + "; ".join(problems))
+    print("Apple Silicon: this runner process is untranslated")
 
 
 def run(args):
@@ -172,32 +157,49 @@ def run(args):
     if not args.command:
         fail("no command to run after --")
     libc, libproc = libraries()
-    before = set(pids(libproc))
     seen = {}
     vanished = set()
     done = threading.Event()
+    problems = []
+    command = subprocess.Popen(args.command)
+    descendants = {command.pid}
 
     def sample():
         while not done.is_set():
-            for pid in pids(libproc):
-                if pid in before or pid in seen:
-                    continue
+            parents = process_parents()
+            # Keep ancestry after a parent exits, and follow every generation,
+            # including children that precede their parent in the ps snapshot.
+            while True:
+                children = {pid for pid, ppid in parents.items() if ppid in descendants}
+                if children <= descendants:
+                    break
+                descendants.update(children)
+            for pid in descendants.intersection(parents):
                 path = pidpath(libproc, pid)
-                if path is None or os.path.basename(path) != "java":
-                    continue
-                record = {"pid": pid, "ppid": parent(pid), "path": path, "args": process_args(libc, pid),
-                          "translated": translated(libc, pid), "cpu": [cpu_name(cpu) for cpu in cpu_types(path)]}
-                if record["translated"] is None and not alive(pid):
+                is_translated = translated(libc, pid)
+                if (path is None or is_translated is None) and not alive(pid):
                     # It ended between the two reads, so it can't be inspected.
                     vanished.add(pid)
                     continue
-                seen[pid] = record
+                # A shell may exec Java or a translated binary without changing
+                # PID. Inspect it again rather than treating a PID as finished.
+                key = (pid, path, is_translated)
+                if key not in seen:
+                    seen[key] = {"pid": pid, "ppid": parents[pid], "path": path,
+                                 "args": process_args(libc, pid), "translated": is_translated,
+                                 "cpu": [cpu_name(cpu) for cpu in cpu_types(path)] if path else []}
             done.wait(INTERVAL)
 
-    thread = threading.Thread(target=sample, daemon=True)
+    def monitor():
+        try:
+            sample()
+        except Exception as error:
+            problems.append("could not inspect descendants: %s" % error)
+
+    thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
     try:
-        status = subprocess.run(args.command).returncode
+        status = command.wait()
     finally:
         done.set()
         thread.join()
@@ -207,13 +209,16 @@ def run(args):
             json.dump({"command": args.command, "status": status, "java": args.java,
                        "selfTranslated": translated(libc, os.getpid()), "processes": records}, f, indent=1)
             f.write("\n")
-    problems = []
+    java_pids = set()
     for record in records:
-        print("java process %d (parent %s): %s, %s, translated %s" % (
+        print("process %d (parent %s): %s, %s, translated %s" % (
             record["pid"], record["ppid"], record["path"], "/".join(record["cpu"]) or "not Mach-O",
             record["translated"]))
         if record["translated"] is not False:
             problems.append("process %d runs translated, or its translation is unknown" % record["pid"])
+        if record["path"] is None or os.path.basename(record["path"]) != "java":
+            continue
+        java_pids.add(record["pid"])
         if not fnmatch.fnmatchcase(record["path"], args.java):
             problems.append("process %d runs %s, which doesn't match %s" % (
                 record["pid"], record["path"], args.java))
@@ -221,10 +226,10 @@ def run(args):
             problems.append("process %d runs %s, which isn't an arm64 Mach-O file" % (
                 record["pid"], record["path"]))
     print("%d Java processes, every one matching %s: %s%s" % (
-        len(records), args.java, "yes" if not problems else "no",
+        len(java_pids), args.java, "yes" if not problems else "no",
         "; %d more ended before they could be inspected" % len(vanished) if vanished else ""))
-    if len(records) < args.min_java:
-        problems.append("expected at least %d Java processes, saw %d" % (args.min_java, len(records)))
+    if len(java_pids) < args.min_java:
+        problems.append("expected at least %d Java processes, saw %d" % (args.min_java, len(java_pids)))
     if status != 0:
         problems.append("the command exited with status %d" % status)
     if problems:
@@ -234,8 +239,8 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="action", required=True)
-    commands.add_parser("host", help="check that this Mac is Apple Silicon without Rosetta 2")
-    runner = commands.add_parser("run", help="run a command and check its Java processes")
+    commands.add_parser("host", help="check an untranslated Apple Silicon runner; report Rosetta's presence")
+    runner = commands.add_parser("run", help="check command descendants for translation and the expected Java")
     runner.add_argument("--java", required=True, help="fnmatch pattern every Java executable must match")
     runner.add_argument("--min-java", type=int, default=1)
     runner.add_argument("--report")

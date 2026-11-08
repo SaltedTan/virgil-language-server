@@ -5,7 +5,7 @@ name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
 # both supported hosts, packages the JVM build for Apple Silicon on Linux and
-# tests it on Apple Silicon without Rosetta 2, packages four bundled VSIX
+# tests it on Apple Silicon without Rosetta translation, packages four bundled VSIX
 # targets (one of them the JVM build's darwin-arm64-jvm) and a universal
 # fallback, and runs the editor tests of
 # editor-test-suites.yml on those archives and VSIX files (the LazyVim test on
@@ -190,29 +190,32 @@ jobs:
       runtime-source: true
 
   test-jvm:
-    # The JVM archive on Apple Silicon without Rosetta 2, which is never
-    # installed here; test/jvm/native.py host checks that it is absent. As the
+    # The JVM archive on Apple Silicon with Rosetta 2 installed but no
+    # translation; native.py host requires an untranslated arm64 runner. As the
     # build job does for its own archive, it runs the tests that the JVM build
     # supports (docs/development.md#the-jvm-target), except in a pull
     # request's dry run, then smoke-tests the archive, and checks that the
     # jars it tested are the packaged ones: the build is deterministic, and the
     # pinned jar Aeneas here writes the same jars as Linux's native Aeneas.
-    # native.py run checks that every Java process runs untranslated arm64
-    # code: the pinned JDK for the tests, the bundled runtime for the archive.
-    name: Test the JVM archive (macOS Apple Silicon without Rosetta 2)
+    # native.py run rejects translation in every observed descendant and
+    # requires arm64 Java: the pinned JDK for tests, bundled runtime for archives.
+    name: Test the JVM archive (macOS Apple Silicon without Rosetta translation)
     needs: [check, build-jvm]
     runs-on: macos-15
     timeout-minutes: 30
     env:
       REQUIRE_NVIM: '1'
+      VIRGIL_V3C: ${{ github.workspace }}/vendor/virgil/bin/stable/jar/Aeneas
       ARCHIVE: virgil-lsp-${{ needs.check.outputs.version }}-jvm-arm64-darwin.tar.gz
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0 # full history and tags, so the build's revision is the package's
-      - name: Check that this is Apple Silicon without Rosetta 2
-        run: python3 test/jvm/native.py host
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
       # Only make test needs Neovim, and a pull request's dry run doesn't run it.
       - name: Install Neovim (Homebrew)
         if: github.event_name != 'pull_request'
@@ -226,13 +229,19 @@ jobs:
         run: |
           uname -sm
           vendor/virgil/bin/dev/sense_host
-          V3C_TARGET=jvm scripts/v3c.sh -print-compiler
+          compiler=$(V3C_TARGET=jvm scripts/v3c.sh -print-compiler)
+          echo "$compiler"
+          test "$compiler" = "$GITHUB_WORKSPACE/vendor/virgil/bin/stable/jar/Aeneas"
           git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build
-        run: make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
+      - name: Build, checking all observed descendants
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
+            --report "$RUNNER_TEMP/processes/build.json" -- \
+            make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
       # A pull request's dry run only builds: CI's test-macos-jvm runs the
       # same tests on the same tree, with the same runner image.
-      - name: Test, checking every Java process
+      - name: Test, checking all observed descendants
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p "$RUNNER_TEMP/processes"
@@ -253,7 +262,7 @@ jobs:
             cmp "build/jvm-target/$f" "$RUNNER_TEMP"/extracted/*/"$f"
           done
           file "$RUNNER_TEMP"/extracted/*/runtime/bin/java
-      - name: Smoke-test the extracted archive, checking every Java process
+      - name: Smoke-test the extracted archive, checking all observed descendants
         run: |
           mkdir -p "$RUNNER_TEMP/processes"
           python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 \

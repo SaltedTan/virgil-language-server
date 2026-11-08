@@ -3,7 +3,7 @@ name: Editor tests (weekly)
 # Runs the editor tests in full, where pull request CI runs only part of them:
 # the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, the
 # Extension Host test on macOS against a packaged VSIX, both on macOS also on
-# the JVM build for Apple Silicon without Rosetta 2, and the same suite
+# the JVM build for Apple Silicon without Rosetta translation, and the same suite
 # through VS Code Remote-SSH on Linux, plus the clean README install in a Linux
 # container. It builds the server archives from
 # source, packages the JVM build (package-jvm.yml), and packages the VSIX as

@@ -14,8 +14,9 @@ name: Editor test suites
 # through VS Code Remote-SSH on Linux. On macOS, the LazyVim and Extension Host
 # tests run twice: on the x86-64-darwin build under Rosetta 2, and on the JVM
 # build for Apple Silicon (the jvm-arm64-darwin archive and darwin-arm64-jvm
-# VSIX) on a runner without Rosetta 2, where test/jvm/native.py checks that
-# every Java process runs the bundled runtime's arm64 java, untranslated. The LazyVim test installs the pinned
+# VSIX) on a runner with Rosetta 2 installed. test/jvm/native.py rejects
+# translation in every observed descendant and checks that every Java process
+# runs the bundled runtime's arm64 java. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
 # results and logs, also when it fails. See test/e2e/lazyvim/README.md#ci,
@@ -328,9 +329,9 @@ jobs:
           retention-days: 30
 
   lazyvim-macos-jvm:
-    # The JVM build for Apple Silicon, without Rosetta 2, which is never
-    # installed here; test/jvm/native.py host checks that it is absent.
-    name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta 2, Homebrew Neovim)
+    # The JVM build for Apple Silicon with Rosetta 2 installed. native.py
+    # requires an untranslated runner and rejects translated descendants.
+    name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Homebrew Neovim)
     runs-on: macos-15
     timeout-minutes: 20
     env:
@@ -339,8 +340,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Check that this is Apple Silicon without Rosetta 2
-        run: python3 test/jvm/native.py host
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
       - name: Install Neovim and tmux (Homebrew)
         run: brew install neovim tmux
       - name: Show versions
@@ -353,7 +356,7 @@ jobs:
         with:
           name: archive-jvm-arm64-darwin
           path: ${{ runner.temp }}/archive
-      - name: LazyVim test against the archive, checking every Java process
+      - name: LazyVim test against the archive, checking all observed descendants
         # The test's provenance, in the log and the results, records the
         # archive's SHA-256.
         run: |
@@ -373,16 +376,18 @@ jobs:
 
   vscode-vsix-macos-jvm:
     # The darwin-arm64-jvm VSIX and its bundled JVM server and runtime, on
-    # Apple Silicon without Rosetta 2, as lazyvim-macos-jvm. The artifact holds
-    # the test's output, the Java processes it saw, and, if a launch failed,
+    # Apple Silicon without translation, as lazyvim-macos-jvm. The artifact
+    # holds the test's output, observed descendants, and, if a launch failed,
     # that launch's VS Code logs.
-    name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta 2)
+    name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta translation)
     runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Check that this is Apple Silicon without Rosetta 2
-        run: python3 test/jvm/native.py host
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
       - uses: actions/download-artifact@v8
         with:
           name: vsix-darwin-arm64-jvm
@@ -405,7 +410,7 @@ jobs:
       - name: Install client dependencies from the lockfile
         working-directory: clients/vscode
         run: npm ci
-      - name: Extension Host test against the installed VSIX, checking every Java process
+      - name: Extension Host test against the installed VSIX, checking all observed descendants
         working-directory: clients/vscode
         run: |
           set -o pipefail
