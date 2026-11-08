@@ -605,8 +605,16 @@ class WorkerDeaths(unittest.TestCase):
 class StandIn(unittest.TestCase):
     """Oracle failures from a scripted server; no build needed."""
 
+    # The stand-in is a Python process, whose start alone can take longer than
+    # 0.2 s on a loaded machine, such as a macOS runner running the JVM suites
+    # beside it (#465). Only the deadline cases use the short limits; the others
+    # have deterministic outcomes, and generous limits keep them from becoming
+    # deadlines.
+    SHORT = {"request_timeout": 0.2, "case_timeout": 0.4, "run_timeout": 0.6}
+    GENEROUS = {"request_timeout": 5, "case_timeout": 10, "run_timeout": 15}
+
     def run_fake(self, mode, limits=None, record=None):
-        limits = limits or sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 0.4, "run_timeout": 0.6})
+        limits = limits or sm.resolve_limits(self.GENEROUS)
         record = record or single_case("component Mutant { def f() {} }\n", limits=limits)
         with tempfile.TemporaryDirectory() as directory:
             started = time.monotonic()
@@ -801,7 +809,7 @@ class StandIn(unittest.TestCase):
         self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
 
     def test_request_deadline(self):
-        result, transcript, elapsed = self.run_fake("hang")
+        result, transcript, elapsed = self.run_fake("hang", sm.resolve_limits(self.SHORT))
         self.assertEqual(result["outcome"], "deadline", result)
         self.assertIn("request deadline", result["error"])
         self.assertLess(elapsed, 4)
