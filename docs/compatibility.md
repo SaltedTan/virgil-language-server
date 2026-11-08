@@ -73,7 +73,7 @@ The tables on this page record what each release was built with and what was tes
 | Project file version | `ProjectConfig:version` |
 | Client startup | In `npm test` in `clients/vscode`: [`test/lifecycle.cjs`](../clients/vscode/test/lifecycle.cjs)'s "server selection", "a broken bundle", and "a mismatched workspace host" tests |
 
-A release adds archive smoke tests and editor tests on its own assets through the [release workflow](releasing.md#how-the-workflow-works). The [automated editor coverage](manual-testing.md#what-the-automated-tests-cover) lists which variants get editor tests; the `darwin-x64` VSIX gets only the packaging checks.
+A release adds the [release workflow's](releasing.md#how-the-workflow-works) evidence: archive smoke tests for the native builds and the JVM archive, the [Extension Host test](../clients/vscode/README.md#extension-host-test) on the `linux-x64`, `universal`, `darwin-arm64`, and `darwin-arm64-jvm` VSIX variants, the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), and the LazyVim test on Linux and on macOS with both the Rosetta and JVM archives. The JVM editor jobs, `vscode-vsix-macos-jvm` and `lazyvim-macos-jvm`, run on Apple Silicon without Rosetta 2. The [automated editor coverage](manual-testing.md#what-the-automated-tests-cover) gives the job details; the `darwin-x64` VSIX gets only the packaging checks.
 
 ## LSP baseline
 
