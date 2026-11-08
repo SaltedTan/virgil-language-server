@@ -76,8 +76,9 @@ jobs:
         run: make test
       - name: Version
         run: build/virgil-lsp --version
-      # Only lazyvim-linux uses this artifact, so a failed upload mustn't fail
-      # this required job; lazyvim-linux then fails at its download instead.
+      # Only lazyvim-linux and lspcheck-linux use this artifact, so a failed
+      # upload mustn't fail this required job; they fail at their downloads
+      # instead.
       - uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
@@ -148,6 +149,56 @@ jobs:
         with:
           name: lazyvim-linux
           path: ${{ runner.temp }}/lazyvim
+          if-no-files-found: warn
+          retention-days: 14
+
+  lspcheck-linux:
+    # Checks the server that test built and tested with lspcheck, an LSP 3.17
+    # and JSON-RPC 2.0 conformance checker: framing, replies, lifecycle,
+    # cancellation, and positions. --strict fails the job on any failed check,
+    # SHOULD and POLICY ones included, as well as on an ERROR verdict. The
+    # release and its archive's SHA-256 digest change together, and only on an
+    # upgrade; see docs/development.md#protocol-conformance.
+    name: Protocol conformance (lspcheck, built server, linux)
+    needs: test
+    # Explicit, because the skipped tested job would otherwise skip this one.
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    runs-on: ubuntu-24.04
+    # A run takes a few seconds; lspcheck bounds each of its own waits.
+    timeout-minutes: 10
+    env:
+      LSPCHECK_VERSION: 0.1.0
+      LSPCHECK_SHA256: a90ae061d39227fd0f3a8b6994ff5d0ad0da83a80d36d87284c4720e56aaf594
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: server-linux
+          path: build
+      - name: Restore executable permissions
+        # Artifacts don't preserve file permissions.
+        run: |
+          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          build/virgil-lsp --version
+      - name: Install lspcheck
+        run: |
+          name="lspcheck-$LSPCHECK_VERSION-x86_64-unknown-linux-musl"
+          curl --fail --location --retry 3 \
+            "https://github.com/SaltedTan/lspcheck/releases/download/v$LSPCHECK_VERSION/$name.tar.gz" \
+            -o "$RUNNER_TEMP/lspcheck.tar.gz"
+          echo "$LSPCHECK_SHA256  $RUNNER_TEMP/lspcheck.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/lspcheck.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: Check the server with lspcheck
+        run: |
+          lspcheck --version
+          mkdir "$RUNNER_TEMP/lspcheck"
+          lspcheck --strict --json "$RUNNER_TEMP/lspcheck/report.json" \
+            --transcripts "$RUNNER_TEMP/lspcheck/transcripts" -- build/virgil-lsp --stdio
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: lspcheck-linux
+          path: ${{ runner.temp }}/lspcheck
           if-no-files-found: warn
           retention-days: 14
 
