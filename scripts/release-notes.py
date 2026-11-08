@@ -6,9 +6,12 @@
 # archives and the exact revisions recorded in their build manifests, and the
 # VS Code extension with the version recorded in the VSIX itself. Every
 # manifest in the asset directory must record the same version, tag, and
-# revisions, and its archive must be present. The directory must hold exactly
-# four VSIX files: universal, linux-x64, darwin-arm64, and darwin-x64,
-# named after their common extension identity and version.
+# revisions, and its archive must be present: virgil-lsp-<version>-<target>,
+# or for the JVM build virgil-lsp-<version>-jvm-<platform>, whose manifest
+# also names its Java runtime's source archive, which must be present too.
+# The directory must hold exactly five VSIX files: universal, linux-x64,
+# darwin-arm64, darwin-x64, and darwin-arm64-jvm, named after their common
+# extension identity and version.
 # GitHub doesn't resolve relative links in a release, so the CHANGELOG
 # section's repository links, such as [Hover](docs/architecture.md#hover), are
 # rewritten with the Downloads links' repository URL and ref: the manifests'
@@ -45,7 +48,11 @@ PLATFORMS = {
     "x86-64-linux": "Linux x86-64; WSL 2 on a best-effort basis",
     "x86-64-darwin": "macOS: an x86-64 build, which Apple Silicon runs under Rosetta 2. "
     "It is not a native arm64 build.",
+    "jvm-arm64-darwin": "macOS on Apple Silicon, without Rosetta 2: the Java (JVM) build, with "
+    "its own Java runtime, so no Java installation is needed",
 }
+# The VSIX targets, as the suffixes of their file names; "" is the universal one.
+VSIX_SUFFIXES = ("", "-linux-x64", "-darwin-arm64", "-darwin-x64", "-darwin-arm64-jvm")
 SHARED = ("version", "tag", "sourceRevision", "dirty", "virgilRevision")
 # The fields that main() reads from each build manifest and the types that
 # scripts/package-release.sh writes, which the release notes depend on: the
@@ -174,6 +181,35 @@ def validate_manifest(path, manifest):
         fail("%s: %s" % (path, "; ".join(problems)))
 
 
+def label(manifest):
+    """The archive's name after the version: the target, or for the JVM build
+    jvm-<platform>."""
+    if manifest["target"] != "jvm":
+        return manifest["target"]
+    return "jvm-" + manifest["platform"]
+
+
+def validate_jvm(path, manifest):
+    """Checks the fields that a JVM build manifest adds and the notes read:
+    its platform and the name of its runtime's source archive."""
+    problems = []
+    why = string_fault(manifest.get("platform"), "a non-empty string")
+    if why is not None:
+        problems.append("platform " + why)
+    elif "/" in manifest["platform"]:
+        problems.append("platform is not a platform name")
+    runtime = manifest.get("runtime")
+    source = runtime.get("source") if isinstance(runtime, dict) else None
+    name = source.get("name") if isinstance(source, dict) else None
+    why = string_fault(name, "a non-empty string")
+    if why is not None:
+        problems.append("runtime.source.name " + why)
+    elif "/" in name or name.startswith("."):
+        problems.append("runtime.source.name is not a file name")
+    if problems:
+        fail("%s: %s" % (path, "; ".join(problems)))
+
+
 def changelog_section(heading):
     prefix = "## [%s]" % heading
     lines = None
@@ -237,14 +273,13 @@ def release_links(section, url, ref):
 
 def extensions(assets):
     vsixes = sorted(glob.glob(os.path.join(assets, "*.vsix")))
-    if len(vsixes) != 4:
-        fail("expected four VS Code extensions (*.vsix) in %s, found %d" % (assets, len(vsixes)))
+    if len(vsixes) != len(VSIX_SUFFIXES):
+        fail("expected five VS Code extensions (*.vsix) in %s, found %d" % (assets, len(vsixes)))
     found = [extension(path) for path in vsixes]
     first = found[0][1]
-    expected = {"%s-%s%s.vsix" % (first["name"], first["version"], suffix)
-                for suffix in ("", "-linux-x64", "-darwin-arm64", "-darwin-x64")}
+    expected = {"%s-%s%s.vsix" % (first["name"], first["version"], suffix) for suffix in VSIX_SUFFIXES}
     if {name for name, _ in found} != expected:
-        fail("VSIX files do not cover universal, linux-x64, darwin-arm64, and darwin-x64")
+        fail("VSIX files do not cover universal, linux-x64, darwin-arm64, darwin-x64, and darwin-arm64-jvm")
     if any(any(ext[k] != first[k] for k in ("name", "publisher", "version")) for _, ext in found):
         fail("VSIX identities disagree")
     return ", ".join("`%s`" % name for name, _ in found), first
@@ -279,7 +314,7 @@ def extension(path):
             for k in ("name", "publisher", "version")):
         fail(name + ": extension/package.json lacks a name, publisher, or version")
     if name not in {"%s-%s%s.vsix" % (manifest["name"], manifest["version"], suffix)
-                    for suffix in ("", "-linux-x64", "-darwin-arm64", "-darwin-x64")}:
+                    for suffix in VSIX_SUFFIXES}:
         fail("%s holds version %s of %s" % (name, manifest["version"], manifest["name"]))
     return name, manifest
 
@@ -292,6 +327,8 @@ def main():
     for path in sorted(glob.glob(os.path.join(assets, "*.manifest.json"))):
         manifest = load_json(path)
         validate_manifest(path, manifest)
+        if manifest["target"] == "jvm":
+            validate_jvm(path, manifest)
         manifests.append(manifest)
     if not manifests:
         fail("no build manifests in " + assets)
@@ -300,9 +337,13 @@ def main():
         for key in SHARED:
             if m[key] != first[key]:
                 fail("manifests disagree on %s: %r and %r" % (key, first[key], m[key]))
-        archive = "virgil-lsp-%s-%s.tar.gz" % (m["version"], m["target"])
+        archive = "virgil-lsp-%s-%s.tar.gz" % (m["version"], label(m))
         if not os.path.isfile(os.path.join(assets, archive)):
             fail("missing archive " + archive)
+    sources = sorted({m["runtime"]["source"]["name"] for m in manifests if m["target"] == "jvm"})
+    for source in sources:
+        if not os.path.isfile(os.path.join(assets, source)):
+            fail("missing the JVM runtime's source archive " + source)
     if first["dirty"]:
         fail("the archives were built from a modified checkout")
     vsix, ext = extensions(assets)
@@ -317,8 +358,8 @@ def main():
     out.append("| Archive | Platform |")
     out.append("| --- | --- |")
     for m in manifests:
-        archive = "virgil-lsp-%s-%s.tar.gz" % (m["version"], m["target"])
-        out.append("| `%s` | %s |" % (archive, PLATFORMS.get(m["target"], "`%s`" % m["target"])))
+        archive = "virgil-lsp-%s-%s.tar.gz" % (m["version"], label(m))
+        out.append("| `%s` | %s |" % (archive, PLATFORMS.get(label(m), "`%s`" % label(m))))
     out += [
         "",
         "Each archive holds `virgil-lsp` and `virgil-lsp-worker`, which must stay in the same "
@@ -328,12 +369,24 @@ def main():
         "`SHA256SUMS`, then follow the [installation instructions](%s/blob/%s/docs/releasing.md#installing)."
         % (url, ref),
         "",
+    ]
+    if sources:
+        out += [
+            "%s %s the corresponding source of the JVM build's bundled Java runtime: Eclipse "
+            "Adoptium's own source archive for that build, unchanged. See the [JVM build](%s/blob/%s/"
+            "docs/releasing.md#the-jvm-build-for-apple-silicon)."
+            % (", ".join("`%s`" % s for s in sources), "is" if len(sources) == 1 else "are", url, ref),
+            "",
+        ]
+    out += [
         "### VS Code extension",
         "",
         "%s are version %s of the VS Code extension (`%s.%s`)%s. Its versions are "
         "independent of the server's. Install the VSIX for your workspace host: linux-x64, "
         "darwin-arm64 (x86-64 server under Rosetta 2), or darwin-x64. These bundle the tested "
-        "server, worker, and pinned library. The universal VSIX needs an external server. "
+        "server, worker, and pinned library. darwin-arm64-jvm bundles the JVM build and its Java "
+        "runtime instead, for Apple Silicon without Rosetta 2; install it from the file, since VS Code "
+        "doesn't choose it. The universal VSIX needs an external server. "
         "See [installation instructions](%s/blob/%s/docs/releasing.md#vs-code-extension)."
         % (vsix, ext["version"], ext["publisher"], ext["name"],
            ", a preview" if ext.get("preview") is True else "", url, ref),

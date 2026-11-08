@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Checks that a release assets directory holds exactly the files a tag release
-# attaches, and lists them: the two server archives and their build manifests,
-# the four VSIX files, and SHA256SUMS. The VSIX files carry the extension's
-# own version, which the server's VERSION does not, so they are matched by
-# name shape and checked for one shared extension version and one file per
-# target, rather than derived from VERSION.
+# attaches, and lists them: the three server archives (x86-64-linux,
+# x86-64-darwin, and the JVM build for Apple Silicon, jvm-arm64-darwin) and
+# their build manifests, the five VSIX files, the JVM runtime's source archive
+# under the name that scripts/jvm-runtime.json pins, and SHA256SUMS. The VSIX
+# files carry the extension's own version, which the server's VERSION does
+# not, so they are matched by name shape and checked for one shared extension
+# version and one file per target, rather than derived from VERSION. See
+# docs/releasing.md.
 # Usage: scripts/release-assets.sh <version> <assets-dir>
 # Prints the file names, one per line, on success.
 set -uo pipefail
@@ -25,18 +28,28 @@ if [ -z "$version" ] || [ ! -d "$dir" ]; then
 fi
 
 expected=()
-for target in x86-64-linux x86-64-darwin; do
+for target in x86-64-linux x86-64-darwin jvm-arm64-darwin; do
     expected+=("virgil-lsp-$version-$target.tar.gz")
     expected+=("virgil-lsp-$version-$target.manifest.json")
 done
 
-# The four VSIX files: one per platform target and one universal, all
-# carrying the extension's version.
+# The JVM archive's runtime source, which every release with a JVM asset
+# attaches; scripts/check-release.sh --runtime-source checks its contents.
+pin=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jvm-runtime.json
+if ! source_name=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["name"])' "$pin") ||
+   [ -z "$source_name" ]; then
+    echo "error: cannot read the runtime source archive's name from $pin" >&2
+    exit 2
+fi
+expected+=("$source_name")
+
+# The five VSIX files: one per platform target, the JVM build's darwin-arm64
+# one, and one universal, all carrying the extension's version.
 shopt -s nullglob
 vsix=("$dir"/virgil-lsp-vscode-*.vsix)
 shopt -u nullglob
-if [ "${#vsix[@]}" -ne 4 ]; then
-    echo "error: expected 4 VSIX files, found ${#vsix[@]}" >&2
+if [ "${#vsix[@]}" -ne 5 ]; then
+    echo "error: expected 5 VSIX files, found ${#vsix[@]}" >&2
     exit 1
 fi
 ext_version=
@@ -45,6 +58,7 @@ for f in "${vsix[@]}"; do
     v=${name#virgil-lsp-vscode-}
     v=${v%.vsix}
     case $v in
+        *-darwin-arm64-jvm) v=${v%-darwin-arm64-jvm} ;;
         *-linux-x64) v=${v%-linux-x64} ;;
         *-darwin-arm64) v=${v%-darwin-arm64} ;;
         *-darwin-x64) v=${v%-darwin-x64} ;;
@@ -60,7 +74,7 @@ for f in "${vsix[@]}"; do
         exit 1
     fi
 done
-for target in linux-x64 darwin-arm64 darwin-x64; do
+for target in linux-x64 darwin-arm64 darwin-x64 darwin-arm64-jvm; do
     found=
     for f in "${vsix[@]}"; do
         [ "${f##*/}" = "virgil-lsp-vscode-$ext_version-$target.vsix" ] && found=1
