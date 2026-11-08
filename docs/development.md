@@ -244,9 +244,9 @@ Without `ARGS`, `make test` and `make test-unit` run each group of unit tests (t
 
 CI job `lspcheck-linux` checks the server that the `test` job built with [lspcheck](https://github.com/SaltedTan/lspcheck), an LSP 3.17 and JSON-RPC 2.0 conformance checker maintained outside this repository. It checks message framing, request and response ids, the lifecycle from `initialize` to `exit`, cancellation, positions in the negotiated encoding, and that no process outlives the server. The job runs it with `--strict`, so any failed check fails the job, a `SHOULD` or `POLICY` check as well as a `MUST` one, and so does an `ERROR` verdict, which means lspcheck couldn't complete a scenario. The job keeps the JSON report and one transcript per scenario as the `lspcheck-linux` artifact for 14 days, also when it fails. It is not a required check ([CI policy](compatibility.md#host-platforms)).
 
-The job pins an lspcheck release and the SHA-256 digest of its Linux archive, `LSPCHECK_VERSION` and `LSPCHECK_SHA256` in [`ci.yml`](../.github/workflows/ci.yml), so its verdicts change only when the pin does. To upgrade, read the release's changelog for new and changed checks, take the digest of `lspcheck-<version>-x86_64-unknown-linux-musl.tar.gz` from the release's `SHA256SUMS`, and change both in one pull request. That is a workflow change, so it needs the maintainer's merge.
+The job pins an lspcheck release and the SHA-256 digest of its Linux archive, `LSPCHECK_VERSION` and `LSPCHECK_SHA256` in [`ci.yml`](../.github/workflows/ci.yml), so the checker's rules change only when the pin does. To upgrade, read the release's changelog for new and changed checks, take the digest of `lspcheck-<version>-x86_64-unknown-linux-musl.tar.gz` from the release's `SHA256SUMS`, and change both in one pull request. That is a workflow change, so it needs the maintainer's merge.
 
-To run the same check locally, download the archive for your platform from [lspcheck's releases](https://github.com/SaltedTan/lspcheck/releases) and run:
+To run the same check locally, build the server and worker with `make`, download and extract your platform's archive of the release pinned in `ci.yml` from [lspcheck's releases](https://github.com/SaltedTan/lspcheck/releases), put its `lspcheck` binary on `PATH`, and run:
 
 ```sh
 lspcheck --strict -- build/virgil-lsp --stdio
