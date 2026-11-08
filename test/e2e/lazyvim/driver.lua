@@ -1008,6 +1008,12 @@ local function main_checks()
     wait_for("Insert mode on a new line", function()
       return vim.api.nvim_get_mode().mode == "i" and vim.api.nvim_win_get_cursor(0)[1] == use_line + 2
     end)
+    -- Blink installs its mappings and typing handlers only after its fuzzy
+    -- matcher download settles. Input typed before then is not replayed.
+    wait_for("blink.cmp's Insert-mode mappings", function()
+      local enter = vim.fn.maparg("<CR>", "i", false, true)
+      return enter.desc and enter.desc:find("^blink%.cmp:")
+    end)
   end
   -- Presses u until the buffer is the saved original again, at most four
   -- times, and returns the number of presses and the lines after each. If
@@ -1376,7 +1382,8 @@ local function main_checks()
   -- commands. A bare :lsp restart restarts only the clients attached to the
   -- current buffer, here not the library file's own client; a bare
   -- :LspRestart restarts every client, and on Neovim 0.11 stops each of two
-  -- clients twice, so that Neovim ends the server with signal 15.
+  -- clients twice, so that Neovim ends the server with signal 15. Java handles
+  -- that signal and exits with status 128 + 15 instead.
   local builtin_lsp = vim.fn.exists(":lsp") == 2
   local restart_command = builtin_lsp and "lsp restart" or "LspRestart"
 
@@ -1409,7 +1416,9 @@ local function main_checks()
     for id in pairs(old) do
       local e = O.exits[id]
       statuses[#statuses + 1] = string.format("%d: code %d signal %d", id, e.code, e.signal)
-      assert(e.code == 0 and (e.signal == 0 or (not strict and e.signal == 15)),
+      local clean = e.code == 0 and e.signal == 0
+      local terminated = (e.code == 0 and e.signal == 15) or (e.code == 128 + 15 and e.signal == 0)
+      assert(clean or (not strict and terminated),
         "old client " .. id .. " exited uncleanly: " .. vim.inspect(e))
     end
     local new = wait_for("a new client on words/Words.v3", function()
