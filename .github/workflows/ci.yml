@@ -155,11 +155,12 @@ jobs:
   lspcheck-linux:
     # Checks the server that test built and tested with lspcheck, an LSP 3.17
     # and JSON-RPC 2.0 conformance checker: framing, replies, lifecycle,
-    # cancellation, positions, advertised requests and robustness to odd
-    # input. --strict fails the job on any failed check,
-    # SHOULD and POLICY ones included, as well as on an ERROR verdict. The
-    # release and its archive's SHA-256 digest change together, and only on an
-    # upgrade; see docs/development.md#protocol-conformance.
+    # cancellation, positions, advertised requests, message types against
+    # the LSP meta-model and robustness to odd input. --strict fails the job
+    # on any failed check, SHOULD and POLICY ones included, as well as on an
+    # ERROR verdict. The release and its archive's SHA-256 digest change
+    # together, and only on an upgrade; see
+    # docs/development.md#protocol-conformance.
     name: Protocol conformance (lspcheck, built server, linux)
     needs: test
     # Explicit, because the skipped tested job would otherwise skip this one.
@@ -168,8 +169,8 @@ jobs:
     # A run takes a few seconds; lspcheck bounds each of its own waits.
     timeout-minutes: 10
     env:
-      LSPCHECK_VERSION: 0.2.0
-      LSPCHECK_SHA256: a1f33cdc634cf84d795a53a1ea000ea2385f2dcf73662309d0ff57ee898118ec
+      LSPCHECK_VERSION: 0.3.0
+      LSPCHECK_SHA256: f970006c6f1d0388ee49d3f6b932a992ac03a880685ec4612a5f0f1dfc5e8b1f
     steps:
       - uses: actions/download-artifact@v8
         with:
