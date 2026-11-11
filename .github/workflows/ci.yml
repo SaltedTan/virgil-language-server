@@ -169,8 +169,8 @@ jobs:
     # A run takes a few seconds; lspcheck bounds each of its own waits.
     timeout-minutes: 10
     env:
-      LSPCHECK_VERSION: 0.3.0
-      LSPCHECK_SHA256: f970006c6f1d0388ee49d3f6b932a992ac03a880685ec4612a5f0f1dfc5e8b1f
+      LSPCHECK_VERSION: 0.4.0
+      LSPCHECK_SHA256: 1b2cf96af058d734cc7a5751f1fc9a18f363e4431728e5a3b3aefc00a949be46
     steps:
       - uses: actions/download-artifact@v8
         with:
