@@ -362,7 +362,9 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/lazyvim"
-          python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 \
+          # The tmux server that runs Neovim detaches from run.sh; --adopt
+          # follows it and so the servers that Neovim starts.
+          python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 --adopt tmux \
             --report "$RUNNER_TEMP/lazyvim/processes.json" -- \
             test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" 2>&1 |
             tee "$RUNNER_TEMP/lazyvim/run.log"

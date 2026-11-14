@@ -68,7 +68,7 @@ class RunTests(unittest.TestCase):
         # Independent oracle for the ps interface: the OS's own parent PID.
         self.assertEqual(native.process_parents()[os.getpid()], os.getppid())
 
-    def check_run(self, frames, min_java=1, status=0):
+    def check_run(self, frames, min_java=1, status=0, adopt=()):
         # Each entry is pid: (ppid, executable, translated, Mach-O CPU types).
         # The observer consumes every fixture frame before the command exits;
         # no correctness assertion depends on a wall-clock scheduling delay.
@@ -105,7 +105,8 @@ class RunTests(unittest.TestCase):
             for name, probe in probes.items():
                 stack.enter_context(patch.object(native, name, side_effect=probe))
             stack.enter_context(patch("native.subprocess.Popen", return_value=SimpleNamespace(pid=100, wait=wait)))
-            args = SimpleNamespace(command=["fixture-command"], java=JAVA, min_java=min_java, report=str(report))
+            args = SimpleNamespace(command=["fixture-command"], java=JAVA, min_java=min_java, adopt=list(adopt),
+                                   report=str(report))
             with redirect_stdout(output):
                 try:
                     native.run(args)
@@ -159,6 +160,29 @@ class RunTests(unittest.TestCase):
             with self.subTest(path=path, flag=flag, cpus=cpus):
                 error, _, _ = self.check_run([{100: (1, path, flag, cpus)}])
                 self.assertIn(message, error)
+
+    def test_adopted_new_processes_and_their_descendants_are_followed(self):
+        # The first snapshot is taken before the command starts.
+        old_tmux = {50: (1, "/usr/bin/tmux", False, [ARM64]), 51: (50, "/old/java", True, [X86_64])}
+        error, records, _ = self.check_run([old_tmux, {
+            **old_tmux,
+            100: (1, "/bin/sh", False, [ARM64]),
+            300: (1, "/opt/homebrew/bin/tmux", False, [ARM64]),
+            301: (300, "/opt/homebrew/bin/nvim", False, [ARM64]),
+            302: (301, JAVA, False, [ARM64]),
+            400: (1, "/bin/other", True, [X86_64]),
+        }], adopt=["tmux"])
+        self.assertIsNone(error)
+        self.assertEqual([record["pid"] for record in records], [100, 300, 301, 302])
+
+    def test_adopted_translated_descendant_fails(self):
+        error, _, _ = self.check_run([{}, {
+            100: (1, "/bin/sh", False, [ARM64]),
+            300: (1, "/opt/homebrew/bin/tmux", False, [ARM64]),
+            301: (300, "/bin/helper", True, [X86_64]),
+            302: (300, JAVA, False, [ARM64]),
+        }], adopt=["tmux"])
+        self.assertIn("process 301 runs translated", error)
 
     def test_java_count_and_command_exit_are_still_required(self):
         frame = {100: (1, JAVA, False, [ARM64])}

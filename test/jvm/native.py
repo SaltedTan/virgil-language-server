@@ -8,7 +8,7 @@
       whether the Rosetta runtime is installed and the status of
       `arch -x86_64 /usr/bin/true`; Rosetta's presence is allowed.
 
-  native.py run --java GLOB [--min-java N] [--report FILE] -- COMMAND...
+  native.py run --java GLOB [--min-java N] [--adopt NAME]... [--report FILE] -- COMMAND...
       Runs COMMAND, and while it runs records its observed descendants:
       its process ID, parent, executable path (proc_pidpath), command line,
       whether macOS runs it translated by Rosetta (P_TRANSLATED), and the CPU
@@ -21,7 +21,10 @@
       writes the records as JSON. Processes are sampled every 50 ms, so one
       that ends sooner may be missed, and one that ends while it is read is
       counted apart; the server and its worker live for the whole of a
-      session.
+      session. --adopt NAME also follows each process whose executable is
+      named NAME, and its descendants, if it started after native.py did: a
+      tmux server detaches from the client that starts it, so the processes
+      in its panes aren't the command's descendants.
 
 macOS only. CI runs it in the JVM jobs on Apple Silicon; see
 docs/compatibility.md#host-platforms.
@@ -161,12 +164,21 @@ def run(args):
     vanished = set()
     done = threading.Event()
     problems = []
+    # Processes that were already running are never adopted.
+    preexisting = set(process_parents()) if args.adopt else set()
+    named = set()
     command = subprocess.Popen(args.command)
     descendants = {command.pid}
 
     def sample():
         while not done.is_set():
             parents = process_parents()
+            if args.adopt:
+                for pid in parents.keys() - descendants - preexisting - named:
+                    named.add(pid)
+                    path = pidpath(libproc, pid)
+                    if path is not None and os.path.basename(path) in args.adopt:
+                        descendants.add(pid)
             # Keep ancestry after a parent exits, and follow every generation,
             # including children that precede their parent in the ps snapshot.
             while True:
@@ -243,6 +255,8 @@ def main():
     runner = commands.add_parser("run", help="check command descendants for translation and the expected Java")
     runner.add_argument("--java", required=True, help="fnmatch pattern every Java executable must match")
     runner.add_argument("--min-java", type=int, default=1)
+    runner.add_argument("--adopt", action="append", default=[],
+                        help="also follow new processes with this executable name, such as tmux")
     runner.add_argument("--report")
     runner.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
