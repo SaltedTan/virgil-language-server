@@ -60,9 +60,12 @@ endif
 endif
 
 # src/main.v3 and src/worker/WorkerMain.v3 hold the entry points of the server
-# and the analysis worker, and must be passed first.
+# and the analysis worker, and must be passed first. Make's sort orders by bytes,
+# while sort(1) follows the locale, and the file order shapes the JVM build's
+# class files: the release checks the packaged jars against the tested ones,
+# which are built on another host.
 ENTRY_SRC   = src/main.v3 src/worker/WorkerMain.v3
-SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(shell find src -name '*.v3' | sort)) $(OS_SRC)
+SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(sort $(shell find src -name '*.v3'))) $(OS_SRC)
 # The worker's heap, chosen from measurements in
 # docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
 WORKER_HEAP ?= 384m
@@ -73,7 +76,7 @@ ifeq ($(BENCH),1)
 BENCH_FLAGS = -redef-field=BenchProbe.enabled=true,RiGc.stats=true
 endif
 # test/unit/main.v3 holds the test entry point and must be passed first.
-TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
+TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(sort $(shell find test/unit -name '*.v3')))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 # The command run-unit-tests wraps. A plain = lets a command-line override work,
 # and test_cleanup.py uses that to exercise the wrapper without the real tests.
