@@ -1426,6 +1426,19 @@ local function main_checks()
       return c and not old[c.id] and c.initialized and c
     end, 20000)
     assert(vim.lsp.buf_is_attached(bufnr, new.id), "bad.v3 not re-attached")
+    -- Each restarted client gets its own replacement once it has exited, and
+    -- on a slow host the library file's can start after Words.v3's. Wait for
+    -- all of them, so that a later step sees every client.
+    wait_for("a new client for each restarted one", function()
+      local n = 0
+      for _, c in ipairs(virgil_clients()) do
+        if not old[c.id] and not others[c.id] then
+          if not c.initialized then return false end
+          n = n + 1
+        end
+      end
+      return n == vim.tbl_count(old)
+    end, 20000)
     wait_for("the TypeError from the new client", function()
       local list = O.published[words_uri]
       return type_error_published(before)() and list[#list].client_id == new.id
