@@ -407,8 +407,11 @@ async function workspace(extension) {
   const semicolon = await open('semicolon.v3');
   const [semicolonDiagnostic] = await waitForDiagnostics('missing semicolon', semicolon);
   assert.equal(semicolonDiagnostic.message, '";" expected');
-  const fixes = await vscode.commands.executeCommand('vscode.executeCodeActionProvider',
-    semicolon.document.uri, semicolonDiagnostic.range, vscode.CodeActionKind.QuickFix.value);
+  const fixes = await waitFor('the semicolon quick fix', async () => {
+    const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider',
+      semicolon.document.uri, semicolonDiagnostic.range, vscode.CodeActionKind.QuickFix.value);
+    return actions?.length > 0 && actions;
+  });
   assert.equal(fixes.length, 1);
   const [fix] = fixes;
   assert.equal(fix.title, 'Insert missing ";"');
@@ -896,12 +899,20 @@ async function noVirgilRoot(failures, words) {
   // Root errors need an intentionally incomplete install now that archives
   // carry a default library. Copy the executables; a symlink resolves back
   // to the original install and would still discover its bundle.
+  // The JVM build's launchers also need their jars and Java runtime beside
+  // them; the runtime can be a symlink, since the server finds its library
+  // from the launcher's own directory, which has no virgil/.
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'no-bundle-'));
   const copy = path.join(directory, 'virgil-lsp');
+  const installed = path.dirname(fs.realpathSync(server));
   for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
-    fs.copyFileSync(path.join(path.dirname(fs.realpathSync(server)), name), path.join(directory, name));
+    fs.copyFileSync(path.join(installed, name), path.join(directory, name));
     fs.chmodSync(path.join(directory, name), 0o755);
   }
+  for (const name of ['virgil-lsp.jar', 'virgil-lsp-worker.jar']) {
+    if (fs.existsSync(path.join(installed, name))) fs.copyFileSync(path.join(installed, name), path.join(directory, name));
+  }
+  if (fs.existsSync(path.join(installed, 'runtime'))) fs.symlinkSync(path.join(installed, 'runtime'), path.join(directory, 'runtime'));
   await restoreServer(copy, words);
   // Errors logged meanwhile can come from a client that the restart replaces,
   // as after a failed check, so only the new server's start counts.
@@ -1188,8 +1199,20 @@ function groupProcesses() {
   });
 }
 
+// Whether a process runs executable: its arguments start with that path. The
+// JVM build's launcher replaces itself with its bundled runtime's java, so
+// that process's arguments start with the java beside the launcher's
+// physical path instead, and name the launcher in -Dvirgil.lsp.executable.
 function runs(entry, executable) {
-  return entry.args === executable || entry.args.startsWith(`${executable} `);
+  if (entry.args === executable || entry.args.startsWith(`${executable} `)) return true;
+  let real;
+  try {
+    real = fs.realpathSync(executable);
+  } catch {
+    return false;
+  }
+  return entry.args.startsWith(`${path.join(path.dirname(real), 'runtime', 'bin', 'java')} `)
+    && entry.args.includes(` -Dvirgil.lsp.executable=${real} `);
 }
 
 // Kills the server with PID pid, after checking that it is the one that

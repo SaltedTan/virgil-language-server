@@ -9,7 +9,8 @@
 #
 #   run.sh [--out DIR] [--keep-work] [--update-lock] (--archive ARCHIVE | SERVER)
 #
-# ARCHIVE is a release archive, virgil-lsp-<version>-x86-64-<os>.tar.gz;
+# ARCHIVE is a release archive, virgil-lsp-<version>-x86-64-<os>.tar.gz or the
+# JVM build's virgil-lsp-<version>-jvm-arm64-darwin.tar.gz;
 # SERVER is a built virgil-lsp with virgil-lsp-worker beside it.
 set -euo pipefail
 
@@ -453,9 +454,17 @@ fi
 # The rootless profiles deliberately model an incomplete installation. Keep
 # their MissingVirgilRoot and noice warning checks meaningful for archives
 # that now carry a default library. The main profile uses the real install.
+# The JVM build's launchers also need their jars and Java runtime beside them;
+# the runtime can be a symlink, since the server finds its library from the
+# launcher's own directory, which has no virgil/.
 mkdir "$work/no-bundle"
 installed_server=$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("virgil-lsp")))')
-cp "$installed_server" "$(dirname "$installed_server")/virgil-lsp-worker" "$work/no-bundle/"
+installed_dir=$(dirname "$installed_server")
+cp "$installed_server" "$installed_dir/virgil-lsp-worker" "$work/no-bundle/"
+for jar in virgil-lsp.jar virgil-lsp-worker.jar; do
+  if [[ -f $installed_dir/$jar ]]; then cp "$installed_dir/$jar" "$work/no-bundle/"; fi
+done
+if [[ -d $installed_dir/runtime ]]; then ln -s "$installed_dir/runtime" "$work/no-bundle/runtime"; fi
 server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here: $server_version"
 
 # The provenance header, printed and kept in the output directory.

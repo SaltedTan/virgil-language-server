@@ -1,0 +1,102 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+name: Package the JVM build
+
+# Packages the JVM build for Apple Silicon on Linux x86-64, where the release
+# packages it (docs/releasing.md#the-jvm-build-for-apple-silicon): the archive
+# virgil-lsp-<version>-jvm-arm64-darwin.tar.gz, its manifest, and the source
+# archive of its bundled Java runtime, which scripts/jvm-runtime.py downloads
+# with the JDKs and checks against scripts/jvm-runtime.json. It checks them
+# with scripts/check-release.sh --archive and --runtime-source, and uploads
+# the archive and manifest as archive-jvm-arm64-darwin. With runtime-source,
+# it also uploads the source archive as jvm-runtime-source, for a release to
+# attach. With vsix, it also packages the darwin-arm64-jvm VSIX, which
+# scripts/package-vsix.py checks with scripts/check-vsix.py, and uploads it
+# with its producer digest as vsix-darwin-arm64-jvm; the release workflow
+# packages that VSIX in package-vsix.yml instead. The release workflow, the
+# weekly editor tests, and CI call this workflow; macOS jobs test what it
+# packages. The JDK downloads aren't cached: they come from GitHub releases
+# in seconds, and each is checked by SHA-256.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to check and record in the manifest; empty for none
+        type: string
+        default: ''
+      runtime-source:
+        description: Upload the runtime's source archive as jvm-runtime-source
+        type: boolean
+        default: false
+      vsix:
+        description: Also package the darwin-arm64-jvm VSIX and upload it as vsix-darwin-arm64-jvm
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package and check (JVM, for Apple Silicon)
+    runs-on: ubuntu-24.04
+    # Packaging takes a minute or two, most of it the pinned downloads.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0 # full history and tags so --version reports a described revision
+      - name: Package the archive and the runtime's source archive
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$TAG" ]; then
+            V3C_TARGET=jvm scripts/package-release.sh --tag "$TAG" build/release
+          else
+            V3C_TARGET=jvm scripts/package-release.sh build/release
+          fi
+          cat build/release/*.manifest.json
+      - name: Check the archive and the runtime's source archive
+        run: |
+          source=$(python3 -c 'import json; print(json.load(open("scripts/jvm-runtime.json"))["source"]["name"])')
+          scripts/check-release.sh --archive build/release/virgil-lsp-*-jvm-arm64-darwin.tar.gz
+          scripts/check-release.sh --runtime-source "build/release/$source"
+          mkdir "$RUNNER_TEMP/source"
+          mv "build/release/$source" "$RUNNER_TEMP/source/"
+          ls -l build/release "$RUNNER_TEMP/source"
+      - uses: actions/setup-node@v7
+        if: inputs.vsix
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install client dependencies
+        if: inputs.vsix
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Package the VSIX and verify bytes, target, permissions, and notices
+        if: inputs.vsix
+        run: |
+          scripts/package-vsix.py darwin-arm64-jvm --archive build/release/virgil-lsp-*-jvm-arm64-darwin.tar.gz \
+            --out "$RUNNER_TEMP/vsix"
+          cd "$RUNNER_TEMP/vsix"
+          sha256sum -- *.vsix > darwin-arm64-jvm.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-jvm-arm64-darwin
+          path: build/release/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: inputs.runtime-source
+        with:
+          name: jvm-runtime-source
+          path: ${{ runner.temp }}/source/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: inputs.vsix
+        with:
+          name: vsix-darwin-arm64-jvm
+          path: ${{ runner.temp }}/vsix/
+          if-no-files-found: error

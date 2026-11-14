@@ -5,12 +5,18 @@ name: Editor test suites
 
 # The editor tests that both the weekly editor tests workflow and the release
 # workflow run, on the files of the run that calls this one: the archives in
-# its archive-x86-64-linux and archive-x86-64-darwin artifacts and the VSIX in
+# its archive-x86-64-linux, archive-x86-64-darwin, and archive-jvm-arm64-darwin
+# artifacts and the VSIX in
 # its vsix-<target> artifacts, never building the server or packaging the VSIX again.
 # They run a clean README install in an Ubuntu container, the LazyVim test on
 # Linux with Neovim 0.11 and 0.12 and on macOS,
 # the Extension Host test on macOS on the installed VSIX, and the same suite
-# through VS Code Remote-SSH on Linux. The LazyVim test installs the pinned
+# through VS Code Remote-SSH on Linux. On macOS, the LazyVim and Extension Host
+# tests run twice: on the x86-64-darwin build under Rosetta 2, and on the JVM
+# build for Apple Silicon (the jvm-arm64-darwin archive and darwin-arm64-jvm
+# VSIX) on a runner with Rosetta 2 installed. test/jvm/native.py rejects
+# translation in every observed descendant and checks that every Java process
+# runs the bundled runtime's arm64 java. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
 # results and logs, also when it fails. See test/e2e/lazyvim/README.md#ci,
@@ -318,6 +324,107 @@ jobs:
         if: always()
         with:
           name: vscode-vsix-macos
+          path: ${{ runner.temp }}/vscode
+          if-no-files-found: warn
+          retention-days: 30
+
+  lazyvim-macos-jvm:
+    # The JVM build for Apple Silicon with Rosetta 2 installed. native.py
+    # requires an untranslated runner and rejects translated descendants.
+    name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Homebrew Neovim)
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      ARCHIVE: virgil-lsp-${{ inputs.version }}-jvm-arm64-darwin.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
+      - name: Install Neovim and tmux (Homebrew)
+        run: brew install neovim tmux
+      - name: Show versions
+        run: |
+          sw_vers
+          uname -sm
+          nvim --version | head -n 1
+          tmux -V
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-jvm-arm64-darwin
+          path: ${{ runner.temp }}/archive
+      - name: LazyVim test against the archive, checking all observed descendants
+        # The test's provenance, in the log and the results, records the
+        # archive's SHA-256.
+        run: |
+          set -o pipefail
+          mkdir "$RUNNER_TEMP/lazyvim"
+          # The tmux server that runs Neovim detaches from run.sh; --adopt
+          # follows it and so the servers that Neovim starts.
+          python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 --adopt tmux \
+            --report "$RUNNER_TEMP/lazyvim/processes.json" -- \
+            test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" 2>&1 |
+            tee "$RUNNER_TEMP/lazyvim/run.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lazyvim-macos-jvm
+          path: ${{ runner.temp }}/lazyvim
+          if-no-files-found: warn
+          retention-days: 30
+
+  vscode-vsix-macos-jvm:
+    # The darwin-arm64-jvm VSIX and its bundled JVM server and runtime, on
+    # Apple Silicon without translation, as lazyvim-macos-jvm. The artifact
+    # holds the test's output, observed descendants, and, if a launch failed,
+    # that launch's VS Code logs.
+    name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta translation)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix-darwin-arm64-jvm
+          path: ${{ runner.temp }}/vsix
+      - name: Check the producer digest
+        run: |
+          cd "$RUNNER_TEMP/vsix"
+          shasum -a 256 --check --strict darwin-arm64-jvm.sha256
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Show versions
+        run: |
+          sw_vers
+          uname -sm
+          node --version
+          grep -m 1 "VSCODE_VERSION = " clients/vscode/test/e2e/run.cjs
+      - name: Install client dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Extension Host test against the installed VSIX, checking all observed descendants
+        working-directory: clients/vscode
+        run: |
+          set -o pipefail
+          mkdir "$RUNNER_TEMP/vscode"
+          python3 ../../test/jvm/native.py run --java '*/server/runtime/bin/java' --min-java 2 \
+            --report "$RUNNER_TEMP/vscode/processes.json" -- \
+            npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" 2>&1 |
+            tee "$RUNNER_TEMP/vscode/test.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: vscode-vsix-macos-jvm
           path: ${{ runner.temp }}/vscode
           if-no-files-found: warn
           retention-days: 30

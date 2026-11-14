@@ -2,6 +2,7 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """Checks that scripts/release-assets.sh selects exactly the release assets."""
+import json
 import subprocess
 import tempfile
 import unittest
@@ -11,8 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/release-assets.sh'
 VERSION = '0.1.0-alpha.6'
 EXT = '0.1.5'
+# The JVM runtime's source archive, under the name that the pin file gives.
+SOURCE = json.loads((ROOT / 'scripts/jvm-runtime.json').read_text())['source']['name']
 
-EXPECTED = sorted([
+# The assets of a release before the JVM build for Apple Silicon was added.
+NATIVE = [
     f'virgil-lsp-{VERSION}-x86-64-linux.tar.gz',
     f'virgil-lsp-{VERSION}-x86-64-linux.manifest.json',
     f'virgil-lsp-{VERSION}-x86-64-darwin.tar.gz',
@@ -22,7 +26,15 @@ EXPECTED = sorted([
     f'virgil-lsp-vscode-{EXT}-darwin-x64.vsix',
     f'virgil-lsp-vscode-{EXT}.vsix',
     'SHA256SUMS',
-])
+]
+# The JVM build's archive, manifest, and VSIX, and its runtime's source.
+JVM = [
+    f'virgil-lsp-{VERSION}-jvm-arm64-darwin.tar.gz',
+    f'virgil-lsp-{VERSION}-jvm-arm64-darwin.manifest.json',
+    f'virgil-lsp-vscode-{EXT}-darwin-arm64-jvm.vsix',
+    SOURCE,
+]
+EXPECTED = sorted(NATIVE + JVM)
 
 
 class ReleaseAssetsTests(unittest.TestCase):
@@ -112,21 +124,44 @@ class ReleaseAssetsTests(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
 
-    def test_jvm_assets_do_not_stand_in_for_the_default_ones(self):
-        # The JVM archive and VSIX names (scripts/package-release.sh with
-        # V3C_TARGET=jvm, scripts/package-vsix.py darwin-arm64-jvm) never
-        # match a default asset, so they can't replace the Rosetta build.
-        for default, jvm in (
-                (f'virgil-lsp-vscode-{EXT}-darwin-arm64.vsix', f'virgil-lsp-vscode-{EXT}-darwin-arm64-jvm.vsix'),
-                (f'virgil-lsp-{VERSION}-x86-64-darwin.tar.gz', f'virgil-lsp-{VERSION}-jvm-arm64-darwin.tar.gz'),
-                (f'virgil-lsp-{VERSION}-x86-64-darwin.manifest.json',
-                 f'virgil-lsp-{VERSION}-jvm-arm64-darwin.manifest.json')):
-            with self.subTest(jvm=jvm):
-                (self.assets / default).rename(self.assets / jvm)
+    def test_rejects_each_missing_asset(self):
+        # Each asset is required: a JVM asset never stands in for a default
+        # (Rosetta) one, nor a default one for a JVM one.
+        for name in EXPECTED:
+            with self.subTest(missing=name):
+                data = (self.assets / name).read_bytes()
+                (self.assets / name).unlink()
                 result = self.run_script()
-                (self.assets / jvm).rename(self.assets / default)
+                (self.assets / name).write_bytes(data)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, '')
+
+    def test_rejects_a_release_without_the_jvm_assets(self):
+        for name in JVM:
+            (self.assets / name).unlink()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
+    def test_rejects_a_second_jvm_vsix(self):
+        (self.assets / f'virgil-lsp-vscode-{EXT}-darwin-x64-jvm.vsix').write_bytes(b'x')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('expected 5 VSIX files', result.stderr)
+
+    def test_rejects_a_jvm_archive_for_another_platform(self):
+        for suffix in ('tar.gz', 'manifest.json'):
+            (self.assets / f'virgil-lsp-{VERSION}-jvm-arm64-darwin.{suffix}').rename(
+                self.assets / f'virgil-lsp-{VERSION}-jvm-x86-64-linux.{suffix}')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('jvm-x86-64-linux', result.stderr)
+
+    def test_rejects_another_runtime_source_archive(self):
+        (self.assets / SOURCE).rename(self.assets / 'OpenJDK21U-jdk-sources_21.0.12_7.tar.gz')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(SOURCE, result.stderr)
 
     def test_rejects_bad_arguments(self):
         result = subprocess.run(

@@ -2,10 +2,12 @@ name: Editor tests (weekly)
 
 # Runs the editor tests in full, where pull request CI runs only part of them:
 # the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, the
-# Extension Host test on macOS against a packaged VSIX, and the same suite
+# Extension Host test on macOS against a packaged VSIX, both on macOS also on
+# the JVM build for Apple Silicon without Rosetta translation, and the same suite
 # through VS Code Remote-SSH on Linux, plus the clean README install in a Linux
 # container. It builds the server archives from
-# source and packages the VSIX as the release workflow does, then runs the
+# source, packages the JVM build (package-jvm.yml), and packages the VSIX as
+# the release workflow does, then runs the
 # jobs of editor-test-suites.yml on them, which the release workflow also runs
 # on each release's own files. The LazyVim test installs the pinned starter
 # and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH, and the
@@ -78,6 +80,12 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  build-jvm:
+    # The JVM build for Apple Silicon, packaged on Linux as the release does,
+    # without the release's tests.
+    name: JVM package
+    uses: ./.github/workflows/package-jvm.yml
+
   version:
     runs-on: ubuntu-24.04
     outputs:
@@ -88,14 +96,14 @@ jobs:
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
   vsix:
-    needs: [build, version]
+    needs: [build, build-jvm, version]
     uses: ./.github/workflows/package-vsix.yml
     with:
       version: ${{ needs.version.outputs.version }}
 
   editor-tests:
     name: Editor tests
-    needs: [build, vsix, version]
+    needs: [build, build-jvm, vsix, version]
     uses: ./.github/workflows/editor-test-suites.yml
     with:
       version: ${{ needs.version.outputs.version }}

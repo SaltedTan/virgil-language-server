@@ -4,11 +4,15 @@
 name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
-# both supported hosts, packages three bundled VSIX targets and a universal
+# both supported hosts, packages the JVM build for Apple Silicon on Linux and
+# tests it on Apple Silicon without Rosetta translation, packages four bundled VSIX
+# targets (one of them the JVM build's darwin-arm64-jvm) and a universal
 # fallback, and runs the editor tests of
 # editor-test-suites.yml on those archives and VSIX files (the LazyVim test on
-# Linux and macOS, the Extension Host test on macOS, and the Remote-SSH test on
-# Linux, plus the clean README install in a Linux container), writes SHA256SUMS,
+# Linux and macOS, the Extension Host test on macOS, both also on the JVM
+# build, and the Remote-SSH test on
+# Linux, plus the clean README install in a Linux container), writes SHA256SUMS
+# over them and the JVM runtime's source archive,
 # and publishes them as a GitHub prerelease. Running the workflow by hand, or
 # on a pull request that changes the release files or
 # the editor tests, is a dry run: the same jobs without publishing, with the
@@ -33,6 +37,7 @@ on:
       - scripts/package-vsix.py
       - scripts/vsix-payload.py
       - .github/workflows/package-vsix.yml
+      - .github/workflows/package-jvm.yml
       - clients/vscode/src/**
       - scripts/check-vsix.py
       - scripts/package-release.sh
@@ -40,6 +45,9 @@ on:
       - scripts/release-notes.py
       - scripts/smoke-test-release.sh
       - scripts/release-library.py
+      - scripts/jvm-runtime.py
+      - scripts/jvm-runtime.json
+      - test/jvm/**
       - test/release/**
       - test/e2e/lazyvim/**
       - test/e2e/nvim/fixture/**
@@ -170,8 +178,111 @@ jobs:
           path: build/release/
           if-no-files-found: error
 
+  build-jvm:
+    # The JVM build for Apple Silicon is packaged on Linux x86-64, which links
+    # the same pinned runtime as a Mac (docs/releasing.md), with the source
+    # archive of its runtime, which the release attaches; test-jvm tests it.
+    name: JVM package
+    needs: check
+    uses: ./.github/workflows/package-jvm.yml
+    with:
+      tag: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      runtime-source: true
+
+  test-jvm:
+    # The JVM archive on Apple Silicon with Rosetta 2 installed but no
+    # translation; native.py host requires an untranslated arm64 runner. As the
+    # build job does for its own archive, it runs the tests that the JVM build
+    # supports (docs/development.md#the-jvm-target), except in a pull
+    # request's dry run, then smoke-tests the archive, and checks that the
+    # jars it tested are the packaged ones: the build is deterministic, and the
+    # pinned jar Aeneas here writes the same jars as Linux's native Aeneas.
+    # native.py run rejects translation in every observed descendant and
+    # requires arm64 Java: the pinned JDK for tests, bundled runtime for archives.
+    name: Test the JVM archive (macOS Apple Silicon without Rosetta translation)
+    needs: [check, build-jvm]
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      REQUIRE_NVIM: '1'
+      VIRGIL_V3C: ${{ github.workspace }}/vendor/virgil/bin/stable/jar/Aeneas
+      ARCHIVE: virgil-lsp-${{ needs.check.outputs.version }}-jvm-arm64-darwin.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0 # full history and tags, so the build's revision is the package's
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
+      # Only make test needs Neovim, and a pull request's dry run doesn't run it.
+      - name: Install Neovim (Homebrew)
+        if: github.event_name != 'pull_request'
+        run: brew install neovim
+      - name: Fetch the pinned JDK
+        run: |
+          java=$(python3 scripts/jvm-runtime.py prepare arm64-darwin "$RUNNER_TEMP/jdk")
+          "$java" -version
+          echo "JAVA=$java" >> "$GITHUB_ENV"
+      - name: Show host, compiler, and pinned Virgil revision
+        run: |
+          uname -sm
+          vendor/virgil/bin/dev/sense_host
+          compiler=$(V3C_TARGET=jvm scripts/v3c.sh -print-compiler)
+          echo "$compiler"
+          test "$compiler" = "$GITHUB_WORKSPACE/vendor/virgil/bin/stable/jar/Aeneas"
+          git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build, checking all observed descendants
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
+            --report "$RUNNER_TEMP/processes/build.json" -- \
+            make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
+      # A pull request's dry run only builds: CI's test-macos-jvm runs the
+      # same tests on the same tree, with the same runner image.
+      - name: Test, checking all observed descendants
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 100 \
+            --report "$RUNNER_TEMP/processes/make-test.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 2 \
+            --report "$RUNNER_TEMP/processes/test-jvm.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test-jvm
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-jvm-arm64-darwin
+          path: ${{ runner.temp }}/archive
+      - name: Check that the tests tested the packaged jars
+        # For pull-request test coverage, see docs/releasing.md#dry-runs.
+        run: |
+          mkdir "$RUNNER_TEMP/extracted"
+          tar -xzf "$RUNNER_TEMP/archive/$ARCHIVE" -C "$RUNNER_TEMP/extracted"
+          for f in virgil-lsp.jar virgil-lsp-worker.jar; do
+            cmp "build/jvm-target/$f" "$RUNNER_TEMP"/extracted/*/"$f"
+          done
+          file "$RUNNER_TEMP"/extracted/*/runtime/bin/java
+      - name: Smoke-test the extracted archive, checking all observed descendants
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 \
+            --report "$RUNNER_TEMP/processes/release-run.json" -- test/release/run.sh --archive "$RUNNER_TEMP/archive/$ARCHIVE"
+      - name: JVM smoke test on the extracted archive, with no Java on PATH
+        run: |
+          server=$(echo "$RUNNER_TEMP"/extracted/virgil-lsp-*-jvm-arm64-darwin)
+          python3 test/jvm/native.py run --java "$server/runtime/bin/java" --min-java 2 \
+            --report "$RUNNER_TEMP/processes/jvm-smoke.json" -- \
+            env -i PATH=/usr/bin:/bin HOME="$HOME" /usr/bin/python3 test/jvm/smoke.py "$server/virgil-lsp"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: test-jvm-processes
+          path: ${{ runner.temp }}/processes
+          if-no-files-found: warn
+          retention-days: 30
+
   vsix:
-    needs: [check, build]
+    needs: [check, build, build-jvm]
     uses: ./.github/workflows/package-vsix.yml
     with:
       version: ${{ needs.check.outputs.version }}
@@ -181,14 +292,14 @@ jobs:
     # own files: the build jobs' archives and the vsix job's VSIX, which they
     # check against its recorded SHA-256. They never build or package again.
     name: Editor tests
-    needs: [check, build, vsix]
+    needs: [check, build, build-jvm, vsix]
     uses: ./.github/workflows/editor-test-suites.yml
     with:
       version: ${{ needs.check.outputs.version }}
 
   checksums:
     name: Write and verify SHA256SUMS
-    needs: [check, build, vsix, editor-tests]
+    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -202,9 +313,21 @@ jobs:
         with:
           pattern: vsix-*
           path: ${{ runner.temp }}/vsix
+      # A release that publishes a JVM asset must attach its runtime's source,
+      # which the notices in the archive and VSIX say is attached, so this
+      # fails unless it is the pinned source archive.
+      - uses: actions/download-artifact@v8
+        with:
+          name: jvm-runtime-source
+          path: ${{ runner.temp }}/source
+      - name: Check and collect the JVM runtime's source archive
+        run: |
+          source=$(python3 -c 'import json; print(json.load(open("scripts/jvm-runtime.json"))["source"]["name"])')
+          scripts/check-release.sh --runtime-source "$RUNNER_TEMP/source/$source"
+          cp "$RUNNER_TEMP/source/$source" release/assets/
       - name: Collect only the checked VSIX files and verify their producer digests
         run: |
-          for target in linux-x64 darwin-arm64 darwin-x64 universal; do
+          for target in linux-x64 darwin-arm64 darwin-x64 darwin-arm64-jvm universal; do
             (cd "$RUNNER_TEMP/vsix/vsix-$target" && sha256sum --check --strict "$target.sha256")
             cp "$RUNNER_TEMP/vsix/vsix-$target/"*.vsix release/assets/
           done
@@ -238,7 +361,7 @@ jobs:
 
   publish:
     name: Publish prerelease
-    needs: [check, build, vsix, editor-tests, checksums]
+    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests, checksums]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -255,7 +378,8 @@ jobs:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.check.outputs.version }}
     steps:
-      # Only for scripts/release-assets.sh; nothing is built here.
+      # Only for scripts/release-assets.sh, scripts/check-release.sh, and the
+      # pin file they read; nothing is built here.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -266,6 +390,12 @@ jobs:
       - name: Verify SHA256SUMS
         working-directory: release/assets
         run: sha256sum --check --strict SHA256SUMS
+      - name: Check the JVM runtime's source archive
+        # No JVM asset is published without it; release-assets.sh also
+        # requires it by name.
+        run: |
+          source=$(python3 -c 'import json; print(json.load(open("scripts/jvm-runtime.json"))["source"]["name"])')
+          scripts/check-release.sh --runtime-source "release/assets/$source"
       - name: Refuse to replace an existing release
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then

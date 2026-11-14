@@ -60,9 +60,12 @@ endif
 endif
 
 # src/main.v3 and src/worker/WorkerMain.v3 hold the entry points of the server
-# and the analysis worker, and must be passed first.
+# and the analysis worker, and must be passed first. Make's sort orders by bytes,
+# while sort(1) follows the locale, and the file order shapes the JVM build's
+# class files: the release checks the packaged jars against the tested ones,
+# which are built on another host.
 ENTRY_SRC   = src/main.v3 src/worker/WorkerMain.v3
-SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(shell find src -name '*.v3' | sort)) $(OS_SRC)
+SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(sort $(shell find src -name '*.v3'))) $(OS_SRC)
 # The worker's heap, chosen from measurements in
 # docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
 WORKER_HEAP ?= 384m
@@ -73,7 +76,7 @@ ifeq ($(BENCH),1)
 BENCH_FLAGS = -redef-field=BenchProbe.enabled=true,RiGc.stats=true
 endif
 # test/unit/main.v3 holds the test entry point and must be passed first.
-TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
+TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(sort $(shell find test/unit -name '*.v3')))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 # The command run-unit-tests wraps. A plain = lets a command-line override work,
 # and test_cleanup.py uses that to exercise the wrapper without the real tests.
@@ -86,7 +89,10 @@ SUITE_JOBS ?=
 
 # The suites `make test` runs after the unit tests, through test/suites.py,
 # each a quoted shell command. The longest on macOS CI come first, so that the
-# short ones fill in at the end.
+# short ones fill in at the end. `make V3C_TARGET=jvm test` runs only the
+# suites that the JVM build supports: native_only drops a suite there. See
+# "The JVM target" below.
+native_only = $(if $(filter jvm,$(V3C_TARGET)),,$(1))
 SUITES = \
 	'test/cli/run.sh $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/worker.py $(BUILD)/virgil-lsp' \
@@ -112,7 +118,7 @@ SUITES = \
 	'python3 test/protocol/current_repair.py $(BUILD)/virgil-lsp' \
 	'python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
 	'test/e2e/nvim/run.sh $(BUILD)/virgil-lsp' \
-	'python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp' \
+	$(call native_only,'python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp') \
 	'python3 test/benchmarks/test_client.py' \
 	'python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/inlay_hints.py $(BUILD)/virgil-lsp' \
@@ -127,10 +133,10 @@ SUITES = \
 	'python3 test/protocol/outline_parse_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/test_reply_shapes.py' \
-	'python3 test/protocol/test_source_mutations.py' \
+	'env VIRGIL_LSP_EXE=$(BUILD)/virgil-lsp python3 test/protocol/test_source_mutations.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
-	'$(BUILD)/retain-probe' \
+	$(call native_only,'$(BUILD)/retain-probe') \
 	'python3 test/e2e/clean-install/test_readme.py'
 
 .PHONY: all test test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
@@ -208,10 +214,17 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-
 	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables. The unit tests
-# run first, since they use every CPU themselves.
+# run first, since they use every CPU themselves. The JVM build runs only the
+# suites: the unit tests and retain-probe measure the native collector's heap
+# and allocation, so they don't build for it (docs/development.md).
+ifeq ($(V3C_TARGET),jvm)
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/type-depth-probe
+	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
+else
 test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
+endif
 
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker

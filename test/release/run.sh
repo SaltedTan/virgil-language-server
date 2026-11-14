@@ -489,8 +489,9 @@ rm "$TMP/lock/package-lock.json"
 expect_run "check-vsix.py: no lockfile" 1 - "cannot read .*/package-lock\.json" "$CHECK_VSIX" "$VSIX" "$TMP/lock"
 
 # assets [<tag as JSON>]: release assets as the build and vsix jobs produce
-# them: a manifest and an empty archive for each target, and the VSIX. The
-# manifests' tag is null, as for a dry run, unless <tag> is given.
+# them: a manifest and an empty archive for each target, the JVM runtime's
+# source archive, and the VSIX. The manifests' tag is null, as for a dry run,
+# unless <tag> is given.
 ASSETS=$TMP/assets
 revision=0123456789abcdef0123456789abcdef01234567
 virgil=fedcba9876543210fedcba9876543210fedcba98
@@ -504,9 +505,19 @@ assets() {
             > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.manifest.json"
         : > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.tar.gz"
     done
-    for target in "" -linux-x64 -darwin-arm64 -darwin-x64; do
+    jvm_manifest "$tag" '"arm64-darwin"' '{"source": {"name": "OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"}}'
+    : > "$ASSETS/virgil-lsp-1.2.3-alpha.4-jvm-arm64-darwin.tar.gz"
+    : > "$ASSETS/OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"
+    for target in "" -linux-x64 -darwin-arm64 -darwin-x64 -darwin-arm64-jvm; do
         vsix "$ASSETS/virgil-lsp-vscode-7.8.9$target.vsix" "$package" "${files[@]}"
     done
+}
+# jvm_manifest <tag as JSON> <platform as JSON> <runtime as JSON>: writes the
+# JVM build's manifest, with the fields that release-notes.py reads.
+jvm_manifest() {
+    printf '{"version": "1.2.3-alpha.4", "tag": %s, "target": "jvm", "platform": %s, "sourceRevision": "%s",
+        "dirty": false, "virgilRevision": "%s", "runtime": %s}\n' "$1" "$2" "$revision" "$virgil" "$3" \
+        > "$ASSETS/virgil-lsp-1.2.3-alpha.4-jvm-arm64-darwin.manifest.json"
 }
 # notes <name> <expected-exit> <stdout-pattern|-> <stderr-pattern|-|"">
 notes() {
@@ -515,13 +526,18 @@ notes() {
 
 assets
 notes "lists the archives" 0 '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-darwin\.tar\.gz` [|] macOS' ""
+notes "lists the JVM archive" 0 \
+    '^[|] `virgil-lsp-1\.2\.3-alpha\.4-jvm-arm64-darwin\.tar\.gz` [|] macOS on Apple Silicon, without Rosetta 2: the Java \(JVM\) build' ""
+notes "names the JVM runtime's source archive" 0 \
+    '^`OpenJDK21U-jdk-sources_21\.0\.13_9\.tar\.gz` is the corresponding source of the JVM build' ""
+notes "names the JVM VSIX" 0 '`virgil-lsp-vscode-7\.8\.9-darwin-arm64-jvm\.vsix`.*darwin-arm64-jvm bundles the JVM build' ""
 notes "says that WSL 2 is best effort" 0 \
     '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz` [|] Linux x86-64; WSL 2 on a best-effort basis [|]$' ""
 notes "lists the VSIX with the version that it records" 0 \
     '.*`virgil-lsp-vscode-7\.8\.9\.vsix` are version 7\.8\.9 of the VS Code extension \(`virgil-language-server\.virgil-lsp-vscode`\), a preview\. Its versions' ""
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" \
     '{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "7.8.9"}'
-for target in -linux-x64 -darwin-arm64 -darwin-x64; do
+for target in -linux-x64 -darwin-arm64 -darwin-x64 -darwin-arm64-jvm; do
     vsix "$ASSETS/virgil-lsp-vscode-7.8.9$target.vsix" \
         '{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "7.8.9"}'
 done
@@ -530,10 +546,16 @@ notes "lists a VSIX that isn't a preview without saying it is" 0 \
 assets
 notes "links the revisions" 0 "^- Server: \[\`$revision\`\]" ""
 rm "$ASSETS/"*.vsix
-notes "no VSIX" 1 - "expected four VS Code extensions \(\*\.vsix\) in .*, found 0$"
+notes "no VSIX" 1 - "expected five VS Code extensions \(\*\.vsix\) in .*, found 0$"
+assets
+rm "$ASSETS/virgil-lsp-vscode-7.8.9-darwin-arm64-jvm.vsix"
+notes "no JVM VSIX" 1 - "expected five VS Code extensions \(\*\.vsix\) in .*, found 4$"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9-darwin-x64-jvm.vsix" "$package" "${files[@]}"
+notes "a JVM VSIX for another target" 1 - \
+    "virgil-lsp-vscode-7\.8\.9-darwin-x64-jvm\.vsix holds version 7\.8\.9 of virgil-lsp-vscode$"
 assets
 vsix "$ASSETS/virgil-lsp-vscode-7.8.10.vsix" "${package/7.8.9/7.8.10}" "${files[@]}"
-notes "an extra VSIX file" 1 - "expected four VS Code extensions .*, found 5$"
+notes "an extra VSIX file" 1 - "expected five VS Code extensions .*, found 6$"
 assets
 echo "not a zip file" > "$ASSETS/virgil-lsp-vscode-7.8.9.vsix"
 notes "VSIX that isn't a zip file" 1 - "virgil-lsp-vscode-7\.8\.9\.vsix is not a zip file"
@@ -664,6 +686,26 @@ notes "an unreadable build manifest" 1 - "cannot read .*manifest\.json: "
 assets
 rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.tar.gz"
 notes "missing archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz"
+assets
+rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-jvm-arm64-darwin.tar.gz"
+notes "missing JVM archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-jvm-arm64-darwin\.tar\.gz$"
+assets
+rm "$ASSETS/OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"
+notes "missing JVM runtime source archive" 1 - \
+    "missing the JVM runtime's source archive OpenJDK21U-jdk-sources_21\.0\.13_9\.tar\.gz$"
+assets
+jvm_manifest null null '{"source": {"name": "OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"}}'
+notes "a JVM manifest without a platform" 1 - "jvm-arm64-darwin\.manifest\.json: platform is null, not a non-empty string$"
+jvm_manifest null '"../arm64-darwin"' '{"source": {"name": "OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"}}'
+notes "a JVM manifest with a path for a platform" 1 - "manifest\.json: platform is not a platform name$"
+jvm_manifest null '"arm64-darwin"' '{}'
+notes "a JVM manifest without a runtime source" 1 - \
+    "manifest\.json: runtime\.source\.name is null, not a non-empty string$"
+jvm_manifest null '"arm64-darwin"' '{"source": {"name": "../SHA256SUMS"}}'
+notes "a JVM manifest with a path for a runtime source" 1 - "manifest\.json: runtime\.source\.name is not a file name$"
+jvm_manifest null '"x86-64-linux"' '{"source": {"name": "OpenJDK21U-jdk-sources_21.0.13_9.tar.gz"}}'
+notes "a JVM manifest for another platform than its archive" 1 - \
+    "missing archive virgil-lsp-1\.2\.3-alpha\.4-jvm-x86-64-linux\.tar\.gz$"
 
 # CHANGELOG.md's links are relative to the repository root, which
 # release-notes.py finds from its own path, so these cases run a copy of it
