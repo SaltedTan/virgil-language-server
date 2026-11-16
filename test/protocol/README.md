@@ -12,6 +12,10 @@ and the server's stderr on failure.
 - `client_initialization.py` replays the initialization exchange that real
   editors captured, from `clients/<name>/messages.json`, then opens a file,
   requests its document symbols, and shuts down.
+- `lspcheck.toml` is the [lspcheck](https://github.com/SaltedTan/lspcheck)
+  profile that CI's `lspcheck-linux` job uses: a one-file Virgil project and
+  the seeded source mutation lspcheck runs on it. See
+  [protocol conformance](../../docs/development.md#protocol-conformance).
 
 ## Evicted-snapshot reproduction
 

@@ -156,7 +156,9 @@ jobs:
     # Checks the server that test built and tested with lspcheck, an LSP 3.17
     # and JSON-RPC 2.0 conformance checker: framing, replies, lifecycle,
     # cancellation, positions, advertised requests, message types against
-    # the LSP meta-model and robustness to odd input. --strict fails the job
+    # the LSP meta-model and robustness to odd input, then, in a step of its
+    # own, survival of and recovery from seeded edits to real Virgil source.
+    # Both use the profile test/protocol/lspcheck.toml. --strict fails a step
     # on any failed check, SHOULD and POLICY ones included, as well as on an
     # ERROR verdict. The release and its archive's SHA-256 digest change
     # together, and only on an upgrade; see
@@ -166,12 +168,22 @@ jobs:
     # Explicit, because the skipped tested job would otherwise skip this one.
     if: ${{ !cancelled() && needs.test.result == 'success' }}
     runs-on: ubuntu-24.04
-    # A run takes a few seconds; lspcheck bounds each of its own waits.
-    timeout-minutes: 10
+    # Both runs take a few seconds. lspcheck bounds each of its own waits, and
+    # the profile's run_timeout bounds the mutation run at about 10 minutes
+    # when the server hangs.
+    timeout-minutes: 20
     env:
-      LSPCHECK_VERSION: 0.4.0
-      LSPCHECK_SHA256: 1b2cf96af058d734cc7a5751f1fc9a18f363e4431728e5a3b3aefc00a949be46
+      LSPCHECK_VERSION: 0.5.0
+      LSPCHECK_SHA256: 386163ac068401d3ef82c39dfe91c844b6f3c85b08d282415adeae73c3e086e3
+      # The mutation plan: the same seed and case count give the same edits.
+      LSPCHECK_MUTATION_SEED: 20261115
+      LSPCHECK_MUTATION_CASES: 100
     steps:
+      # Only the profile; the server is the one the test job built.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: test/protocol/lspcheck.toml
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           name: server-linux
@@ -182,6 +194,7 @@ jobs:
           chmod +x build/virgil-lsp build/virgil-lsp-worker
           build/virgil-lsp --version
       - name: Install lspcheck
+        id: install
         run: |
           name="lspcheck-$LSPCHECK_VERSION-x86_64-unknown-linux-musl"
           curl --fail --location --retry 3 \
@@ -194,9 +207,24 @@ jobs:
         run: |
           lspcheck --version
           mkdir "$RUNNER_TEMP/lspcheck"
-          lspcheck --strict --json "$RUNNER_TEMP/lspcheck/report.json" \
+          lspcheck --strict --profile test/protocol/lspcheck.toml \
+            --json "$RUNNER_TEMP/lspcheck/report.json" \
             --markdown "$GITHUB_STEP_SUMMARY" \
             --transcripts "$RUNNER_TEMP/lspcheck/transcripts" -- build/virgil-lsp --stdio
+      - name: Mutate the profile's source with lspcheck (experimental)
+        # Apart from the step above, so that its verdicts, report and
+        # transcripts stay separate and the step can be dropped alone while
+        # --mutate is experimental. It runs when the step above fails too.
+        # --only keeps the checks the mutation scenario gives evidence for.
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/lspcheck"
+          lspcheck --strict --profile test/protocol/lspcheck.toml --mutate \
+            --mutation-seed "$LSPCHECK_MUTATION_SEED" --mutation-cases "$LSPCHECK_MUTATION_CASES" \
+            --only M1,M2,M3,D1,D2,D6,K1,K2,F1,F2,F8,J1,J2,J5,J7,L9 \
+            --json "$RUNNER_TEMP/lspcheck/mutation-report.json" \
+            --markdown "$GITHUB_STEP_SUMMARY" \
+            --transcripts "$RUNNER_TEMP/lspcheck/mutation-transcripts" -- build/virgil-lsp --stdio
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
