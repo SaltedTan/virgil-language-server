@@ -1,0 +1,124 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# An lspcheck profile for virgil-lsp: a one-file Virgil project, the file K1 and
+# the document checks ask about, and the seeded source mutation that lspcheck's
+# experimental --mutate runs on it. See
+# docs/development.md#protocol-conformance. Paths are relative to this file.
+[server]
+command = ["../../build/virgil-lsp", "--stdio"]
+startup_timeout = "30s"
+request_timeout = "10s"
+exit_timeout = "5s"
+
+[workspace.files]
+".virgil-lsp.json" = """
+{"version": 1, "projects": [{"name": "lspcheck", "sources": ["*.v3"]}]}
+"""
+# Parses and type-checks with no diagnostics: no virgilDependencies, so the
+# server needs no Virgil root. The comments carry non-ASCII text before names
+# on the same line (é is 2 UTF-8 bytes and 1 UTF-16 unit, 中 3 and 1, 😀 4 and
+# 2), so a position counted in the wrong unit lands inside a character.
+"Shapes.v3" = """
+// Shapes for lspcheck: é中😀 before names, strings and characters with escapes.
+/* é中😀 */ class Shape(name: string) {
+	def area() -> int { return 0; }
+	def describe() -> string { return name; }
+}
+/* é中😀 */ class Rect extends Shape {
+	def w: int;
+	def h: int;
+	new(w, h) super("rect\\t\\"r\\"") { }
+	def area() -> int { return w * h; }
+}
+class Square extends Rect {
+	new(side: int) super(side, side) { }
+}
+enum Color(code: byte) {
+	RED('r'), GREEN('\\x67'), QUOTE('\\''), NEWLINE('\\n')
+}
+type Tree {
+	case Leaf(value: int);
+	case Node(left: Tree, right: Tree);
+}
+component Shapes {
+	var count: int;
+	def sum(t: Tree) -> int {
+		match (t) {
+			Leaf(value) => return value;
+			Node(left, right) => return sum(left) + sum(right);
+		}
+	}
+	def total(shapes: Array<Shape>) -> int {
+		var result = 0;
+		for (s in shapes) result += s.area(); // é中😀 area
+		return result + count + Color.QUOTE.code;
+	}
+	def main() -> int {
+		var shapes = [Rect.new(2, 3), Square.new(4), Shape.new("plain \\\\ \\x41")];
+		var tree = Tree.Node(Tree.Leaf(1), Tree.Leaf(total(shapes)));
+		var i = 0;
+		while (i < shapes.length) {
+			/* é中😀 */ count = count + shapes[i].describe().length;
+			i++;
+		}
+		return sum(tree);
+	}
+}
+"""
+
+[document]
+path = "Shapes.v3"
+language_id = "virgil"
+# Rect's use of Shape after é中😀, total's call of area, sum's recursive call,
+# main's use of Square, and count after é中😀.
+positions = ["6:30", "32:33", "27:32", "36:33", "40:14"]
+
+# Used only by the experimental --mutate; see lspcheck's docs/source-mutations.md.
+# The lexicon only steers where edits land. It follows the pinned Virgil parser
+# (vendor/virgil: Parser.skipToNextToken, Strings.parseLiteral,
+# Chars.parseEscape, Char, Keywords) and test/protocol/source_mutations.py.
+[mutation]
+# The default operators, steps and requests. A case usually takes milliseconds,
+# but lspcheck starts one only while its worst case, every wait running to its
+# deadline (355 s at a 10 s request timeout), fits in what is left of
+# run_timeout. Ten minutes leaves about four for starting cases, far more than
+# CI's 100 cases need, and a server that hangs ends the run, with its report,
+# within about ten minutes instead of the default hour.
+run_timeout = "10m"
+# MALFORMED and ODD_LITERALS from source_mutations.py, then its inserted quotes
+# and comment delimiters, and operators the lexicon splits into characters.
+fragments = [
+	"0i", "0x", "0b", "0b2", "1e", "1.", "0xFFFFFFFFFFFFFFFFFFFF", "99999999999999999999", "0u", "1i64x",
+	"'ab'", "''", "'\\q'", '"\q"', '"\x"', "0o7", "1_", "0x_",
+	"0i64", "0u8", "0i33", "0x0i", "0xFFFFFFFFu32", "0.0e400", "1e999", "2147483648", "-2147483649",
+	'"\', "'\\", '"\u{110000}"', "/**/", "...", "..+", "->", "=>", "#",
+]
+
+[mutation.lexicon]
+# Block comments don't nest. Strings and characters end at their line: the
+# parser rejects any byte below ' ' in them. Both take the escapes \r \t \n
+# \" \' \\ and \xHH. Identifiers are ASCII letters, digits and _.
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+strings = [{ open = '"', close = '"', escape = '\' }, { open = "'", close = "'", escape = '\' }]
+identifier_chars = "_"
+brackets = ["()", "[]", "{}"]
+# The keyword table of the pinned parser (vst/Parser.v3, Keywords).
+keywords = [
+	"break", "case", "class", "component", "continue", "def", "descriptor", "describes", "else", "enum",
+	"export", "extends", "false", "for", "fun", "if", "import", "in", "layout", "match", "new", "null",
+	"packing", "private", "return", "struct", "super", "thread", "true", "type", "var", "while",
+]
+
+[mutation.recovery]
+# The probes are documentSymbol, foldingRange and pushed diagnostics; the
+# server advertises no pull diagnostics. In this one-file project each answers
+# from the text alone: symbols and folding ranges from its parse, diagnostics
+# from analysing that file without other sources or a Virgil root. So the clean
+# text's answers are fixed, and each case is held to them. Measured on
+# 2026-11-16 with lspcheck 0.5.0: every case of 1000 recovered within 0.02 s,
+# including after contained worker crashes. no_errors would add nothing, since
+# the baseline's diagnostics are empty, and with pushed diagnostics it makes
+# every case wait the whole recovery_timeout.
+expect = "baseline"
