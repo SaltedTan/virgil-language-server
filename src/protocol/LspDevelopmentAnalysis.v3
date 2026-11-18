@@ -69,10 +69,12 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		if (supervisor.busy()) return workerError("an analysis is already running");
 		if (projects != null && !projects.admitKeeping(pendingProject, supervisor.snapshot,
 			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
-		// Explicit URIs form no project, so they use the default language options.
+		// Explicit URIs form no project, so they use the default language
+		// options and no target.
 		var options: Array<string> = if(pendingProject != null, pendingProject.definition.compilerArgs, []);
+		var target = if(pendingProject != null, pendingProject.definition.target);
 		if (BenchProbe.enabled) BenchProbe.server(0, "prepare_us", long.view(BenchProbe.now() - prepareStart));
-		var outcome = supervisor.begin(inputs.sources, options, null, AnalysisWire.WANT_OCCURRENCES);
+		var outcome = supervisor.begin(inputs.sources, options, target, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
 			_ => {

@@ -10,10 +10,12 @@ def X = [
 	T("LspProjectAnalysis:explicit_uris_above_project_limit", test_explicit_uris_above_project_limit),
 	T("LspProjectAnalysis:compiler_args_per_project", test_compiler_args_per_project),
 	T("LspProjectAnalysis:compiler_args_change_reparses", test_compiler_args_change_reparses),
+	T("LspProjectAnalysis:target_per_project", test_target_per_project),
 	()
 ];
-// A server for the fixture project directory {fixture}.
-class ProjectTestSession(fixture: string) {
+// A server for the fixture project directory {fixture}, with the Virgil root
+// {virgilRoot}, relative to the repository, or none if it is null.
+class ProjectTestSession(fixture: string, virgilRoot: string) {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 	def base = ProjectTestFiles.repository(Strings.format1("test/fixtures/projects/%s", fixture));
@@ -25,6 +27,11 @@ class ProjectTestSession(fixture: string) {
 		server.sendNotification = receive;
 		var params = Strings.newMap<JsonValue>();
 		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		if (virgilRoot != null) {
+			var options = Strings.newMap<JsonValue>();
+			options["virgilRoot"] = JsonValue.String(ProjectTestFiles.repository(virgilRoot));
+			params["initializationOptions"] = JsonValue.JObject(options);
+		}
 		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
 	}
 	def receive(bytes: Array<byte>) {
@@ -59,7 +66,7 @@ class ProjectTestSession(fixture: string) {
 	}
 }
 def test_contexts_and_revisions(t: Tester) {
-	var s = ProjectTestSession.new("two-programs");
+	var s = ProjectTestSession.new("two-programs", null);
 	var mapping = s.server.projects.forDocument(s.uri);
 	t.asserti(2, mapping.contexts.length);
 	s.begin(t, s.uri);
@@ -89,7 +96,7 @@ def test_contexts_and_revisions(t: Tester) {
 	s.server.close();
 }
 def test_configuration_diagnostics(t: Tester) {
-	var s = ProjectTestSession.new("two-programs"), config = ProjectFiles.join(s.base, ".virgil-lsp.json");
+	var s = ProjectTestSession.new("two-programs", null), config = ProjectFiles.join(s.base, ".virgil-lsp.json");
 	var uri = ProjectFiles.uri(config);
 	s.server.documents.open(uri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"virgilDependencies\":[\"lib/*.v3\"]}]}");
 	var c = s.server.projects.load(config);
@@ -114,7 +121,7 @@ def test_configuration_diagnostics(t: Tester) {
 	s.server.close();
 }
 def test_routine_events_reuse_expansion(t: Tester) {
-	var s = ProjectTestSession.new("two-programs"), mapping = s.server.projects.forDocument(s.uri);
+	var s = ProjectTestSession.new("two-programs", null), mapping = s.server.projects.forDocument(s.uri);
 	t.asserti(2, mapping.contexts.length);
 	var cached = [mapping.contexts[0].sources, mapping.contexts[1].sources];
 	var text = System.fileLoad(ProjectFiles.join(s.base, "shared/Greeting.v3"));
@@ -163,7 +170,7 @@ def test_initialize_folders(t: Tester) {
 }
 
 def test_explicit_uris_above_project_limit(t: Tester) {
-	var s = ProjectTestSession.new("two-programs"), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
+	var s = ProjectTestSession.new("two-programs", null), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
 	for (i < uris.length) {
 		var uri = Strings.format1("untitled:empty-%d", i);
 		t.assert(s.server.documents.open(uri, "virgil", 1, "") == null, "empty overlay admitted");
@@ -183,7 +190,7 @@ def test_explicit_uris_above_project_limit(t: Tester) {
 // shared/Table.v3 belongs to two projects with different language options.
 // Each analysis applies its own project's options, in the same worker.
 def test_compiler_args_per_project(t: Tester) {
-	var s = ProjectTestSession.new("compiler-flags");
+	var s = ProjectTestSession.new("compiler-flags", null);
 	var shared = ProjectFiles.uri(ProjectFiles.join(s.base, "shared/Table.v3"));
 	var defaults = ProjectFiles.uri(ProjectFiles.join(s.base, "defaults/Main.v3"));
 	var described = ProjectFiles.uri(ProjectFiles.join(s.base, "descriptors/Described.v3"));
@@ -234,7 +241,7 @@ def takeParsed(s: ProjectTestSession) -> HashMap<string, Array<JsonValue>> {
 // A configuration change parses again only the open documents whose active
 // project's language options changed.
 def test_compiler_args_change_reparses(t: Tester) {
-	var s = ProjectTestSession.new("compiler-flags");
+	var s = ProjectTestSession.new("compiler-flags", null);
 	var described = ProjectFiles.uri(ProjectFiles.join(s.base, "descriptors/Described.v3"));
 	var readOnly = ProjectFiles.uri(ProjectFiles.join(s.base, "read-only/Main.v3"));
 	var config = ProjectFiles.join(s.base, ".virgil-lsp.json");
@@ -260,4 +267,35 @@ def replace(text: string, from: string, to: string) -> string {
 		}
 	}
 	return null;
+}
+// Each project's analysis has its own target: the native project's
+// verifies with its runtime, the portable one's without, and the native
+// project without its target can't find RiUserCode or Pointer.
+def test_target_per_project(t: Tester) {
+	var s = ProjectTestSession.new("native-target", "vendor/virgil");
+	var shared = ProjectFiles.uri(ProjectFiles.join(s.base, "shared/Words.v3"));
+	var portable = ProjectFiles.uri(ProjectFiles.join(s.base, "portable/Main.v3"));
+	t.asserti(2, s.server.projects.forDocument(shared).contexts.length);
+	s.begin(t, shared);
+	var native = s.complete(t);
+	t.assert_string("native", native.projectName);
+	t.asserti(14, native.paths.length);
+	t.assertz(true, native.verified);
+	s.begin(t, portable);
+	var plain = s.complete(t);
+	t.assert_string("portable", plain.projectName);
+	t.asserti(2, plain.paths.length);
+	t.assertz(true, plain.verified);
+	var config = ProjectFiles.join(s.base, ".virgil-lsp.json");
+	openDocument(s, ProjectFiles.uri(config), "json", replace(System.fileLoad(config), "\"x86-64-linux\"", "null"));
+	s.begin(t, shared);
+	var untargeted = s.complete(t);
+	t.assert_string("native", untargeted.projectName);
+	t.asserti(2, untargeted.paths.length);
+	t.assertz(false, untargeted.verified);
+	var unresolved = false;
+	for (d in untargeted.diagnostics) unresolved = unresolved || (Strings.equal("UnresolvedType", d.kind) && Strings.endsWith(d.path, "/native/Native.v3"));
+	t.assert(unresolved, "RiUserCode and Pointer are unresolved without the target");
+	t.asserti(1, s.supervisor.workersStarted);
+	s.server.close();
 }

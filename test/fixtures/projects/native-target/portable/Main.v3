@@ -1,0 +1,9 @@
+// Analyzed without a target, with the synthetic System component, which
+// this file calls itself: analyzed for a target without its runtime
+// sources, System would not be found here.
+component Main {
+	def main() {
+		Words.say(Words.greeting);
+		System.puts("portable\n");
+	}
+}

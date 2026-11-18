@@ -1,0 +1,18 @@
+// Analyzed for x86-64-linux: Pointer, CiRuntime, and Linux come from the
+// target, and RiUserCode, LinuxConst, and System from its runtime sources.
+// Without the target, RiUserCode and Pointer cannot be found.
+class StubCode extends RiUserCode {
+	new(start: Pointer, end: Pointer) super(start, end) { }
+	def nextFrame(ip: Pointer, sp: Pointer) -> (Pointer, Pointer) {
+		return (sp.load<Pointer>(), sp + Pointer.SIZE);
+	}
+}
+component Main {
+	def main() -> int {
+		var p = Pointer.atContents(Words.greeting);
+		var code = StubCode.new(CiRuntime.CODE_START, CiRuntime.CODE_END);
+		var r = Linux.syscall(LinuxConst.SYS_write, (LinuxConst.STDOUT, p, Words.greeting.length));
+		Words.say(if(code.start < code.end, "code\n", "none\n"));
+		return if(r.0 >= 0, 0, 1);
+	}
+}

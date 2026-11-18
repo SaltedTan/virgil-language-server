@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "projects": [
+    {
+      "name": "native",
+      "target": "x86-64-linux",
+      "sources": ["native/*.v3", "shared/*.v3"]
+    },
+    {
+      "name": "portable",
+      "sources": ["portable/*.v3", "shared/*.v3"]
+    }
+  ]
+}

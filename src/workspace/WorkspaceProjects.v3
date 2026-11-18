@@ -268,7 +268,7 @@ class WorkspaceProjects(store: DocumentStore) {
 						&& matcher.startsWith(path, bases[i]);
 					if (matcher.exhausted()) return (null, null);
 				}
-				var selectsLibrary = inLibrary && p.virgilDependencies.length > 0;
+				var selectsLibrary = inLibrary && (p.virgilDependencies.length > 0 || p.target != null);
 				if (!below && !selectsLibrary) continue;
 				if (split[i] == null) split[i] = matcher.patterns(p);
 				if (split[i] == null) return (null, null);

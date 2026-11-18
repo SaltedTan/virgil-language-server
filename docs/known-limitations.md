@@ -45,7 +45,12 @@ fix-all or action on save ([Code actions](architecture.md#code-actions)).
 
 Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, type definition, inlay hints, hover, references, document highlights, implementations, type hierarchy, call hierarchy, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs a Virgil root: the one the editor sends, or else the library that a release archive bundles. With neither, as with a development build and no root set, or when the editor sends a root that isn't an absolute path, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
 
-The worker protocol's `ANALYZE` request can carry a target, and the development command `virgil-lsp analyze --target=x86-64-linux` sends one. Version 2 project files can name a target. Editor analyses still run without one. Native code that needs `Pointer`, `AnyRef`, `CiRuntime`, or `Linux` therefore reports unresolved types in the editor. Adding runtime files alone doesn't supply those builtin types, and completion's builtin names remain independent of the target ([Target](configuration.md#target)).
+## Native targets
+
+- Only version 2 project files can name a target, and `x86-64-linux` is the only supported name. Any other name produces an `InvalidValue` configuration error. In a project with no target selected, code for another native target reports unresolved types for that target's builtins ([Target](configuration.md#target)).
+- A target project's runtime sources come from the Virgil root's `rt/`, which the bundled library in release archives doesn't have yet, so such a project needs a Virgil checkout as its root, supplied by the client. With the bundle, it gets a `MissingTargetRuntime` configuration error.
+- Completion doesn't suggest the target's builtin names, such as `Pointer`, `CiRuntime`, and `Linux`, or the members of pointers and of `Linux` and `CiRuntime`, and implementation's check for a builtin type's name doesn't know them.
+- An edit analyzes every project that contains the edited file. Target programs are large, so several target projects that share most of their files make each edit's background analysis take several times as long, and their snapshots compete for the retained-snapshot budget, so moving between them analyzes them again more often.
 
 ## Inlay hints
 
@@ -123,7 +128,7 @@ After a `.`, completion suggests the members that the type checker would accept 
 - **Integer values.** A value of an integer type, such as `x.` for an `x: int`, has no members to suggest. `int.max`, `int.view`, and the other integer members belong to the type, so `int.` suggests them.
 - **Type positions.** Where a type goes, as in `var s: Flag.` before `set`, nothing is suggested; members are suggested only in expressions.
 - **Operators.** Casts, queries, comparisons, and index methods, such as `int.!`, `int.?`, `==`, and `[]`, are written with symbols, not names, so they aren't suggested.
-- **Pointers.** Pointer members aren't suggested, because the server analyzes programs without a compilation target, and Aeneas defines pointers only for one.
+- **Pointers.** Pointer members aren't suggested, even in a project with a [target](configuration.md#target), because completion doesn't know the target's builtin members yet.
 - **Strings.** A member's description shows types as the type checker resolved them, so a `string` appears as `Array<byte>`.
 
 ## Stale results

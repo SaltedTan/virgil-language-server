@@ -14,6 +14,8 @@ component ProjectGlob {
 }
 
 // A program's patterns, split at '/' by a ProjectGlobMatcher.
+// {virgilDependencies} also holds its target's runtime patterns, which are
+// relative to the Virgil root too.
 class ProjectGlobPatterns(sources: Array<Array<string>>, dependencies: Array<Array<string>>,
 	exclude: Array<Array<string>>, virgilDependencies: Array<Array<string>>) { }
 
@@ -72,6 +74,14 @@ class ProjectGlobMatcher(budget: int) {
 		if (exclude == null) return null;
 		var virgilDependencies = splitAll(program.virgilDependencies);
 		if (virgilDependencies == null) return null;
+		if (program.target != null) {
+			var runtime = program.target.runtimePatterns, all = Arrays.grow(virgilDependencies, virgilDependencies.length + runtime.length);
+			for (i < runtime.length) {
+				all[virgilDependencies.length + i] = split(runtime[i]);
+				if (all[virgilDependencies.length + i] == null) return null;
+			}
+			virgilDependencies = all;
+		}
 		return ProjectGlobPatterns.new(sources, dependencies, exclude, virgilDependencies);
 	}
 	private def splitAll(patterns: Array<ProjectPattern>) -> Array<Array<string>> {

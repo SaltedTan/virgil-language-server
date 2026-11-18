@@ -33,15 +33,48 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 	private var visited: OrderedStringSet;
 	private var matches: OrderedStringSet;
 	private var found: Vector<string>;
+	// The regular files that the last pattern matched, selected before or not.
+	private var selected: int;
 
 	def expand(base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
 		add(base, p.sources, p.exclude, true);
 		add(base, p.dependencies, p.exclude, false);
-		if (p.virgilDependencies.length > 0 && root == null) {
+		// A target needs the root whatever else the project lists, so a
+		// missing root is reported at the target value when there is one.
+		if (root == null && p.target != null) {
+			current = targetValue(p);
+			error(ProjectConfigCode.MISSING_VIRGIL_ROOT, Strings.format1(
+				"target %s needs the runtime sources under a Virgil root (initializationOptions.virgilRoot)", p.target.name));
+		} else if (p.virgilDependencies.length > 0 && root == null) {
 			current = p.virgilDependencies[0];
 			error(ProjectConfigCode.MISSING_VIRGIL_ROOT, "virgilDependencies requires a Virgil root (initializationOptions.virgilRoot)");
 		} else add(root, p.virgilDependencies, [], false);
+		if (p.target != null && root != null) runtime(root, p);
 		return ProjectExpansionResult.new(if(errors.length == 0, sources.extract(), []), errors.extract());
+	}
+	// The target value of {p}, where a problem with its target is reported.
+	private def targetValue(p: ProjectDefinition) -> ProjectPattern {
+		return ProjectPattern.new(p.target.name, p.targetBegin, p.targetEnd);
+	}
+	// Adds the runtime sources of {p}'s target from the Virgil {root}, after
+	// every other source, as v3c appends -rt.files (ADR-0018, decision 3).
+	// They are dependencies, and count against the limits like any other
+	// source. A problem with them is reported at the target value.
+	private def runtime(root: string, p: ProjectDefinition) {
+		var target = p.target;
+		current = targetValue(p);
+		for (text in target.runtimePatterns) {
+			if (errors.length > 0) return;
+			add(root, [ProjectPattern.new(text, p.targetBegin, p.targetEnd)], [], false);
+			// A file that the project's own patterns selected counts, though
+			// it isn't added again.
+			if (errors.length == 0 && selected == 0) {
+				var dir = ProjectFiles.join(root, ProjectFiles.parent(text));
+				error(ProjectConfigCode.MISSING_TARGET_RUNTIME, Strings.format3(
+					"target %s needs the runtime sources %s, but %s has none; use a Virgil checkout as the Virgil root",
+					target.name, text, dir));
+			}
+		}
 	}
 	private def error(code: ProjectConfigCode, text: string) {
 		if (errors.length == 0) errors.put(ProjectConfigDiagnostic.new(code, current.begin, current.end, text));
@@ -52,6 +85,7 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 			if (errors.length > 0) return;
 			current = pattern;
 			visited = OrderedStringSet.new(); matches = OrderedStringSet.new(); found = Vector<string>.new();
+			selected = 0;
 			walk(base, "", Strings.split(pattern.text, "/", -1), 0, 0);
 			if (errors.length > 0) return;
 			var paths = found.extract();
@@ -91,6 +125,7 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 			var meta = ProjectFiles.metadata(path);
 			if (ProjectFiles.metadataError(meta.0)) { error(ProjectConfigCode.SOURCE_IO, Strings.format1("cannot inspect readable project source: %s", path)); return; }
 			if (meta.0 != ProjectFiles.REGULAR) return;
+			selected++;
 			if (!seen.has(path) && matches.add(relative)) {
 				if (found.length + sources.length >= maxFiles) { error(ProjectConfigCode.EXPANSION_LIMIT, "project selects too many source files"); return; }
 				found.put(path);

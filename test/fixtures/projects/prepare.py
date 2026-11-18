@@ -278,6 +278,11 @@ if mode == "--run":
     sys.exit(128 - status if status < 0 else status)
 if mode is not None:
     sys.exit(f"error: unknown option {mode}")
+# A Virgil root with only part of x86-64-linux's runtime: rt/gc is missing.
+partial_runtime = root / "partial-runtime"
+for directory in ["rt/x86-64-linux", "rt/native"]:
+    (partial_runtime / directory).mkdir(parents=True, exist_ok=True)
+    (partial_runtime / directory / "Part.v3").write_text("def part = 1;\n", encoding="utf-8")
 closed_shared = root / "closed-shared"
 ownership_version = root / "ownership-version"
 (ownership_version / "sub").mkdir(parents=True, exist_ok=True)
@@ -634,7 +639,8 @@ for count in [256, 512]:
         )
 (root / "rename-no-project").mkdir(exist_ok=True)
 (root / "safe").mkdir(parents=True, exist_ok=True)
-(root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
+repository = Path(__file__).absolute().parents[3]
+(root / "repository-root").write_text(str(repository), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")
 with (root / "large.v3").open("wb") as output:
     output.truncate(4 * 1024 * 1024 + 1)
@@ -672,10 +678,33 @@ for depth in range(1, 66):
         discovery_depth.mkdir(parents=True, exist_ok=True)
         (discovery_depth / ".virgil-lsp.json").write_text('{"version":1,"projects":[]}', encoding="utf-8")
 
+max_visits = 10_000
 wide = root / "scan-a"
 wide.mkdir(exist_ok=True)
-for index in range(10001):
+for index in range(max_visits + 1):
     (wide / f"entry-{index}").touch()
+runtime = repository / "vendor/virgil/rt"
+if runtime.is_dir():
+    runtime_entries = sum(
+        1 for name in ("x86-64-linux", "native", "gc") for _ in (runtime / name).iterdir()
+    )
+    patterns = ["Main.v3"] + [f"missing-{index}.v3" for index in range(102)]
+    scans = len(patterns)
+    visits_per_scan = (max_visits - runtime_entries + scans - 1) // scans
+    directory_entries = visits_per_scan - 1
+    traversal = root / "target-runtime-traversal"
+    if traversal.exists():
+        shutil.rmtree(traversal)
+    traversal.mkdir()
+    (traversal / "Main.v3").write_text("def value = 1;\n", encoding="utf-8")
+    (traversal / ".virgil-lsp.json").write_text(
+        json.dumps({"version": 2, "projects": [
+            {"name": "p", "sources": patterns, "target": "x86-64-linux"},
+        ]}),
+        encoding="utf-8",
+    )
+    for index in range(directory_entries - 2):
+        (traversal / f"entry-{index}").touch()
 other = root / "scan-b"
 other.mkdir(exist_ok=True)
 (other / ".virgil-lsp.json").write_text(

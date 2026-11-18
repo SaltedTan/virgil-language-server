@@ -136,6 +136,7 @@ SUITES = \
 	'env VIRGIL_LSP_EXE=$(BUILD)/virgil-lsp python3 test/protocol/test_source_mutations.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/target_analysis.py $(BUILD)/virgil-lsp' \
 	$(call native_only,'$(BUILD)/retain-probe') \
 	'python3 test/e2e/clean-install/test_readme.py'
 
