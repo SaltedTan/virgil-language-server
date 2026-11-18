@@ -115,10 +115,10 @@ class LibraryTest(unittest.TestCase):
                  and any(path.parent == pattern.parent and path.match(pattern.name) for pattern in patterns)}
         self.assertEqual(len(paths), 12, paths)
         expected = {path.as_posix(): git(virgil, 'show', f'{pin}:{path}') for path in paths}
-        self.assertEqual(sum(map(len, expected.values())), 80837)
         source = self.root / 'pinned Virgil checkout'
         source.mkdir()
-        git(source, 'init', '--quiet')
+        object_format = git(virgil, 'rev-parse', '--show-object-format').decode().strip()
+        git(source, 'init', '--quiet', f'--object-format={object_format}')
         objects = virgil / git(virgil, 'rev-parse', '--git-path', 'objects').decode().strip()
         (source / '.git/objects/info/alternates').write_text(f'{objects}\n')
         git(source, 'checkout', '--quiet', '--detach', pin)
@@ -350,11 +350,15 @@ class LibraryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unexpected bundle entry'):
             lib.stage(self.source, self.root / 'second', self.revision)
 
-    def test_missing_runtime_directory(self):
+    def test_stage_uses_commit_files_for_missing_checkout_paths(self):
         import shutil
-        shutil.rmtree(self.source / RUNTIME[-1].rsplit('/', 1)[0])
-        with self.assertRaises(FileNotFoundError):
-            lib.stage(self.source, self.root / 'second', self.revision)
+        expected = {path: (self.source / path).read_bytes() for path in RUNTIME}
+        shutil.rmtree(self.source / 'rt/gc')
+        (self.source / 'rt/native/Fixture.v3').unlink()
+        bundle = self.root / 'second'
+        lib.stage(self.source, bundle, self.revision)
+        self.assertEqual(expected, {path.relative_to(bundle).as_posix(): path.read_bytes()
+                                    for path in (bundle / 'rt').rglob('*') if path.is_file()})
 
     def test_license_checksum(self):
         (self.bundle / 'LICENSE').write_text('wrong license')

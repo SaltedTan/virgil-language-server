@@ -134,13 +134,14 @@ def check_runtime_checkout(source, patterns):
         raise ValueError(f'not a physical directory: {root}')
     for pattern in patterns:
         path = source / pattern.rsplit('/', 1)[0]
-        if not stat.S_ISDIR(path.lstat().st_mode):
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(mode):
             raise ValueError(f'not a physical directory: {path}')
-        matched = sorted(p for p in path.iterdir() if runtime_source(p.name))
-        if not matched:
-            raise ValueError(f'runtime pattern {pattern} selects no files in {source}')
-        for entry in matched:
-            if not stat.S_ISREG(entry.lstat().st_mode):
+        for entry in sorted(path.iterdir()):
+            if runtime_source(entry.name) and not stat.S_ISREG(entry.lstat().st_mode):
                 raise ValueError(f'unexpected bundle entry (regular files only): {entry}')
 
 
