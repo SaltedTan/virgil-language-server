@@ -312,7 +312,7 @@ or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update a
 
 New archives include the complete pinned `lib/` under executable-adjacent `virgil/`. With no client root, projects selecting `lib/util/*.v3` work without a checkout. See [The Virgil root](configuration.md#the-virgil-root) for root selection and errors.
 
-Projects that need Virgil sources outside `lib/`, including [target runtime sources](configuration.md#target), need a checkout. For those projects and for development builds that need a root, use the Virgil revision that `virgil-lsp --version` prints:
+Projects selecting sources outside `lib/`, such as `rt/` or `aeneas/`, and development builds without a bundle still need a checkout. Use the Virgil revision that `virgil-lsp --version` prints:
 
 ```sh
 git clone https://github.com/titzer/virgil.git ~/src/virgil

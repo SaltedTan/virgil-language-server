@@ -151,8 +151,8 @@ component LspRenameEligibility {
 		if (now == null || !sameSources(now, ctx.sources)) {
 			return "the project's files changed since the last analysis; an analysis starts on the next open, edit, save, close, or file event";
 		}
-		// Check expanded membership. A file selected by sources stays a
-		// member even if it also matches a target runtime pattern.
+		// Rename only edits the project's own sources, never a dependency or a
+		// library under the Virgil root, which the expansion marks non-member.
 		// The member paths are indexed once: checking each file by scanning
 		// the sources would cost the files times the sources.
 		var members = OrderedStringSet.new();

@@ -166,7 +166,7 @@ Preserve these principles:
 - Unknown compiler flags produce a configuration diagnostic rather than silently changing semantics.
 - A file that belongs to more than one project gets one analysis context per project, with a deterministic active context.
 - `virgilRoot` or compiler-source discovery is explicit and inspectable. Do not silently download or execute code from the workspace.
-- Each project has one analysis context and can name a [target](docs/configuration.md#target). Analyzing a single project for several targets is later work ([ADR-0018](docs/decisions/0018-native-target-analysis.md)).
+- Multi-target analysis is later work. First establish one target-independent parse/verify snapshot; add per-target snapshots only for features whose semantics actually differ. A project can name one native target in a version 2 project file, which adds its runtime sources, and is analyzed only for it ([Target](docs/configuration.md#target), [ADR-0018](docs/decisions/0018-native-target-analysis.md)); `x86-64-linux` is the only supported target.
 
 Where possible, align this manifest with Aeneas's emerging query-mode concepts rather than inventing an unrelated build system.
 
