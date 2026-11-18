@@ -273,7 +273,7 @@ To upgrade, extract the new archive next to the old one and point the symlink at
 
 ### macOS
 
-On Apple Silicon, install Rosetta 2 first:
+On Apple Silicon, install Rosetta 2 first, unless you install the [JVM archive](#the-jvm-build-for-apple-silicon):
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
@@ -296,7 +296,7 @@ The editors start `virgil-lsp --stdio`:
 
 ### VS Code extension
 
-Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host: `linux-x64`, `darwin-arm64`, or `darwin-x64`. The platform VSIX includes the tested archive's server, worker, and pinned library. Both Darwin packages contain an Intel server, with Rosetta 2 required on Apple Silicon. Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
+Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host: `linux-x64`, `darwin-arm64`, or `darwin-x64`. The platform VSIX includes the tested archive's server, worker, and pinned library. Both Darwin packages contain an Intel server, with Rosetta 2 required on Apple Silicon. On Apple Silicon without Rosetta 2, install `virgil-lsp-vscode-<extension version>-darwin-arm64-jvm.vsix`, the [JVM build](#the-jvm-build-for-apple-silicon), instead. Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
 
 With Remote-SSH or WSL, install the package for the remote host in the remote window. VS Code or the extension's output channel rejects a mismatched bundle. Download and verify it against `SHA256SUMS`, then install it:
 

@@ -90,6 +90,7 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | Linux x86-64 | **Supported** | `x86-64-linux` | Required |
 | Windows x86-64 with WSL 2 | Best effort: the Linux build, run inside WSL 2, is untested | `x86-64-linux` | Linux job only; nothing runs inside WSL |
 | macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | Required, on `macos-15` (Apple Silicon) |
+| macOS on Apple Silicon without Rosetta 2 | Preview: the [JVM build](releasing.md#the-jvm-build-for-apple-silicon), with its own Java runtime and provisional memory settings ([#463](https://github.com/SaltedTan/virgil-language-server/issues/463)) | `jvm-arm64-darwin` | Advisory, on `macos-15` without Rosetta translation |
 | macOS on Intel | Best effort: same build, untested | `x86-64-darwin` | None |
 | Native Windows | Not supported. WSL 2 runs the Linux build on a best-effort basis. | — | — |
 | Linux arm64 | Not supported yet | — | — |
@@ -99,7 +100,7 @@ The [repository setup script](../scripts/github-setup.sh) configures both pinned
 
 CI runs on every pull request, by hand, and for each push to `main`. The push trigger keeps the README's CI badge current. Because `main` requires pull requests to be up to date and merges squash them, a push usually carries exactly the tree that its pull request's CI passed on. A push-only check skips the build and test jobs only when a merged pull request associated with the pushed commit has the same tree at its head and a successful `pull_request` run of `ci.yml` on that head; the push run then reports success for that commit. Without that evidence, or if the check fails, the normal jobs remain eligible. Pull requests and manual runs skip the check and keep the normal jobs eligible too. Dependent editor jobs still require their build job to succeed, and cancellation prevents guarded jobs from starting. Required check names are unchanged.
 
-Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Rosetta 2 is needed until then. Install it with:
+Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Until then, the default macOS assets need Rosetta 2, and the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) is the option for a Mac without it. Install Rosetta 2 with:
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
