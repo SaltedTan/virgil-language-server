@@ -65,8 +65,8 @@ component AnalysisFormatMark {
 	// A subsequent pattern of the same match case.
 	def PATTERN_START: u16 = 128;
 	// The keyword of an if expression (IfExpr), which takes no space
-	// before its '('. An "if" with neither this mark nor CONTROL is a
-	// member name, such as "x.if", and gets no spacing rule.
+	// before its '('. An unmarked "if", such as the member in "x.if",
+	// gets no keyword spacing.
 	def IF_EXPR: u16 = 256;
 	// The keyword of a match statement. The pinned grammar has no match
 	// expression (Parser.parseTerm).
@@ -516,10 +516,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// Applies the spacing rules (ADR-0019 decision 3, Spacing) to the run
 	// from {begin} to {end} within a line, between the last item and the
 	// next: a comment if {comment}, or else the token {next}. Only a run
-	// between two tokens, or before a line comment, can change. An exact
-	// gap replaces the run; every other rule only inserts a missing space,
-	// or removes the single space before a colon after a name, so that a
-	// tab or two or more spaces, which align columns, stay.
+	// between two tokens, or before a line comment with a token earlier
+	// on its line, can change.
 	private def spacing(begin: int, end: int, comment: bool, afterToken: bool) {
 		var empty = begin == end;
 		if (comment) {
