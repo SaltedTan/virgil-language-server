@@ -5,8 +5,10 @@
 
 test/fixtures/projects/native-target is copied to a temporary directory, with
 vendor/virgil as the Virgil root. Its "native" project names the target and
-"portable" doesn't; both select shared/Words.v3. The clean target files get no
-diagnostics, and the runtime files none at all. Hover, definition into
+"portable" doesn't; both select shared/Words.v3, and portable/Main.v3 calls
+the synthetic System itself, so a target leaking into "portable" shows there.
+The clean target files get no diagnostics, and neither do the clean pinned
+runtime's files. Hover, definition into
 rt/native and rt/x86-64-linux, and references answer in the target project,
 and the shared file answers from its active project, "native". An unsaved
 type error is published and cleared. Rename refuses a runtime declaration and
@@ -14,7 +16,9 @@ renames one of the project's own. Signature help and completion in text that
 doesn't parse, which run query analyses, see the target's types, and so does an analysis that substitutes a body
 that doesn't parse. The development request for a document analyzes for the
 target, and explicit URIs don't. Setting the target to null in an unsaved
-project file brings back UnresolvedType, and restoring it clears it.
+project file brings back UnresolvedType, and restoring it clears it. Without
+a Virgil root, a target project with virgilDependencies gets MissingVirgilRoot
+at its target value.
 """
 import json
 from pathlib import Path
@@ -104,7 +108,9 @@ def run(exe, root):
         lists = c.published()
         assert lists.get(native.as_uri(), []) == [], lists
         assert lists.get(words.as_uri(), []) == [], lists
-        # The runtime files are dependencies: nothing is published for them.
+        # The pinned runtime is clean, so nothing is published for its files.
+        # A runtime file's own errors would be published by its owner, the
+        # active project that contains it, as for any dependency.
         rt = [uri for uri in lists if uri.startswith(VIRGIL.as_uri() + '/')]
         assert rt == [], rt
         # Definition goes into the runtime sources.
@@ -213,14 +219,46 @@ def run(exe, root):
         s.close()
 
 
+class WarnedSession(Session):
+    # An invalid project file also gets a warning.
+    NOTIFICATIONS = Session.NOTIFICATIONS + ('window/showMessage',)
+
+
+def without_root(exe, root):
+    """Without a Virgil root, a target project that also lists
+    virgilDependencies gets one MissingVirgilRoot, at the target value."""
+    config = root / '.virgil-lsp.json'
+    text = json.dumps({'version': 2, 'projects': [{
+        'name': 'native', 'sources': ['native/*.v3'], 'virgilDependencies': ['lib/util/*.v3'],
+        'target': 'x86-64-linux'}]})
+    s = WarnedSession(exe)
+    c = Client(s)
+    try:
+        # A development build has no bundle, so no root is selected.
+        s.result(s.send('initialize', {'rootUri': root.as_uri()}))
+        c.open(config, text, 'json')
+        s.ping()
+        diagnostics = c.published()[config.as_uri()]
+        assert [d['code'] for d in diagnostics] == ['MissingVirgilRoot'], diagnostics
+        assert diagnostics[0]['range'] == location(config, text, '"x86-64-linux"')['range'], diagnostics
+        s.shutdown()
+    except BaseException:
+        print(json.dumps(s.transcript, indent=2)[-20000:], file=sys.stderr)
+        print(s.logs()[-5000:], file=sys.stderr)
+        raise
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix='target-analysis-', dir=exe.parent) as work:
         root = Path(work).resolve() / 'native-target'
         shutil.copytree(FIXTURE, root)
         run(exe, root)
+        without_root(exe, root)
     print('protocol target analysis: diagnostics, hover, definition, references, rename, shared file, '
-          'and target changes passed')
+          'target changes, and a missing root passed')
 
 
 if __name__ == '__main__':

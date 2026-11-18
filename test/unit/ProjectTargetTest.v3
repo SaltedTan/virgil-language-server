@@ -156,14 +156,31 @@ def test_target_runtime_diagnostics(t: Tester) {
 			"target x86-64-linux needs the runtime sources rt/gc/*.v3, but %s has none; use a Virgil checkout as the Virgil root",
 			ProjectFiles.join(partial, "rt/gc")), r.diagnostics[0].message);
 	}
-	// virgilDependencies without a root keep their own diagnostic, at their
-	// first pattern, and the target adds none.
-	var p = definition2("{\"name\":\"p\",\"target\":\"x86-64-linux\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"lib/util/*.v3\"]}");
+	// A target project with virgilDependencies and no root gets one
+	// MissingVirgilRoot, at the target value: the target needs the root
+	// whatever else the project lists.
+	var text = "{\"version\":2,\"projects\":[{\"name\":\"p\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"lib/util/*.v3\"],\"target\":\"x86-64-linux\"}]}";
+	var p = ProjectConfigParser.parse(text).config.projects[0], value = targetRange(text);
+	t.assert(p.virgilDependencies[0].begin < value.0, "the glob comes before the target");
+	r = expandTarget(BASE, null, p);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "a target with virgilDependencies and no root");
+		t.asserti(value.0, r.diagnostics[0].begin);
+		t.asserti(value.1, r.diagnostics[0].end);
+		t.assert_string("target x86-64-linux needs the runtime sources under a Virgil root (initializationOptions.virgilRoot)", r.diagnostics[0].message);
+	}
+	// A portable project keeps its diagnostic at its first virgilDependencies
+	// pattern.
+	p = definition2("{\"name\":\"p\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"lib/util/*.v3\"]}");
 	r = expandTarget(BASE, null, p);
 	t.asserti(1, r.diagnostics.length);
 	if (r.diagnostics.length == 1) {
 		t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "virgilDependencies without a root");
 		t.asserti(p.virgilDependencies[0].begin, r.diagnostics[0].begin);
+		t.asserti(p.virgilDependencies[0].end, r.diagnostics[0].end);
+		t.assert_string("virgilDependencies requires a Virgil root (initializationOptions.virgilRoot)", r.diagnostics[0].message);
 	}
 }
 def test_target_runtime_limits(t: Tester) {

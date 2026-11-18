@@ -39,25 +39,30 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 	def expand(base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
 		add(base, p.sources, p.exclude, true);
 		add(base, p.dependencies, p.exclude, false);
-		if (p.virgilDependencies.length > 0 && root == null) {
+		// A target needs the root whatever else the project lists, so a
+		// missing root is reported at the target value when there is one.
+		if (root == null && p.target != null) {
+			current = targetValue(p);
+			error(ProjectConfigCode.MISSING_VIRGIL_ROOT, Strings.format1(
+				"target %s needs the runtime sources under a Virgil root (initializationOptions.virgilRoot)", p.target.name));
+		} else if (p.virgilDependencies.length > 0 && root == null) {
 			current = p.virgilDependencies[0];
 			error(ProjectConfigCode.MISSING_VIRGIL_ROOT, "virgilDependencies requires a Virgil root (initializationOptions.virgilRoot)");
 		} else add(root, p.virgilDependencies, [], false);
-		if (p.target != null) runtime(root, p);
+		if (p.target != null && root != null) runtime(root, p);
 		return ProjectExpansionResult.new(if(errors.length == 0, sources.extract(), []), errors.extract());
 	}
-	// Adds the runtime sources of {p}'s target from the Virgil root, after
+	// The target value of {p}, where a problem with its target is reported.
+	private def targetValue(p: ProjectDefinition) -> ProjectPattern {
+		return ProjectPattern.new(p.target.name, p.targetBegin, p.targetEnd);
+	}
+	// Adds the runtime sources of {p}'s target from the Virgil {root}, after
 	// every other source, as v3c appends -rt.files (ADR-0018, decision 3).
 	// They are dependencies, and count against the limits like any other
 	// source. A problem with them is reported at the target value.
 	private def runtime(root: string, p: ProjectDefinition) {
 		var target = p.target;
-		current = ProjectPattern.new(target.name, p.targetBegin, p.targetEnd);
-		if (root == null) {
-			error(ProjectConfigCode.MISSING_VIRGIL_ROOT, Strings.format1(
-				"target %s needs the runtime sources under a Virgil root (initializationOptions.virgilRoot)", target.name));
-			return;
-		}
+		current = targetValue(p);
 		for (text in target.runtimePatterns) {
 			if (errors.length > 0) return;
 			add(root, [ProjectPattern.new(text, p.targetBegin, p.targetEnd)], [], false);
