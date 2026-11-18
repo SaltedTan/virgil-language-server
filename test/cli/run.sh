@@ -114,6 +114,29 @@ expect "analyze rejects a bad worker timeout" 2 "" "invalid option" -- analyze -
 expect "analyze rejects a bad worker analysis limit" 2 "" "invalid option" -- \
     analyze --worker-max-analyses=x "$A/two-file/main.v3"
 
+# A target (ADR-0018). The command analyzes exactly the files given, so the
+# caller lists the target's runtime sources, as v3c's wrapper passes them.
+NATIVE=$A/x86-64-linux/main.v3
+RT=("$ROOT"/vendor/virgil/rt/x86-64-linux/*.v3 "$ROOT"/vendor/virgil/rt/native/*.v3 \
+    "$ROOT"/vendor/virgil/rt/gc/*.v3)
+expect "analyze verifies a program for a target" 0 '^ok: 13 files parsed and verified$' "" -- \
+    analyze --target=x86-64-linux "$NATIVE" "${RT[@]}"
+expect "analyze without a target reports unresolved target types" 1 \
+    'UnresolvedType: type "Pointer" cannot be found' "" -- \
+    analyze "$NATIVE" "${RT[@]}"
+expect "analyze follows a binding into the target's runtime" 0 \
+    'SYS_write @ .*rt/x86-64-linux/LinuxConst\.v3' "" -- \
+    analyze --target=x86-64-linux --bindings "$NATIVE" "${RT[@]}"
+expect "analyze shows a target builtin's type" 0 \
+    'main\.v3:14:25-14:32 builtin: Pointer' "" -- \
+    analyze --target=x86-64-linux --display "$NATIVE" "${RT[@]}"
+expect "analyze rejects an unsupported target" 2 "" \
+    "unsupported target 'jvm'; supported targets: x86-64-linux" -- \
+    analyze --target=jvm "$NATIVE"
+expect "analyze rejects an empty target" 2 "" \
+    "unsupported target ''; supported targets: x86-64-linux" -- \
+    analyze --target= "$NATIVE"
+
 # Project files (docs/configuration.md). Glob expansion is not implemented yet,
 # so the fixture programs are analyzed from the file lists their project files
 # describe.

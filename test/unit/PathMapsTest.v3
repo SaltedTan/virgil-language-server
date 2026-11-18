@@ -337,7 +337,7 @@ def workerRequest(t: Tester, n: int, scoped: bool) {
 	for (i < n) sources[i + 1] = AnalysisSource.new(paths[i], Strings.format3("%s C%d {%s}", kind, i, if(i == n - 1, " var y: Absent; ", body)));
 	var flags = if(scoped, AnalysisWire.WANT_SCOPE, AnalysisWire.WANT_OCCURRENCES);
 	var query = if(scoped, AnalysisScopeRequest.new(0, 35, AnalysisScopeKinds.VALUES, ""));
-	var frame = AnalysisWire.encodeAnalyze(1, flags, 10000, [], sources, query);
+	var frame = AnalysisWire.encodeAnalyze(1, flags, 10000, [], null, sources, query);
 	var request = AnalysisWire.decodeAnalyze(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]));
 	if (request == null) return t.fail("the request did not decode");
 	var analysis = if(scoped, AeneasAdapter.analyzeForScope(request.sources, request.options, null, false),

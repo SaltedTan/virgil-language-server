@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 17, self.hello
+        assert self.hello["protocol"] == 18, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -115,6 +115,7 @@ class Worker:
         payload = b"\x02" + leb(self.next_id) + leb(flags) + leb(2000) + leb(len(options))
         for option in options:
             payload += string(option)
+        payload += leb(0)  # no target
         payload += leb(len(sources))
         for path, text in sources:
             payload += string(path) + string(text)

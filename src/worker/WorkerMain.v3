@@ -98,8 +98,8 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		// Only a completion's or a signature help's analysis keeps its program,
 		// for its query.
 		var analysis = if(request.scope() != null,
-			AeneasAdapter.analyzeForScope(request.sources, request.options, null, stats),
-			AeneasAdapter.analyzeProgram(request.sources, request.options, null, stats));
+			AeneasAdapter.analyzeForScope(request.sources, request.options, request.target, stats),
+			AeneasAdapter.analyzeProgram(request.sources, request.options, request.target, stats));
 		var t2 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {

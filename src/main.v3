@@ -37,6 +37,8 @@ component VirgilLsp {
 		buf.puts("                     Parse and verify the files as one program and print diagnostics.\n");
 		buf.puts("    --bindings       Also print each bound use and the declaration it resolves to.\n");
 		buf.puts("    --display        Also print signatures, use types, and call sites.\n");
+		buf.puts("    --target=<name>  Analyze the files as one program for the named target, such as\n");
+		buf.puts("                     x86-64-linux; list the target's runtime files too (docs/development.md).\n");
 		buf.puts("    --stats          Print timing and compiler global-state counters to stderr.\n");
 		buf.puts("    --repeat=<n>     Run the analysis n times and fail if any run differs.\n");
 		buf.puts("    --worker-timeout-ms=<n>\n");
@@ -166,11 +168,20 @@ component VirgilLsp {
 		var bindings = false, display = false, stats = false, repeat = 1;
 		var limits = AnalysisWorkerLimits.new();
 		var paths = Vector<string>.new();
+		var target: AnalysisTarget;
 		for (arg in args) {
 			if (Strings.equal(arg, "--bindings")) bindings = true;
 			else if (Strings.equal(arg, "--display")) display = true;
 			else if (Strings.equal(arg, "--stats")) stats = true;
-			else if (Strings.startsWith(arg, "--repeat=")) {
+			else if (Strings.startsWith(arg, "--target=")) {
+				var name = Arrays.range(arg, "--target=".length, arg.length);
+				target = AnalysisTargets.find(name);
+				// An empty name is unsupported too, and listed as one.
+				if (target == null) {
+					Log.error2("unsupported target '%s'; supported targets: %s", name, targetNames());
+					return 2;
+				}
+			} else if (Strings.startsWith(arg, "--repeat=")) {
 				if ((repeat = positiveOption(arg, "--repeat=")) < 0) return 2;
 			} else if (Strings.startsWith(arg, "--worker-timeout-ms=")) {
 				if ((limits.timeoutMs = positiveOption(arg, "--worker-timeout-ms=")) < 0) return 2;
@@ -204,7 +215,7 @@ component VirgilLsp {
 		var firstHash: u64, status = 0;
 		for (run < repeat) {
 			var snapshot: AnalysisSnapshot;
-			match (supervisor.analyze(sources, [], flags)) {
+			match (supervisor.analyze(sources, [], target, flags)) {
 				Completed(s) => snapshot = s;
 				Pending => {
 					Log.error("analysis returned without completing");
@@ -233,6 +244,15 @@ component VirgilLsp {
 		}
 		supervisor.close();
 		return status;
+	}
+	// The supported target names, comma separated, for an error message.
+	def targetNames() -> string {
+		var buf = StringBuilder.new();
+		for (t in AnalysisTargets.all) {
+			if (buf.length > 0) buf.puts(", ");
+			buf.puts(t.name);
+		}
+		return buf.toString();
 	}
 	// The completion repair spike (LspRepairSpike). Exits with 0 if a repair
 	// was usable, 1 if none was, and 2 for invalid arguments.

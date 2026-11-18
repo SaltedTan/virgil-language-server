@@ -1455,7 +1455,7 @@ def test_jobs_and_analyses_take_turns(t: Tester) {
 	var job = fun (label: string) => LspAnalysisJob.new(
 		fun (supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 			order.put(Strings.format2("%s after %d", label, ctx.snapshot.generation));
-			return supervisor.beginTemporary(source, [], AnalysisWire.WANT_OCCURRENCES, null);
+			return supervisor.beginTemporary(source, [], null, AnalysisWire.WANT_OCCURRENCES, null);
 		},
 		fun (outcome: AnalysisOutcome) { order.put(Strings.format1("%s done", label)); });
 	var generation = ctx.snapshot.generation;

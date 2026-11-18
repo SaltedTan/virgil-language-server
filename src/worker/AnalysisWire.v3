@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 17;
+	def PROTOCOL_VERSION = 18;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The decoding budget of a query's result without occurrences, which
 	// has no diagnostics (encodeResultWithQuery) and so only the answer: at
@@ -32,7 +32,8 @@ component AnalysisWire {
 	def HELLO: byte = 1;
 	// Server to worker: request ID, flags, the server's time limit in
 	// milliseconds, the count and strings of the program's language options
-	// in the order given (see AeneasAdapter.setLanguageOptions), file count,
+	// in the order given (see AeneasAdapter.setLanguageOptions), the target's
+	// name, or an empty string for none (see AnalysisTargets), file count,
 	// then each file's path and contents; and, with WANT_SCOPE, a scope query:
 	// a source's index, a byte offset in it, AnalysisScopeKinds, and a prefix.
 	// The kinds are scope kinds, or MEMBERS alone for a member query, or CALL
@@ -84,14 +85,16 @@ component AnalysisWire {
 		return if(r.finish(), hello);
 	}
 
-	// The frame size of an ANALYZE request; {scope} is null unless {flags}
-	// has WANT_SCOPE.
-	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>,
-			scope: AnalysisScopeRequest) -> long {
+	// The frame size of an ANALYZE request; {target} is null or empty for no
+	// target, and {scope} is null unless {flags} has WANT_SCOPE.
+	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, options: Array<string>, target: string,
+			sources: Array<AnalysisSource>, scope: AnalysisScopeRequest) -> long {
+		var targetLength = if(target == null, 0, target.length);
 		var size = long.view(WorkerFraming.HEADER_BYTES) + 1
 			+ sleb32Size(id) + sleb32Size(flags) + sleb32Size(timeoutMs)
-			+ sleb32Size(options.length) + sleb32Size(sources.length);
+			+ sleb32Size(options.length) + sleb32Size(targetLength) + sleb32Size(sources.length);
 		for (o in options) size += sleb32Size(o.length) + long.view(o.length);
+		size += long.view(targetLength);
 		for (s in sources) {
 			var pathLength = if(s.path == null, -1, s.path.length);
 			var inputLength = if(s.input == null, 0, s.input.length);
@@ -113,12 +116,14 @@ component AnalysisWire {
 		return size;
 	}
 	// Encodes an ANALYZE request, with {scope} unless it is null, in which
-	// case {flags} must not have WANT_SCOPE.
-	def encodeAnalyze(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>,
-			scope: AnalysisScopeRequest) -> Range<byte> {
+	// case {flags} must not have WANT_SCOPE. {target} is the target's name,
+	// or null or empty for no target.
+	def encodeAnalyze(id: int, flags: int, timeoutMs: int, options: Array<string>, target: string,
+			sources: Array<AnalysisSource>, scope: AnalysisScopeRequest) -> Range<byte> {
 		var w = WorkerFraming.start().putb(ANALYZE);
 		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(options.length);
 		for (o in options) putString(w, o);
+		putString(w, if(target == null, "", target));
 		w.put_sleb32(sources.length);
 		for (s in sources) {
 			putString(w, s.path);
@@ -141,9 +146,9 @@ component AnalysisWire {
 		return if(alarm > int.max, int.max, int.view(alarm));
 	}
 	// Returns null for a malformed request, including one with a language
-	// option that a project file would not accept, and a scope query for a
-	// source, offset, kinds, or prefix that do not exist, or a call query
-	// with a prefix.
+	// option that a project file would not accept or a target that
+	// AnalysisTargets does not list, and a scope query for a source, offset,
+	// kinds, or prefix that do not exist, or a call query with a prefix.
 	def decodeAnalyze(payload: Array<byte>) -> AnalysisWorkerRequest {
 		var r = AnalysisWireReader.new(payload, ANALYZE);
 		var id = r.readInt(), flags = r.readInt(), timeoutMs = r.readInt();
@@ -152,6 +157,14 @@ component AnalysisWire {
 			var o = r.readString(1);
 			if (o == null || ProjectCompilerFlags.check(o, seen) != null) return null;
 			options[i] = o;
+		}
+		// An empty name means no target; any other name must be supported.
+		var targetName = r.readString(1);
+		if (targetName == null) return null;
+		var target: AnalysisTarget;
+		if (targetName.length > 0) {
+			target = AnalysisTargets.find(targetName);
+			if (target == null) return null;
 		}
 		var sources = Array<AnalysisSource>.new(r.readCount(2, 128));
 		for (i < sources.length) {
@@ -168,8 +181,8 @@ component AnalysisWire {
 			scope = AnalysisScopeRequest.new(file, offset, kinds, prefix);
 		}
 		if (!r.finish()) return null;
-		if (scope != null) return AnalysisScopedRequest.new(id, flags, timeoutMs, options, sources, scope);
-		return AnalysisWorkerRequest.new(id, flags, timeoutMs, options, sources);
+		if (scope != null) return AnalysisScopedRequest.new(id, flags, timeoutMs, options, target, sources, scope);
+		return AnalysisWorkerRequest.new(id, flags, timeoutMs, options, target, sources);
 	}
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
@@ -1021,7 +1034,9 @@ class AnalysisWorkerHello(protocol: int, version: string, revision: string, heap
 
 // A decoded ANALYZE request. One with a scope query is an
 // AnalysisScopedRequest, so that an ordinary request carries nothing for it.
-class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>) {
+// {target} is the supported target to analyze the program for, or null.
+class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<string>,
+		target: AnalysisTarget, sources: Array<AnalysisSource>) {
 	// The scope query, or null.
 	def scope() -> AnalysisScopeRequest {
 		return null;
@@ -1063,7 +1078,8 @@ class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<
 }
 class AnalysisScopedRequest extends AnalysisWorkerRequest {
 	private def query: AnalysisScopeRequest;
-	new(i: int, f: int, t: int, o: Array<string>, s: Array<AnalysisSource>, query) super(i, f, t, o, s) { }
+	new(i: int, f: int, t: int, o: Array<string>, target: AnalysisTarget, s: Array<AnalysisSource>, query)
+		super(i, f, t, o, target, s) { }
 	def scope() -> AnalysisScopeRequest {
 		return query;
 	}
