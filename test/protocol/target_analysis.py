@@ -160,15 +160,21 @@ def run(exe, root):
         details = {i['label']: i.get('detail') for i in items['items']}
         assert details.get('nextFrame') == 'def nextFrame(ip: Pointer, sp: Pointer) -> (Pointer, Pointer)', details
         assert details.get('start') == 'var start: Pointer', details
-        # A body that doesn't parse is analyzed through method-body fallback
-        # or current-text repair, still for the target: only the syntax
+        # Method-body fallback still analyzes for the target. Only the syntax
         # error is published, and nextFrame keeps its Pointer types.
-        partial = native_text.replace('var p = ', 'var bad = ;\n\t\tvar p = ', 1)
+        inserted = 'var bad = ;\n\t\t'
+        partial = native_text.replace('var p = ', inserted + 'var p = ', 1)
         assert partial != native_text
         c.change(native, partial)
         hover = c.result('textDocument/hover', native, partial, 'nextFrame')
         assert 'Pointer, sp: Pointer' in hover['contents']['value'], hover
         assert codes(c.published()[native.as_uri()]) == ['ParseError'], c.published()[native.as_uri()]
+        snapshot = s.result(s.send('virgil-lsp/snapshot'))
+        version, = (v for v in snapshot['documentVersions'] if v['uri'] == native.as_uri())
+        assert version['current'] and version['version'] == c.versions[native], version
+        substitution = version.get('substitution')
+        assert substitution is not None and substitution['currentEnd'] - substitution['effectiveEnd'] == \
+            len(inserted.encode('utf-8')), version
         c.change(native, native_text)
         # An unsaved type error is published, and fixing it clears it.
         broken = native_text.replace('return if(r.0 >= 0, 0, 1);', 'return Pointer.SIZE + "";')
