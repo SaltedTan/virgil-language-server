@@ -49,7 +49,6 @@ Without a `.virgil-lsp.json` that selects it, a document stays in [single-file m
 
 - Only version 2 project files can name a target, and `x86-64-linux` is the only supported name. Any other name produces an `InvalidValue` configuration error. In a project with no target selected, code for another native target reports unresolved types for that target's builtins ([Target](configuration.md#target)).
 - A target project's runtime sources come from the Virgil root's `rt/`, which the bundled library in release archives doesn't have yet, so such a project needs a Virgil checkout as its root, supplied by the client. With the bundle, it gets a `MissingTargetRuntime` configuration error.
-- Completion doesn't suggest the target's builtin names, such as `Pointer`, `CiRuntime`, and `Linux`, or the members of pointers and of `Linux` and `CiRuntime`, and implementation's check for a builtin type's name doesn't know them.
 - An edit analyzes every project that contains the edited file. Target programs are large, so several target projects that share most of their files make each edit's background analysis take several times as long, and their snapshots compete for the retained-snapshot budget, so moving between them analyzes them again more often.
 
 ## Inlay hints
@@ -128,7 +127,7 @@ After a `.`, completion suggests the members that the type checker would accept 
 - **Integer values.** A value of an integer type, such as `x.` for an `x: int`, has no members to suggest. `int.max`, `int.view`, and the other integer members belong to the type, so `int.` suggests them.
 - **Type positions.** Where a type goes, as in `var s: Flag.` before `set`, nothing is suggested; members are suggested only in expressions.
 - **Operators.** Casts, queries, comparisons, and index methods, such as `int.!`, `int.?`, `==`, and `[]`, are written with symbols, not names, so they aren't suggested.
-- **Pointers.** Pointer members aren't suggested, even in a project with a [target](configuration.md#target), because completion doesn't know the target's builtin members yet.
+- **Pointers and the runtime's builtins.** `Pointer`, `CiRuntime`, and `Linux` and their members are suggested only in a project with a [target](configuration.md#target); without one, those names aren't types. Their descriptions are fixed, so `CiRuntime.STACK_SIZE` and the `FEATURE_` flags show their types but not their values. Of the `FEATURE_` names, only those the compiler gives a value are suggested, though it accepts any name with that prefix.
 - **Strings.** A member's description shows types as the type checker resolved them, so a `string` appears as `Array<byte>`.
 
 ## Stale results

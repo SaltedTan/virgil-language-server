@@ -205,7 +205,7 @@ def spaced(words: Array<string>) -> string {
 // The builtin types with the default language options, which
 // AnalysisScopeTest checks against the verifier.
 def builtins() -> string {
-	return spaced(AeneasAdapter.builtinTypes([]));
+	return spaced(AeneasAdapter.builtinTypes([], null));
 }
 // {names} without the integer types iN and uN.
 def nonIntegers(names: Array<string>) -> string {
@@ -406,10 +406,15 @@ def test_positions(t: Tester) {
 	var s = session(t);
 	t.assert_string(Strings.format1("Color Other Registry Shape Square Token %s | 0", builtins()), complete(t, s, inScale("\t\tvar v: $")));
 	// The builtin types follow the project's language options.
-	var readOnly = AeneasAdapter.builtinTypes(["-lang:read-only-arrays"]);
+	var readOnly = AeneasAdapter.builtinTypes(["-lang:read-only-arrays"], null);
 	t.assert_string("Array Range Ref System array bool byte double float int long range ref short string void", nonIntegers(readOnly));
-	t.assert_string("Array Range Ref System bool byte double float int long ref short string void", nonIntegers(AeneasAdapter.builtinTypes([])));
-	t.asserti(AeneasAdapter.builtinTypes([]).length + 2, readOnly.length);
+	t.assert_string("Array Range Ref System bool byte double float int long ref short string void", nonIntegers(AeneasAdapter.builtinTypes([], null)));
+	t.asserti(AeneasAdapter.builtinTypes([], null).length + 2, readOnly.length);
+	// And its target: x86-64-linux's types, without the synthetic System.
+	var target = AnalysisTargets.X86_64_LINUX;
+	t.assert_string("AnyRef Array CiRuntime Linux Pointer Range Ref bool byte double float int long ref short string void",
+		nonIntegers(AeneasAdapter.builtinTypes([], target)));
+	t.asserti(AeneasAdapter.builtinTypes([], null).length + 3, AeneasAdapter.builtinTypes([], target).length);
 	var paint = "\tdef paint(c: Color, t: Token) -> int { return 0; }";
 	t.assert_string("End Word | 3", complete(t, s, before(MAIN, paint, "\tdef cases(t: Token) {\n\t\tmatch (t) {\n\t\t\t$\n\t\t}\n\t}")));
 	t.assert_string("GREEN RED | 3", complete(t, s, before(MAIN, paint, "\tdef cases(c: Color) {\n\t\tmatch (c) {\n\t\t\t$\n\t\t}\n\t}")));

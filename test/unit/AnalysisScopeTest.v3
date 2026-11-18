@@ -778,7 +778,7 @@ def test_implicit_members(t: Tester) {
 // The builtin integer types are those that Aeneas's type lookup accepts: iN
 // and uN for each width from 1 to 64, checked here against the verifier.
 def test_builtin_types(t: Tester) {
-	var names = AeneasAdapter.builtinTypes([]);
+	var names = AeneasAdapter.builtinTypes([], null);
 	var count = 0;
 	for (name in names) {
 		if (name.length < 2 || (name[0] != 'i' && name[0] != 'u') || name[1] < '0' || name[1] > '9') continue;

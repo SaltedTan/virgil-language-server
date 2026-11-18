@@ -666,28 +666,39 @@ component AeneasAdapter {
 	// order: those of {BUILTIN_TYPES} and of the integer types that the
 	// verifier's top-level type lookup (V3.lookupToplevelType) resolves with
 	// language options {options} (see setLanguageOptions), such as "array"
-	// with read-only arrays, and the System component that analyses install
-	// (SystemCalls.install). The integer types are iN and uN for each width
-	// N up to Aeneas's Int.MAX_WIDTH in decimal, as Int.lookupFsi reads them.
-	def builtinTypes(options: Array<string>) -> Array<string> {
+	// with read-only arrays; and for no {target}, the System component that
+	// analyses install (SystemCalls.install), or else the types that the
+	// target installs (AnalysisTarget.builtinTypes), whose runtime declares
+	// its own System. The integer types are iN and uN for each width N up to
+	// Aeneas's Int.MAX_WIDTH in decimal, as Int.lookupFsi reads them.
+	def builtinTypes(options: Array<string>, target: AnalysisTarget) -> Array<string> {
 		// Every completion with names asks, mostly with the same options.
-		if (builtinOptions != null && sameOptions(builtinOptions, options)) return builtinNames;
+		if (builtinOptions != null && builtinTarget == target && sameOptions(builtinOptions, options)) return builtinNames;
 		builtinOptions = options;
-		return builtinNames = listBuiltinTypes(options);
+		builtinTarget = target;
+		return builtinNames = listBuiltinTypes(options, target);
 	}
 	private var builtinOptions: Array<string>;
+	private var builtinTarget: AnalysisTarget;
 	private var builtinNames: Array<string>;
+	// The components among {builtinTypes} for {target}, whose members the
+	// verifier binds by name (Member_TypeCon): System for none, or the
+	// target's own (AnalysisTarget.builtinComponents).
+	def builtinComponents(target: AnalysisTarget) -> Array<string> {
+		return if(target == null, SYSTEM, target.builtinComponents);
+	}
+	private def SYSTEM = [SystemCalls.TYPECON.name];
 	private def sameOptions(a: Array<string>, b: Array<string>) -> bool {
 		if (a == b) return true;
 		if (a == null || b == null || a.length != b.length) return false;
 		for (i < a.length) if (!Strings.equal(a[i], b[i])) return false;
 		return true;
 	}
-	private def listBuiltinTypes(options: Array<string>) -> Array<string> {
+	private def listBuiltinTypes(options: Array<string>, target: AnalysisTarget) -> Array<string> {
 		setLanguageOptions(options);
 		var v = Vector<string>.new();
 		for (name in BUILTIN_TYPES) {
-			if (V3.lookupToplevelType(name) != null || Strings.equal(name, SystemCalls.TYPECON.name)) v.put(name);
+			if (V3.lookupToplevelType(name) != null) v.put(name);
 		}
 		for (width = 1; width <= Int.MAX_WIDTH; width++) {
 			for (sign in ["i", "u"]) {
@@ -696,10 +707,11 @@ component AeneasAdapter {
 			}
 		}
 		resetLanguageOptions();
+		v.puta(if(target == null, SYSTEM, target.builtinTypes));
 		return AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
 	}
 	// The builtin type names other than the integer types iN and uN.
-	def BUILTIN_TYPES = ["Array", "Range", "Ref", "System", "array", "bool", "byte", "double", "float",
+	def BUILTIN_TYPES = ["Array", "Range", "Ref", "array", "bool", "byte", "double", "float",
 		"int", "long", "range", "ref", "short", "string", "void"];
 	// The AnalysisKeywordForms that the parser accepts with language options
 	// {options} (see setLanguageOptions), read as Parser.parseFile reads them.

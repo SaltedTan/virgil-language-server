@@ -211,7 +211,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var hide = fun (name: string) {
 			if ((values || types) && (!values || valueNames.has(name)) && (!types || typeNames.has(name))) hidden.put(name);
 		};
+		// System and the targets' types are builtins only for some analyses;
+		// hiding a name that completion does not offer changes nothing.
 		for (name in AeneasAdapter.BUILTIN_TYPES) hide(name);
+		hide(SystemCalls.TYPECON.name);
+		for (target in AnalysisTargets.all) for (name in target.builtinTypes) hide(name);
 		for (width = 1; width <= Int.MAX_WIDTH; width++) {
 			for (sign in ["i", "u"]) hide(Strings.format2("%s%d", sign, width));
 		}
