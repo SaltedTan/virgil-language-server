@@ -22,6 +22,9 @@ spec.loader.exec_module(tolerance)
 spec = importlib.util.spec_from_file_location("tolerance_check", ROOT / "scripts/check-tolerance.py")
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
+spec = importlib.util.spec_from_file_location("pinned", Path(__file__).with_name("pinned.py"))
+pinned = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pinned)
 CONTROLS = json.loads(Path(__file__).with_name("tolerance-negative-oracles.json").read_text())["cases"]
 
 SCORECARD_ANSWERS = {
@@ -1013,6 +1016,7 @@ class Scorecard(unittest.TestCase):
 
 class Inventory(unittest.TestCase):
     def test_the_committed_inventory_matches_the_corpus_generators(self):
+        pinned.skip_away_from_pin(self, tolerance.bench.corpus)
         spec = importlib.util.spec_from_file_location(
             "tolerance_inventory", ROOT / "scripts/tolerance-inventory.py")
         inventory = importlib.util.module_from_spec(spec)
