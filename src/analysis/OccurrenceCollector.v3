@@ -707,10 +707,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// including one through a class (C.m(c, x)), a constructor, a variant
 	// case, a closure, a builtin, and a partial application, whose "_"
 	// arguments are arguments like any other, except "void(e)", which only
-	// discards its operands, and Pointer.atField, which needs a target, so
-	// verification never accepts it here. What the tree does not keep as an
-	// application has no call: a constructor's super(...) clause, an index
-	// operation, and an operator. See docs/architecture.md#call-sites.
+	// discards its operands, and Pointer.atField (see the exclusions below).
+	// What the tree does not keep as an application has no call: a
+	// constructor's super(...) clause, an index operation, and an operator.
+	// See docs/architecture.md#call-sites.
 	// Returns the offset just past the call's closing parenthesis, or -1.
 	private def call(e: AppExpr) -> int {
 		// The end of the last argument, if endOf found it before, which is
