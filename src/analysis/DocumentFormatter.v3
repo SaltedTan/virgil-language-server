@@ -49,22 +49,29 @@ class AnalysisFormatting {
 // the tokens alone, as bits for each token of a SymbolSyntaxIndex.
 component AnalysisFormatMark {
 	// The name that starts an enum case, whose comma is optional.
-	def ENUM_CASE: byte = 1;
+	def ENUM_CASE: u16 = 1;
 	// The first token of a match case's patterns.
-	def CASE_START: byte = 2;
+	def CASE_START: u16 = 2;
 	// The "=>" that ends a match case's patterns.
-	def CASE_ARROW: byte = 4;
-	// The keyword of an if, while, or for statement: an "if" without it is
-	// an expression.
-	def CONTROL: byte = 8;
+	def CASE_ARROW: u16 = 4;
+	// The keyword of an if, while, or for statement.
+	def CONTROL: u16 = 8;
 	// The keyword of an if statement that has an else.
-	def IF_ELSE: byte = 16;
+	def IF_ELSE: u16 = 16;
 	// The "else" of a match's default case, which no if statement has.
-	def DEFAULT_ELSE: byte = 32;
+	def DEFAULT_ELSE: u16 = 32;
 	// The ';' of a fun expression's empty body.
-	def FUN_SEMICOLON: byte = 64;
+	def FUN_SEMICOLON: u16 = 64;
 	// A subsequent pattern of the same match case.
-	def PATTERN_START: byte = 128;
+	def PATTERN_START: u16 = 128;
+	// The keyword of an if expression (IfExpr), which takes no space
+	// before its '('. An "if" with neither this mark nor CONTROL is a
+	// member name, such as "x.if", and gets no spacing rule.
+	def IF_EXPR: u16 = 256;
+	// The keyword of a match statement. The pinned grammar has no match
+	// expression (Parser.parseTerm).
+	def MATCH: u16 = 512;
+	def LAYOUT_SIZE: u16 = 1024;
 }
 
 class FormatterFunHeader {
@@ -76,7 +83,7 @@ class FormatterFunHeader {
 // its own stack of statements and expressions instead of recursing, so that a
 // deeply nested tree that the parser accepted can't exhaust the native stack.
 class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstVisitor<void, void> {
-	def bits = Array<byte>.new(syntax.count);
+	def bits = Array<u16>.new(syntax.count);
 	def funHeaders = Array<FormatterFunHeader>.new(syntax.count);
 	private def stmts = Vector<Stmt>.new();
 	private def exprs = Vector<Expr>.new();
@@ -85,7 +92,11 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		for (i < file.classes.length) compound(file.classes[i]);
 		for (i < file.components.length) compound(file.components[i]);
 		for (i < file.enums.length) compound(file.enums[i]);
-		for (i < file.layouts.length) compound(file.layouts[i]);
+		for (i < file.layouts.length) {
+			var decl = file.layouts[i];
+			mark(syntax.find(decl.size.token) - 1, AnalysisFormatMark.LAYOUT_SIZE);
+			compound(decl);
+		}
 		for (i < file.exports.length) expr(file.exports[i].expr);
 		while (true) {
 			if (exprs.length > 0) {
@@ -123,10 +134,10 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 			}
 		}
 	}
-	private def mark(i: int, bit: byte) {
+	private def mark(i: int, bit: u16) {
 		if (i >= 0) bits[i] |= bit;
 	}
-	private def point(p: FilePoint, bit: byte) {
+	private def point(p: FilePoint, bit: u16) {
 		mark(index(p), bit);
 	}
 	private def index(p: FilePoint) -> int {
@@ -200,20 +211,20 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 	// has a range of that keyword alone, and no arrow. Patterns hold only
 	// literals and names (Parser.parseMatchPattern), so the walk skips them.
 	def visitMatch(s: MatchStmt, env: void) {
+		point(s.src, AnalysisFormatMark.MATCH);
 		expr(s.expr);
 		if (s.cases == null) return;
 		for (l = s.cases.list; l != null; l = l.tail) {
 			var c = l.head, r = if(c.patterns != null, c.patterns.src);
 			if (r != null) {
 				var arrow = syntax.findAt(r.endLine, r.endColumn - 2);
-				if (arrow >= 0 && syntax.end(arrow) - syntax.begin(arrow) == 2
-						&& file.input[syntax.begin(arrow)] == '=' && file.input[syntax.begin(arrow) + 1] == '>') {
+				if (arrow >= 0 && syntax.matches(file.input, arrow, "=>")) {
 					mark(arrow, AnalysisFormatMark.CASE_ARROW);
 					mark(syntax.findAt(r.beginLine, r.beginColumn), AnalysisFormatMark.CASE_START);
 					for (p = c.patterns.list.tail; p != null; p = p.tail) pattern(p.head);
 				} else {
 					var k = syntax.findAt(r.beginLine, r.beginColumn);
-					if (k >= 0 && word(k, "else")) mark(k, AnalysisFormatMark.DEFAULT_ELSE);
+					if (k >= 0 && syntax.matches(file.input, k, "else")) mark(k, AnalysisFormatMark.DEFAULT_ELSE);
 				}
 			}
 			stmt(c.stmt);
@@ -279,6 +290,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		expr(e.right);
 	}
 	def visitIfExpr(e: IfExpr, env: void) {
+		point(e.start, AnalysisFormatMark.IF_EXPR);
 		list(e.exprs);
 	}
 	// A block body's list starts at its '{' (Parser.parseList).
@@ -286,7 +298,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		if (e.func == null) return;
 		var body = e.func.body;
 		var start = index(e.start);
-		if (start >= 0 && word(start, "fun")) {
+		if (start >= 0 && syntax.matches(file.input, start, "fun")) {
 			match (body) {
 				b: BlockStmt => {
 					var brace = index(b.stmts.src);
@@ -297,12 +309,6 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 			}
 		}
 		stmt(body);
-	}
-	private def word(k: int, w: string) -> bool {
-		var b = syntax.begin(k);
-		if (syntax.end(k) - b != w.length) return false;
-		for (i < w.length) if (file.input[b + i] != w[i]) return false;
-		return true;
 	}
 }
 
@@ -320,11 +326,12 @@ class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHead
 // errors hold only whitespace and comments. Only the whitespace runs between
 // tokens and comments change, at most one edit for each run, so edits never
 // overlap or cover a comment. Indentation is in tabs, by the line kinds of
-// ADR-0019 decision 3. {input} is the original text, with no carriage return
+// ADR-0019 decision 3, and a run within a line follows its spacing rules
+// ({spacing}). {input} is the original text, with no carriage return
 // that a line feed doesn't follow (AeneasAdapter.formatting refuses those),
 // so each line end is LF or CR LF and is kept byte for byte.
 // See docs/architecture.md#formatting.
-class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<byte>,
+class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<u16>,
 		funHeaders: Array<FormatterFunHeader>, eof: AnalysisFormatEnd) {
 	// After {measure}, the formatted text's length in bytes, and the number of edits.
 	var size: long;
@@ -334,7 +341,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// A run's new line ends, or the single space of a join, before its indentation.
 	private def ends = Vector<byte>.new();
 	private def stack = Vector<FormatterBracket>.new();
-	private def comments = Vector<(int, int)>.new();
+	// The comments of a gap: each one's span, and whether a token precedes
+	// it on its line.
+	private def comments = Vector<(int, int, bool)>.new();
 	// The leading tabs of the line of each if statement with an else that
 	// hasn't been reached yet, innermost last. If statements nest, so each
 	// "else" belongs to the last.
@@ -401,17 +410,18 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def gap(begin: int, end: int) -> bool {
 		if (end < begin) return false;
 		comments.length = 0;
-		var pos = begin, line = begin, crossing = false;
+		var pos = begin, line = begin, crossing = false, afterToken = next > 0;
 		while (pos < end) {
 			if (space(input[pos])) {
 				if (input[pos] == '\n') {
 					line = pos + 1;
 					crossing = false;
+					afterToken = false;
 				}
 				pos++;
 				continue;
 			}
-			var i = pos;
+			var i = pos, onLine = afterToken;
 			open = false;
 			if (input[i] == '/' && i + 1 < end && input[i + 1] == '/') {
 				// A line comment, less the trailing whitespace that its run removes.
@@ -431,13 +441,14 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 					if (input[pos++] == '\n') {
 						line = pos;
 						crossing = true;
+						afterToken = false;
 					}
 				}
 				if (open && next < syntax.count) return false;
 			} else {
 				return false;
 			}
-			comments.put((i, pos));
+			comments.put((i, pos, onLine));
 		}
 		var indentEnd = line;
 		while (indentEnd < end && space(input[indentEnd])) indentEnd++;
@@ -447,7 +458,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		for (i < comments.length) {
 			var span = comments[i];
 			var leading = next < syntax.count && span.1 > line && span.0 <= indentEnd;
-			run(pos, span.0, true, leading, crossing, following);
+			run(pos, span.0, true, span.2, leading, crossing, following);
 			lastItem = -1;
 			pos = span.1;
 		}
@@ -456,7 +467,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			codeLine(next, line, indentEnd, false);
 			lastStartsLine = false;
 		} else {
-			lastStartsLine = run(pos, end, false, false, false, following);
+			lastStartsLine = run(pos, end, false, false, false, false, following);
 		}
 		return true;
 	}
@@ -465,7 +476,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	}
 	// Formats the run from {begin} to {end} before an item and returns
 	// whether the item then starts its line.
-	private def run(begin: int, end: int, comment: bool, leading: bool, crossing: bool, following: (int, int, int)) -> bool {
+	private def run(begin: int, end: int, comment: bool, afterToken: bool, leading: bool, crossing: bool,
+			following: (int, int, int)) -> bool {
 		var first = !started, lines = 0, lastEnd = -1;
 		started = true;
 		for (i = begin; i < end; i++) {
@@ -474,8 +486,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 				lastEnd = i;
 			}
 		}
-		if (lines == 0 && !first) return false; // spacing within a line (#506)
 		ends.length = 0;
+		if (lines == 0 && !first) {
+			spacing(begin, end, comment, afterToken);
+			return false;
+		}
 		if (lines == 1 && lastItem >= 0 && !comment && joins(next)) {
 			ends.put(' ');
 			change(begin, end, 0, 0, 0);
@@ -497,6 +512,99 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		change(begin, end, wantTabs, keepBegin, keepEnd);
 		return true;
+	}
+	// Applies the spacing rules (ADR-0019 decision 3, Spacing) to the run
+	// from {begin} to {end} within a line, between the last item and the
+	// next: a comment if {comment}, or else the token {next}. Only a run
+	// between two tokens, or before a line comment, can change. An exact
+	// gap replaces the run; every other rule only inserts a missing space,
+	// or removes the single space before a colon after a name, so that a
+	// tab or two or more spaces, which align columns, stay.
+	private def spacing(begin: int, end: int, comment: bool, afterToken: bool) {
+		var empty = begin == end;
+		if (comment) {
+			// A line comment after code: after a token on its line, also with
+			// block comments between them, but not on a line of comments alone.
+			if (empty && afterToken && input[end] == '/' && input[end + 1] == '/') insert(begin);
+			return;
+		}
+		var a = lastItem, b = next;
+		if (a < 0) return; // after a comment
+		var ca = ch(a), cb = ch(b), keyword = keywordSpace(a);
+		if (cb == '(' && keyword >= 0) return exact(begin, end, keyword > 0);
+		if ((ca == '}' && isElse(b)) || (isElse(a) && (cb == '{' || isIfStatement(b))) || (ca == '{' && cb == '}')) {
+			return exact(begin, end, true);
+		}
+		if (cb == '{' || ca == ',') {
+			if (empty) insert(begin);
+			return;
+		}
+		if (cb == ':') {
+			if (end - begin == 1 && input[begin] == ' ' && name(a)) change(begin, end, 0, 0, 0);
+			return;
+		}
+		if (ca == ':') {
+			if (empty && a > 0 && name(a - 1)) insert(begin);
+			return;
+		}
+		if (empty && (spaced(a) || spaced(b))) insert(begin);
+	}
+	// Replaces the run from {begin} to {end} with one space, or with none.
+	private def exact(begin: int, end: int, space: bool) {
+		if (space) ends.put(' ');
+		change(begin, end, 0, 0, 0);
+	}
+	private def insert(at: int) {
+		ends.put(' ');
+		change(at, at, 0, 0, 0);
+	}
+	// Whether the token {k} follows a '.', which makes it a member's name
+	// (Parser.addMemberSuffix): an identifier, or an operator such as the
+	// "+=" of "x.+=", the "!=" of "double.!=", or the "[]=" of "map.[]=",
+	// which the parser consumes as one token and which is never an operator
+	// here. Ranges' "..." and "..+" are tokens of their own, not '.'.
+	private def member(k: int) -> bool {
+		return k > 0 && ch(k - 1) == '.';
+	}
+	// Whether the token {k} is "=", a compound assignment, "->", or "=>",
+	// which take a space on each side, and not a member's name. No other
+	// rule's token can be a member's name: the parser takes none of ',',
+	// ':', '{', '}', or a lone '=' after a '.'.
+	private def spaced(k: int) -> bool {
+		if (member(k) || (marks[k] & AnalysisFormatMark.LAYOUT_SIZE) != 0) return false;
+		var b = syntax.begin(k), n = syntax.end(k) - b;
+		if (n == 1) return input[b] == '=';
+		var last = input[b + n - 1];
+		if (n == 2) {
+			var f = input[b];
+			if (last == '>') return f == '-' || f == '=';
+			if (last != '=') return false;
+			return f == '+' || f == '-' || f == '*' || f == '/' || f == '%' || f == '&' || f == '|' || f == '^';
+		}
+		if (last != '=') return false;
+		if (n == 3) return (input[b] == '<' && input[b + 1] == '<') || (input[b] == '>' && input[b + 1] == '>');
+		return n == 4 && input[b] == '>' && input[b + 1] == '>' && input[b + 2] == '>';
+	}
+	// Whether the token {k} is a name: an identifier or a keyword.
+	private def name(k: int) -> bool {
+		var c = input[syntax.begin(k)];
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+	}
+	// The spaces that the token {k} takes before a '(' that follows it on
+	// its line: none for the keyword of an if expression, one for the
+	// keyword of an if, while, for, or match statement, which the parse tree
+	// marks (AnalysisFormatMark), or -1 for any other token, such as the
+	// member name of "x.if". The spacing rules and the corpus test of if
+	// kinds both read it, so they agree on which mark wins.
+	def keywordSpace(k: int) -> int {
+		var m = marks[k];
+		if ((m & AnalysisFormatMark.IF_EXPR) != 0) return 0;
+		if ((m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) return 1;
+		return -1;
+	}
+	// Whether the token {k} is the keyword of an if statement.
+	private def isIfStatement(k: int) -> bool {
+		return (marks[k] & AnalysisFormatMark.CONTROL) != 0 && syntax.matches(input, k, "if");
 	}
 	// Chooses the indentation of the code line whose first token is {k} and
 	// whose old indentation is from {begin} to {end}, and makes it the
@@ -720,9 +828,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		return syntax.single(input, k);
 	}
 	private def isElse(k: int) -> bool {
-		var b = syntax.begin(k);
-		return syntax.end(k) - b == 4 && input[b] == 'e' && input[b + 1] == 'l' && input[b + 2] == 's' && input[b + 3] == 'e'
-			&& (k == 0 || ch(k - 1) != '.');
+		return syntax.matches(input, k, "else") && !member(k);
 	}
 }
 // The kinds of line that classify returns. A line that starts a statement,

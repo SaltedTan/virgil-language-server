@@ -77,6 +77,12 @@ class SymbolSyntaxIndex {
 		var b = spans[4 * i];
 		return if(spans[4 * i + 1] - b == 1, input[b]);
 	}
+	def matches(input: Array<byte>, i: int, token: string) -> bool {
+		var b = begin(i);
+		if (end(i) - b != token.length) return false;
+		for (j < token.length) if (input[b + j] != token[j]) return false;
+		return true;
+	}
 }
 
 // A symbol without children shares this empty array, and a walk of the

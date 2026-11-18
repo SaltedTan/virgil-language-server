@@ -609,8 +609,8 @@ component AeneasAdapter {
 		}
 		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
-	// Formats the current text {input} by ADR-0019's indentation and line
-	// rules (DocumentFormatter), ending it as {eof} says, or refuses: a carriage
+	// Formats the current text {input} by ADR-0019's indentation, spacing,
+	// and line rules (DocumentFormatter), ending it as {eof} says, or refuses: a carriage
 	// return that no line feed follows, which the compiler's lexer and the
 	// folding parse disagree about, is refused before the text is normalized
 	// or parsed; then a text with too many tokens to parse
