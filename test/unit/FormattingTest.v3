@@ -617,6 +617,7 @@ def layout_sizes(t: Tester) {
 	// (spike rule bug 4).
 	var input = "layout L {\n\t+0 x: u8;\n\t=16;\n}\nlayout M {\n\t+0 x: u8;=16;\n}\nlayout N {=4; }\nlayout P { +0 x: u8; =8; }\n";
 	both(t, input, input);
+	both(t, "layout L #hint(fun ();=1) {=4; }\n", "layout L #hint(fun (); = 1) {=4; }\n");
 }
 def operator_members(t: Tester) {
 	// Operator member names are single tokens (spike rule bug 2).
@@ -730,7 +731,7 @@ def spacing_in_one_run(t: Tester) {
 def corpus_if_kinds(t: Tester) {
 	var paths = Vector<string>.new();
 	for (dir in ["vendor/virgil/aeneas/src", "vendor/virgil/lib", "vendor/virgil/apps"]) sources(t, dir, paths);
-	var parsed = 0, statements = 0, expressions = 0, members = 0;
+	var parsed = 0, statements = 0, expressions = 0;
 	var syntax = SymbolSyntaxIndex.new();
 	for (i < paths.length) {
 		var path = paths[i], text = System.fileLoad(path);
@@ -764,7 +765,6 @@ def corpus_if_kinds(t: Tester) {
 			if (got != expected) t.fail3("%s: the \"if\" at offset %d is the parse tree's %s", path, b, KIND_NAMES[expected]);
 			if (expected == IF_STATEMENT) statements++;
 			else if (expected == IF_EXPRESSION) expressions++;
-			else members++;
 		}
 	}
 	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
