@@ -48,7 +48,7 @@ The VSIX files are packaged by `scripts/package-vsix.py`, using `npm run package
 
 ### The JVM build for Apple Silicon
 
-The JVM build runs on Apple Silicon without Rosetta 2 and without an installed Java. It has an archive and a VSIX of its own, beside the default darwin assets, which stay the Intel build. `V3C_TARGET=jvm scripts/package-release.sh <output-directory>` packages it, on a Linux x86-64 host, and `scripts/package-vsix.py darwin-arm64-jvm --archive <archive> --out <directory>` packages its VSIX. The [release workflow](#how-the-workflow-works) builds, tests, and attaches them in every release, with the runtime's source archive, below, which the notices in both say is attached to the same release; the workflow fails rather than publish them without it.
+The JVM build runs on Apple Silicon without Rosetta 2 and without an installed Java. It has an archive and a VSIX of its own, beside the default darwin assets, which stay the Intel build. `V3C_TARGET=jvm scripts/package-release.sh <output-directory>` packages it, on a Linux x86-64 host, and `scripts/package-vsix.py darwin-arm64-jvm --archive <archive> --out <directory>` packages its VSIX. The [release workflow](#how-the-workflow-works) builds, tests, and attaches them in every release from `0.1.0-alpha.7` on, with the runtime's source archive, below, which the notices in both say is attached to the same release; the workflow fails rather than publish them without it.
 
 | Asset | Contents |
 | --- | --- |
