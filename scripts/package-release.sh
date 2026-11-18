@@ -58,6 +58,7 @@ OUT=$(cd "$1" && pwd)
 # record their source paths, so an absolute one would make them differ from
 # the ones that make test builds.
 cd "$ROOT"
+export GIT_NO_REPLACE_OBJECTS=1
 virgil=${VIRGIL:-vendor/virgil}
 
 if [ -n "$tag" ]; then

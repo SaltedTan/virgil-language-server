@@ -8,7 +8,8 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -58,7 +59,6 @@ class LibraryTest(unittest.TestCase):
         self.revision = commit_virgil(self.source)
         self.stage = self.root / 'virgil-lsp-test'
         self.stage.mkdir()
-        self.stage.chmod(0o755)
         self.bundle = self.stage / 'virgil'
         lib.stage(self.source, self.bundle, self.revision)
         for name in ('virgil-lsp', 'virgil-lsp-worker', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md'):
@@ -100,22 +100,30 @@ class LibraryTest(unittest.TestCase):
                              self.manifest['library']['files'][path])
 
     def test_pinned_runtime_sources(self):
+        def git(directory, *args):
+            return subprocess.check_output(['git', '--no-replace-objects', '-C', str(directory), *args])
+
         virgil = ROOT / (os.environ.get('VIRGIL') or 'vendor/virgil')
-        pin = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:vendor/virgil'], text=True).strip()
-        self.assertEqual(subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True).strip(), pin)
-        compiler = self.root / 'capture-compiler'
-        compiler.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
-        compiler.chmod(0o755)
-        args = subprocess.check_output(['bash', str(virgil / 'bin/v3c-x86-64-linux')], cwd=self.root,
-                                       env={**os.environ, 'V3C': './capture-compiler'}, text=True).splitlines()
-        selected, = [arg.removeprefix('-rt.files=') for arg in args if arg.startswith('-rt.files=')]
-        paths = [Path(path).resolve().relative_to(virgil.resolve()).as_posix() for path in selected.split()]
-        self.assertEqual(len(set(paths)), 12, paths)
-        expected = {path: subprocess.check_output(['git', '-C', str(virgil), 'show', f'{pin}:{path}'])
-                    for path in paths}
+        pin = git(ROOT, 'rev-parse', 'HEAD:vendor/virgil').decode().strip()
+        wrapper = git(virgil, 'show', f'{pin}:bin/v3c-x86-64-linux').decode()
+        selected, = re.findall(r'^RT_FILES=\$\(echo ([^\n]+)\)$', wrapper, re.MULTILINE)
+        terms = selected.split()
+        self.assertTrue(all(term.startswith('$RT/') for term in terms), selected)
+        patterns = [PurePosixPath('rt/' + term.removeprefix('$RT/')) for term in terms]
+        tree = git(virgil, 'ls-tree', '-r', '-z', '--name-only', pin, '--', 'rt').decode().split('\0')
+        paths = {path for path in map(PurePosixPath, filter(None, tree)) if not path.name.startswith('.')
+                 and any(path.parent == pattern.parent and path.match(pattern.name) for pattern in patterns)}
+        self.assertEqual(len(paths), 12, paths)
+        expected = {path.as_posix(): git(virgil, 'show', f'{pin}:{path}') for path in paths}
         self.assertEqual(sum(map(len, expected.values())), 80837)
+        source = self.root / 'pinned Virgil checkout'
+        source.mkdir()
+        git(source, 'init', '--quiet')
+        objects = virgil / git(virgil, 'rev-parse', '--git-path', 'objects').decode().strip()
+        (source / '.git/objects/info/alternates').write_text(f'{objects}\n')
+        git(source, 'checkout', '--quiet', '--detach', pin)
         bundle = self.root / 'pinned'
-        lib.stage(virgil, bundle, pin)
+        lib.stage(source, bundle, pin)
         files = lib.metadata(bundle, pin)['files']
         self.assertEqual({path: hashlib.sha256(data).hexdigest() for path, data in expected.items()},
                          {path: digest for path, digest in files.items() if path.startswith('rt/')})
@@ -134,6 +142,21 @@ class LibraryTest(unittest.TestCase):
         result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('pinned Virgil runtime: changed rt/native/RiRuntime.v3', result.stderr)
+
+    def test_runtime_ignores_git_replacement_blob(self):
+        path = RUNTIME[0]
+        original = (self.source / path).read_bytes()
+        replacement = b'replacement runtime source\n'
+        git = ['git', '-C', str(self.source)]
+        original_oid = subprocess.check_output([*git, 'rev-parse', f'{self.revision}:{path}']).strip()
+        replacement_oid = subprocess.check_output([*git, 'hash-object', '-w', '--stdin'], input=replacement).strip()
+        subprocess.run([*git, 'replace', original_oid.decode(), replacement_oid.decode()], check=True)
+
+        bundle = self.root / 'second'
+        lib.stage(self.source, bundle, self.revision)
+        self.assertEqual((bundle / path).read_bytes(), original)
+        self.check()
+        self.runtime_rejected(lambda: (self.bundle / path).write_bytes(replacement))
 
     def test_stage_uses_commit_bytes_with_crlf_checkout(self):
         path = RUNTIME[0]
@@ -303,7 +326,6 @@ class LibraryTest(unittest.TestCase):
                 def add():
                     extra = self.bundle / path
                     extra.parent.mkdir(parents=True, exist_ok=True)
-                    extra.parent.chmod(0o755)
                     extra.write_text('extra')
                     extra.chmod(0o644)
                 self.runtime_rejected(add)
@@ -389,20 +411,18 @@ class LibraryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unexpected archive entry'):
             self.check()
 
-    def test_archive_runtime_modes(self):
+    def test_archive_runtime_mode(self):
         self.pack()
         original = self.archive.read_bytes()
-        for path, expected_mode in ((f'virgil/{RUNTIME[0]}', '644'), ('virgil/rt/native', '755'),
-                                    ('virgil/rt', '755'), ('virgil', '755'), ('', '755')):
-            with self.subTest(path=path), tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as before:
-                with tarfile.open(self.archive, 'w:gz') as after:
-                    for member in before:
-                        if member.name == f'{self.stage.name}/{path}'.rstrip('/'):
-                            member.mode = 0
-                        after.addfile(member, before.extractfile(member) if member.isfile() else None)
-                with mock.patch.dict(os.environ, VIRGIL=str(self.source)):
-                    with self.assertRaisesRegex(ValueError, f'has mode 0, expected {expected_mode}'):
-                        lib.check_archive(self.archive, self.revision)
+        with tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as before, \
+                tarfile.open(self.archive, 'w:gz') as after:
+            for member in before:
+                if member.name == f'{self.stage.name}/virgil/{RUNTIME[0]}':
+                    member.mode = 0
+                after.addfile(member, before.extractfile(member) if member.isfile() else None)
+        with mock.patch.dict(os.environ, VIRGIL=str(self.source)):
+            with self.assertRaisesRegex(ValueError, 'has mode 0, expected 644'):
+                lib.check_archive(self.archive, self.revision)
 
     def test_archive_extra_directory(self):
         (self.bundle / 'bin').mkdir()

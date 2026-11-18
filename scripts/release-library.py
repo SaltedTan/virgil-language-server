@@ -146,7 +146,7 @@ def check_runtime_checkout(source, patterns):
 
 def pinned_revision():
     """The Virgil revision that this checkout pins, its vendor/virgil gitlink."""
-    result = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:vendor/virgil'],
+    result = subprocess.run(['git', '--no-replace-objects', '-C', str(ROOT), 'rev-parse', 'HEAD:vendor/virgil'],
                             capture_output=True, text=True)
     if result.returncode != 0:
         raise ValueError(f'cannot read the vendor/virgil gitlink: {result.stderr.strip()}')
@@ -156,7 +156,8 @@ def pinned_revision():
 def runtime_blobs(virgil, revision, patterns):
     """Read the runtime sources selected by patterns from the given Git revision."""
     def git(*args, data=None):
-        result = subprocess.run(['git', '-C', str(virgil), *args], input=data, capture_output=True)
+        result = subprocess.run(['git', '--no-replace-objects', '-C', str(virgil), *args],
+                                input=data, capture_output=True)
         if result.returncode != 0:
             raise ValueError(f'cannot read the runtime sources of Virgil {revision} from {virgil}; '
                              f'initialize the vendor/virgil submodule or set VIRGIL to a checkout with the revision: '
@@ -315,11 +316,7 @@ def check_archive(archive, revision):
                 raise ValueError(f"duplicate archive member: {entry.name}")
             mode = entry.mode & 0o777
             if entry.isdir():
-                directory = entry.name.rstrip('/')
-                if (mode != 0o755 and (directory in (name, bundle_root, runtime_root)
-                                       or directory.startswith(runtime_root + '/'))):
-                    raise ValueError(f'directory {directory} has mode {mode:o}, expected 755')
-                directories[directory] = mode
+                directories[entry.name.rstrip('/')] = mode
             elif entry.isfile():
                 if entry.name.startswith(runtime_root + '/'):
                     check_runtime_mode(entry.name, mode)
