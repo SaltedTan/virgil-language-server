@@ -435,9 +435,9 @@ frame "$INIT_RESULT" > "$TMP/want"
 expect_stdio "stdio stops at a bare LF without waiting for more input" 1 "$TMP/want" \
     'error: malformed message header: header has an LF without a CR before it' -- --hold-input-open < "$TMP/in"
 
-# exit ends the process even while the client holds the pipe open; the
-# watchdog, not a wall-clock bound, catches a server that waits for the end
-# of input, so a slow start (the JVM build on macOS) doesn't fail it.
+# The exit notification must stop the server while the client holds the pipe
+# open. The watchdog gives the JVM time to start on macOS and catches a server
+# that waits for the end of input.
 {
     frame "$INITIALIZE"
     frame "$(request 2 shutdown)"
