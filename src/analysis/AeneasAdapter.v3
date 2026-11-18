@@ -609,14 +609,8 @@ component AeneasAdapter {
 		}
 		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
-	// Formats the current text {input} by ADR-0019's indentation and line
-	// rules (DocumentFormatter), ending it as {eof} says, or refuses: a carriage
-	// return that no line feed follows, which the compiler's lexer and the
-	// folding parse disagree about, is refused before the text is normalized
-	// or parsed; then a text with too many tokens to parse
-	// (AnalysisParseBudget), and one that doesn't parse with the project's
-	// language options {options}, with its first diagnostic. The result knows
-	// the formatted size before it builds any edit.
+	// Check for a lone CR before normalization. Turning it into LF could end
+	// a line comment early and let a brace join move code into that comment.
 	// See docs/architecture.md#formatting.
 	def formatting(path: string, input: Array<byte>, options: Array<string>, eof: AnalysisFormatEnd) -> AnalysisFormatting {
 		for (i < input.length) {

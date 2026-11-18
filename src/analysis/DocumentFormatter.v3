@@ -18,10 +18,7 @@ enum AnalysisFormatEnd {
 	ONE
 }
 
-// A document formatted (AeneasAdapter.formatting), or a refusal that says why:
-// a carriage return without a line feed, the parse's first diagnostic, or the
-// parse budget. {size} is known before any replacement text is built, so a
-// caller can refuse a result that would not fit before calling {edits}.
+// The measured result of AeneasAdapter.formatting, or a refusal.
 class AnalysisFormatting {
 	// Why the document was not formatted, or null.
 	def refusal: string;
@@ -315,14 +312,8 @@ class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHead
 	var caseTabs: int;
 }
 
-// Formats a document that parsed: one forward pass over the parser's tokens
-// and the comments in the gaps between them, which after a parse without
-// errors hold only whitespace and comments. Only the whitespace runs between
-// tokens and comments change, at most one edit for each run, so edits never
-// overlap or cover a comment. Indentation is in tabs, by the line kinds of
-// ADR-0019 decision 3. {input} is the original text, with no carriage return
-// that a line feed doesn't follow (AeneasAdapter.formatting refuses those),
-// so each line end is LF or CR LF and is kept byte for byte.
+// Scan the gaps in the original {input}. The parser's normalized copy has
+// matching offsets, and the original bytes preserve the kind of each line end.
 // See docs/architecture.md#formatting.
 class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<byte>,
 		funHeaders: Array<FormatterFunHeader>, eof: AnalysisFormatEnd) {
