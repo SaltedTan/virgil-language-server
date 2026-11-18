@@ -69,7 +69,7 @@ component AnalysisFormatMark {
 
 class FormatterFunHeader {
 	var tabs: int;
-	var anchor: (int, int, int);
+	var anchor: (int, int, int, int);
 }
 
 // Marks the tokens of a file that parsed (AnalysisFormatMark). The walk keeps
@@ -354,10 +354,10 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var continues: bool;
 	private var closeTabs: int;
 	private var open: bool;
-	// The old indentation (a range of {input}) and the new tabs of the line
-	// where the current statement started, and the new indentation's
+	// The old indentation range and new tabs of the continuation anchor,
+	// then the tabs of the statement that owns a body. {lineTabs} counts
 	// leading tabs on the current code line.
-	private var chunk: (int, int, int);
+	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
@@ -383,7 +383,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		count = 0;
 		started = open = closedControl = continues = lastStartsLine = false;
 		last = lastItem = -1;
-		chunk = (0, 0, 0);
+		chunk = (0, 0, 0, 0);
 		lineTabs = closeTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
@@ -510,7 +510,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			}
 			lineTabs = t;
 		} else {
-			chunk = if(writable, (begin, end, wantTabs), (-1, -1, wantTabs));
+			chunk = if(writable, (begin, end, wantTabs, wantTabs), (-1, -1, wantTabs, wantTabs));
 			lineTabs = wantTabs;
 		}
 	}
@@ -566,7 +566,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		// A body's '{' that a comment or a blank line kept from joining the
 		// header stays at the header's indentation.
 		if (c == '{') {
-			wantTabs = chunk.2;
+			wantTabs = chunk.3;
 			return BLOCK;
 		}
 		// A case's "=>" that starts a line is one tab deeper than the line
@@ -575,7 +575,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			wantTabs = inner.caseTabs + 1;
 			return NESTED;
 		}
-		wantTabs = chunk.2 + 1;
+		wantTabs = chunk.3 + 1;
 		if (closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0) return NESTED;
 		return CONTINUATION;
 	}
@@ -633,15 +633,15 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
-			chunk = (chunk.0, chunk.1, closeTabs);
+			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
 		} else if (ifs.length > 0 && isElse(k)) {
-			chunk = (chunk.0, chunk.1, ifs[ifs.length - 1]);
+			chunk = (chunk.0, chunk.1, chunk.2, ifs[ifs.length - 1]);
 			ifs.length--;
 		}
 		var header = funHeaders[k];
 		match (c) {
 			'{' => {
-				var base = if(inner != null && inner.kind != '{', lineTabs, chunk.2);
+				var base = if(inner != null && inner.kind != '{', lineTabs, chunk.3);
 				stack.put(FormatterBracket.new('{', base + 1, base, false, header));
 			}
 			'(', '[' => {
@@ -721,7 +721,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	}
 	private def isElse(k: int) -> bool {
 		var b = syntax.begin(k);
-		return syntax.end(k) - b == 4 && input[b] == 'e' && input[b + 1] == 'l' && input[b + 2] == 's' && input[b + 3] == 'e';
+		return syntax.end(k) - b == 4 && input[b] == 'e' && input[b + 1] == 'l' && input[b + 2] == 's' && input[b + 3] == 'e'
+			&& (k == 0 || ch(k - 1) != '.');
 	}
 }
 // The kinds of line that classify returns. A line that starts a statement,

@@ -30,6 +30,7 @@ def X = [
 	T("Formatting:unjoined_brace", unjoined_brace),
 	T("Formatting:code_after_comment", code_after_comment),
 	T("Formatting:else_line", else_line),
+	T("Formatting:inline_else", inline_else),
 	T("Formatting:fun_body_close", fun_body_close),
 	T("Formatting:case_arrow_anchor", case_arrow_anchor),
 	T("Formatting:foreach_initializer", foreach_initializer),
@@ -47,29 +48,38 @@ def both(t: Tester, input: string, expected: string) -> Array<AnalysisTextEdit> 
 	format(t, MIRROR, input, expected);
 	return format(t, ONE, input, expected);
 }
+def format(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string) -> Array<AnalysisTextEdit> {
+	return formatWithOptions(t, eof, input, expected, OPTIONS);
+}
 // The shared check of every case: applying the edits gives {expected};
 // formatting that again gives no edits; the tokens and comments, less the
 // trailing whitespace after a line comment, are unchanged; the edits are
 // sorted, don't overlap, replace only whitespace with whitespace, and never
 // start or end between a CR and its LF; and the reported size and count
 // match the output.
-def format(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string) -> Array<AnalysisTextEdit> {
-	var r = AeneasAdapter.formatting(PATH, input, OPTIONS, eof);
+def formatWithOptions(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string, options: Array<string>) -> Array<AnalysisTextEdit> {
+	var r = AeneasAdapter.formatting(PATH, input, options, eof);
 	if (r.refusal != null) {
 		t.fail1("refused: %s", r.refusal);
 		return null;
 	}
-	var edits = r.edits();
-	t.asserti(edits.length, r.editCount());
+	t.assertl(expected.length, r.size());
+	var count = r.editCount(), edits = r.edits();
+	if (edits == null) {
+		t.fail("formatting produced no edit array");
+		return null;
+	}
+	t.asserti(count, edits.length);
 	var output = apply(t, input, edits);
 	if (output == null) return edits;
 	t.assert_string(expected, output);
-	t.assertl(output.length, r.size());
-	var again = AeneasAdapter.formatting(PATH, output, OPTIONS, eof);
+	var again = AeneasAdapter.formatting(PATH, output, options, eof);
 	t.assert(again.refusal == null, "the output parses");
 	t.asserti(0, again.editCount());
 	t.assertl(output.length, again.size());
-	var a = items(input), b = items(output);
+	var repeated = again.edits();
+	t.assert(repeated != null && repeated.length == 0, "the second pass produces an empty edit array");
+	var a = items(input, options), b = items(output, options);
 	t.asserti(a.length, b.length);
 	for (i < a.length) {
 		if (i < b.length) t.assert_string(a[i], b[i]);
@@ -101,10 +111,10 @@ def splits(input: string, at: int) -> bool {
 }
 // The parser's tokens and the comments between them, each line comment
 // without its trailing whitespace.
-def items(text: string) -> Array<string> {
+def items(text: string, options: Array<string>) -> Array<string> {
 	var input = AeneasAdapter.normalizedRange(text, 0, text.length);
 	var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
-	AeneasAdapter.setLanguageOptions(OPTIONS);
+	AeneasAdapter.setLanguageOptions(options);
 	AnalysisSingleFileParser.parse(PATH, input, errors, syntax, TypeCache.new(), null);
 	AeneasAdapter.resetLanguageOptions();
 	var result = Vector<string>.new(), i = 0, k = 0, max = text.length;
@@ -332,12 +342,12 @@ def syntax_error(t: Tester) {
 	}
 	// The project's language options decide what parses.
 	t.assert(AeneasAdapter.formatting(PATH, "def f = fun () { };\n", ["-lang:fun-exprs=false"], ONE).refusal != null, "fun needs -lang:fun-exprs");
-	t.assert(AeneasAdapter.formatting(PATH, "def f = fun () { };\n", [], ONE).refusal == null, "with the default options");
+	formatWithOptions(t, ONE, "def f = fun () { };\n", "def f = fun () { };\n", []);
 }
 def parse_budget(t: Tester) {
 	var input = "component C {\n def f() {}\n}";
 	AnalysisParseBudget.maxTokens = 10;
-	t.assert(AeneasAdapter.formatting(PATH, input, OPTIONS, ONE).refusal == null, "within the budget");
+	format(t, ONE, input, "component C {\n\tdef f() {}\n}\n");
 	AnalysisParseBudget.maxTokens = 9;
 	var r = AeneasAdapter.formatting(PATH, input, OPTIONS, ONE);
 	t.assert_string(AnalysisParseBudget.refusal(), r.refusal);
@@ -458,6 +468,20 @@ def else_line(t: Tester) {
 		"def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} // keep\n\t\telse\n\t\t\tf(x);\n\telse\n\t\tf(x);\n}\n");
 	both(t, "def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t}\nelse\n\t\tf(x);\n}\n",
 		"def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} else\n\t\t\tf(x);\n}\n");
+}
+def inline_else(t: Tester) {
+	var input = "def f() {\n\tif (true)\n\t\tg(); else h(\n\t\t\t\t1);\n}\n";
+	both(t, input, input);
+	input = "def f() {\n\tmatch (0) {\n\t\t_ => g(); } else h(\n\t\t\t\t1);\n}\n";
+	both(t, input, input);
+	both(t, "def f() {\n\tif (true)\n    g(); else return\n      // argument\n      h();\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else return\n\t\t  // argument\n\t\t  h();\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else\nh();\n\tmatch (0) {\n\t\t_ => g(); } else {\nh();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else\n\t\th();\n\tmatch (0) {\n\t\t_ => g(); } else {\n\t\th();\n\t}\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else // keep\n\t\t{\nh();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else // keep\n\t{\n\t\th();\n\t}\n}\n");
+	both(t, "def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\telse h();\n}\n",
+		"def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\t\telse h();\n}\n");
 }
 def fun_body_close(t: Tester) {
 	// The line after a fun expression's '}' continues its statement.
