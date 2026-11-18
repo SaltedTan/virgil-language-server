@@ -1244,6 +1244,9 @@ component AnalysisApplications {
 	}
 	def arguments(e: AppExpr) -> Expr {
 		if (!rewrittenFieldAddress(e)) return e.args;
+		// MethodEnv.objExpr marks an implicit receiver with an empty dot token
+		// and gives it the field's identifier. Walking it would index that name
+		// as a use of the receiver's type.
 		match (e.target) {
 			v: VarExpr => if (Token.?(v.dot) && Strings.equal(Token.!(v.dot).image, "")) return null;
 		}
