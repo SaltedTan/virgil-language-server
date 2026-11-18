@@ -281,7 +281,6 @@ class LibraryTest(unittest.TestCase):
         self.pack()
         original = self.archive.read_bytes()
         for path in self.stage.rglob('*'):
-            import os
             os.utime(path, (99999, 99999))
         self.pack()
         self.assertEqual(original, self.archive.read_bytes())
@@ -360,7 +359,6 @@ class LibraryTest(unittest.TestCase):
             lib.stage(self.source, self.root / 'second', self.revision)
 
     def test_runtime_source_fifo(self):
-        import os
         os.mkfifo((self.source / RUNTIME[0]).with_name('Pipe.v3'))
         with self.assertRaisesRegex(ValueError, 'unexpected bundle entry'):
             lib.stage(self.source, self.root / 'second', self.revision)
@@ -413,7 +411,6 @@ class LibraryTest(unittest.TestCase):
             lib.stage(self.source, self.root / 'second', self.revision)
 
     def test_source_fifo(self):
-        import os
         os.mkfifo(self.source / 'lib/pipe')
         with self.assertRaisesRegex(ValueError, 'unexpected bundle entry'):
             lib.stage(self.source, self.root / 'second', self.revision)
