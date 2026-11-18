@@ -137,8 +137,8 @@ def test_analyze_round_trip(t: Tester) {
 		AnalysisSource.new(null, "\x00\xFF")];
 	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
 	var options = ["-lang:simple-bodies=false", "-lang:fun-exprs", "-lang:descriptors"];
-	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, options, null, sources, null);
-	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, options, null, sources, null));
+	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, options, "", sources, null);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, options, "", sources, null));
 	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("request did not decode");
 	t.asserti(99, r.id);
@@ -161,22 +161,22 @@ def test_analyze_frame_size(t: Tester) {
 	var values = [int.min, -8193, -8192, -65, -64, -1, 0, 63, 64, 8191, 8192, int.max];
 	for (value in values) {
 		var sources = [AnalysisSource.new(null, null), AnalysisSource.new("", "")];
-		var frame = AnalysisWire.encodeAnalyze(value, value, value, [], null, sources, null);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, [], null, sources, null));
+		var frame = AnalysisWire.encodeAnalyze(value, value, value, [], "", sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, [], "", sources, null));
 	}
 	for (length in [0, 63, 64, 8191, 8192]) {
 		var bytes = Array<byte>.new(length);
 		var sources = [AnalysisSource.new(bytes, bytes)];
-		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], null, sources, null);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], null, sources, null));
+		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], "", sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], "", sources, null));
 		var options = Array<string>.new(length);
 		for (i < options.length) options[i] = "-lang:descriptors";
-		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, options, null, [], null);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, options, null, [], null));
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, options, "", [], null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, options, "", [], null));
 		sources = Array<AnalysisSource>.new(length);
 		for (i < sources.length) sources[i] = AnalysisSource.new(null, null);
-		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], null, sources, null);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], null, sources, null));
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], "", sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], "", sources, null));
 	}
 }
 
@@ -197,21 +197,11 @@ def test_analyze_target_round_trip(t: Tester) {
 	t.asserti(flags, r.flags);
 	t.asserti(1, r.sources.length);
 	t.assert_string("a.v3", r.sources[0].path);
-	// An empty name and no name both mean no target.
-	for (name in [null, ""]) {
-		var plain = AnalysisWire.encodeAnalyze(6, 0, 1000, [], name, sources, null);
-		t.assertl(long.view(plain.length), AnalysisWire.analyzeFrameSize(6, 0, 1000, [], name, sources, null));
-		var decoded = AnalysisWire.decodeAnalyze(payloadOf(plain));
-		if (decoded == null) return t.fail("a request without a target did not decode");
-		t.assert(decoded.target == null, "no target");
-	}
 	// The name's bytes are all that its field adds.
 	t.assertl(AnalysisWire.analyzeFrameSize(1, 0, 1000, [], "", [], null) + long.view(target.name.length),
 		AnalysisWire.analyzeFrameSize(1, 0, 1000, [], target.name, [], null));
 }
 
-// A target that AnalysisTargets does not list, a non-string target, and the
-// previous protocol version are rejected.
 def test_invalid_analyze_target(t: Tester) {
 	var sources = [AnalysisSource.new("a.v3", "class A { }\n")];
 	// Aeneas registers other targets, such as jvm, but the server supports
@@ -228,13 +218,6 @@ def test_invalid_analyze_target(t: Tester) {
 	var w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(0);
 	w.put_sleb32(-1).put_sleb32(0);
 	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "non-string target");
-	// A handshake from before the target field claims protocol 17, which
-	// AnalysisSupervisor.onPoll refuses because it differs from PROTOCOL_VERSION.
-	w = DataWriter.new().putb(AnalysisWire.HELLO).put_sleb32(17).put_sleb32(1).putb('1').put_sleb32(1).putb('r').put_sleb64(1L);
-	var old = AnalysisWire.decodeHello(w.extract());
-	if (old == null) return t.fail("the old handshake did not decode");
-	t.asserti(17, old.protocol);
-	t.assert(old.protocol != AnalysisWire.PROTOCOL_VERSION, "the old protocol version is refused");
 }
 
 // The snapshot answers every query as the analysis it was encoded from does.
@@ -514,7 +497,7 @@ def test_truncated_messages(t: Tester) {
 	for (n < hello.length) {
 		if (AnalysisWire.decodeHello(Arrays.range(hello, 0, n)) != null) return t.fail1("decoded a hello cut to %d bytes", n);
 	}
-	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, ["-lang:descriptors"], null, sources, null));
+	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, ["-lang:descriptors"], "", sources, null));
 	for (n < request.length) {
 		if (AnalysisWire.decodeAnalyze(Arrays.range(request, 0, n)) != null) return t.fail1("decoded a request cut to %d bytes", n);
 	}
@@ -537,7 +520,7 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	var rejected: Array<Array<string>> = [[null], ["-O2"], ["-lang:unknown"], ["-lang:descriptors=yes"],
 		["-lang:descriptors", "-lang:descriptors=false"], ["descriptors.v3"]];
 	for (options in rejected) {
-		var payload = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, options, null, [], null));
+		var payload = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, options, "", [], null));
 		t.assert(AnalysisWire.decodeAnalyze(payload) == null, "rejected option");
 	}
 	// Results with a huge diagnostic count, a bad path index, a bad declaration
@@ -1412,8 +1395,8 @@ def test_scope_request_round_trip(t: Tester) {
 	for (scope in [AnalysisScopeRequest.new(0, 37, AnalysisScopeKinds.VALUES, "b"),
 			AnalysisScopeRequest.new(1, 0, AnalysisScopeKinds.ALL, ""),
 			AnalysisScopeRequest.new(1, sources[1].input.length, AnalysisScopeKinds.TYPES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX))]) {
-		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], null, sources, scope);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], null, sources, scope));
+		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], "", sources, scope);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], "", sources, scope));
 		var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 		if (r == null) return t.fail("scope request did not decode");
 		t.asserti(flags, r.flags);
@@ -1423,11 +1406,11 @@ def test_scope_request_round_trip(t: Tester) {
 		t.assert_string(scope.prefix, r.scope().prefix);
 	}
 	// A query needs no occurrences.
-	var alone = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources,
+	var alone = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources,
 		AnalysisScopeRequest.new(0, 1, AnalysisScopeKinds.PATTERN, "x"))));
 	t.assert(alone != null && alone.scope() != null && alone.scope().offset == 1, "a query without occurrences");
 	// Without WANT_SCOPE, there is no query.
-	var plain = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], null, sources, null)));
+	var plain = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], "", sources, null)));
 	t.assert(plain != null && plain.scope() == null, "no scope query");
 }
 // A query for a source, offset, kinds, or prefix that does not exist makes
@@ -1449,10 +1432,10 @@ def test_invalid_scope_requests(t: Tester) {
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX + 1)))
 	];
 	for (c in cases) {
-		t.assert(AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, c.0, 100, [], null, sources, c.1))) == null, "malformed scope query");
+		t.assert(AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, c.0, 100, [], "", sources, c.1))) == null, "malformed scope query");
 	}
 	// A query that WANT_SCOPE does not announce is a trailing remainder.
-	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], null, sources, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, ""));
+	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], "", sources, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, ""));
 	t.assert(AnalysisWire.decodeAnalyze(payloadOf(frame)) == null, "unannounced scope query");
 }
 // A result with {scope} for the analysis of scopeSources().
@@ -1601,8 +1584,8 @@ def afterDot(n: int) -> int {
 def test_member_request_round_trip(t: Tester) {
 	var sources = memberSources();
 	var query = AnalysisScopeRequest.new(0, afterDot(1), AnalysisScopeKinds.MEMBERS, "x");
-	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources, query);
-	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources, query));
+	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources, query);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources, query));
 	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("member request did not decode");
 	t.asserti(AnalysisScopeKinds.MEMBERS, r.scope().kinds);
@@ -1611,7 +1594,7 @@ def test_member_request_round_trip(t: Tester) {
 	var members = r.memberAnswer(analysis);
 	t.assert(members != null && members.names.length == 2, "the member query has an answer");
 	// A scope query has no member answer.
-	var scoped = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources,
+	var scoped = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources,
 		AnalysisScopeRequest.new(0, afterDot(1), AnalysisScopeKinds.VALUES, ""))));
 	t.assert(scoped.memberAnswer(analysis) == null, "no member answer to a scope query");
 }
@@ -1772,27 +1755,27 @@ def test_call_request_round_trip(t: Tester) {
 	var sources = callSources();
 	var query = AnalysisScopeRequest.new(0, openOf("f(1"), AnalysisScopeKinds.CALL, "");
 	for (flags in [AnalysisWire.WANT_SCOPE, AnalysisWire.WANT_SCOPE | AnalysisWire.WANT_OCCURRENCES]) {
-		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], null, sources, query);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], null, sources, query));
+		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], "", sources, query);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], "", sources, query));
 		var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 		if (r == null) return t.fail("call request did not decode");
 		t.asserti(AnalysisScopeKinds.CALL, r.scope().kinds);
 		t.asserti(query.offset, r.scope().offset);
 		t.assert_string("", r.scope().prefix);
 	}
-	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources, query)));
+	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources, query)));
 	var analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	t.assert(r.scopeAnswer(analysis) == null, "no scope answer to a call query");
 	t.assert(r.memberAnswer(analysis) == null, "no member answer to a call query");
 	var call = r.callAnswer(analysis);
 	t.assert(call != null && call.open == query.offset, "the call query has an answer");
 	// Where no call opens, there is no answer.
-	var none = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources,
+	var none = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources,
 		AnalysisScopeRequest.new(0, query.offset + 1, AnalysisScopeKinds.CALL, ""))));
 	t.assert(none != null && none.callAnswer(analysis) == null, "no call at the offset");
 	// Scope and member queries have no call answer.
 	for (kinds in [AnalysisScopeKinds.VALUES, AnalysisScopeKinds.MEMBERS]) {
-		var other = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources,
+		var other = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources,
 			AnalysisScopeRequest.new(0, query.offset, kinds, ""))));
 		t.assert(other != null && other.callAnswer(analysis) == null, "no call answer to another query");
 	}
@@ -2325,7 +2308,7 @@ def test_query_results_have_no_diagnostics(t: Tester) {
 		AnalysisScopeRequest.new(0, call, AnalysisScopeKinds.CALL, "")
 	];
 	for (query in queries) {
-		var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], null, sources, query)));
+		var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], "", sources, query)));
 		if (r == null) return t.fail("the request did not decode");
 		var scope = r.scopeAnswer(analysis), members = r.memberAnswer(analysis), answer = r.callAnswer(analysis);
 		t.assert(scope != null || members != null || answer != null, "the query has an answer");

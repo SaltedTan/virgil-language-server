@@ -85,11 +85,11 @@ component AnalysisWire {
 		return if(r.finish(), hello);
 	}
 
-	// The frame size of an ANALYZE request; {target} is null or empty for no
-	// target, and {scope} is null unless {flags} has WANT_SCOPE.
+	// The frame size of an ANALYZE request. {target} is the target's name,
+	// or the empty string for no target. {scope} is null unless {flags} has WANT_SCOPE.
 	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, options: Array<string>, target: string,
 			sources: Array<AnalysisSource>, scope: AnalysisScopeRequest) -> long {
-		var targetLength = if(target == null, 0, target.length);
+		var targetLength = target.length;
 		var size = long.view(WorkerFraming.HEADER_BYTES) + 1
 			+ sleb32Size(id) + sleb32Size(flags) + sleb32Size(timeoutMs)
 			+ sleb32Size(options.length) + sleb32Size(targetLength) + sleb32Size(sources.length);
@@ -117,13 +117,13 @@ component AnalysisWire {
 	}
 	// Encodes an ANALYZE request, with {scope} unless it is null, in which
 	// case {flags} must not have WANT_SCOPE. {target} is the target's name,
-	// or null or empty for no target.
+	// or the empty string for no target.
 	def encodeAnalyze(id: int, flags: int, timeoutMs: int, options: Array<string>, target: string,
 			sources: Array<AnalysisSource>, scope: AnalysisScopeRequest) -> Range<byte> {
 		var w = WorkerFraming.start().putb(ANALYZE);
 		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(options.length);
 		for (o in options) putString(w, o);
-		putString(w, if(target == null, "", target));
+		w.put_sleb32(target.length).puta(target);
 		w.put_sleb32(sources.length);
 		for (s in sources) {
 			putString(w, s.path);
