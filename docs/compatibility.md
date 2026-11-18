@@ -12,7 +12,7 @@
 | `0.1.0-alpha.2` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Second prerelease |
 | `0.1.0-alpha.1` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | First prerelease |
 
-The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges. Away from the pin, the advisory job skips the tolerance inventory check because its recorded parse verdicts cover texts generated from the pinned Virgil sources ([inventory checks](benchmarks.md#release-scorecard)).
+The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges. Away from the pin, the checks of committed benchmark inventories, the tolerance inventory and the cursor tolerance histories, skip and name both revisions, because each inventory records the pinned Virgil's sources ([inventory checks](benchmarks.md#release-scorecard)).
 
 Each release supports exactly one Virgil revision, the one in this table. To find the revision of a server you have:
 
