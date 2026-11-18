@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -106,6 +107,11 @@ class JvmArchiveTest(unittest.TestCase):
         (source / 'rt').mkdir()
         (source / 'lib/util/A.v3').write_bytes(b'class A {}\n')
         (source / 'rt/LICENSE').write_bytes(b'Apache License, Version 2.0\n')
+        # One runtime source for each of the supported targets' patterns.
+        for pattern in lib.runtime_patterns():
+            path = source / pattern.replace('*', 'Fixture')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f'// {pattern}\n')
         self.stage = self.root / 'virgil-lsp-1.2.3-jvm-arm64-darwin'
         self.stage.mkdir()
         lib.stage(source, self.stage / 'virgil', REVISION)
@@ -172,6 +178,17 @@ class JvmArchiveTest(unittest.TestCase):
 
     def test_good_archive(self):
         self.check()
+
+    def test_runtime_sources(self):
+        # The JVM worker analyzes target projects too: its archive carries
+        # the runtime sources, and one without them is refused.
+        archive = self.pack()
+        with tarfile.open(archive) as tar:
+            names = {m.name.split('/', 2)[2] for m in tar.getmembers() if m.isfile()
+                     and m.name.startswith(self.stage.name + '/virgil/rt/')}
+        self.assertEqual({p.replace('*', 'Fixture') for p in lib.runtime_patterns()}, names)
+        shutil.rmtree(self.stage / 'virgil/rt')
+        self.rejects('no runtime sources for ')
 
     def test_pin_is_one_temurin_release(self):
         self.assertEqual(PIN['distribution'], 'Temurin')

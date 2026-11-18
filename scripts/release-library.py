@@ -7,8 +7,10 @@ import argparse
 import gzip
 import hashlib
 import importlib.util
+import fnmatch
 import json
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import sys
@@ -42,13 +44,80 @@ def metadata(root, revision):
     return {'revision': revision, 'treeSha256': sha(lines.encode()), 'files': files}
 
 
-def stage(source, destination, revision):
+# The supported-target table, whose runtime patterns select the rt/ sources
+# that the bundle holds beside lib/ (ADR-0018, decision 7).
+TARGETS_SOURCE = Path(__file__).resolve().parents[1] / 'src/analysis/AnalysisTargets.v3'
+
+
+def runtime_patterns(source=TARGETS_SOURCE):
+    """The runtime patterns of the targets in AnalysisTargets.all, in order and
+    without duplicates, read from the Virgil table itself."""
+    text = Path(source).read_text(encoding='utf-8')
+    entries = dict(re.findall(r'def\s+(\w+)\s*=\s*AnalysisTarget\.new\(\s*"[^"]*"\s*,'
+                              r'\s*"[^"]*"\s*,\s*\[([^\]]*)\]', text))
+    supported = re.search(r'def\s+all\s*:\s*Array<AnalysisTarget>\s*=\s*\[([^\]]*)\]', text)
+    if not entries or supported is None:
+        raise ValueError(f'no supported targets found in {source}')
+    patterns = []
+    for name in re.findall(r'\w+', supported.group(1)):
+        if name not in entries:
+            raise ValueError(f'supported target {name} has no AnalysisTarget.new entry in {source}')
+        for pattern in re.findall(r'"([^"]*)"', entries[name]):
+            parts = pattern.split('/')
+            if (parts[0] != 'rt' or len(parts) < 3 or any(p in ('', '.', '..') for p in parts)
+                    or any(c in p for p in parts[:-1] for c in '*?[')):
+                raise ValueError(f'unsupported runtime pattern in {source}: {pattern!r}')
+            if pattern not in patterns:
+                patterns.append(pattern)
+    if not patterns:
+        raise ValueError(f'the supported targets in {source} have no runtime patterns')
+    return patterns
+
+
+def runtime_match(path, patterns):
+    """Whether a bundle path is selected by one of the runtime patterns, whose
+    wildcards, as in project patterns, never match a "/"."""
+    parts = path.split('/')
+    return any(len(parts) == len(p.split('/')) and
+               all(fnmatch.fnmatchcase(a, b) for a, b in zip(parts, p.split('/')))
+               for p in patterns)
+
+
+def runtime_files(source, patterns):
+    """The bundle paths of the regular files under source that the runtime
+    patterns select. A selected entry that isn't a regular file, or a
+    directory on the way that is a link, is an error, as for lib/."""
+    files = []
+    for pattern in patterns:
+        directory, name = pattern.rsplit('/', 1)
+        path = source
+        for part in directory.split('/'):
+            path = path / part
+            if not stat.S_ISDIR(path.lstat().st_mode):
+                raise ValueError(f'not a physical directory: {path}')
+        matched = sorted(p for p in path.iterdir() if fnmatch.fnmatchcase(p.name, name))
+        if not matched:
+            raise ValueError(f'runtime pattern {pattern} selects no files in {source}')
+        for entry in matched:
+            if not stat.S_ISREG(entry.lstat().st_mode):
+                raise ValueError(f'unexpected bundle entry (regular files only): {entry}')
+            relative = f'{directory}/{entry.name}'
+            if relative not in files:
+                files.append(relative)
+    return sorted(files)
+
+
+def stage(source, destination, revision, patterns=None):
     inventory(source / 'lib')  # inspect before copying, without following links
+    runtime = runtime_files(source, runtime_patterns() if patterns is None else patterns)
     license = source / 'rt/LICENSE'  # named by Virgil's root README
     if not stat.S_ISREG(license.lstat().st_mode):
         raise ValueError(f"not a regular license file: {license}")
     destination.mkdir()
     shutil.copytree(source / 'lib', destination / 'lib')
+    for relative in runtime:
+        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, destination / relative)
     shutil.copyfile(license, destination / 'LICENSE')
     (destination / 'REVISION').write_text(revision + '\n', encoding='ascii')
     for path in [destination, *destination.rglob('*')]:
@@ -106,7 +175,8 @@ def check_jvm(name, manifest, entries, modes, directories):
     return {prefix + path for path in files}
 
 
-def check_archive(archive, revision):
+def check_archive(archive, revision, patterns=None):
+    patterns = runtime_patterns() if patterns is None else patterns
     name = archive.name.removesuffix('.tar.gz')
     with tarfile.open(archive, 'r:gz') as tar:
         entries = {}
@@ -137,8 +207,12 @@ def check_archive(archive, revision):
             raise ValueError('bundle files/checksums do not match the manifest')
         if not files.get('LICENSE') or not any(p.startswith('lib/') for p in files):
             raise ValueError('bundle must include LICENSE and lib sources')
-        if any(p not in ('LICENSE', 'REVISION') and not p.startswith('lib/') for p in files):
-            raise ValueError('bundle includes files outside lib, LICENSE, and REVISION')
+        if any(p not in ('LICENSE', 'REVISION') and not p.startswith('lib/')
+               and not runtime_match(p, patterns) for p in files):
+            raise ValueError('bundle includes files outside lib, the runtime patterns, LICENSE, and REVISION')
+        for pattern in patterns:
+            if not any(runtime_match(p, [pattern]) for p in files):
+                raise ValueError(f'bundle has no runtime sources for {pattern}')
         lines = ''.join(f'{digest}  {path}\n' for path, digest in sorted(files.items()))
         if sha(lines.encode()) != library['treeSha256']:
             raise ValueError('bundle tree digest does not match the manifest')
@@ -159,7 +233,7 @@ def check_archive(archive, revision):
         for exe in ('virgil-lsp', 'virgil-lsp-worker'):
             if sha(entries[f'{name}/{exe}']) != manifest['sha256'][exe]:
                 raise ValueError(f'{exe} checksum does not match the manifest')
-    print(f'{archive.name}: bundle files, license, revision, and tree digest verified')
+    print(f'{archive.name}: bundle files, runtime sources, license, revision, and tree digest verified')
 
 
 def archive(stage, output, epoch):

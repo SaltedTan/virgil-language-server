@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise an installed server's root selection through stdio (no environment root)."""
+"""Exercise an installed server's root selection through stdio (no environment root),
+for a project that uses lib/util and for an x86-64-linux target project."""
 import argparse
 import json
 import os
@@ -131,9 +132,64 @@ def exercise(server, expected_root=None, options=None, error=None, log_contains=
             session.close()
 
 
+def exercise_target(server, expected_root, options=None):
+    """An x86-64-linux project: its runtime sources come from the root, with
+    no diagnostics; hover shows the target's Pointer, and definition goes into
+    the root's rt/native/RiRuntime.v3."""
+    with tempfile.TemporaryDirectory(prefix='target-project-') as temporary:
+        project = Path(temporary).resolve()
+        config = project / '.virgil-lsp.json'
+        config.write_text(json.dumps({'version': 2, 'projects': [{'name': 'native',
+            'target': 'x86-64-linux', 'sources': ['main.v3']}]}))
+        source = ('component Main {\n def main() -> int {\n  var sp = Pointer.NULL;\n'
+                  '  return if(RiRuntime.inStackRedZone(sp), 1, 0);\n }\n}\n')
+        main = project / 'main.v3'
+        main.write_text(source)
+        session = Session(server, project)
+        try:
+            params = {'rootUri': project.as_uri(), 'capabilities': {}}
+            if options is not None:
+                params['initializationOptions'] = options
+            session.request('initialize', params)
+            session.send('initialized', {}, request=False)
+            session.send('textDocument/didOpen', {'textDocument': {'uri': config.as_uri(),
+                'languageId': 'json', 'version': 1, 'text': config.read_text()}}, request=False)
+            configured = session.until(lambda m: m.get('method') == 'textDocument/publishDiagnostics'
+                and m['params']['uri'] == config.as_uri())
+            assert configured['params']['diagnostics'] == [], configured
+            session.send('textDocument/didOpen', {'textDocument': {'uri': main.as_uri(),
+                'languageId': 'virgil', 'version': 1, 'text': source}}, request=False)
+            published = session.until(lambda m: m.get('method') == 'textDocument/publishDiagnostics'
+                and m['params']['uri'] == main.as_uri())
+            hover = session.request('textDocument/hover', {'textDocument': {'uri': main.as_uri()},
+                                                           'position': {'line': 2, 'character': 7}})
+            assert hover and 'var sp: Pointer' in json.dumps(hover), hover
+            definition = session.request('textDocument/definition', {'textDocument': {'uri': main.as_uri()},
+                                                                     'position': {'line': 3, 'character': 14}})
+            expected = (expected_root / 'rt/native/RiRuntime.v3').as_uri()
+            assert definition and definition['uri'] == expected, (definition, expected)
+            # Every list published for the project, not only the first, is empty.
+            lists = [m['params'] for m in session.messages if m.get('method') == 'textDocument/publishDiagnostics']
+            assert all(p['diagnostics'] == [] for p in lists), lists
+            print(json.dumps(published))
+            print('hover: ' + json.dumps(hover))
+            print('definition: ' + json.dumps(definition))
+            session.request('shutdown')
+            session.send('exit', request=False)
+            session.proc.stdin.close()
+            assert session.proc.wait(timeout=5) == 0
+        finally:
+            session.close()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('server', type=Path)
+    parser.add_argument('--target', action='store_true',
+                        help='exercise an x86-64-linux target project instead of lib/util')
     args = parser.parse_args()
     root = args.server.resolve().parent / 'virgil'
-    exercise(args.server.absolute(), root, log_contains='(bundle, revision ')
+    if args.target:
+        exercise_target(args.server.absolute(), root)
+    else:
+        exercise(args.server.absolute(), root, log_contains='(bundle, revision ')

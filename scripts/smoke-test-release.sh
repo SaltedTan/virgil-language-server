@@ -8,7 +8,9 @@
 # the manifest, --version must report the manifest's version and Virgil
 # revision, and the analyze command, which needs the worker, must verify one
 # program and report the errors in another. The working program is also checked
-# through a symlink as docs/releasing.md installs it. For a JVM archive, the
+# through a symlink as docs/releasing.md installs it. With no client root, the
+# bundled virgil/ must serve both a lib/util project and an x86-64-linux target
+# project, whose runtime sources it holds. For a JVM archive, the
 # jars must match the manifest too, and its bundled Java runtime must run and
 # report the pinned Temurin version; the archive's platform must be the host's.
 # Usage: smoke-test-release.sh <archive>
@@ -166,6 +168,8 @@ check "analyze works through a symlink on PATH" \
 
 check "no-root lib/util diagnostics, hover, and definition through a symlink in a moved, read-only install" \
     python3 "$ROOT/test/release/bundled-library.py" "$TMP/bin/virgil-lsp"
+check "no-root x86-64-linux project: no diagnostics, Pointer hover, and definition into the bundled rt/" \
+    python3 "$ROOT/test/release/bundled-library.py" --target "$TMP/bin/virgil-lsp"
 
 echo "$name: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

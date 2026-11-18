@@ -26,6 +26,11 @@ spec.loader.exec_module(check)
 spec = importlib.util.spec_from_file_location('jvm_package', Path(__file__).with_name('test_jvm_package.py'))
 jvm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jvm)
+spec = importlib.util.spec_from_file_location('release_library', ROOT / 'scripts/release-library.py')
+library = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(library)
+# One bundled runtime source for each of the supported targets' patterns.
+RUNTIME = ['virgil/' + p.replace('*', 'Fixture') for p in library.runtime_patterns()]
 
 
 class PayloadTests(unittest.TestCase):
@@ -37,7 +42,7 @@ class PayloadTests(unittest.TestCase):
     def fixture(self, target='linux-x64'):
         files = {n: (n.encode(), 0o644) for n in (
             'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE', 'virgil/REVISION',
-            'virgil/lib/util/StringBuilder.v3')}
+            'virgil/lib/util/StringBuilder.v3', *RUNTIME)}
         files.update({n: (n.encode(), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         manifest = {'target': 'x86-64-linux' if target == 'linux-x64' else 'x86-64-darwin',
                     'sha256': {n: hashlib.sha256(files[n][0]).hexdigest()
@@ -61,7 +66,7 @@ class PayloadTests(unittest.TestCase):
         jvm.pin_runtime(self, jvm.runtime_fixture())
         files = {n: (n.encode(), 0o644) for n in (
             'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE', 'virgil/REVISION',
-            'virgil/lib/util/StringBuilder.v3', 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}
+            'virgil/lib/util/StringBuilder.v3', *RUNTIME, 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}
         files.update({n: (jvm.launcher(n), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         runtime = jvm.runtime_fixture() if runtime is None else runtime
         files.update({'runtime/' + n: v for n, v in runtime.items()})
@@ -110,12 +115,12 @@ class PayloadTests(unittest.TestCase):
         self.check({'extension.vsixmanifest': (self.xml(None), 0o644)}, 'universal', None)
 
     def test_mutated_payload_and_metadata_are_rejected(self):
-        for mutation in ('server', 'worker', 'library', 'notice', 'manifest', 'mode',
-                         'missing', 'extra', 'target', 'marker', 'prerelease', 'universal'):
+        for mutation in ('server', 'worker', 'library', 'runtime', 'notice', 'manifest', 'mode',
+                         'missing', 'missing-runtime', 'extra', 'target', 'marker', 'prerelease', 'universal'):
             with self.subTest(mutation=mutation):
                 archive, entries = self.fixture()
                 changed = {'server': 'virgil-lsp', 'worker': 'virgil-lsp-worker',
-                           'library': 'virgil/lib/util/StringBuilder.v3',
+                           'library': 'virgil/lib/util/StringBuilder.v3', 'runtime': RUNTIME[-1],
                            'notice': 'THIRD_PARTY_NOTICES.md', 'manifest': 'manifest.json'}
                 if mutation in changed:
                     name = 'extension/server/' + changed[mutation]
@@ -124,6 +129,8 @@ class PayloadTests(unittest.TestCase):
                     entries['extension/server/virgil-lsp'] = (b'virgil-lsp', 0o644)
                 elif mutation == 'missing':
                     del entries['extension/server/virgil/LICENSE']
+                elif mutation == 'missing-runtime':
+                    del entries['extension/server/' + RUNTIME[0]]
                 elif mutation == 'extra':
                     entries['extension/server/unexpected'] = (b'', 0o644)
                 elif mutation == 'target':
@@ -136,6 +143,34 @@ class PayloadTests(unittest.TestCase):
                     entries['extension.vsixmanifest'] = (self.xml(None), 0o644)
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     self.check(entries, 'universal' if mutation == 'universal' else 'linux-x64', archive)
+
+    def test_archive_runtime_sources_are_checked(self):
+        # An archive without a pattern's runtime sources, or with an rt/ file
+        # that no pattern selects, is refused even with a VSIX to match.
+        directory = RUNTIME[0].rsplit('/', 1)[0]
+        for change in ('missing', directory + '/DEPS', directory + '/nested/Deep.v3',
+                       'virgil/rt/other-target/Other.v3'):
+            for target in ('linux-x64', 'darwin-arm64-jvm'):
+                with self.subTest(change=change, target=target):
+                    archive, entries = self.fixture() if target == 'linux-x64' else self.jvm_fixture()
+                    with tarfile.open(archive, 'r:gz') as t:
+                        members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
+                    if change == 'missing':
+                        members = [(m, d) for m, d in members if m.name != 'release/' + RUNTIME[0]]
+                        del entries['extension/server/' + RUNTIME[0]]
+                    else:
+                        extra = tarfile.TarInfo('release/' + change)
+                        extra.size, extra.mode = 5, 0o644
+                        members.append((extra, b'extra'))
+                        entries['extension/server/' + change] = (b'extra', 0o644)
+                    with tarfile.open(archive, 'w:gz') as t:
+                        for member, data in members:
+                            t.addfile(member, io.BytesIO(data))
+                    err = io.StringIO()
+                    with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(err):
+                        self.check(entries, target, archive)
+                    self.assertIn('runtime sources' if change == 'missing' else 'unexpected archive file',
+                                  str(raised.exception) + err.getvalue())
 
     def test_jvm_target(self):
         archive, entries = self.jvm_fixture()

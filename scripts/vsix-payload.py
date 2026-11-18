@@ -47,8 +47,27 @@ def jvm_runtime():
     return module
 
 
+def release_library():
+    """scripts/release-library.py, for the runtime patterns that select the
+    bundle's rt/ sources."""
+    module = sys.modules.get("virgil_lsp_release_library")
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "virgil_lsp_release_library", Path(__file__).resolve().with_name("release-library.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["virgil_lsp_release_library"] = module
+    return module
+
+
 def payload(archive, target):
     """Return canonical file names mapped to (bytes, permissions). Refuse links."""
+    library = release_library()
+    patterns = library.runtime_patterns()
+
+    def runtime(name):
+        return name.startswith("virgil/") and library.runtime_match(name[len("virgil/"):], patterns)
+
     files = {}
     root = None
     jvm = TARGETS[target].startswith("jvm-")
@@ -70,11 +89,15 @@ def payload(archive, target):
             if name in files:
                 raise ValueError("duplicate archive file: " + name)
             if (name != "README.md" and name not in REQUIRED and not name.startswith("virgil/lib/")
-                    and not (jvm and (name in JARS or name.startswith("runtime/")))):
+                    and not runtime(name) and not (jvm and (name in JARS or name.startswith("runtime/")))):
                 raise ValueError("unexpected archive file: " + name)
             files[name] = (tar.extractfile(member).read(), member.mode & 0o777)
     if not REQUIRED <= files.keys() or not any(n.startswith("virgil/lib/") for n in files):
         raise ValueError("archive lacks executables, library, metadata, or notices")
+    for pattern in patterns:
+        if not any(n.startswith("virgil/") and library.runtime_match(n[len("virgil/"):], [pattern])
+                   for n in files):
+            raise ValueError("archive lacks the runtime sources for " + pattern)
     manifest = json.loads(files["manifest.json"][0])
     label = manifest["target"]
     if label == "jvm":
