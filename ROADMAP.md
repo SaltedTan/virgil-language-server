@@ -87,7 +87,6 @@ The August plan named v0.2, v0.3, and v0.5 as later releases. What shipped, and 
 ### Non-goals for the first release
 
 - Code generation, optimization, program initialization, or running user programs.
-- A formatter. Formatting is a separate language-design/tooling project.
 - Debug Adapter Protocol work; Virgil already contains a separate debugger-extension prototype.
 - Reimplementing Virgil's parser or type system in TypeScript, Rust, or Lua.
 - Supporting every Aeneas target before the target-independent semantic core works.
@@ -360,7 +359,7 @@ Exit criteria:
 | P2       | semantic tokens       | verified occurrence kinds              | Present, full documents only; [token table and refresh](docs/architecture.md#semantic-tokens) |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
-| Deferred | formatting            | a future canonical formatter           | Language-wide style and comment preservation  |
+| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Planned; keeps line breaks, comments, and alignment |
 
 ## Editor integration plan
 
@@ -498,7 +497,7 @@ Additional policies:
 | Independent implementation duplicates prior effort   | Longer initial protocol work and possible community fragmentation       | Keep v0.1 narrow, explain the greenfield scope clearly, cooperate on shared compatibility problems, and avoid antagonistic project comparisons                                         |
 | One initial maintainer creates a bus factor of one   | Reviews, security response, and releases pause when you are unavailable | Automate builds/releases, document operations, and add trusted maintainers if the contributor community develops                                                                       |
 | Contributor onboarding is too difficult              | Few outside fixes and repeated setup questions                          | Maintain a one-command build/test path, small fixture-based issues, architecture notes, and prompt constructive reviews                                                                |
-| Scope expands toward a complete IDE too early        | Core diagnostics and navigation never become reliable                   | Keep completion, formatting, debugging, and deep incrementality outside v0.1; require milestone evidence before expanding scope                                                        |
+| Scope expands toward a complete IDE too early        | Core diagnostics and navigation never become reliable                   | Keep completion, debugging, and deep incrementality outside v0.1; require milestone evidence before expanding scope                                                        |
 | Account or release credential loss                   | Official project and package channels become inaccessible               | Use hardware-backed 2FA, securely stored recovery codes, signed tags, least-privilege tokens, and reproducible release automation                                                      |
 
 ## Learning path for the compiler front end
