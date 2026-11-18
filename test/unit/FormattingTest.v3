@@ -1,0 +1,530 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("Formatting:enum_cases", enum_cases),
+	T("Formatting:match_cases", match_cases),
+	T("Formatting:case_arrow_line", case_arrow_line),
+	T("Formatting:braces_on_continuations", braces_on_continuations),
+	T("Formatting:fun_in_parentheses", fun_in_parentheses),
+	T("Formatting:braceless_bodies", braceless_bodies),
+	T("Formatting:continuations", continuations),
+	T("Formatting:comments", comments),
+	T("Formatting:block_comments", block_comments),
+	T("Formatting:else_join", else_join),
+	T("Formatting:brace_join", brace_join),
+	T("Formatting:no_join", no_join),
+	T("Formatting:lines", lines),
+	T("Formatting:start_of_file", start_of_file),
+	T("Formatting:end_of_file", end_of_file),
+	T("Formatting:open_block_comment", open_block_comment),
+	T("Formatting:crlf", crlf),
+	T("Formatting:lone_cr", lone_cr),
+	T("Formatting:comment_gap_edits", comment_gap_edits),
+	T("Formatting:syntax_error", syntax_error),
+	T("Formatting:parse_budget", parse_budget),
+	T("Formatting:unindexed_source", unindexed_source),
+	T("Formatting:growth", growth),
+	T("Formatting:comment_lookahead_linear", comment_lookahead_linear),
+	T("Formatting:unjoined_brace", unjoined_brace),
+	T("Formatting:code_after_comment", code_after_comment),
+	T("Formatting:else_line", else_line),
+	T("Formatting:inline_else", inline_else),
+	T("Formatting:fun_body_close", fun_body_close),
+	T("Formatting:case_arrow_anchor", case_arrow_anchor),
+	T("Formatting:foreach_initializer", foreach_initializer),
+	T("Formatting:representation_hints", representation_hints),
+	()
+];
+def PATH = "format.v3";
+def OPTIONS = ["-lang:fun-exprs"];
+def ONE = AnalysisFormatEnd.ONE;
+def MIRROR = AnalysisFormatEnd.MIRROR;
+
+// Formats {input} in both modes, which agree for a text that ends with a
+// line end or inside a block comment.
+def both(t: Tester, input: string, expected: string) -> Array<AnalysisTextEdit> {
+	format(t, MIRROR, input, expected);
+	return format(t, ONE, input, expected);
+}
+def format(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string) -> Array<AnalysisTextEdit> {
+	return formatWithOptions(t, eof, input, expected, OPTIONS);
+}
+// The shared check of every case: applying the edits gives {expected};
+// formatting that again gives no edits; the tokens and comments, less the
+// trailing whitespace after a line comment, are unchanged; the edits are
+// sorted, don't overlap, replace only whitespace with whitespace, and never
+// start or end between a CR and its LF; and the reported size and count
+// match the output.
+def formatWithOptions(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string, options: Array<string>) -> Array<AnalysisTextEdit> {
+	var r = AeneasAdapter.formatting(PATH, input, options, eof);
+	if (r.refusal != null) {
+		t.fail1("refused: %s", r.refusal);
+		return null;
+	}
+	t.assertl(expected.length, r.size());
+	var count = r.editCount(), edits = r.edits();
+	if (edits == null) {
+		t.fail("formatting produced no edit array");
+		return null;
+	}
+	t.asserti(count, edits.length);
+	var output = apply(t, input, edits);
+	if (output == null) return edits;
+	t.assert_string(expected, output);
+	var again = AeneasAdapter.formatting(PATH, output, options, eof);
+	t.assert(again.refusal == null, "the output parses");
+	t.asserti(0, again.editCount());
+	t.assertl(output.length, again.size());
+	var repeated = again.edits();
+	t.assert(repeated != null && repeated.length == 0, "the second pass produces an empty edit array");
+	var a = items(input, options), b = items(output, options);
+	t.asserti(a.length, b.length);
+	for (i < a.length) {
+		if (i < b.length) t.assert_string(a[i], b[i]);
+	}
+	return edits;
+}
+def apply(t: Tester, input: string, edits: Array<AnalysisTextEdit>) -> string {
+	var out = StringBuilder.new(), pos = 0;
+	for (i < edits.length) {
+		var e = edits[i];
+		t.assert(e.begin >= pos && e.begin <= e.end && e.end <= input.length, Strings.format2("edit %d at %d is out of order", i, e.begin));
+		if (i > 0) t.assert(e.begin > edits[i - 1].begin, "edits are sorted");
+		for (j = e.begin; j < e.end; j++) t.assert(whitespace(input[j]), Strings.format1("edit %d replaces more than whitespace", i));
+		for (c in e.text) t.assert(whitespace(c), Strings.format1("edit %d inserts more than whitespace", i));
+		t.assert(!splits(input, e.begin) && !splits(input, e.end), Strings.format1("edit %d splits a CR LF", i));
+		if (e.begin < pos) return null; // reported above
+		out.putk(input, pos, e.begin);
+		out.puts(e.text);
+		pos = e.end;
+	}
+	out.putk(input, pos, input.length);
+	return out.toString();
+}
+def whitespace(c: byte) -> bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+def splits(input: string, at: int) -> bool {
+	return at > 0 && at < input.length && input[at - 1] == '\r' && input[at] == '\n';
+}
+// The parser's tokens and the comments between them, each line comment
+// without its trailing whitespace.
+def items(text: string, options: Array<string>) -> Array<string> {
+	var input = AeneasAdapter.normalizedRange(text, 0, text.length);
+	var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(AeneasAdapter.MAX_ERRORS);
+	AeneasAdapter.setLanguageOptions(options);
+	AnalysisSingleFileParser.parse(PATH, input, errors, syntax, TypeCache.new(), null);
+	AeneasAdapter.resetLanguageOptions();
+	var result = Vector<string>.new(), i = 0, k = 0, max = text.length;
+	while (i < max) {
+		if (k < syntax.count && syntax.begin(k) == i) {
+			result.put(Arrays.range(text, i, syntax.end(k)));
+			i = syntax.end(k);
+			k++;
+		} else if (whitespace(text[i])) {
+			i++;
+		} else if (text[i] == '/' && i + 1 < max && text[i + 1] == '/') {
+			var e = i;
+			while (e < max && text[e] != '\n') e++;
+			var s = e;
+			while (s > i && whitespace(text[s - 1])) s--;
+			result.put(Arrays.range(text, i, s));
+			i = e;
+		} else if (text[i] == '/' && i + 1 < max && text[i + 1] == '*') {
+			var e = i + 2;
+			while (e < max && !(text[e] == '*' && e + 1 < max && text[e + 1] == '/')) e++;
+			e = if(e < max, e + 2, max);
+			result.put(Arrays.range(text, i, e));
+			i = e;
+		} else {
+			result.put(Arrays.range(text, i, i + 1));
+			i++;
+		}
+	}
+	return result.extract();
+}
+
+def enum_cases(t: Tester) {
+	// Commas are optional, so the parse tree says where each case starts.
+	both(t, "enum E {\nA,\n  B,\n\t\tC\n\t}\nenum F(x: int) {\n   A(1)\nB(2), C(3)\n\t\tD(\n\t\t\t4)\n}\n",
+		"enum E {\n\tA,\n\tB,\n\tC\n}\nenum F(x: int) {\n\tA(1)\n\tB(2), C(3)\n\tD(\n\t\t4)\n}\n");
+	// A '}' after the last case is a block line.
+	both(t, "enum E {\n\tA,\n\tB\n\t}\n", "enum E {\n\tA,\n\tB\n}\n");
+}
+def match_cases(t: Tester) {
+	// Patterns on several lines are block lines; a comma in a case's
+	// statement isn't a pattern's.
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t\t1,\n\t\t  2,\n\t3 => return;\n\t\t4 => var a = 1,\n\t\t\tb = 2;\n   _ => ;\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\t1,\n\t\t2,\n\t\t3 => return;\n\t\t4 => var a = 1,\n\t\t\tb = 2;\n\t\t_ => ;\n\t}\n}\n");
+	// The default case after the braces, and match cases one tab in.
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t1 => ;\n\t} else\n\tf(x);\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\t1 => ;\n\t} else\n\t\tf(x);\n}\n");
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t\tx: Pair<\n\t\t\tint,\n\t\t\tint>,\n   A.B(a,\n\t\t\tb),\n -1,\n      y: _,\n  _\n\t\t=> ;\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\tx: Pair<\n\t\t\tint,\n\t\t\tint>,\n\t\tA.B(a,\n\t\t\tb),\n\t\t-1,\n\t\ty: _,\n\t\t_\n\t\t\t=> ;\n\t}\n}\n");
+}
+def case_arrow_line(t: Tester) {
+	// As aeneas/src/wasm/WasmGcLowering.v3:50: a case's "=>" that starts a
+	// line is one tab deeper than the case and anchors its braced body.
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t\t1, // one\n\t\t2 // two\n\t\t\t=> {\n\t\t\t\tx++;\n\t\t\t}\n\t\t3\n\t\t=> x--;\n\t\t4 =>\n\t\tx++;\n\t\t5\n\t\t=> {\n\t\t\tx++;\n\t\t}\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\t1, // one\n\t\t2 // two\n\t\t\t=> {\n\t\t\t\tx++;\n\t\t\t}\n\t\t3\n\t\t\t=> x--;\n\t\t4 =>\n\t\t\tx++;\n\t\t5\n\t\t\t=> {\n\t\t\t\tx++;\n\t\t\t}\n\t}\n}\n");
+	// A simple method body's "=>" that starts a line is a continuation.
+	both(t, "class C {\n\tdef m() -> int\n\t\t\t=> 1;\n    def n() -> int\n\t\t=> 2;\n}\n",
+		"class C {\n\tdef m() -> int\n\t\t\t=> 1;\n\tdef n() -> int\n\t\t=> 2;\n}\n");
+}
+def braces_on_continuations(t: Tester) {
+	// As aeneas/src/arm64/Arm64Backend.v3:53: a constructor's "super(...) {"
+	// on a continuation line opens a body indented from the constructor's line.
+	both(t, "class A(x: int) { }\nclass B extends A {\n\tnew(x: int)\n\t\tsuper(x) {\n\t\t\tvar y = x;\n\t\t}\n}\n",
+		"class A(x: int) { }\nclass B extends A {\n\tnew(x: int)\n\t\tsuper(x) {\n\t\tvar y = x;\n\t}\n}\n");
+	both(t, "class C(a: int,\n\tb: int) extends B(a) {\n\t\tdef x = 1;\n}\n",
+		"class C(a: int,\n\tb: int) extends B(a) {\n\tdef x = 1;\n}\n");
+}
+def fun_in_parentheses(t: Tester) {
+	// A '{' inside parentheses indents from its own line.
+	both(t, "def f() {\n\tm(fun () {\n\t\t\tn();\n\t});\n\tm(\n\t\tfun () {\n\t\tn();\n\t});\n\tm(1, fun () {\n\t\tn(); }, 2);\n}\n",
+		"def f() {\n\tm(fun () {\n\t\tn();\n\t});\n\tm(\n\t\tfun () {\n\t\t\tn();\n\t\t});\n\tm(1, fun () {\n\t\tn(); }, 2);\n}\n");
+}
+def braceless_bodies(t: Tester) {
+	both(t, "def f(c: bool) {\n\tif (c)\n\tf(c);\n\telse\n\t\t\tf(c);\n\twhile (c)\n\t\tif (c)\n\t\tf(c);\n\tfor (i < 3)\n\tf(c);\n\tfor (x in [1])\n\tf(c);\n\tfor (i = 0; i < 3; i++)\n\tf(c);\n}\n",
+		"def f(c: bool) {\n\tif (c)\n\t\tf(c);\n\telse\n\t\tf(c);\n\twhile (c)\n\t\tif (c)\n\t\t\tf(c);\n\tfor (i < 3)\n\t\tf(c);\n\tfor (x in [1])\n\t\tf(c);\n\tfor (i = 0; i < 3; i++)\n\t\tf(c);\n}\n");
+	// An "if" expression's ')' at a line's end leaves the next line a continuation.
+	both(t, "def f(c: bool) {\n\tvar y = if(c, 1, 2)\n\t\t\t+ 3;\n\tvar z = g(if(c, 1, 2),\n\t\t1);\n}\n",
+		"def f(c: bool) {\n\tvar y = if(c, 1, 2)\n\t\t\t+ 3;\n\tvar z = g(if(c, 1, 2),\n\t\t1);\n}\n");
+	// Stacked loops (apps/Zoomers/Zoomers.v3:298) indent as nested bodies.
+	both(t, "def f() {\n\tfor (i < 3)\n\tfor (j < 3) {\n\t\tf();\n\t}\n\tf();\n}\n",
+		"def f() {\n\tfor (i < 3)\n\t\tfor (j < 3) {\n\t\t\tf();\n\t\t}\n\tf();\n}\n");
+}
+def continuations(t: Tester) {
+	// Kept, and moved with a reindented first line only when its old
+	// indentation is a prefix.
+	both(t, "def f() {\n    var x = g(1,\n              2);\n    var y = 1 +\n\t2;\n  var z = 3 +\n      4;\n\tvar w = 5 +\n\t\t\t\t6;\n}\n",
+		"def f() {\n\tvar x = g(1,\n\t          2);\n\tvar y = 1 +\n\t2;\n\tvar z = 3 +\n\t    4;\n\tvar w = 5 +\n\t\t\t\t6;\n}\n");
+	both(t, "def f() {\n\t\tvar x = 1 +\n\t\t\t2 +\n\t\t\t\t3;\n}\n", "def f() {\n\tvar x = 1 +\n\t\t2 +\n\t\t\t3;\n}\n");
+	both(t, "class C {\n\tdef f() {\n\t\tvar x = 1 +\n\t\t\t\t2;\n\t}\n}\n", "class C {\n\tdef f() {\n\t\tvar x = 1 +\n\t\t\t\t2;\n\t}\n}\n");
+}
+def comments(t: Tester) {
+	// Column 0 stays; others take the next code line's indentation, or the
+	// block's before a '}'.
+	both(t, "def f() {\n// col0\n\tvar x = 1;\n\t\t// misindented\n\tx++;\n  /* block */\n\tx++;\n    // before close\n}\n  // end\n",
+		"def f() {\n// col0\n\tvar x = 1;\n\t// misindented\n\tx++;\n\t/* block */\n\tx++;\n\t// before close\n}\n// end\n");
+	// Inside brackets, comments follow the list's continuation lines,
+	// including one after the last element.
+	both(t, "  def a = [\n  \t1, // one\n  \t2\n  \t// after last\n  ];\n",
+		"def a = [\n\t1, // one\n\t2\n\t// after last\n];\n");
+	both(t, "def f() {\n\tg(1,\n// col0\n\t\t2);\n}\n", "def f() {\n\tg(1,\n// col0\n\t\t2);\n}\n");
+	// Before a braceless body and before a continuation line.
+	both(t, "def f(c: bool) {\n\tif (c)\n\t// why\n\t\tf(c);\n\tvar x = 1 +\n\t\t\t\t// two\n\t\t2;\n}\n",
+		"def f(c: bool) {\n\tif (c)\n\t\t// why\n\t\tf(c);\n\tvar x = 1 +\n\t\t// two\n\t\t2;\n}\n");
+}
+def block_comments(t: Tester) {
+	// Only the indentation before "/*" changes; the lines inside keep their bytes.
+	both(t, "def f() {\n      /* a  \n   b  \n  */ var x = 1;\n}\n",
+		"def f() {\n\t/* a  \n   b  \n  */ var x = 1;\n}\n");
+	both(t, "/* a */ /* b */  \ndef x = 1; /* c\n */  \n", "/* a */ /* b */\ndef x = 1; /* c\n */\n");
+}
+def else_join(t: Tester) {
+	// A '}' that starts its line joins an "else" on the next.
+	both(t, "def f(c: bool) {\n\tif (c) {\n\t\tf(c);\n\t}  \n\t\telse {\n\t\tf(c);\n\t}\n\tif (c) {\n\t}\n\telse if (c) f(c);\n\telse\n\t\tf(c);\n}\n",
+		"def f(c: bool) {\n\tif (c) {\n\t\tf(c);\n\t} else {\n\t\tf(c);\n\t}\n\tif (c) {\n\t} else if (c) f(c);\n\telse\n\t\tf(c);\n}\n");
+	// After a one-line block, an "else" on the next line stays.
+	both(t, "def f(c: bool) {\n\tif (c) { f(c); }\n\telse { f(c); }\n}\n", "def f(c: bool) {\n\tif (c) { f(c); }\n\telse { f(c); }\n}\n");
+}
+def brace_join(t: Tester) {
+	both(t, "def f(c: bool)\n{\n\tif (c)  \n\t{\n\t\tf(c);\n\t}\n\twhile (c)\n{ f(c); }\n}\n",
+		"def f(c: bool) {\n\tif (c) {\n\t\tf(c);\n\t}\n\twhile (c) { f(c); }\n}\n");
+	// The joined header line anchors the body and the '}'.
+	both(t, "class C {\n\tdef m()\n\t\t{\n\t\t\tm();\n\t\t}\n}\n", "class C {\n\tdef m() {\n\t\tm();\n\t}\n}\n");
+	both(t, "def f() {\n\tm(fun ()\n\t\t{\n\t\t\tm();\n\t\t});\n}\n", "def f() {\n\tm(fun () {\n\t\tm();\n\t});\n}\n");
+	// After ';', '{', or '}', a '{' is a block statement and stays.
+	both(t, "def f() {\n\tf();\n\t{\n\t\tf();\n\t}\n\t{\n\t}\n}\n", "def f() {\n\tf();\n\t{\n\t\tf();\n\t}\n\t{\n\t}\n}\n");
+	both(t, "def f() {\n{\n\tf();\n}\n}\n", "def f() {\n\t{\n\t\tf();\n\t}\n}\n");
+}
+def no_join(t: Tester) {
+	// Never across a blank line or a comment.
+	both(t, "def f()\n\n{\n}\n", "def f()\n\n{\n}\n");
+	both(t, "def f() // c\n{\n}\n", "def f() // c\n{\n}\n");
+	both(t, "def f() /* c */\n{\n}\n", "def f() /* c */\n{\n}\n");
+	both(t, "def f()\n/* c */ {\n}\n", "def f()\n/* c */ {\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c) {\n\t} // c\n\telse {\n\t}\n\tif (c) {\n\t}\n\n\telse {\n\t}\n\tif (c) {\n\t}\n\t// c\n\telse {\n\t}\n}\n",
+		"def f(c: bool) {\n\tif (c) {\n\t} // c\n\telse {\n\t}\n\tif (c) {\n\t}\n\n\telse {\n\t}\n\tif (c) {\n\t}\n\t// c\n\telse {\n\t}\n}\n");
+	// An empty body over two lines stays.
+	both(t, "class C(a: int) {\n}\n", "class C(a: int) {\n}\n");
+}
+def lines(t: Tester) {
+	// Trailing whitespace goes, also after a line comment; whitespace-only
+	// lines are emptied; runs of blank lines stay.
+	both(t, "def x = 1;   \n \t \n\n\n\ndef y = 2;\t// c  \t\n// d \ndef z = 3;\n",
+		"def x = 1;\n\n\n\n\ndef y = 2;\t// c\n// d\ndef z = 3;\n");
+	both(t, "//\t\n", "//\n");
+}
+def start_of_file(t: Tester) {
+	both(t, "  def x = 1;\n", "def x = 1;\n");
+	both(t, "\n  \n\t\ndef x = 1;\n", "\n\n\ndef x = 1;\n");
+	both(t, "\t// c\n  def x = 1;\n", "// c\ndef x = 1;\n");
+	both(t, "", "");
+	both(t, " \n\t\n", "");
+	both(t, "\n", "");
+	format(t, MIRROR, "  ", "");
+	format(t, ONE, "  ", "");
+}
+def end_of_file(t: Tester) {
+	format(t, ONE, "def x = 1;", "def x = 1;\n");
+	format(t, MIRROR, "def x = 1;", "def x = 1;");
+	format(t, ONE, "def x = 1; // c  ", "def x = 1; // c\n");
+	format(t, MIRROR, "def x = 1; // c  ", "def x = 1; // c");
+	// Several line ends, or whitespace after them.
+	both(t, "def x = 1;  \n\n\n", "def x = 1;\n");
+	format(t, ONE, "def f() { }\n ", "def f() { }\n");
+	format(t, MIRROR, "def f() { }\n ", "def f() { }");
+	format(t, ONE, "def f() { }\n\n\t", "def f() { }\n");
+	format(t, MIRROR, "def f() { }\n\n\t", "def f() { }");
+	// An added line end is of the kind of the file's first.
+	format(t, ONE, "def x = 1;\r\ndef y = 2;  ", "def x = 1;\r\ndef y = 2;\r\n");
+	format(t, MIRROR, "def x = 1;\r\ndef y = 2;  ", "def x = 1;\r\ndef y = 2;");
+	format(t, ONE, "/* a\r\n */ def x = 1;\ndef y = 2;", "/* a\r\n */ def x = 1;\ndef y = 2;\r\n");
+	both(t, "def x = 1;\r\n\r\n", "def x = 1;\r\n");
+}
+def open_block_comment(t: Tester) {
+	// A block comment left open runs to the end untouched.
+	both(t, "def x = 1;\n/* note\n\n", "def x = 1;\n/* note\n\n");
+	both(t, "/* note\n\n", "/* note\n\n");
+	both(t, "def x = 1;  \n  /* note  ", "def x = 1;\n/* note  ");
+}
+def crlf(t: Tester) {
+	var edits = both(t, "class C {\r\n    def f() {  \r\n\r\n  \t}\r\n}  \r\n\r\n",
+		"class C {\r\n\tdef f() {\r\n\r\n\t}\r\n}\r\n");
+	both(t, "def f()\r\n{\r\n}\r\n", "def f() {\r\n}\r\n");
+	both(t, "def f(c: bool) {\r\n\tif (c) {\r\n\t}\r\n\telse {\r\n\t}\r\n}\r\n", "def f(c: bool) {\r\n\tif (c) {\r\n\t} else {\r\n\t}\r\n}\r\n");
+	// A CR is never removed as trailing whitespace, also after a line comment.
+	both(t, "def x = 1; // c \r\n\t\r\n// d\t\r\n", "def x = 1; // c\r\n\r\n// d\r\n");
+	// LF and CR LF mixed.
+	both(t, "class C {\n  def x = 1;\r\n  def y = 2;\n}\r\n", "class C {\n\tdef x = 1;\r\n\tdef y = 2;\n}\r\n");
+}
+def lone_cr(t: Tester) {
+	// The folding parse ends the line comment at the CR, and the compiler's
+	// lexer doesn't, so a join based on it would move '{' into the comment.
+	for (input in ["def f() // note\r -> int\n{\n\treturn;\n}\n", "def x = 1;\r", "def x = 1;\r\r\n"]) {
+		for (eof in [ONE, MIRROR]) {
+			var r = AeneasAdapter.formatting(PATH, input, OPTIONS, eof);
+			t.assert(r.refusal != null, "a lone CR is refused");
+			refused(t, r);
+		}
+	}
+}
+def comment_gap_edits(t: Tester) {
+	// One parser gap, "   \n\t\t// note   \n   ", holds two changed runs
+	// around a comment: one edit for each, neither covering the comment.
+	var input = "def f() {   \n\t\t// note   \n   var x = 1;\n}\n";
+	var edits = both(t, input, "def f() {\n\t// note\n\tvar x = 1;\n}\n");
+	t.asserti(2, edits.length);
+	var comment = 15;
+	t.assert(input[comment] == '/', "the comment's offset");
+	t.assert(edits[0].end <= comment && edits[1].begin >= comment + 7, "no edit covers the comment");
+	// "{// note" with a misindented line after it changes only after the comment.
+	edits = both(t, "def f() {// note  \n   var x = 1;\n}\n", "def f() {// note\n\tvar x = 1;\n}\n");
+	t.asserti(1, edits.length);
+}
+def syntax_error(t: Tester) {
+	var input = "def f( {\n  var x = 1;\n}\n";
+	var expected = AeneasAdapter.parseFile(PATH, input, OPTIONS).diagnostics[0];
+	for (eof in [ONE, MIRROR]) {
+		var r = AeneasAdapter.formatting(PATH, input, OPTIONS, eof);
+		t.assert_string(expected.message, r.refusal);
+		t.assert(r.diagnostic != null, "the first diagnostic");
+		if (r.diagnostic != null) {
+			t.asserti(expected.beginLine, r.diagnostic.beginLine);
+			t.asserti(expected.beginColumn, r.diagnostic.beginColumn);
+		}
+		t.assertl(-1, r.size());
+		t.assert(r.edits() == null, "no edits");
+	}
+	// The project's language options decide what parses.
+	t.assert(AeneasAdapter.formatting(PATH, "def f = fun () { };\n", ["-lang:fun-exprs=false"], ONE).refusal != null, "fun needs -lang:fun-exprs");
+	formatWithOptions(t, ONE, "def f = fun () { };\n", "def f = fun () { };\n", []);
+}
+def parse_budget(t: Tester) {
+	var input = "component C {\n def f() {}\n}";
+	AnalysisParseBudget.maxTokens = 10;
+	format(t, ONE, input, "component C {\n\tdef f() {}\n}\n");
+	AnalysisParseBudget.maxTokens = 9;
+	var r = AeneasAdapter.formatting(PATH, input, OPTIONS, ONE);
+	t.assert_string(AnalysisParseBudget.refusal(), r.refusal);
+	refused(t, r);
+	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
+}
+def refused(t: Tester, r: AnalysisFormatting) {
+	t.assert(r.diagnostic == null, "no diagnostic");
+	t.assertl(-1, r.size());
+	t.asserti(0, r.editCount());
+	t.assert(r.edits() == null, "no edits");
+}
+def unindexed_source(t: Tester) {
+	var input = " def f() { }\n ", syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(1);
+	var file = AnalysisSingleFileParser.parse(PATH, input, errors, syntax, TypeCache.new(), null);
+	t.asserti(0, errors.numErrors);
+	var marks = AnalysisFormatMarks.new(file, syntax).collect();
+	for (i in [0, 4, input.length - 1]) {
+		var inconsistent = Arrays.range(input, 0, input.length);
+		inconsistent[i] = 'x';
+		for (eof in [ONE, MIRROR]) {
+			var r = DocumentFormatter.new(inconsistent, syntax, marks.bits, marks.funHeaders, eof).measure();
+			t.assert_string("the parser left source text outside its tokens", r.refusal);
+			refused(t, r);
+		}
+	}
+}
+def growth(t: Tester) {
+	// Indentation can make a small file of nested empty blocks grow past
+	// 1 MiB (ADR-0019 decision 5): the k-th level's '{' and '}' lines gain k
+	// tabs each. The result reports the size before building any edit.
+	var n = 1100, b = StringBuilder.new().puts("def f() {\n");
+	for (i < n) b.puts("{\n");
+	for (i < n) b.puts("}\n");
+	b.puts("}\n");
+	var expected = StringBuilder.new().puts("def f() {\n");
+	for (depth = 1; depth <= n; depth++) {
+		for (j < depth) expected.putc('\t');
+		expected.puts("{\n");
+	}
+	for (depth = n; depth > 0; depth--) {
+		for (j < depth) expected.putc('\t');
+		expected.puts("}\n");
+	}
+	expected.puts("}\n");
+	var input = b.toString(), output = expected.toString();
+	t.assert(output.length > 1024 * 1024 && input.length < 5000, "past 1 MiB from under 5 KB");
+	var edits = both(t, input, output);
+	if (edits != null) t.asserti(2 * n, edits.length);
+}
+def comment_lookahead_linear(t: Tester) {
+	// Every comment line looks ahead to the same code line, whose start
+	// is found once: a pass over many such lines stays linear.
+	var n = 4000, b = StringBuilder.new().puts("def f() {\n\tvar x = 1 +\n");
+	for (i < n) b.puts(" //c\n");
+	b.puts("/*b*/");
+	for (i < n) b.putc(' ');
+	b.puts("2;\n}\n");
+	var input = b.toString();
+	var after = StringBuilder.new().puts("def f() {\n\tvar x = 1 +\n");
+	for (i < n) after.puts("//c\n");
+	after.puts("/*b*/");
+	for (i < n) after.putc(' ');
+	after.puts("2;\n}\n");
+	both(t, input, after.toString());
+	// The same with the code line's own long indentation, which each
+	// comment line before it follows.
+	b = StringBuilder.new().puts("def f() {\n    var x = 1 +\n");
+	for (i < n) b.puts("        //c\n");
+	b.puts("            2;\n}\n");
+	var c = StringBuilder.new().puts("def f() {\n\tvar x = 1 +\n");
+	for (i < n) c.puts("\t        //c\n");
+	c.puts("\t        2;\n}\n");
+	both(t, b.toString(), c.toString());
+}
+def unjoined_brace(t: Tester) {
+	// A body's '{' that a comment or a blank line keeps on its own line
+	// stays at its header's indentation, its body one tab deeper.
+	both(t, "def f(c: bool) {\n\tif (c) // keep\n\t{\n\t\tf(c);\n\t}\n}\n", "def f(c: bool) {\n\tif (c) // keep\n\t{\n\t\tf(c);\n\t}\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c)\n\n\t{\n\t\tf(c);\n\t}\n}\n", "def f(c: bool) {\n\tif (c)\n\n\t{\n\t\tf(c);\n\t}\n}\n");
+	both(t, "class C {\n\tdef m() // c\n\t\t{\n\t\t\tm();\n\t\t}\n}\n", "class C {\n\tdef m() // c\n\t{\n\t\tm();\n\t}\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c) {\n\t} else // c\n\t\t{\n\t\t\tf(c);\n\t\t}\n}\n", "def f(c: bool) {\n\tif (c) {\n\t} else // c\n\t{\n\t\tf(c);\n\t}\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c)\n\t\t// c\n\t\t{\n\t\t}\n}\n", "def f(c: bool) {\n\tif (c)\n\t// c\n\t{\n\t}\n}\n");
+	both(t, "def f() {\n\tm(\n\t\tfun () // keep\n\t\t\t\t{\n\t\t\t\t\tn();\n\t\t\t\t});\n}\n",
+		"def f() {\n\tm(\n\t\tfun () // keep\n\t\t{\n\t\t\tn();\n\t\t});\n}\n");
+	both(t, "def f() {\n\tvar fs = [\n\t\tfun (\n\t\t\tx: int)\n\n\t\t\t\t{\n\t\t\t\t\tn();\n\t\t\t\t}];\n}\n",
+		"def f() {\n\tvar fs = [\n\t\tfun (\n\t\t\tx: int)\n\n\t\t{\n\t\t\tn();\n\t\t}];\n}\n");
+}
+def code_after_comment(t: Tester) {
+	// A line that starts with a comment and then has code is a code line,
+	// also at column 0.
+	both(t, "def f(c: bool) {\n  /* note */ if (c) {\n\t\tf(c);\n\t}\n}\n", "def f(c: bool) {\n\t/* note */ if (c) {\n\t\tf(c);\n\t}\n}\n");
+	both(t, "def f() {\n\tf();\n  /* end */ }\n", "def f() {\n\tf();\n/* end */ }\n");
+	both(t, "def f() {\n/* x */ /* y */ f();\n}\n", "def f() {\n\t/* x */ /* y */ f();\n}\n");
+	both(t, "def f() {\n\t\t// a\n  /* b */ f();\n}\n", "def f() {\n\t// a\n\t/* b */ f();\n}\n");
+	// A block comment over two lines with code after it.
+	both(t, "def f() {\n  /* a\n b */ f();\n}\n", "def f() {\n\t/* a\n b */ f();\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n   f();\n}\n",
+		"def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n\t\tf();\n}\n");
+	both(t, "def f() {\n\tvar x = 1 +\n   // before\n\t/* a\n  b */ 2;\n}\n",
+		"def f() {\n\tvar x = 1 +\n  // before\n\t/* a\n  b */ 2;\n}\n");
+}
+def else_line(t: Tester) {
+	// An "else" that starts its line aligns with its "if"'s line.
+	both(t, "def f(c: bool) {\n\twhile (c)\n\t\tif (c)\n\t\t\tf(c);\n\t\telse\n\t\t\tf(c);\n}\n",
+		"def f(c: bool) {\n\twhile (c)\n\t\tif (c)\n\t\t\tf(c);\n\t\telse\n\t\t\tf(c);\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c)\n\t\tf(c);\n\t\telse if (c)\n\tf(c);\n   else\n\t\t\tf(c);\n}\n",
+		"def f(c: bool) {\n\tif (c)\n\t\tf(c);\n\telse if (c)\n\t\tf(c);\n\telse\n\t\tf(c);\n}\n");
+	both(t, "def f(c: bool) {\n\tif (c)\n\t\tif (c)\n\t\t\tf(c);\n\t\telse\n\t\t\tf(c);\n\telse\n\t\tf(c);\n}\n",
+		"def f(c: bool) {\n\tif (c)\n\t\tif (c)\n\t\t\tf(c);\n\t\telse\n\t\t\tf(c);\n\telse\n\t\tf(c);\n}\n");
+	// A match's default "else" belongs to no if statement.
+	both(t, "def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} else\n\t\t\tf(x);\n\telse\n\t\tf(x);\n}\n",
+		"def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} else\n\t\t\tf(x);\n\telse\n\t\tf(x);\n}\n");
+	// An if statement inside an if's condition, in a fun body.
+	both(t, "def f(c: bool) {\n\tif (g(fun () {\n\t\tif (c) f(c);\n\t\telse f(c);\n\t}))\n\t\tf(c);\n\telse\n\t\tf(c);\n}\n",
+		"def f(c: bool) {\n\tif (g(fun () {\n\t\tif (c) f(c);\n\t\telse f(c);\n\t}))\n\t\tf(c);\n\telse\n\t\tf(c);\n}\n");
+	both(t, "def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} // keep\n\telse\n\t\tf(x);\n\telse\n\t\tf(x);\n}\n",
+		"def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} // keep\n\t\telse\n\t\t\tf(x);\n\telse\n\t\tf(x);\n}\n");
+	both(t, "def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t}\nelse\n\t\tf(x);\n}\n",
+		"def f(x: int) {\n\tif (x > 0)\n\t\tmatch (x) {\n\t\t\t1 => ;\n\t\t} else\n\t\t\tf(x);\n}\n");
+}
+def inline_else(t: Tester) {
+	var input = "def f() {\n\tif (true)\n\t\tg(); else h(\n\t\t\t\t1);\n}\n";
+	both(t, input, input);
+	input = "def f() {\n\tmatch (0) {\n\t\t_ => g(); } else h(\n\t\t\t\t1);\n}\n";
+	both(t, input, input);
+	both(t, "def f() {\n\tif (true)\n    g(); else return\n      // argument\n      h();\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else return\n\t\t  // argument\n\t\t  h();\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else\nh();\n\tmatch (0) {\n\t\t_ => g(); } else {\nh();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else\n\t\th();\n\tmatch (0) {\n\t\t_ => g(); } else {\n\t\th();\n\t}\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else // keep\n\t\t{\nh();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else // keep\n\t{\n\t\th();\n\t}\n}\n");
+	both(t, "def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\telse h();\n}\n",
+		"def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\t\telse h();\n}\n");
+}
+def fun_body_close(t: Tester) {
+	// The line after a fun expression's '}' continues its statement.
+	both(t, "def f() -> int {\n\treturn fun () -> int {\n\t\treturn 42;\n\t}\n          ();\n}\n",
+		"def f() -> int {\n\treturn fun () -> int {\n\t\treturn 42;\n\t}\n          ();\n}\n");
+	// After a statement's block, the next line starts a statement.
+	both(t, "def f() {\n\tvar g = fun () {\n\t};\n\t\tf();\n\t{\n\t}\n\t\tf();\n}\n", "def f() {\n\tvar g = fun () {\n\t};\n\tf();\n\t{\n\t}\n\tf();\n}\n");
+	both(t, "def f() {\n\tdef g() { }\n    g();\n\tdef h();\n    h();\n}\n",
+		"def f() {\n\tdef g() { }\n\tg();\n\tdef h();\n\th();\n}\n");
+	both(t, "def f() {\n\tvar g = fun ();\n\t\t();\n}\n", "def f() {\n\tvar g = fun ();\n\t\t();\n}\n");
+	both(t, "def f() {\n\tif (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t}))\n   g();\n\twhile (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t})) // keep\n   {\n   g();\n   }\n}\n",
+		"def f() {\n\tif (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t}))\n\t\tg();\n\twhile (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t})) // keep\n\t{\n\t\tg();\n\t}\n}\n");
+	both(t, "def f() {\n    var x = g(\n      fun () {\n\t\treturn;\n      },\n        2);\n}\n",
+		"def f() {\n\tvar x = g(\n\t  fun () {\n\t\treturn;\n\t},\n\t    2);\n}\n");
+}
+def case_arrow_anchor(t: Tester) {
+	// A case's "=>" that starts a line is anchored on the line where the
+	// case's first pattern starts.
+	both(t, "def f(x: int) {\n\tmatch (x) { 1,\n\t\t2\n\t\t=> {\n\t\t\tx++;\n\t\t}\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) { 1,\n\t\t2\n\t\t=> {\n\t\t\tx++;\n\t\t}\n\t}\n}\n");
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t\t1,\n\t\t2,\n\t\t3\n\t\t=> x++;\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\t1,\n\t\t2,\n\t\t3\n\t\t\t=> x++;\n\t}\n}\n");
+}
+def foreach_initializer(t: Tester) {
+	// The parse tree's statements inside a for loop's variable initializer.
+	both(t, "def f() {\n\tfor (x = fun () {\n\t\tif (true)\n   return;\n\t} in [0]) { }\n}\n",
+		"def f() {\n\tfor (x = fun () {\n\t\tif (true)\n\t\t\treturn;\n\t} in [0]) { }\n}\n");
+	both(t, "def f() {\n\tfor (i = fun () {\n\t\tif (true)\n   return;\n\t}; i != null; i = null) { }\n}\n",
+		"def f() {\n\tfor (i = fun () {\n\t\tif (true)\n\t\t\treturn;\n\t}; i != null; i = null) { }\n}\n");
+}
+def representation_hints(t: Tester) {
+	var unindented = "fun () {\n\tif (true)\n\treturn;\n}";
+	var indented = "fun () {\n\tif (true)\n\t\treturn;\n}";
+	for (parts in [
+		("def f() #hint(", ") { }\n"),
+		("def x = 0 #hint(", ");\n"),
+		("class C #hint(", ") { }\n"),
+		("type T { case C #hint(", "); }\n"),
+		("layout L #hint(", ") { = 1; }\n"),
+		("layout L { +0 x: u8 #hint(", "); = 1; }\n"),
+		("def f() { var x #hint(", ") = 1; }\n")
+	]) {
+		both(t, Strings.format3("%s%s%s", parts.0, unindented, parts.1),
+			Strings.format3("%s%s%s", parts.0, indented, parts.1));
+	}
+}

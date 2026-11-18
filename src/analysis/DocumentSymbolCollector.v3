@@ -59,13 +59,17 @@ class SymbolSyntaxIndex {
 		else if (4 * n > spans.length) spans = Arrays.grow(spans, 4 * n);
 	}
 	def find(t: Token) -> int {
+		return findAt(t.beginLine, t.beginColumn);
+	}
+	// The token that starts at the compiler's {line} and {column}, or -1.
+	def findAt(line: int, column: int) -> int {
 		var lo = 0, hi = count;
 		while (lo < hi) {
-			var mid = lo + (hi - lo) / 2, l = line(mid);
-			if (l < t.beginLine || (l == t.beginLine && column(mid) < t.beginColumn)) lo = mid + 1;
+			var mid = lo + (hi - lo) / 2, l = this.line(mid);
+			if (l < line || (l == line && this.column(mid) < column)) lo = mid + 1;
 			else hi = mid;
 		}
-		if (lo < count && line(lo) == t.beginLine && column(lo) == t.beginColumn) return lo;
+		if (lo < count && this.line(lo) == line && this.column(lo) == column) return lo;
 		return -1;
 	}
 	// The token's byte, in {input}, if it is one byte long, or 0.

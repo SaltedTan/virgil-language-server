@@ -609,6 +609,40 @@ component AeneasAdapter {
 		}
 		return DocumentFoldingCollector.new(normalized, syntax, cutoff).collect();
 	}
+	// Formats the current text {input} by ADR-0019's indentation and line
+	// rules (DocumentFormatter), ending it as {eof} says, or refuses: a carriage
+	// return that no line feed follows, which the compiler's lexer and the
+	// folding parse disagree about, is refused before the text is normalized
+	// or parsed; then a text with too many tokens to parse
+	// (AnalysisParseBudget), and one that doesn't parse with the project's
+	// language options {options}, with its first diagnostic. The result knows
+	// the formatted size before it builds any edit.
+	// See docs/architecture.md#formatting.
+	def formatting(path: string, input: Array<byte>, options: Array<string>, eof: AnalysisFormatEnd) -> AnalysisFormatting {
+		for (i < input.length) {
+			if (input[i] == '\r' && (i + 1 == input.length || input[i + 1] != '\n')) {
+				return AnalysisFormatting.new("the document has a carriage return that a line feed doesn't follow", null, null);
+			}
+		}
+		if (!AnalysisParseBudget.admits(input)) return AnalysisFormatting.new(AnalysisParseBudget.refusal(), null, null);
+		var normalized = normalizeLineTerminators(input);
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
+		if (errors.numErrors > 0) {
+			var diagnostics = convertErrors(path, errors);
+			if (diagnostics.length == 0) return AnalysisFormatting.new("the document doesn't parse", null, null);
+			var first = diagnostics[0];
+			if (errors.offsets.length > 0) {
+				first.beginOffset = errors.offsets[0].0;
+				first.endOffset = errors.offsets[0].1;
+			}
+			return AnalysisFormatting.new(Strings.nonnull(first.message), first, null);
+		}
+		var marks = AnalysisFormatMarks.new(file, syntax).collect();
+		return DocumentFormatter.new(input, syntax, marks.bits, marks.funHeaders, eof).measure();
+	}
 	// All positions share one current-text parse and one syntax index. Only
 	// token recovery after the first error uses a conservative lexer. Null if
 	// the text has too many tokens to parse (AnalysisParseBudget).
