@@ -156,7 +156,7 @@ For the last item, use the per-document `PositionMap`; [Coordinates](docs/archit
 
 Virgil is a whole-program compiler: all participating `.v3` files are passed together. Recursively analyzing every `.v3` file in a repository is unsafe because one repository can contain separate programs, tests with duplicate declarations, and multiple targets.
 
-Version 1 of `.virgil-lsp.json` is specified in [Configuration](docs/configuration.md), including examples, implementation status, and remaining work. Its fields were chosen after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)).
+Versions 1 and 2 of `.virgil-lsp.json` are specified in [Configuration](docs/configuration.md), including examples, implementation status, and remaining work. Version 1's fields were chosen after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)).
 
 Preserve these principles:
 

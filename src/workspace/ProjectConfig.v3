@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The project file, .virgil-lsp.json: its model, and the parser that checks
-// it against version 1 of the format. docs/configuration.md specifies the
-// format, and docs/decisions/0005-project-file-format.md records why.
-// Nothing here reads the file system: callers pass the file's bytes.
+// it against versions 1 and 2 of the format. docs/configuration.md specifies
+// the format, and docs/decisions/0005-project-file-format.md and
+// docs/decisions/0018-native-target-analysis.md record why. Nothing here
+// reads the file system: callers pass the file's bytes.
 
 // The rule that a configuration diagnostic reports. {code} is its name,
 // shown to users and sent as the LSP diagnostic code.
@@ -36,11 +37,13 @@ class ProjectPattern(text: string, begin: int, end: int) { }
 // {sources}, {dependencies}, and {exclude} are relative to the directory that
 // contains the project file, and {virgilDependencies} to the Virgil root.
 // {compilerArgs} holds validated language options, in the order given.
+// {target} is null when the project is analyzed without a target, as every
+// version 1 project is, or the supported target that a version 2 file names.
 class ProjectDefinition(name: string, begin: int, end: int,
 		sources: Array<ProjectPattern>, dependencies: Array<ProjectPattern>, exclude: Array<ProjectPattern>,
-		virgilDependencies: Array<ProjectPattern>, compilerArgs: Array<string>) { }
+		virgilDependencies: Array<ProjectPattern>, compilerArgs: Array<string>, target: AnalysisTarget) { }
 
-// A valid version 1 project file. Programs keep the file's order.
+// A valid project file, of version 1 or 2. Programs keep the file's order.
 class ProjectConfig(projects: Array<ProjectDefinition>) { }
 
 // Either a project model or the problems that prevent one: {config} is
@@ -48,7 +51,10 @@ class ProjectConfig(projects: Array<ProjectDefinition>) { }
 class ProjectConfigResult(config: ProjectConfig, diagnostics: Array<ProjectConfigDiagnostic>) { }
 
 component ProjectConfigParser {
+	// The supported format versions. Version 2 is version 1 except that a
+	// project's target may name a supported target (ADR-0018, decision 1).
 	def VERSION = 1;
+	def VERSION_TARGETS = 2;
 	// A project file lists patterns, not files, so it is small. Even a file
 	// naming every Aeneas source explicitly is about 10 KB.
 	def MAX_BYTES = 256 * 1024;
@@ -82,6 +88,8 @@ component ProjectConfigParser {
 class ProjectConfigValidator {
 	def diagnostics = Vector<ProjectConfigDiagnostic>.new();
 	private def names = OrderedStringMap<bool>.new();
+	// The format version of the file being checked, set once it is known.
+	private var formatVersion: int;
 
 	def result(config: ProjectConfig) -> ProjectConfigResult {
 		if (diagnostics.length > 0) config = null;
@@ -116,8 +124,10 @@ class ProjectConfigValidator {
 		}
 		return if(projects != null, ProjectConfig.new(projects));
 	}
-	// Checks the version. Returns false, after reporting why, unless it is
-	// {ProjectConfigParser.VERSION}.
+	// Checks the version. Returns false, after reporting why, unless it is a
+	// supported version. Versions other than {ProjectConfigParser.VERSION}
+	// and {ProjectConfigParser.VERSION_TARGETS} stop all other checks,
+	// because a later version may define other fields.
 	private def version(root: ProjectJson) -> bool {
 		var m = root.member("version");
 		if (m == null) {
@@ -129,11 +139,14 @@ class ProjectConfigValidator {
 			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("version must be a number, not %s", n.kind.article));
 			return false;
 		}
-		if (!n.integer || n.intValue != ProjectConfigParser.VERSION) {
-			errorAt(ProjectConfigCode.UNSUPPORTED_VERSION, n, Strings.format1(
-				"unsupported version; this server reads version %d project files", ProjectConfigParser.VERSION));
+		if (!n.integer || (n.intValue != ProjectConfigParser.VERSION
+			&& n.intValue != ProjectConfigParser.VERSION_TARGETS)) {
+			errorAt(ProjectConfigCode.UNSUPPORTED_VERSION, n, Strings.format2(
+				"unsupported version; this server reads version %d and version %d project files",
+				ProjectConfigParser.VERSION, ProjectConfigParser.VERSION_TARGETS));
 			return false;
 		}
+		formatVersion = n.intValue;
 		return true;
 	}
 	private def projectList(n: ProjectJson) -> Array<ProjectDefinition> {
@@ -153,7 +166,7 @@ class ProjectConfigValidator {
 			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("a project must be an object, not %s", n.kind.article));
 			return null;
 		}
-		var name: string, sources: Array<ProjectPattern>;
+		var name: string, sources: Array<ProjectPattern>, target: AnalysisTarget;
 		var dependencies: Array<ProjectPattern> = [], exclude: Array<ProjectPattern> = [];
 		var virgilDependencies: Array<ProjectPattern> = [], args: Array<string> = [];
 		var seen = OrderedStringMap<bool>.new();
@@ -178,14 +191,14 @@ class ProjectConfigValidator {
 			} else if (Strings.equal(key, "compilerArgs")) {
 				args = compilerArgs(value);
 			} else if (Strings.equal(key, "target")) {
-				target(value);
+				target = targetValue(value);
 			} else {
 				unknown(m, "a project", "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target");
 			}
 		}
 		if (name == null || sources == null || dependencies == null || exclude == null
 			|| virgilDependencies == null || args == null) return null;
-		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args);
+		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args, target);
 	}
 	private def projectName(n: ProjectJson) -> string {
 		if (n.kind != ProjectJsonKind.STRING) {
@@ -260,10 +273,37 @@ class ProjectConfigValidator {
 		}
 		return if(ok, result);
 	}
-	private def target(n: ProjectJson) {
-		if (n.kind == ProjectJsonKind.NULL) return;
-		errorAt(ProjectConfigCode.INVALID_VALUE, n,
-			"target must be null; version 1 analyzes every project without a target");
+	// Returns the target that {n} names, or null when it names none. Version 1
+	// accepts only null, because analysis there has no target (ADR-0005).
+	// Version 2 also accepts a supported target's name (ADR-0018, decision 1).
+	private def targetValue(n: ProjectJson) -> AnalysisTarget {
+		if (n.kind == ProjectJsonKind.NULL) return null;
+		if (formatVersion < ProjectConfigParser.VERSION_TARGETS) {
+			errorAt(ProjectConfigCode.INVALID_VALUE, n,
+				"target must be null; version 1 analyzes every project without a target");
+			return null;
+		}
+		if (n.kind != ProjectJsonKind.STRING) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n,
+				Strings.format1("target must be a string or null, not %s", n.kind.article));
+			return null;
+		}
+		var target = AnalysisTargets.find(n.text);
+		if (target == null) {
+			errorAt(ProjectConfigCode.INVALID_VALUE, n, Strings.format2(
+				"unknown target '%s'; the supported targets are %s", n.text, targetNames()));
+		}
+		return target;
+	}
+	// The supported target names, as a diagnostic lists them.
+	private def targetNames() -> string {
+		var buf = StringBuilder.new();
+		var targets = AnalysisTargets.all;
+		for (i < targets.length) {
+			if (i > 0) buf.puts(", ");
+			buf.puts(targets[i].name);
+		}
+		return buf.toString();
 	}
 	// Reports a member whose key repeats an earlier one in the same object.
 	// Returns true for the first occurrence of a key.
