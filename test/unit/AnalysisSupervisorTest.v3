@@ -27,6 +27,7 @@ def X = [
 	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
 	T("AnalysisSupervisor:over_budget_result_keeps_snapshot", test_over_budget_result_keeps_snapshot),
 	T("AnalysisSupervisor:query_over_budget", test_query_over_budget),
+	T("AnalysisSupervisor:target_scope_query", test_target_scope_query),
 	T("AnalysisSupervisor:skipped_uses_warn", test_skipped_uses_warn),
 	T("AnalysisSupervisor:malformed_result_replaces_worker", test_malformed_result_replaces_worker),
 	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
@@ -36,6 +37,7 @@ def X = [
 def SHAPES = "test/fixtures/analysis/two-file/shapes.v3";
 def MAIN = "test/fixtures/analysis/two-file/main.v3";
 def CRASH = "test/fixtures/analysis/worker-crash/main.v3";
+def NATIVE = "test/fixtures/analysis/x86-64-linux/main.v3";
 def ALL = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
 
 // Records what a supervisor logs.
@@ -439,6 +441,33 @@ def test_query_over_budget(t: Tester) {
 	var full = completed(t, s.analyze(large, [], null, 0));
 	t.assert(full != null && full.diagnostics.length == 1, "within a full analysis's budget");
 	t.asserti(2, s.workersStarted);
+	s.close();
+}
+// A query analysis carries its target to the worker too. In the
+// x86-64-linux fixture, a scope query at "p.load" in main finds the local p, whose
+// Pointer type only the target declares. Without the target the program
+// doesn't verify, and the query finds no p.
+def test_target_scope_query(t: Tester) {
+	var input = System.fileLoad(NATIVE);
+	if (input == null) return t.fail1("cannot read %s; run the unit tests from the repository root", NATIVE);
+	var runtime = AnalysisTargetFiles.runtimeSources(t, AnalysisTargets.X86_64_LINUX);
+	if (runtime == null) return;
+	var sources = Arrays.concat([AnalysisSource.new(NATIVE, input)], runtime);
+	// After "= ", since "sp.load" comes earlier.
+	var query = AnalysisScopeRequest.new(0, indexOf(input, "= p.load") + 2, AnalysisScopeKinds.VALUES, "p");
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	for (target in [AnalysisTargets.X86_64_LINUX, null]) {
+		var snapshot = completed(t, poll(s, s.beginTemporary(sources, [], target, 0, query)));
+		if (snapshot == null) return s.close();
+		var found = false;
+		if (snapshot.scope != null) {
+			for (k in snapshot.scope.declarations) {
+				var d = snapshot.declarations[k];
+				if (Strings.equal("p", d.name) && Strings.equal(NATIVE, d.range.path)) found = true;
+			}
+		}
+		t.assertz(target != null, found);
+	}
 	s.close();
 }
 // Polls {s} until {outcome}, the start of an analysis, completes.
