@@ -30,16 +30,9 @@ component AnalysisWire {
 	// Worker to server, once at startup: protocol version, server version,
 	// source revision, and heap size in bytes.
 	def HELLO: byte = 1;
-	// Server to worker: request ID, flags, the server's time limit in
-	// milliseconds, the count and strings of the program's language options
-	// in the order given (see AeneasAdapter.setLanguageOptions), the target's
-	// name, or an empty string for none (see AnalysisTargets), file count,
-	// then each file's path and contents; and, with WANT_SCOPE, a scope query:
-	// a source's index, a byte offset in it, AnalysisScopeKinds, and a prefix.
-	// The kinds are scope kinds, or MEMBERS alone for a member query, or CALL
-	// alone, with no prefix, for a call query. Without WANT_OCCURRENCES, the
-	// result of a query has an occurrence section with no files, whose
-	// declarations are the answer's, and no diagnostics.
+	// Server to worker. ADR-0004's message table specifies the wire layout.
+	// Without WANT_OCCURRENCES, a query result's occurrence section carries
+	// only the answer's declarations. The result carries no diagnostics.
 	def ANALYZE: byte = 2;
 	// Worker to server: see encodeResult.
 	def RESULT: byte = 3;
