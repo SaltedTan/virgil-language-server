@@ -22,7 +22,7 @@ Only files that the server's parser accepts with the default language options ar
 
 It changes only whitespace around tokens and comments, including at the start and end of a file. Tokens, comments, and string and character literals keep their bytes, except that trailing whitespace after a line comment is removed. `else` after a `}` that starts its line joins that line, and a body's `{` on a line of its own joins the line before. Each join crosses exactly one line end with only whitespace around it. The proposed formatter computes indentation from the lines after the joins. The other exception to keeping line breaks is at EOF, where the last token or comment gets exactly one line end, as in `gofmt`. Whitespace-only files become empty. Every file the prototype formatted kept its token sequence, and formatting it again changed nothing. Its lexer couldn't read `vendor/virgil/test/core/parser/multiline00.v3`, which ends inside a block comment. The parser accepts that file, and the proposed formatter leaves the comment untouched through EOF.
 
-The prototype's EOF rule matches the proposed command-line behavior for admitted files. The proposed LSP request leaves a missing final line end to the editor. Both proposed interfaces accept LF and CR LF, with each retained CR LF pair kept intact. They decline input with a CR that has no following LF because the folding parse ends a line comment there and the compiler's lexer continues it. [ADR-0019](../decisions/0019-formatter.md#decision)
+The prototype's EOF rule informed the proposed command-line behavior. The CLI and LSP end-of-file and line-ending rules are in [ADR-0019](../decisions/0019-formatter.md#decision).
 
 The prototype classifies each line by the tokens before it:
 
@@ -85,13 +85,10 @@ Two examples of kind D at Virgil revision `b86f43f1`.
 `aeneas/src/mach/MachProgram.v3`, lines 409–415
 
 ```diff
- 		if (PrimType.?(t)) return PrimType.!(t).byteSize;
+@@ -410 +410 @@
 -		match(t.typeCon.kind) {
 +		match (t.typeCon.kind) {
- 			COMPONENT => return 0;
- 			CLASS,
- 			ARRAY,
- 			ANYREF => return refSize;
+@@ -415 +415 @@
 -			VARIANT => return if (prog.ir.isEnum(t), V3.getVariantTagType(t).byteSize, refSize);
 +			VARIANT => return if(prog.ir.isEnum(t), V3.getVariantTagType(t).byteSize, refSize);
 ```
@@ -99,11 +96,10 @@ Two examples of kind D at Virgil revision `b86f43f1`.
 `aeneas/src/mach/LinearScanRegAlloc.v3`, lines 513–516
 
 ```diff
- 				else next = USE_FIXED;
+@@ -514,2 +514 @@
 -			}
 -			else if (uv == gen.KILL) next = KILL;
 +			} else if (uv == gen.KILL) next = KILL;
- 			else if (uv == gen.LIVE) next = KILL;
 ```
 
 `vendor/virgil/test` changes much more: 12,456 lines of kind A, 12,044 of kind B, 6,244 of kind C (deep-nesting and generated tests, such as staircases of one-space indents), and 4,634 of kind D, 2,226 of them a missing space after a comma in dense literal tables. It serves to test robustness, not style.
@@ -158,6 +154,6 @@ The corpora exposed the first ten in early versions of the prototype, and a revi
 9. **`}` and `else` on separate lines** are joined only when the `}` starts its line; a one-line block keeps its `else` on the next line.
 10. **Removing the space before a comma** broke that table in `apps/ZiVm/ZiVm.v3:119`, changing 20 lines; a single space can be part of an alignment, so spaces before a comma are left alone.
 11. **Statement starts that tokens alone misread.** In `for (i = 0; if(c, a, b); if(c, i++, i--))`, the `if`s after `;` are expressions, and in a match case `1 => def g = fun() => if(c, a, b);`, the `if` after the second `=>` is one too. The prototype now ignores a `;` inside parentheses and an `=>` that follows another `=>`, `fun`, or `def` in the same case; the implementation reads each `if`'s kind from the parse tree instead.
-12. **Overlapping edits.** A `}` with trailing spaces before an `else` on the next line got both a trim and a join over the same bytes, and a body's `{` was joined across a blank line, deleting it. Joins now apply only across exactly one line end with only whitespace around it. The proposed formatter combines rules into one edit per changed whitespace run, with separate edits on either side of a comment. The LSP reply merges the edits into one only above 10,000 edits.
+12. **Overlapping edits.** A `}` with trailing spaces before an `else` on the next line got both a trim and a join over the same bytes, and a body's `{` was joined across a blank line, deleting it. Joins now apply only across exactly one line end with only whitespace around it. [ADR-0019](../decisions/0019-formatter.md#decision) specifies how the formatter combines edits and when the LSP reply merges them.
 13. **A tab before a layout field's colon**, as in `+0\twasm_func\t: i64;`, was still removed by the colon rule, in 13 lines of Wizard engine's `src/engine/x86-64/X86_64Stack.v3`. Like other alignment, it is kept now, and the counts above no longer include those lines.
 14. **Enum cases without commas.** A case's comma is optional, so `B(2)` on the line after `A(1)` starts a case too.
