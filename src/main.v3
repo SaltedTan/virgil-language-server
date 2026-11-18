@@ -178,7 +178,7 @@ component VirgilLsp {
 				target = AnalysisTargets.find(name);
 				// An empty name is unsupported too, and listed as one.
 				if (target == null) {
-					Log.error2("unsupported target '%s'; supported targets: %s", name, targetNames());
+					Log.error2("unsupported target '%s'; supported targets: %s", name, AnalysisTargets.names());
 					return 2;
 				}
 			} else if (Strings.startsWith(arg, "--repeat=")) {
@@ -244,15 +244,6 @@ component VirgilLsp {
 		}
 		supervisor.close();
 		return status;
-	}
-	// The supported target names, comma separated, for an error message.
-	def targetNames() -> string {
-		var buf = StringBuilder.new();
-		for (t in AnalysisTargets.all) {
-			if (buf.length > 0) buf.puts(", ");
-			buf.puts(t.name);
-		}
-		return buf.toString();
 	}
 	// The completion repair spike (LspRepairSpike). Exits with 0 if a repair
 	// was usable, 1 if none was, and 2 for invalid arguments.

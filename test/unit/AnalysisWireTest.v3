@@ -180,27 +180,35 @@ def test_analyze_frame_size(t: Tester) {
 	}
 }
 
-// A version 18 ANALYZE frame from the wire layout in ADR-0004.
+// Version 18 ANALYZE frames from the wire layout in ADR-0004.
 def test_analyze_target_round_trip(t: Tester) {
-	var expected = "\x39\x00\x00\x00\x02\x05\x01\x20\x01\x13-lang:simple-bodies\x0Cx86-64-linux\x01\x04a.v3\x0Cclass A { }\n";
+	var namedFrame = "\x39\x00\x00\x00\x02\x05\x01\x20\x01\x13-lang:simple-bodies\x0Cx86-64-linux\x01\x04a.v3\x0Cclass A { }\n";
+	var emptyFrame = "\x2D\x00\x00\x00\x02\x05\x01\x20\x01\x13-lang:simple-bodies\x00\x01\x04a.v3\x0Cclass A { }\n";
+	var fixtures: Array<(string, string, AnalysisTarget)> = [
+		("x86-64-linux", namedFrame, AnalysisTargets.X86_64_LINUX),
+		("", emptyFrame, null)
+	];
 	var sources = [AnalysisSource.new("a.v3", "class A { }\n")];
 	var options = ["-lang:simple-bodies"];
 	var flags = AnalysisWire.WANT_OCCURRENCES;
-	var frame = AnalysisWire.encodeAnalyze(5, flags, 32, options, "x86-64-linux", sources, null);
-	t.assertb(expected, Ranges.dup(frame));
-	t.assertl(long.view(expected.length),
-		AnalysisWire.analyzeFrameSize(5, flags, 32, options, "x86-64-linux", sources, null));
-	var r = AnalysisWire.decodeAnalyze(Arrays.range(expected, 4, expected.length));
-	if (r == null) return t.fail("a request with a target did not decode");
-	t.assert(r.target == AnalysisTargets.X86_64_LINUX, "the request selects x86-64-linux");
-	t.asserti(5, r.id);
-	t.asserti(flags, r.flags);
-	t.asserti(32, r.timeoutMs);
-	t.asserti(1, r.options.length);
-	t.assert_string("-lang:simple-bodies", r.options[0]);
-	t.asserti(1, r.sources.length);
-	t.assert_string("a.v3", r.sources[0].path);
-	t.assert_string("class A { }\n", r.sources[0].input);
+	for (fixture in fixtures) {
+		var name = fixture.0, expected = fixture.1;
+		var frame = AnalysisWire.encodeAnalyze(5, flags, 32, options, name, sources, null);
+		t.assertb(expected, Ranges.dup(frame));
+		t.assertl(long.view(expected.length),
+			AnalysisWire.analyzeFrameSize(5, flags, 32, options, name, sources, null));
+		var r = AnalysisWire.decodeAnalyze(Arrays.range(expected, 4, expected.length));
+		if (r == null) return t.fail("request fixture did not decode");
+		t.assert(r.target == fixture.2, "the request selects the expected target");
+		t.asserti(5, r.id);
+		t.asserti(flags, r.flags);
+		t.asserti(32, r.timeoutMs);
+		t.asserti(1, r.options.length);
+		t.assert_string("-lang:simple-bodies", r.options[0]);
+		t.asserti(1, r.sources.length);
+		t.assert_string("a.v3", r.sources[0].path);
+		t.assert_string("class A { }\n", r.sources[0].input);
+	}
 }
 
 def test_invalid_analyze_target(t: Tester) {
