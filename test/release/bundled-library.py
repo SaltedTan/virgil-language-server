@@ -132,7 +132,7 @@ def exercise(server, expected_root=None, options=None, error=None, log_contains=
             session.close()
 
 
-def exercise_target(server, expected_root, options=None):
+def exercise_target(server, expected_root):
     """An x86-64-linux project: its runtime sources come from the root, with
     no diagnostics; hover shows the target's Pointer, and definition goes into
     the root's rt/native/RiRuntime.v3."""
@@ -147,10 +147,7 @@ def exercise_target(server, expected_root, options=None):
         main.write_text(source)
         session = Session(server, project)
         try:
-            params = {'rootUri': project.as_uri(), 'capabilities': {}}
-            if options is not None:
-                params['initializationOptions'] = options
-            session.request('initialize', params)
+            session.request('initialize', {'rootUri': project.as_uri(), 'capabilities': {}})
             session.send('initialized', {}, request=False)
             session.send('textDocument/didOpen', {'textDocument': {'uri': config.as_uri(),
                 'languageId': 'json', 'version': 1, 'text': config.read_text()}}, request=False)

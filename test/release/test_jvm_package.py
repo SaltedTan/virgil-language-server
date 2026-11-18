@@ -28,6 +28,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from test_library import RUNTIME, commit_virgil
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -45,7 +47,6 @@ REAL_PIN = runtime.pin
 PIN = runtime.pin()
 launchers = load('jvm_launchers', 'test/release/test_jvm_launchers.py')
 GENERATED = launchers.generated_launchers()
-REVISION = '7' * 40
 ARM64 = b'\xcf\xfa\xed\xfe' + (0x0100000C).to_bytes(4, 'little') + bytes(12)
 X86_64_MACHO = b'\xcf\xfa\xed\xfe' + (0x01000007).to_bytes(4, 'little') + bytes(12)
 X86_64_ELF = b'\x7fELF' + bytes(14) + (0x3E).to_bytes(2, 'little')
@@ -107,17 +108,15 @@ class JvmArchiveTest(unittest.TestCase):
         (source / 'rt').mkdir()
         (source / 'lib/util/A.v3').write_bytes(b'class A {}\n')
         (source / 'rt/LICENSE').write_bytes(b'Apache License, Version 2.0\n')
-        # One runtime source for each of the supported targets' patterns.
-        for pattern in lib.runtime_patterns():
-            path = source / pattern.replace('*', 'Fixture')
+        for name in RUNTIME:
+            path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f'// {pattern}\n')
+            path.write_text(f'// {name}\n')
+        self.revision = commit_virgil(source)
         self.stage = self.root / 'virgil-lsp-1.2.3-jvm-arm64-darwin'
         self.stage.mkdir()
-        lib.stage(source, self.stage / 'virgil', REVISION)
-        # The fixture runtime sources stand in for the pin's.
-        digests = lib.runtime_digests(source)
-        patcher = mock.patch.object(lib, 'pinned_runtime', lambda revision, *args, **kwargs: dict(digests))
+        lib.stage(source, self.stage / 'virgil', self.revision)
+        patcher = mock.patch.dict('os.environ', VIRGIL=str(source))
         patcher.start()
         self.addCleanup(patcher.stop)
         self.files = {'LICENSE': b'license', 'README.md': b'readme', 'THIRD_PARTY_NOTICES.md': b'notices',
@@ -156,8 +155,8 @@ class JvmArchiveTest(unittest.TestCase):
             for path in [self.stage / 'runtime', *(self.stage / 'runtime').rglob('*')]:
                 if path.is_dir():
                     path.chmod(0o755)
-        manifest = {'target': target, 'virgilRevision': REVISION,
-                    'library': lib.metadata(self.stage / 'virgil', REVISION),
+        manifest = {'target': target, 'virgilRevision': self.revision,
+                    'library': lib.metadata(self.stage / 'virgil', self.revision),
                     'sha256': {n: lib.sha(self.files[n]) for n in
                                ('virgil-lsp', 'virgil-lsp-worker', 'virgil-lsp.jar', 'virgil-lsp-worker.jar')
                                if n in self.files}}
@@ -175,7 +174,7 @@ class JvmArchiveTest(unittest.TestCase):
     def check(self, **options):
         archive = self.pack(**options)
         with contextlib.redirect_stdout(io.StringIO()):
-            lib.check_archive(archive, REVISION)
+            lib.check_archive(archive, self.revision)
 
     def rejects(self, pattern, **options):
         with self.assertRaisesRegex((ValueError, KeyError), pattern):
@@ -191,7 +190,7 @@ class JvmArchiveTest(unittest.TestCase):
         with tarfile.open(archive) as tar:
             names = {m.name.split('/', 2)[2] for m in tar.getmembers() if m.isfile()
                      and m.name.startswith(self.stage.name + '/virgil/rt/')}
-        self.assertEqual({p.replace('*', 'Fixture') for p in lib.runtime_patterns()}, names)
+        self.assertEqual(set(RUNTIME), names)
         shutil.rmtree(self.stage / 'virgil/rt')
         self.rejects('differ from the pinned Virgil runtime: missing ')
 
@@ -262,7 +261,7 @@ class JvmArchiveTest(unittest.TestCase):
         (self.stage / 'manifest.json').write_text(json.dumps(manifest))
         lib.archive(self.stage, archive, 1234)
         with self.assertRaisesRegex(ValueError, 'virgil-lsp-worker.jar checksum'):
-            lib.check_archive(archive, REVISION)
+            lib.check_archive(archive, self.revision)
 
     def test_missing_legal_file(self):
         for name in ('legal/java.base/LICENSE', 'legal/java.base/ASSEMBLY_EXCEPTION',
@@ -312,14 +311,14 @@ class JvmArchiveTest(unittest.TestCase):
         pin_runtime(self, changed)
         lib.archive(self.stage, archive, 1234)
         with self.assertRaisesRegex(ValueError, 'runtime files/checksums'):
-            lib.check_archive(archive, REVISION)
+            lib.check_archive(archive, self.revision)
 
     def test_changed_runtime_file_against_the_pin(self):
         archive = self.pack()
         (self.stage / 'runtime/lib/modules').write_bytes(b'changed')
         lib.archive(self.stage, archive, 1234)
         with self.assertRaisesRegex(ValueError, 'differs from the pinned runtime: lib/modules$'):
-            lib.check_archive(archive, REVISION)
+            lib.check_archive(archive, self.revision)
 
     # The review's cases (#464): each mutation is packed with a manifest
     # regenerated from the mutated runtime, as a packaging regression would

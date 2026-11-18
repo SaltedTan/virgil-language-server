@@ -3,24 +3,35 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bundle integrity, entry types, and archive reproducibility without compiling."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('release_library', ROOT / 'scripts/release-library.py')
 lib = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lib)
-PATTERNS = lib.runtime_patterns()
 # One fixture runtime source for each of the supported targets' patterns, and
 # a second one for the last pattern, so that a pattern still selects a file
 # when one of its files is missing.
-RUNTIME = [p.replace('*', 'Fixture') for p in PATTERNS] + [PATTERNS[-1].replace('*', 'Second')]
+RUNTIME = ('rt/x86-64-linux/Fixture.v3', 'rt/native/Fixture.v3', 'rt/gc/Fixture.v3', 'rt/gc/Second.v3')
+
+
+def commit_virgil(virgil):
+    env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+    for command in (['init', '-q'], ['-c', 'core.autocrlf=false', 'add', '-A'],
+                    ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
+                     'commit', '-q', '-m', 'fixture']):
+        subprocess.run(['git', '-C', str(virgil), *command], check=True, env=env)
+    return subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True, env=env).strip()
 
 
 class LibraryTest(unittest.TestCase):
@@ -44,13 +55,12 @@ class LibraryTest(unittest.TestCase):
             (directory / name).write_text(name)
         (self.source / 'rt/other-target').mkdir()
         (self.source / 'rt/other-target/Other.v3').write_text('component Other {}\n')
-        self.revision = '7' * 40
+        self.revision = commit_virgil(self.source)
         self.stage = self.root / 'virgil-lsp-test'
         self.stage.mkdir()
+        self.stage.chmod(0o755)
         self.bundle = self.stage / 'virgil'
         lib.stage(self.source, self.bundle, self.revision)
-        # The runtime that the archive check expects, in place of the pin's.
-        self.runtime = lib.runtime_digests(self.source, PATTERNS)
         for name in ('virgil-lsp', 'virgil-lsp-worker', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md'):
             (self.stage / name).write_text(name)
         self.manifest = {'virgilRevision': self.revision,
@@ -65,8 +75,8 @@ class LibraryTest(unittest.TestCase):
 
     def check(self):
         self.pack()
-        with contextlib.redirect_stdout(io.StringIO()):
-            lib.check_archive(self.archive, self.revision, self.runtime)
+        with mock.patch.dict(os.environ, VIRGIL=str(self.source)), contextlib.redirect_stdout(io.StringIO()):
+            lib.check_archive(self.archive, self.revision)
 
     def test_unchanged_sources_and_license(self):
         self.check()
@@ -83,7 +93,6 @@ class LibraryTest(unittest.TestCase):
         staged = sorted(p.relative_to(self.bundle).as_posix() for p in (self.bundle / 'rt').rglob('*')
                         if p.is_file())
         self.assertEqual(sorted(RUNTIME), staged)
-        self.assertEqual(sorted(RUNTIME), sorted(self.runtime))
         for path in RUNTIME:
             self.assertEqual((self.source / path).read_bytes(), (self.bundle / path).read_bytes())
             self.assertEqual((self.bundle / path).stat().st_mode & 0o777, 0o644)
@@ -91,37 +100,51 @@ class LibraryTest(unittest.TestCase):
                              self.manifest['library']['files'][path])
 
     def test_pinned_runtime_sources(self):
-        # At the pin, the bundle holds the runtime files that the supported
-        # targets select, found here with Path.glob, and no other rt/ file.
-        virgil = ROOT / 'vendor/virgil'
-        bundle = self.root / 'pinned'
-        lib.stage(virgil, bundle, self.revision)
-        expected = sorted({p.relative_to(virgil).as_posix() for pattern in PATTERNS
-                           for p in virgil.glob(pattern) if p.is_file()})
-        staged = sorted(p.relative_to(bundle).as_posix() for p in (bundle / 'rt').rglob('*') if p.is_file())
-        self.assertEqual(expected, staged)
-        files = lib.metadata(bundle, self.revision)['files']
-        for path in staged:
-            self.assertEqual(lib.sha((virgil / path).read_bytes()), files[path], path)
-        self.assertEqual(['LICENSE', 'REVISION'],
-                         sorted(p for p in files if not p.startswith(('lib/', 'rt/'))))
-        if PATTERNS == ['rt/x86-64-linux/*.v3', 'rt/native/*.v3', 'rt/gc/*.v3']:
-            # x86-64-linux alone: rt/x86-64-linux, rt/native, and rt/gc.
-            self.assertEqual(12, len(staged), staged)
-
-    def test_pinned_runtime(self):
-        # The pin's runtime, read from the submodule's objects, is the
-        # runtime staged from its working tree at the pin.
-        virgil = ROOT / 'vendor/virgil'
-        pin = lib.pinned_revision()
-        head = subprocess.run(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], capture_output=True, text=True)
-        if head.stdout.strip() != pin:
-            self.skipTest(f'vendor/virgil is not at the pinned {pin}')
-        pinned = lib.pinned_runtime(pin)
-        self.assertEqual(lib.runtime_digests(virgil), pinned)
+        virgil = ROOT / (os.environ.get('VIRGIL') or 'vendor/virgil')
+        pin = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:vendor/virgil'], text=True).strip()
+        self.assertEqual(subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True).strip(), pin)
+        compiler = self.root / 'capture-compiler'
+        compiler.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        compiler.chmod(0o755)
+        args = subprocess.check_output(['bash', str(virgil / 'bin/v3c-x86-64-linux')], cwd=self.root,
+                                       env={**os.environ, 'V3C': './capture-compiler'}, text=True).splitlines()
+        selected, = [arg.removeprefix('-rt.files=') for arg in args if arg.startswith('-rt.files=')]
+        paths = [Path(path).resolve().relative_to(virgil.resolve()).as_posix() for path in selected.split()]
+        self.assertEqual(len(set(paths)), 12, paths)
+        expected = {path: subprocess.check_output(['git', '-C', str(virgil), 'show', f'{pin}:{path}'])
+                    for path in paths}
+        self.assertEqual(sum(map(len, expected.values())), 80837)
         bundle = self.root / 'pinned'
         lib.stage(virgil, bundle, pin)
-        lib.compare_runtime(lib.runtime_digests(bundle), pinned, 'bundle')
+        files = lib.metadata(bundle, pin)['files']
+        self.assertEqual({path: hashlib.sha256(data).hexdigest() for path, data in expected.items()},
+                         {path: digest for path, digest in files.items() if path.startswith('rt/')})
+        self.assertEqual(['LICENSE', 'REVISION'],
+                         sorted(p for p in files if not p.startswith(('lib/', 'rt/'))))
+        self.bundle.rename(self.root / 'fixture')
+        bundle.rename(self.bundle)
+        self.manifest.update(virgilRevision=pin, library=lib.metadata(self.bundle, pin))
+        self.pack()
+        command = [str(ROOT / 'scripts/check-release.sh'), '--archive', str(self.archive)]
+        env = {**os.environ, 'VIRGIL': os.path.relpath(virgil, ROOT)}
+        subprocess.run(command, check=True, cwd=self.root, env=env, capture_output=True, text=True)
+        (self.bundle / 'rt/native/RiRuntime.v3').write_bytes(b'changed')
+        self.manifest['library'] = lib.metadata(self.bundle, pin)
+        self.pack()
+        result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('pinned Virgil runtime: changed rt/native/RiRuntime.v3', result.stderr)
+
+    def test_stage_uses_commit_bytes_with_crlf_checkout(self):
+        path = RUNTIME[0]
+        original = (self.source / path).read_bytes()
+        command = ['git', '-C', str(self.source), '-c', 'core.autocrlf=true']
+        (self.source / path).unlink()
+        subprocess.run([*command, 'checkout-index', '--', path], check=True)
+        self.assertEqual((self.source / path).read_bytes(), original.replace(b'\n', b'\r\n'))
+        bundle = self.root / 'second'
+        lib.stage(self.source, bundle, self.revision)
+        self.assertEqual((bundle / path).read_bytes(), original)
 
     def git_virgil(self, files, links=()):
         """A Virgil repository with one commit of files and symlinks; its SHA."""
@@ -132,13 +155,7 @@ class LibraryTest(unittest.TestCase):
         for name, target in links:
             (virgil / name).parent.mkdir(parents=True, exist_ok=True)
             (virgil / name).symlink_to(target)
-        env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
-        for command in (['init', '-q'], ['add', '-A'],
-                        ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
-                         'commit', '-q', '-m', 'fixture']):
-            subprocess.run(['git', '-C', str(virgil), *command], check=True, env=env)
-        return virgil, subprocess.run(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], check=True,
-                                      capture_output=True, text=True, env=env).stdout.strip()
+        return virgil, commit_virgil(virgil)
 
     def test_pinned_runtime_from_objects(self):
         # Only the selected regular files of the commit, without hidden files,
@@ -148,15 +165,15 @@ class LibraryTest(unittest.TestCase):
         virgil, revision = self.git_virgil(files)
         (virgil / 'rt/a/A.v3').write_text('changed in the working tree')
         (virgil / 'rt/b/D.v3').unlink()
-        self.assertEqual({'rt/a/A.v3': lib.sha(b'a'), 'rt/a/B.v3': lib.sha(b'b'), 'rt/b/D.v3': lib.sha(b'd')},
-                         lib.pinned_runtime(revision, ['rt/a/*.v3', 'rt/b/*.v3'], virgil))
+        self.assertEqual({'rt/a/A.v3': b'a', 'rt/a/B.v3': b'b', 'rt/b/D.v3': b'd'},
+                         lib.runtime_blobs(virgil, revision, ['rt/a/*.v3', 'rt/b/*.v3']))
         with self.assertRaisesRegex(ValueError, 'selects no files'):
-            lib.pinned_runtime(revision, ['rt/a/*.v3', 'rt/c/*.v3'], virgil)
+            lib.runtime_blobs(virgil, revision, ['rt/a/*.v3', 'rt/c/*.v3'])
 
     def test_pinned_runtime_symlink(self):
         virgil, revision = self.git_virgil({'rt/a/A.v3': 'a'}, [('rt/a/Link.v3', 'A.v3')])
         with self.assertRaisesRegex(ValueError, 'not a regular file: rt/a/Link.v3'):
-            lib.pinned_runtime(revision, ['rt/a/*.v3'], virgil)
+            lib.runtime_blobs(virgil, revision, ['rt/a/*.v3'])
 
     def test_pinned_runtime_unavailable(self):
         # A missing commit, a directory that isn't a repository, and an
@@ -167,7 +184,7 @@ class LibraryTest(unittest.TestCase):
                                     (ROOT / 'test/release', lib.pinned_revision())):
             with self.subTest(directory=directory):
                 with self.assertRaisesRegex(ValueError, 'initialize the vendor/virgil submodule'):
-                    lib.pinned_runtime(revision, ['rt/a/*.v3'], directory)
+                    lib.runtime_blobs(directory, revision, ['rt/a/*.v3'])
 
     def test_runtime_patterns(self):
         # Only the targets in AnalysisTargets.all count, each pattern once.
@@ -178,7 +195,8 @@ class LibraryTest(unittest.TestCase):
                          '\tdef C = AnalysisTarget.new("c", "c", ["rt/c/*.v3"], "1m");\n'
                          '\tdef all: Array<AnalysisTarget> = [A, B];\n}\n')
         self.assertEqual(['rt/a/*.v3', 'rt/native/*.v3', 'rt/b/*.v3'], lib.runtime_patterns(table))
-        for bad in ('lib/util/*.v3', 'rt/*/X.v3', 'rt/../lib/*.v3', 'rt/X.v3'):
+        for bad in ('lib/util/*.v3', 'rt/*/*.v3', 'rt/../lib/*.v3', 'rt/X.v3',
+                    'rt/a/*', 'rt/a/*.c', 'rt/a/X.v3', 'rt/a/nested/*.v3'):
             with self.subTest(pattern=bad):
                 table.write_text(f'def A = AnalysisTarget.new("a", "a", ["{bad}"], "2m");\n'
                                  'def all: Array<AnalysisTarget> = [A];\n')
@@ -276,20 +294,18 @@ class LibraryTest(unittest.TestCase):
         self.runtime_rejected(remove)
 
     def test_extra_runtime_source(self):
-        # A file that the pattern would select, but that isn't the pin's.
-        self.runtime_rejected(lambda: (self.bundle / RUNTIME[0]).with_name('Extra.v3').write_text('extra'))
-
-    def test_unselected_runtime_file(self):
-        # No rt/ file that the runtime patterns don't select, hidden ones
-        # included, as the wrapper's shell glob skips them.
+        # Refuse extra paths both within and outside the runtime patterns.
         directory = RUNTIME[0].rsplit('/', 1)[0]
-        for path in (directory + '/DEPS', directory + '/nested/Deep.v3', directory + '/.Hidden.v3',
-                     'rt/other-target/Other.v3'):
+        for path in (directory + '/Extra.v3', directory + '/DEPS', directory + '/nested/Deep.v3',
+                     directory + '/.Hidden.v3', 'rt/other-target/Other.v3'):
             with self.subTest(path=path):
                 self.setUp()
                 def add():
-                    (self.bundle / path).parent.mkdir(parents=True, exist_ok=True)
-                    (self.bundle / path).write_text('extra')
+                    extra = self.bundle / path
+                    extra.parent.mkdir(parents=True, exist_ok=True)
+                    extra.parent.chmod(0o755)
+                    extra.write_text('extra')
+                    extra.chmod(0o644)
                 self.runtime_rejected(add)
 
     def test_runtime_source_symlink(self):
@@ -372,6 +388,21 @@ class LibraryTest(unittest.TestCase):
         (self.bundle / RUNTIME[0]).symlink_to('/etc/passwd')
         with self.assertRaisesRegex(ValueError, 'unexpected archive entry'):
             self.check()
+
+    def test_archive_runtime_modes(self):
+        self.pack()
+        original = self.archive.read_bytes()
+        for path, expected_mode in ((f'virgil/{RUNTIME[0]}', '644'), ('virgil/rt/native', '755'),
+                                    ('virgil/rt', '755'), ('virgil', '755'), ('', '755')):
+            with self.subTest(path=path), tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as before:
+                with tarfile.open(self.archive, 'w:gz') as after:
+                    for member in before:
+                        if member.name == f'{self.stage.name}/{path}'.rstrip('/'):
+                            member.mode = 0
+                        after.addfile(member, before.extractfile(member) if member.isfile() else None)
+                with mock.patch.dict(os.environ, VIRGIL=str(self.source)):
+                    with self.assertRaisesRegex(ValueError, f'has mode 0, expected {expected_mode}'):
+                        lib.check_archive(self.archive, self.revision)
 
     def test_archive_extra_directory(self):
         (self.bundle / 'bin').mkdir()

@@ -87,13 +87,18 @@ def payload(archive, target):
             if (name != "README.md" and name not in REQUIRED and not name.startswith("virgil/lib/")
                     and not name.startswith("virgil/rt/") and not (jvm and (name in JARS or name.startswith("runtime/")))):
                 raise ValueError("unexpected archive file: " + name)
-            files[name] = (tar.extractfile(member).read(), member.mode & 0o777)
+            mode = member.mode & 0o777
+            if name.startswith("virgil/rt/"):
+                library.check_runtime_mode(name, mode)
+            files[name] = (tar.extractfile(member).read(), mode)
     if not REQUIRED <= files.keys() or not any(n.startswith("virgil/lib/") for n in files):
         raise ValueError("archive lacks executables, library, metadata, or notices")
+    manifest = json.loads(files["manifest.json"][0])
+    revision = library.pinned_revision()
+    library.check_bundle_revision(manifest, files["virgil/REVISION"][0], revision)
     runtime = {n[len("virgil/"):]: hashlib.sha256(data).hexdigest()
                for n, (data, _) in files.items() if n.startswith("virgil/rt/")}
-    library.compare_runtime(runtime, library.pinned_runtime(library.pinned_revision()), "archive")
-    manifest = json.loads(files["manifest.json"][0])
+    library.compare_runtime(runtime, library.pinned_runtime(revision), "archive")
     label = manifest["target"]
     if label == "jvm":
         label += "-" + str(manifest.get("platform"))
