@@ -82,11 +82,13 @@ def strip_comments(text, source):
     return ''.join(result)
 
 
-STRING = r'"([^"\\\n]*)"'
+STRING = r'"[^"\\\n]*"'
+STRING_ITEMS = rf'{STRING}(?:\s*,\s*{STRING})*'
+BUILTIN_NAMES = rf'\[\s*(?:{STRING_ITEMS})?\s*\]'
 # The two declaration shapes of the table, outside comments.
-TARGET_DEF = re.compile(r'\bdef\s+([A-Z][A-Z0-9_]*)\s*=\s*AnalysisTarget\.new\(\s*' + STRING + r'\s*,\s*'
-                        + STRING + r'\s*,\s*\[\s*("[^"\\\n]*"(?:\s*,\s*"[^"\\\n]*")*)\s*\]\s*,\s*'
-                        + STRING + r'\s*\)\s*;')
+TARGET_DEF = re.compile(
+    rf'\bdef\s+([A-Z][A-Z0-9_]*)\s*=\s*AnalysisTarget\.new\(\s*{STRING}\s*,\s*{STRING}\s*,\s*'
+    rf'\[\s*({STRING_ITEMS})\s*\]\s*,\s*{STRING}\s*,\s*{BUILTIN_NAMES}\s*,\s*{BUILTIN_NAMES}\s*\)\s*;')
 ALL_DEF = re.compile(r'\bdef\s+all\s*:\s*Array<AnalysisTarget>\s*=\s*\[\s*([A-Z][A-Z0-9_]*(?:\s*,\s*[A-Z][A-Z0-9_]*)*)'
                      r'\s*\]\s*;')
 
@@ -100,10 +102,10 @@ def runtime_patterns(source=TARGETS_SOURCE):
     for match in TARGET_DEF.finditer(text):
         if match.group(1) in entries:
             raise ValueError(f'target {match.group(1)} is declared twice in {source}')
-        entries[match.group(1)] = re.findall(STRING, match.group(4))
+        entries[match.group(1)] = [pattern[1:-1] for pattern in re.findall(STRING, match.group(2))]
     if len(entries) != len(re.findall(r'\bAnalysisTarget\.new\b', text)):
         raise ValueError(f'an AnalysisTarget.new entry in {source} is not `def NAME = AnalysisTarget.new('
-                         f'"name", "aeneas", ["pattern", ...], "stack");`')
+                         f'"name", "aeneas", ["pattern", ...], "stack", ["type", ...], ["component", ...]);`')
     supported = ALL_DEF.findall(text)
     if len(supported) != 1 or len(re.findall(r'\bdef\s+all\b', text)) != 1:
         raise ValueError(f'{source} needs exactly one `def all: Array<AnalysisTarget> = [NAME, ...];`')
@@ -192,9 +194,12 @@ def runtime_blobs(virgil, revision, patterns):
     result = {}
     for path, oid in objects.items():
         header, out = out.split(b'\n', 1)
-        size = int(header.split()[2])
-        if header.split()[0].decode() != oid:
+        fields = header.split()
+        if fields[0].decode() != oid:
             raise ValueError(f'unexpected git cat-file output for {path}')
+        if fields[1:] == [b'missing']:
+            raise ValueError(f'missing pinned runtime blob for {path} in Virgil {revision}')
+        size = int(fields[2])
         result[path] = out[:size]
         out = out[size + 1:]
     return result

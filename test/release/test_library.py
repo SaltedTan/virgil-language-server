@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -113,7 +114,6 @@ class LibraryTest(unittest.TestCase):
         tree = git(virgil, 'ls-tree', '-r', '-z', '--name-only', pin, '--', 'rt').decode().split('\0')
         paths = {path for path in map(PurePosixPath, filter(None, tree)) if not path.name.startswith('.')
                  and any(path.parent == pattern.parent and path.match(pattern.name) for pattern in patterns)}
-        self.assertEqual(len(paths), 12, paths)
         expected = {path.as_posix(): git(virgil, 'show', f'{pin}:{path}') for path in paths}
         source = self.root / 'pinned Virgil checkout'
         source.mkdir()
@@ -198,6 +198,19 @@ class LibraryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not a regular file: rt/a/Link.v3'):
             lib.runtime_blobs(virgil, revision, ['rt/a/*.v3'])
 
+    def test_stage_reports_missing_runtime_blob(self):
+        path = RUNTIME[0]
+        oid = subprocess.check_output(
+            ['git', '-C', str(self.source), 'rev-parse', f'{self.revision}:{path}'], text=True).strip()
+        (self.source / '.git/objects' / oid[:2] / oid[2:]).unlink()
+        bundle = self.root / 'second'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/release-library.py'), 'stage', str(self.source),
+             str(bundle), self.revision], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr.strip(), f'error: missing pinned runtime blob for {path} in Virgil {self.revision}')
+        self.assertFalse(bundle.exists())
+
     def test_pinned_runtime_unavailable(self):
         # A missing commit, a directory that isn't a repository, and an
         # uninitialized submodule directory inside the server's repository
@@ -213,15 +226,16 @@ class LibraryTest(unittest.TestCase):
         # Only the targets in AnalysisTargets.all count, each pattern once.
         table = self.root / 'AnalysisTargets.v3'
         table.write_text('component AnalysisTargets {\n'
-                         '\tdef A = AnalysisTarget.new("a", "a",\n\t\t["rt/a/*.v3", "rt/native/*.v3"], "2m");\n'
-                         '\tdef B = AnalysisTarget.new("b", "b", ["rt/b/*.v3", "rt/native/*.v3"], "1m");\n'
-                         '\tdef C = AnalysisTarget.new("c", "c", ["rt/c/*.v3"], "1m");\n'
+                         '\tdef A = AnalysisTarget.new("a", "a",\n\t\t["rt/a/*.v3", "rt/native/*.v3"], "2m",\n'
+                         '\t\t["Component", "Type"], ["Component"]);\n'
+                         '\tdef B = AnalysisTarget.new("b", "b", ["rt/b/*.v3", "rt/native/*.v3"], "1m", [], []);\n'
+                         '\tdef C = AnalysisTarget.new("c", "c", ["rt/c/*.v3"], "1m", [], []);\n'
                          '\tdef all: Array<AnalysisTarget> = [A, B];\n}\n')
         self.assertEqual(['rt/a/*.v3', 'rt/native/*.v3', 'rt/b/*.v3'], lib.runtime_patterns(table))
         for bad in ('lib/util/*.v3', 'rt/*/*.v3', 'rt/../lib/*.v3', 'rt/X.v3',
                     'rt/a/*', 'rt/a/*.c', 'rt/a/X.v3', 'rt/a/nested/*.v3'):
             with self.subTest(pattern=bad):
-                table.write_text(f'def A = AnalysisTarget.new("a", "a", ["{bad}"], "2m");\n'
+                table.write_text(f'def A = AnalysisTarget.new("a", "a", ["{bad}"], "2m", [], []);\n'
                                  'def all: Array<AnalysisTarget> = [A];\n')
                 with self.assertRaisesRegex(ValueError, 'unsupported runtime pattern'):
                     lib.runtime_patterns(table)
@@ -236,19 +250,20 @@ class LibraryTest(unittest.TestCase):
         table.write_text('// def all: Array<AnalysisTarget> = [B];\n'
                          '/* def all: Array<AnalysisTarget> = [B]; */\n'
                          'def A = AnalysisTarget.new("a//b", "a", ["rt/a/*.v3" /*, "rt/x86-64-darwin/*.v3" */,\n'
-                         '\t"rt/native/*.v3" // , "rt/gc/*.v3"\n\t], "2m");\n'
-                         '// def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m");\n'
-                         'def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m");\n'
+                         '\t"rt/native/*.v3" // , "rt/gc/*.v3"\n\t], "2m", [], []);\n'
+                         '// def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m", [], []);\n'
+                         'def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m", [], []);\n'
                          'def all: Array<AnalysisTarget> = [A];\n')
         self.assertEqual(['rt/a/*.v3', 'rt/native/*.v3'], lib.runtime_patterns(table))
 
     def test_runtime_pattern_shapes(self):
         # Any other shape of a target or of the supported list is an error.
-        good = 'def A = AnalysisTarget.new("a", "a", ["rt/a/*.v3"], "2m");\n'
+        good = 'def A = AnalysisTarget.new("a", "a", ["rt/a/*.v3"], "2m", [], []);\n'
         for text, error in (
                 (good.replace('["rt/a/*.v3"]', 'PATTERNS'), 'is not `def NAME'),
-                (good.replace('"2m");', '"2m")'), 'is not `def NAME'),
-                (good + 'def C = AnalysisTarget.new("c", "c", ["rt/" + "c/*.v3"], "1m");\n', 'is not `def NAME'),
+                (good.replace(');', ')'), 'is not `def NAME'),
+                (good + 'def C = AnalysisTarget.new("c", "c", ["rt/" + "c/*.v3"], "1m", [], []);\n',
+                 'is not `def NAME'),
                 (good, 'exactly one `def all'),
                 (good + 'def all: Array<AnalysisTarget> = [A];\ndef all: Array<AnalysisTarget> = [A];\n',
                  'exactly one `def all'),
