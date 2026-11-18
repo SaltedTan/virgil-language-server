@@ -276,7 +276,7 @@ def test_assignment_kinds(t: Tester) {
 	s.open("Refs.v3", 1, text);
 	s.settle();
 	t.assert(s.context().snapshot.verified, "the assignment fixture verifies");
-	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], false);
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], null, false);
 	t.assert(analysis.verified, "the collector fixture verifies");
 	// All uses of each name, including its declaration, in source order.
 	var expected: Array<(string, Array<int>)> = [
@@ -312,7 +312,7 @@ def test_assignment_kinds_more(t: Tester) {
 	s.open("Refs.v3", 1, text);
 	s.settle();
 	t.assert(s.context().snapshot.verified, "the fixture verifies");
-	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], false);
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], null, false);
 	t.assert(analysis.verified, "the collector fixture verifies");
 	expectKinds(t, s, analysis, text, [
 		("x", [1, 3, 3, 2]),

@@ -181,7 +181,7 @@ def test_analyze_frame_size(t: Tester) {
 def test_result_matches_analysis(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
-	var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+	var analysis = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	var rt = roundTrip(sources, analysis, true), result = rt.1;
 	if (result == null) return t.fail("result did not decode");
 	t.asserti(7, result.id);
@@ -260,7 +260,7 @@ def test_result_with_errors(t: Tester) {
 	for (paths in [[SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
-		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], null, true);
 		var r = roundTrip(sources, analysis, true).1;
 		if (r == null) return t.fail("result did not decode");
 		var s = r.snapshot;
@@ -280,7 +280,7 @@ def test_result_with_errors(t: Tester) {
 def test_result_without_occurrences(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
-	var r = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], false), false).1;
+	var r = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], null, false), false).1;
 	if (r == null) return t.fail("result did not decode");
 	var s = r.snapshot;
 	t.assertz(false, s.hasOccurrences);
@@ -338,7 +338,7 @@ def test_result_buffer_capacity(t: Tester) {
 	for (paths in [[SHAPES, MAIN], [SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
-		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], null, true);
 		for (occurrences in [false, true]) {
 			var files: Array<(string, Array<AnalysisOccurrence>)>;
 			if (occurrences) files = [(paths[0], analysis.occurrences(paths[0])), (paths[1], analysis.occurrences(paths[1]))];
@@ -375,7 +375,7 @@ def test_result_size_matches_writes(t: Tester) {
 	for (paths in [[SHAPES, MAIN], [SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
-		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], null, true);
 		for (occurrences in [false, true]) {
 			var files: Array<(string, Array<AnalysisOccurrence>)>;
 			if (occurrences) files = [(paths[0], analysis.occurrences(paths[0])), (paths[1], analysis.occurrences(paths[1]))];
@@ -383,7 +383,7 @@ def test_result_size_matches_writes(t: Tester) {
 		}
 	}
 	// An empty program, with and without an occurrence section.
-	var empty = AeneasAdapter.analyzeProgram([], [], false);
+	var empty = AeneasAdapter.analyzeProgram([], [], null, false);
 	assertCounted(t, "empty without occurrences", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, empty, -1, -1, null, null, null, null));
 	assertCounted(t, "empty with occurrences", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, empty, -1, -1, [], null, null, null));
 	// Diagnostics only, with a message long enough for a multi-byte length.
@@ -399,17 +399,17 @@ def test_result_size_matches_writes(t: Tester) {
 		t.asserti(bytes, sized.0.end());
 	}
 	// Scope, member, and call answers, with and without occurrences.
-	var scopedSources = scopeSources(), scoped = AeneasAdapter.analyzeForScope(scopedSources, [], false);
+	var scopedSources = scopeSources(), scoped = AeneasAdapter.analyzeForScope(scopedSources, [], null, false);
 	var scopedFiles = [("s.v3", scoped.occurrences("s.v3")), ("t.v3", scoped.occurrences("t.v3"))];
 	var scope = scoped.scopeAt("s.v3", 0, AnalysisScopeKinds.TYPES, "");
 	assertCounted(t, "scope", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, scoped, 12, 42, scopedFiles, scope, null, null));
 	assertCounted(t, "scope without files", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, scoped, -1, 42, [], scope, null, null));
-	var memberedSources = memberSources(), membered = AeneasAdapter.analyzeForScope(memberedSources, [], false);
+	var memberedSources = memberSources(), membered = AeneasAdapter.analyzeForScope(memberedSources, [], null, false);
 	var memberedFiles = [("s.v3", membered.occurrences("s.v3")), ("t.v3", membered.occurrences("t.v3"))];
 	var members = membered.membersAt("s.v3", afterDot(1), "");
 	assertCounted(t, "members", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, membered, 12, 42, memberedFiles, null, members, null));
 	assertCounted(t, "members without files", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, membered, -1, 42, [], null, members, null));
-	var calledSources = callSources(), called = AeneasAdapter.analyzeForScope(calledSources, [], false);
+	var calledSources = callSources(), called = AeneasAdapter.analyzeForScope(calledSources, [], null, false);
 	var calledFiles = [("s.v3", called.occurrences("s.v3")), ("t.v3", called.occurrences("t.v3"))];
 	var call = called.callAt("s.v3", openOf("f(1"));
 	assertCounted(t, "call", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, called, 12, 42, calledFiles, null, null, call));
@@ -445,7 +445,7 @@ def test_truncated_messages(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
 	var paths = [SHAPES, MAIN];
-	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], false), true).0;
+	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], null, false), true).0;
 	for (n < result.length) {
 		t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(Arrays.range(result, 0, n), 1, paths)),
 			Strings.format1("result cut to %d bytes is malformed", n));
@@ -587,7 +587,7 @@ def test_display_round_trip(t: Tester) {
 	for (paths in [[SHAPES, MAIN], [COVERAGE], [CALL_SITES], [SHAPES, UNRESOLVED]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
-		var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], null, false);
 		var r = roundTrip(sources, analysis, true).1;
 		if (r == null) return t.fail("result did not decode");
 		var s = r.snapshot, typed = 0;
@@ -943,7 +943,7 @@ def chainSource(operators: int) -> string {
 // the last of them, which the decoder sets without charging for it.
 def test_capped_diagnostics(t: Tester) {
 	var max = AeneasAdapter.MAX_FILE_DIAGNOSTICS, paths = ["chain.v3"];
-	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("chain.v3", chainSource(8000))], [], false);
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("chain.v3", chainSource(8000))], [], null, false);
 	t.asserti(max, analysis.diagnostics.length);
 	for (occurrences in [false, true]) {
 		var files: Array<(string, Array<AnalysisOccurrence>)>;
@@ -1408,7 +1408,7 @@ def decodeScoped(payload: Array<byte>, requested: bool) -> AnalysisWorkerResult 
 	}
 }
 def test_scope_answer_round_trip(t: Tester) {
-	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	// At the second "b" of "b = b + a": b, then a, then the component's f.
 	var offset = 0;
 	for (n = 0; n < 2; offset++) if (SCOPED[offset] == 'b') n++;
@@ -1469,7 +1469,7 @@ def withScopeTail(payload: Array<byte>, tail: DataWriter) -> Array<byte> {
 	return Arrays.concat(Arrays.range(payload, 0, payload.length - 4), tail.extract());
 }
 def test_invalid_scope_answers(t: Tester) {
-	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	var empty = scopedResult(analysis, AnalysisScopeAnswer.new([], [], -1, false), true);
 	t.assert(Arrays.equal<byte>("\x00\x7F\x00\x00", Arrays.range(empty, empty.length - 4, empty.length)), "an empty answer is four bytes");
 	var declarations = decodeScoped(empty, true).snapshot.declarations.length;
@@ -1507,7 +1507,7 @@ def test_invalid_scope_answers(t: Tester) {
 	t.assert(decodeScoped(flagged, true) == null, "scope answer without occurrences");
 }
 def test_scope_allocation(t: Tester) {
-	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
 	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
 	var base = decodeScoped(plain, false).snapshot.resultAllocation;
@@ -1546,7 +1546,7 @@ def test_member_request_round_trip(t: Tester) {
 	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("member request did not decode");
 	t.asserti(AnalysisScopeKinds.MEMBERS, r.scope().kinds);
-	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	t.assert(r.scopeAnswer(analysis) == null, "no scope answer to a member query");
 	var members = r.memberAnswer(analysis);
 	t.assert(members != null && members.names.length == 2, "the member query has an answer");
@@ -1588,7 +1588,7 @@ def sameMembers(t: Tester, answer: AnalysisMemberAnswer, snapshot: AnalysisSnaps
 	}
 }
 def test_member_answer_round_trip(t: Tester) {
-	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], null, false);
 	var members = analysis.membersAt("s.v3", afterDot(1), "");
 	t.assert(members != null && members.names.length == 2 && members.declarations[0] != null, "declared members");
 	var decoded = decodeMembers(memberResult(analysis, members, true), AnalysisScopeKinds.MEMBERS);
@@ -1619,7 +1619,7 @@ def withMemberTail(payload: Array<byte>, tail: DataWriter) -> Array<byte> {
 	return Arrays.concat(Arrays.range(payload, 0, payload.length - 2), tail.extract());
 }
 def test_invalid_member_answers(t: Tester) {
-	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], null, false);
 	var none = AnalysisMemberAnswer.new([], [], [], [], [], false);
 	var empty = memberResult(analysis, none, true);
 	t.assert(Arrays.equal<byte>("\x00\x00", Arrays.range(empty, empty.length - 2, empty.length)), "an empty answer is two bytes");
@@ -1678,7 +1678,7 @@ def test_invalid_member_answers(t: Tester) {
 // A member answer is charged 64 bytes for its count and 32 for each
 // candidate; its names and details are strings of the table.
 def test_member_allocation(t: Tester) {
-	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], null, false);
 	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
 	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
 	var base = decodeMembers(plain, 0).snapshot.resultAllocation;
@@ -1721,7 +1721,7 @@ def test_call_request_round_trip(t: Tester) {
 		t.assert_string("", r.scope().prefix);
 	}
 	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources, query)));
-	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	t.assert(r.scopeAnswer(analysis) == null, "no scope answer to a call query");
 	t.assert(r.memberAnswer(analysis) == null, "no member answer to a call query");
 	var call = r.callAnswer(analysis);
@@ -1754,7 +1754,7 @@ def decodeCall(payload: Array<byte>, kinds: int, paths: Array<string>) -> Analys
 // The answer is the call as the file's calls have it: its parentheses,
 // arguments, callee, target, and signature.
 def test_call_answer_round_trip(t: Tester) {
-	var analysis = AeneasAdapter.analyzeForScope(callSources(), [], false), paths = ["s.v3", "t.v3"];
+	var analysis = AeneasAdapter.analyzeForScope(callSources(), [], null, false), paths = ["s.v3", "t.v3"];
 	var plain = decodeCall(callResult(analysis, null, true), AnalysisScopeKinds.CALL, paths);
 	if (plain == null) return t.fail("the ordinary result did not decode");
 	t.assert(plain.snapshot.queriedCall == null, "no call answer in an ordinary result");
@@ -1956,7 +1956,7 @@ def parentedAll(kinds: Array<AnalysisDeclKind>, parents: Array<int>) -> DataWrit
 // the snapshot's declaration keeps.
 def FLAGS_SOURCE = "component C { def K = 1; var v = 2; def f(p: int) { def a = p; var b = a; } }\nclass A(x: int, var y: int) { def m() { } }\ntype V { case X; }\n";
 def test_declaration_flags(t: Tester) {
-	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("flags.v3", FLAGS_SOURCE)], [], false);
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("flags.v3", FLAGS_SOURCE)], [], null, false);
 	if (!analysis.verified) return t.fail("the source verifies");
 	var data = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, analysis, 0, 0,
 		[("flags.v3", analysis.occurrences("flags.v3"))]), 0L));
@@ -2009,7 +2009,7 @@ def test_declaration_comments(t: Tester) {
 	for (c in cases) {
 		var sources = Array<AnalysisSource>.new(c.0.length);
 		for (i < sources.length) sources[i] = AnalysisSource.new(c.0[i], c.1[i]);
-		var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], null, false);
 		if (!analysis.verified) return t.fail1("%s verifies", c.0[0]);
 		var r = roundTrip(sources, analysis, true).1;
 		if (r == null) return t.fail1("%s decodes", c.0[0]);
@@ -2027,7 +2027,7 @@ def test_declaration_comments(t: Tester) {
 		assertCounted(t, c.0[0], AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, analysis, -1, -1, files.extract(), null, null, null));
 	}
 	// Flagged and documented together: a component's method and a def field.
-	var flags = AeneasAdapter.analyzeProgram([AnalysisSource.new("f.v3", "component C {\n\t// K.\n\tdef K = 1;\n\t// M.\n\tdef m() { }\n}\n")], [], false);
+	var flags = AeneasAdapter.analyzeProgram([AnalysisSource.new("f.v3", "component C {\n\t// K.\n\tdef K = 1;\n\t// M.\n\tdef m() { }\n}\n")], [], null, false);
 	var decoded = roundTrip([AnalysisSource.new("f.v3", "")], flags, true).1;
 	if (decoded == null) return t.fail("flags decode");
 	var both = 0;
@@ -2209,7 +2209,7 @@ def typeTargets(count: int, data: string) -> DataWriter {
 def test_type_targets_selected_files(t: Tester) {
 	var a = AeneasAdapter.analyzeProgram([
 		AnalysisSource.new("a.v3", "class A { } def a: A;"),
-		AnalysisSource.new("b.v3", "class B { } def b: B;")], [], false);
+		AnalysisSource.new("b.v3", "class B { } def b: B;")], [], null, false);
 	t.assert(a.verified, "independent files verify");
 	a.occurrences("a.v3");
 	// Let encoding collect b's sites lazily, so the numeric index also has
@@ -2255,7 +2255,7 @@ def ERRING = "component E {\n\tdef f(a: int) -> int { return a; }\n\tdef g(e: E)
 // same result has the error.
 def test_query_results_have_no_diagnostics(t: Tester) {
 	var sources = [AnalysisSource.new("s.v3", ERRING)];
-	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	t.asserti(1, analysis.diagnostics.length);
 	var x = OccurrenceCollectorTest.indexOf(ERRING, "var x"), e = OccurrenceCollectorTest.indexOf(ERRING, "e.f(") + 2;
 	var call = OccurrenceCollectorTest.indexOf(ERRING, "f(1") + 1;

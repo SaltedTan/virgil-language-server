@@ -101,7 +101,7 @@ class CallProgram {
 	private def analyze() {
 		var sources = Array<AnalysisSource>.new(names.length), paths = Array<string>.new(names.length);
 		for (i < sources.length) sources[i] = AnalysisSource.new(paths[i] = path(i), texts[i]);
-		var a = analysis = AeneasAdapter.analyzeProgram(sources, options, false);
+		var a = analysis = AeneasAdapter.analyzeProgram(sources, options, null, false);
 		if (verified) {
 			for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
 		}

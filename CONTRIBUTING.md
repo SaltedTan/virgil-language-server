@@ -114,7 +114,10 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 3. Update the revision in `THIRD_PARTY_NOTICES.md` and `docs/compatibility.md`.
 4. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
-   before finalizing the upgrade.
+   before finalizing the upgrade. If `AnalysisTargets:wrapper_runtime_files`
+   fails, a `bin/v3c-<target>` wrapper changed its runtime files or its target:
+   update that entry of `src/analysis/AnalysisTargets.v3` to match
+   ([Analysis targets](docs/architecture.md#analysis-targets)).
 5. Review the language options as [Project file compatibility review](#project-file-compatibility-review) says.
 6. Check that every record of the pin agrees on the new full SHA, as the [support policy](docs/compatibility.md#support-policy) requires:
    - `build/virgil-lsp --version`, whose `virgil revision` comes from the checkout;

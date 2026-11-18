@@ -1,0 +1,26 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A target that the server can analyze a program for (ADR-0018, decision 2):
+// its name, the name of the Aeneas target that configures the compiler and
+// each program for it, and the runtime sources that the pinned
+// bin/v3c-<name> wrapper passes, as patterns relative to the Virgil root, in
+// the wrapper's order. The rest of the server sees only this entry; the
+// adapter finds the Aeneas target (AeneasAdapter.analyzeProgram).
+class AnalysisTarget(name: string, aeneasName: string, runtimePatterns: Array<string>) { }
+
+// The supported targets. AnalysisTargets:wrapper_runtime_files compares each
+// entry with its wrapper at the pin.
+component AnalysisTargets {
+	def X86_64_LINUX = AnalysisTarget.new("x86-64-linux", "x86-64-linux",
+		["rt/x86-64-linux/*.v3", "rt/native/*.v3", "rt/gc/*.v3"]);
+	def all: Array<AnalysisTarget> = [X86_64_LINUX];
+
+	// The supported target named {name}, or null for any other name,
+	// including null.
+	def find(name: string) -> AnalysisTarget {
+		if (name == null) return null;
+		for (t in all) if (Strings.equal(t.name, name)) return t;
+		return null;
+	}
+}

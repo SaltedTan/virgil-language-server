@@ -1,0 +1,108 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisTargets:wrapper_runtime_files", test_wrapper_runtime_files),
+	T("AnalysisTargets:registered", test_registered),
+	T("AnalysisTargets:find", test_find),
+	()
+];
+
+// The pinned Virgil, from the repository root.
+def VIRGIL = "vendor/virgil";
+
+// Each entry's runtime patterns are the directories of its wrapper's
+// RT_FILES, in order, and the wrapper passes the entry's Aeneas target, so a
+// pin update that changes either fails here until the entry follows.
+def test_wrapper_runtime_files(t: Tester) {
+	for (target in AnalysisTargets.all) {
+		var path = Strings.format2("%s/bin/v3c-%s", VIRGIL, target.name), script = System.fileLoad(path);
+		if (script == null) return t.fail1("cannot read %s; run the unit tests from the repository root", path);
+		var rtFiles: string, exec: string;
+		for (line in lines(script)) {
+			if (Strings.startsWith(line, "RT_FILES=")) rtFiles = line;
+			if (Strings.startsWith(line, "exec ")) exec = line;
+		}
+		if (rtFiles == null || exec == null) return t.fail1("%s has no RT_FILES or exec line", path);
+		var expected = StringBuilder.new().puts("RT_FILES=$(echo");
+		for (p in target.runtimePatterns) {
+			if (!Strings.startsWith(p, "rt/")) return t.fail1("pattern %s is not under rt/", p);
+			expected.puts(" $RT/").puts(Arrays.range(p, 3, p.length));
+		}
+		t.assert_string(expected.puts(")").toString(), rtFiles);
+		var flag = Strings.format1(" -target=%s ", target.aeneasName);
+		t.assert(contains(exec, flag), Strings.format2("%s passes %s", path, flag));
+		t.assert(contains(exec, " -rt.files=\"$RT_FILES\" "), Strings.format1("%s passes RT_FILES", path));
+	}
+}
+
+// Every entry's Aeneas target is registered, so no analysis for it falls
+// back to none (AeneasAdapter.compilerFor).
+def test_registered(t: Tester) {
+	t.assert(AnalysisTargets.all.length > 0, "a supported target");
+	for (target in AnalysisTargets.all) {
+		t.assert(AeneasAdapter.registered(target), Strings.format1("Aeneas registers %s", target.aeneasName));
+	}
+	t.assertz(false, AeneasAdapter.registered(AnalysisTarget.new("none", "no-such-target", [])));
+}
+
+// Only supported names are found; Aeneas's other targets, including the
+// -test variant, are not supported.
+def test_find(t: Tester) {
+	t.assert(AnalysisTargets.find("x86-64-linux") == AnalysisTargets.X86_64_LINUX, "x86-64-linux");
+	for (name in [null, "", "x86-64-linux-test", "x86-linux", "jvm", "wasm", "X86-64-LINUX"]) {
+		if (AnalysisTargets.find(name) != null) t.fail1("\"%s\" is unsupported", Strings.nonnull(name));
+	}
+	var patterns = AnalysisTargets.X86_64_LINUX.runtimePatterns;
+	t.asserti(3, patterns.length);
+	t.assert_string("rt/x86-64-linux/*.v3", patterns[0]);
+	t.assert_string("rt/native/*.v3", patterns[1]);
+	t.assert_string("rt/gc/*.v3", patterns[2]);
+}
+
+def lines(text: Array<byte>) -> Array<string> {
+	var v = Vector<string>.new(), start = 0;
+	for (i = 0; i <= text.length; i++) {
+		if (i == text.length || text[i] == '\n') {
+			if (i > start) v.put(Arrays.range(text, start, i));
+			start = i + 1;
+		}
+	}
+	return v.extract();
+}
+def contains(s: string, part: string) -> bool {
+	for (i = 0; i + part.length <= s.length; i++) {
+		if (Arrays.equal(Arrays.range(s, i, i + part.length), part)) return true;
+	}
+	return false;
+}
+
+// The runtime sources of a target from the pinned Virgil, as its wrapper
+// lists them: each pattern's directory's .v3 files in byte order.
+component AnalysisTargetFiles {
+	def runtimeSources(t: Tester, target: AnalysisTarget) -> Array<AnalysisSource> {
+		var sources = Vector<AnalysisSource>.new();
+		for (p in target.runtimePatterns) {
+			if (!Strings.endsWith(p, "/*.v3")) {
+				t.fail1("pattern %s is not a directory's .v3 files", p);
+				return null;
+			}
+			var dir = ProjectFiles.join(VIRGIL, Arrays.range(p, 0, p.length - 5)), listed = ProjectFiles.list(dir, 256);
+			if (listed.names == null) {
+				t.fail1("cannot list %s; run the unit tests from the repository root", dir);
+				return null;
+			}
+			for (name in listed.names) {
+				if (!Strings.endsWith(name, ".v3")) continue;
+				var path = ProjectFiles.join(dir, name), input = System.fileLoad(path);
+				if (input == null) {
+					t.fail1("cannot read %s", path);
+					return null;
+				}
+				sources.put(AnalysisSource.new(path, input));
+			}
+		}
+		return sources.extract();
+	}
+}

@@ -339,7 +339,7 @@ def test_dense_bound(t: Tester) {
 def EVERY_KIND = "// The program.\n// Spans lines.\ncomponent Prog {\n\t// A field.\n\tvar count: int;\n\t// Shared.\n\tvar a, b: int;\n\t// A method.\n\tdef run(p: int) -> int { var q = p; return q + count; }\n\tdef bare() { }\n\t// Uses a row.\n\tdef make() -> Row { return Row(1); }\n}\n// A box\n// of things.\nclass Box<T> {\n\t// Its size.\n\tvar size: int;\n\t// Makes one.\n\tnew(size) { }\n\t//\n\tdef empty() { }\n}\nclass Pt(\n\t// A header parameter.\n\tx: int,\n\tvar y: int) { }\n// Colors.\nenum Color {\n\t// Red.\n\tRED,\n\tGREEN\n}\n// A row.\ntype Row(x: int);\n// Shapes.\ntype Shape {\n\t// A circle.\n\tcase Circle(r: int);\n\tcase Dot;\n}\n// Tags.\nlayout Tag {\n\t// Its kind.\n\t+0 kind: u8;\n\t=1;\n}\n// Low bits.\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\n";
 def test_analysis_matches_reference(t: Tester) {
 	var path = "every.v3", sources = [AnalysisSource.new(path, EVERY_KIND)];
-	var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
+	var analysis = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assert(analysis.parsed, "the program parses");
 	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, analysis, 0, 0, [(path, analysis.occurrences(path))]), 0L);
 	var decoded: AnalysisSnapshot;
@@ -383,7 +383,7 @@ def test_analysis_matches_reference(t: Tester) {
 // a line end and each CR before an LF a space, as the reference reads them.
 def test_carriage_returns(t: Tester) {
 	var text = "// One.\r\n// Two.   \r\ndef f() { } // trailing\r\n// A.\r// B.\ndef g() { }\n// C.\rdef h() { }\n";
-	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("cr.v3", text)], [], false);
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("cr.v3", text)], [], null, false);
 	t.assert(analysis.parsed, "the program parses");
 	var found = 0;
 	for (d in analysis.declarationSites("cr.v3")) {

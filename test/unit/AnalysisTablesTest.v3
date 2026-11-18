@@ -171,7 +171,7 @@ def test_colliding_files(t: Tester) {
 }
 def analyzeFiles(t: Tester, n: int) {
 	var sources = collidingProgram(n);
-	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	var a = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assertz(true, a.verified);
 	var calls = 0;
 	for (o in a.occurrences(sources[0].path)) {
@@ -193,7 +193,7 @@ def test_encoder_declarations(t: Tester) {
 	if (small <= 0 || large > 3 * small) t.fail2("the encoder probed %d slots, against %d for half the files", large, small);
 }
 def encodingProbes(t: Tester, n: int) -> long {
-	var sources = collidingProgram(n), a = AeneasAdapter.analyzeProgram(sources, [], false);
+	var sources = collidingProgram(n), a = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assertz(true, a.verified);
 	for (s in sources) a.occurrences(s.path);
 	var before = AnalysisTables.probes;
@@ -238,7 +238,7 @@ def scopeQuery(t: Tester, n: int) {
 	text.puts(") { var x = ");
 	var offset = text.length;
 	text.puts("0; } }\n");
-	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new("/tables/scope.v3", text.extract())], [], false);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new("/tables/scope.v3", text.extract())], [], null, false);
 	t.assertz(true, a.verified);
 	var s = a.scopeAt("/tables/scope.v3", offset, AnalysisScopeKinds.VALUES, "");
 	var params = 0;
@@ -271,7 +271,7 @@ def analyzeTypes(t: Tester, n: int) {
 	for (i < n) text.puts("\t\tid<").puts(instance(i)).puts(">(null);\n");
 	text.puts("\t}\n}\n");
 	var path = "/tables/types.v3";
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text.extract())], [], false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text.extract())], [], null, false);
 	t.assertz(true, a.verified);
 	var uses = 0;
 	for (o in a.occurrences(path)) {
@@ -408,14 +408,14 @@ def seededResults(t: Tester, k0: u64, k1: u64) -> (Array<byte>, Array<byte>) {
 	var sources = collidingProgram(64), main = sources[0].path;
 	sources[1] = AnalysisSource.new(sources[1].path, Arrays.concat(sources[1].input,
 		"class K<T>(x: T) { def m() -> T { return x; } }\nclass D extends K<int> { new() super(0) { } def n(a: int, b: string) => m() + a; }\n"));
-	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	var a = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assertz(true, a.verified);
 	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
 	for (i < sources.length) files[i] = (sources[i].path, a.occurrences(sources[i].path));
 	var result = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, files), 0L));
 	var text = sources[0].input, offset = 0;
 	while (text[offset] != '\t' || text[offset + 1] != '\t') offset++;
-	var s = AeneasAdapter.analyzeForScope(sources, [], false);
+	var s = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	var answer = s.scopeAt(main, offset + 2, AnalysisScopeKinds.ALL, "");
 	t.assert(answer != null && answer.declarations.length > sources.length, "a scope answer");
 	var scoped = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 1, s, 0, -1, [], answer, null, null), 0L));

@@ -20,7 +20,7 @@ def indexOf(text: string, needle: string) -> int {
 	return -1;
 }
 def snapshot(t: Tester, sources: Array<AnalysisSource>, verified: bool) -> AnalysisSnapshot {
-	var a = AeneasAdapter.analyzeProgram(sources, ["-lang:fun-exprs"], false);
+	var a = AeneasAdapter.analyzeProgram(sources, ["-lang:fun-exprs"], null, false);
 	if (verified) {
 		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
 		t.assertz(true, a.verified);

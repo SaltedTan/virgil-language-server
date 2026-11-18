@@ -1,0 +1,13 @@
+// The x86-64-linux fixture's first byte, returned as a Pointer. Analyzed as
+// ../x86-64-linux/main.v3 is; the pinned v3c-x86-64-linux reports one
+// TypeError, which AeneasAdapter:target_type_error records.
+component Main {
+	def message = "hello\n";
+	def first() -> byte {
+		var p = Pointer.atContents(message);
+		return p;
+	}
+	def main() -> int {
+		return if(first() == 'h', 0, 1);
+	}
+}
