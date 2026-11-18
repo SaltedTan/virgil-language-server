@@ -47,7 +47,7 @@ Without a `.virgil-lsp.json` that selects it, a document stays in [single-file m
 
 ## Native targets
 
-- `x86-64-linux` is the only target a project can name, and only in a version 2 project file. Code for any other native target is analyzed without one and reports unresolved types ([Target](configuration.md#target)).
+- Only version 2 project files can name a target, and `x86-64-linux` is the only supported name. Any other name produces an `InvalidValue` configuration error. In a project with no target selected, code for another native target reports unresolved types for that target's builtins ([Target](configuration.md#target)).
 - A target project's runtime sources come from the Virgil root's `rt/`, which the bundled library in release archives doesn't have yet, so such a project needs a Virgil checkout as its root, supplied by the client. With the bundle, it gets a `MissingTargetRuntime` configuration error.
 - Completion doesn't suggest the target's builtin names, such as `Pointer`, `CiRuntime`, and `Linux`, or the members of pointers and of `Linux` and `CiRuntime`, and implementation's check for a builtin type's name doesn't know them.
 - An edit analyzes every project that contains the edited file. Target programs are large, so several target projects that share most of their files make each edit's background analysis take several times as long, and their snapshots compete for the retained-snapshot budget, so moving between them analyzes them again more often.

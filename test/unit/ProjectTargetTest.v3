@@ -11,6 +11,7 @@ def X = [
 	T("ProjectExpansion:target_runtime_selected_once", test_target_runtime_selected_once),
 	T("ProjectExpansion:target_runtime_diagnostics", test_target_runtime_diagnostics),
 	T("ProjectExpansion:target_runtime_limits", test_target_runtime_limits),
+	T("ProjectExpansion:target_runtime_traversal", test_target_runtime_traversal),
 	T("WorkspaceProjects:target_contexts", test_target_contexts),
 	T("WorkspaceProjects:target_without_root", test_target_without_root),
 	()
@@ -30,19 +31,6 @@ def expandWith(maxFiles: int, maxBytes: int, base: string, root: string, p: Proj
 }
 def expandTarget(base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
 	return expandWith(ProjectLimits.MAX_FILES, ProjectLimits.MAX_BYTES, base, root, p);
-}
-// The files that x86-64-linux's runtime patterns select under {root}, in
-// expansion order: each pattern's matches in byte order.
-def runtimeFiles(root: string) -> Array<string> {
-	var result = Vector<string>.new();
-	for (pattern in AnalysisTargets.X86_64_LINUX.runtimePatterns) {
-		var dir = ProjectFiles.join(root, ProjectFiles.parent(pattern));
-		var names = ProjectFiles.list(dir, 1000).names, paths = Vector<string>.new();
-		for (name in names) { if(Strings.endsWith(name, ".v3")) paths.put(ProjectFiles.join(dir, name)); }
-		var sorted = paths.extract();
-		result.puta(Arrays.sort(sorted, 0, sorted.length, ProjectFiles.before));
-	}
-	return result.extract();
 }
 // The byte range of the target value "x86-64-linux" in the fixture's file.
 def targetRange(text: string) -> (int, int) {
@@ -67,7 +55,9 @@ def checkPaths(t: Tester, expected: Array<string>, members: int, got: Array<Proj
 	}
 }
 def test_target_runtime(t: Tester) {
-	var config = targetConfig().0, runtime = runtimeFiles(ROOT);
+	var sources = AnalysisTargetFiles.runtimeSources(t, AnalysisTargets.X86_64_LINUX);
+	if (sources == null) return;
+	var runtime = Arrays.map(sources, fun (s: AnalysisSource) => s.path), config = targetConfig().0;
 	// The runtime's 12 files at the pin, as ADR-0018 counts them.
 	t.asserti(12, runtime.length);
 	var native = config.projects[0], portable = config.projects[1];
@@ -94,7 +84,9 @@ def test_target_runtime(t: Tester) {
 	checkPaths(t, expected, 1, r.sources);
 }
 def test_target_runtime_selected_once(t: Tester) {
-	var runtime = runtimeFiles(ROOT), riRuntime = ProjectFiles.join(ROOT, "rt/native/RiRuntime.v3");
+	var sources = AnalysisTargetFiles.runtimeSources(t, AnalysisTargets.X86_64_LINUX);
+	if (sources == null) return;
+	var runtime = Arrays.map(sources, fun (s: AnalysisSource) => s.path), riRuntime = ProjectFiles.join(ROOT, "rt/native/RiRuntime.v3");
 	// A runtime file that virgilDependencies already lists keeps its place
 	// there and isn't added again.
 	var p = definition2("{\"name\":\"p\",\"target\":\"x86-64-linux\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"rt/native/RiRuntime.v3\"]}");
@@ -217,6 +209,25 @@ def test_target_runtime_limits(t: Tester) {
 		t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "the runtime counts against the source budget");
 		t.asserti(at.0, r.diagnostics[0].begin);
 	}
+}
+def test_target_runtime_traversal(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/target-runtime-traversal");
+	var fields = "\"name\":\"p\",\"sources\":[\"*.v3\"]";
+	var plain = definition2(Strings.format1("{%s}", fields));
+	var r = expandTarget(base, ROOT, plain);
+	t.asserti(0, r.diagnostics.length);
+	checkPaths(t, [ProjectFiles.join(base, "Main.v3")], 1, r.sources);
+	var text = Strings.format1("{\"version\":2,\"projects\":[{%s,\"target\":\"x86-64-linux\"}]}", fields);
+	var native = ProjectConfigParser.parse(text).config.projects[0], at = targetRange(text);
+	r = expandTarget(base, ROOT, native);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length != 1) return;
+	var d = r.diagnostics[0];
+	t.assert(d.code == ProjectConfigCode.EXPANSION_LIMIT, "the runtime counts against the traversal limit");
+	t.assert_string("project directory traversal limit exceeded", d.message);
+	t.asserti(at.0, d.begin);
+	t.asserti(at.1, d.end);
 }
 def rootParams(base: string, root: string) -> HashMap<string, JsonValue> {
 	var p = Strings.newMap<JsonValue>(), options = Strings.newMap<JsonValue>();

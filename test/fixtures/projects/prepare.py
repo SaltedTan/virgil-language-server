@@ -639,7 +639,8 @@ for count in [256, 512]:
         )
 (root / "rename-no-project").mkdir(exist_ok=True)
 (root / "safe").mkdir(parents=True, exist_ok=True)
-(root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
+repository = Path(__file__).absolute().parents[3]
+(root / "repository-root").write_text(str(repository), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")
 with (root / "large.v3").open("wb") as output:
     output.truncate(4 * 1024 * 1024 + 1)
@@ -677,10 +678,25 @@ for depth in range(1, 66):
         discovery_depth.mkdir(parents=True, exist_ok=True)
         (discovery_depth / ".virgil-lsp.json").write_text('{"version":1,"projects":[]}', encoding="utf-8")
 
+max_visits = 10_000
 wide = root / "scan-a"
 wide.mkdir(exist_ok=True)
-for index in range(10001):
+for index in range(max_visits + 1):
     (wide / f"entry-{index}").touch()
+runtime = repository / "vendor/virgil/rt"
+if runtime.is_dir():
+    runtime_entries = sum(
+        1 for name in ("x86-64-linux", "native", "gc") for _ in (runtime / name).iterdir()
+    )
+    local_walk_states = 2
+    remaining_visits = runtime_entries - 1
+    traversal = root / "target-runtime-traversal"
+    if traversal.exists():
+        shutil.rmtree(traversal)
+    traversal.mkdir()
+    (traversal / "Main.v3").write_text("def value = 1;\n", encoding="utf-8")
+    for index in range(max_visits - local_walk_states - remaining_visits - 1):
+        (traversal / f"entry-{index}").touch()
 other = root / "scan-b"
 other.mkdir(exist_ok=True)
 (other / ".virgil-lsp.json").write_text(
