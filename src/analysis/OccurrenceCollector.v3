@@ -1243,7 +1243,11 @@ component AnalysisApplications {
 		return e.target != e.func && VarExpr.?(e.func) && VarBinding.PtrAtField.?(VarExpr.!(e.func).varbind);
 	}
 	def arguments(e: AppExpr) -> Expr {
-		return if(rewrittenFieldAddress(e), e.target, e.args);
+		if (!rewrittenFieldAddress(e)) return e.args;
+		match (e.target) {
+			v: VarExpr => if (Token.?(v.dot) && Strings.equal(Token.!(v.dot).image, "")) return null;
+		}
+		return e.target;
 	}
 }
 

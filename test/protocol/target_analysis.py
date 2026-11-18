@@ -275,6 +275,12 @@ def fieldAddressCalls(p: Pointer, box: FieldAddressBox) {
     var addr = Pointer.atField(p.load<FieldAddressBox>().f);
     var value = Pointer.load<int>(Pointer.atField(box.f /* é ) */));
 }
+class Box {
+    var Box: int;
+    var Alt: int;
+    def addr() -> Pointer { return Pointer.atField(Box); }
+    def explicitAddr() -> Pointer { return Pointer.atField(this.Box); }
+}
 """
         c.change(native, field_text)
         hover = c.result('textDocument/hover', native, field_text, 'load<FieldAddressBox>')
@@ -286,6 +292,16 @@ def fieldAddressCalls(p: Pointer, box: FieldAddressBox) {
             assert help is not None and [g['label'] for g in help['signatures']] == [label], help
         at_field = 'Pointer.atField('
         assert c.result('textDocument/signatureHelp', native, field_text, at_field, len(at_field)) is None
+        class_start = field_text.index('class Box')
+        box_decl = location(native, field_text, 'Box', class_start)
+        assert c.result('textDocument/definition', native, field_text, 'this.Box') == box_decl
+        edit = c.result('textDocument/rename', native, field_text, 'class Box', len('class '), newName='Alt')
+        change, = edit['documentChanges']
+        assert change['textDocument']['uri'] == native.as_uri(), change
+        assert change['edits'] == [{'range': box_decl['range'], 'newText': 'Alt'}], change
+        refs = c.result('textDocument/references', native, field_text, 'class Box', len('class '),
+                        context={'includeDeclaration': True})
+        assert refs == [box_decl], refs
         s.shutdown()
     except BaseException:
         print(json.dumps(s.transcript, indent=2)[-20000:], file=sys.stderr)
