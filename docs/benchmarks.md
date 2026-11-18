@@ -3136,12 +3136,11 @@ Fully exact state totals are informational baselines, not enforced floors.
 Regenerate the inventory after a corpus change with
 `python3 scripts/tolerance-inventory.py --write`, which needs a built server;
 its `--check` default replays the recorded parse verdicts, so it needs none.
-If `vendor/virgil` is uninitialized or its checked-out commit differs from
-the gitlink in the index, the tolerance inventory unit test and the [cursor
-tolerance tests](#cursor-tolerance-histories-2026-10-31) that compare the
-inventory with its definitions, check the compiler pin, or reject changed
-definitions or Aeneas sources skip and report both revisions (`unknown` for an
-uninitialized checkout).
+When the `vendor/virgil` checkout differs from the gitlink in the index, the
+tolerance inventory unit test and the [cursor tolerance history
+checks](#cursor-tolerance-histories-2026-10-31) for inventory agreement, the
+compiler pin, and rejection of changed definitions or Aeneas sources skip and
+report both revisions, using `unknown` for an uninitialized checkout.
 
 The full run on 2026-10-29 at `ced30385` (server
 `d585307457921dda3bdb19ae0177f5cdc9a0367e119d9b282a321e6edbcab88d`,
