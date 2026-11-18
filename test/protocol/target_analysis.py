@@ -18,13 +18,13 @@ an analysis that substitutes a body that doesn't parse. Completion offers the
 target's builtin types, Pointer, AnyRef, CiRuntime, and Linux, with the
 runtime's System and not the synthetic one, and the members of a pointer, the
 Pointer type, Linux, and CiRuntime. Hover covers Linux.syscall and a pointer's
-load, signature help covers Linux.syscall, and implementation on Pointer
-returns an empty list. A portable project still
-offers none of these, and the synthetic System with its calls. The
-development request for a document analyzes for the target, and explicit URIs
-don't. Setting the target to null in an unsaved project file brings back
-UnresolvedType, and restoring it clears it. Without a Virgil root, a target
-project with virgilDependencies gets MissingVirgilRoot at its target value.
+load. Signature help covers Linux.syscall and calls within and around
+Pointer.atField. Implementation on Pointer returns an empty list. A portable
+project omits the target's builtins and offers the synthetic System and its
+calls. The development request for a document analyzes for the target, and
+explicit URIs don't. Setting the target to null in an unsaved project file
+brings back UnresolvedType, and restoring it clears it. Without a Virgil root,
+a target project with virgilDependencies gets MissingVirgilRoot at its target value.
 """
 import json
 from pathlib import Path
@@ -179,11 +179,11 @@ def run(exe, root):
         # its runtime's System, not the synthetic one; the members of a
         # pointer value, the Pointer type, Linux, and CiRuntime.
         names = c.result('textDocument/completion', native, native_text, 'Pointer.atContents')['items']
-        labels = [i['label'] for i in names]
-        assert {'AnyRef', 'CiRuntime', 'Linux', 'Pointer'} <= set(labels), labels
-        assert labels.count('System') == 1, labels
+        system_item, = (i for i in names if i['label'] == 'System')
+        assert system_item.get('detail') == 'component System', system_item
         kinds = {i['label']: i.get('kind') for i in names}
-        assert kinds['Linux'] == MODULE and kinds['CiRuntime'] == MODULE and kinds['Pointer'] == CLASS, kinds
+        expected_kinds = {'AnyRef': CLASS, 'CiRuntime': MODULE, 'Linux': MODULE, 'Pointer': CLASS, 'System': MODULE}
+        assert {name: kinds.get(name) for name in expected_kinds} == expected_kinds, kinds
         assert members(c, native, native_text, 'sp.load', 3) == ['cmpswp', 'load', 'store']
         on_type = members(c, native, native_text, 'Pointer.SIZE', 8)
         assert {'NULL', 'SIZE', 'atContents', 'atField', 'load'} <= set(on_type), on_type
@@ -265,9 +265,27 @@ def run(exe, root):
         names = c.result('textDocument/completion', portable, portable_text2, 'Words.say')['items']
         labels = [i['label'] for i in names]
         assert not {'AnyRef', 'CiRuntime', 'Linux', 'Pointer'} & set(labels), labels
-        assert labels.count('System') == 1 and {i['label']: i.get('kind') for i in names}['System'] == MODULE, labels
+        system_item, = (i for i in names if i['label'] == 'System')
+        assert system_item.get('kind') == MODULE and 'detail' not in system_item, system_item
         calls = members(c, portable, portable_text2, 'System.puts', 7)
         assert {'puts', 'ticksUs', 'fileLoad'} <= set(calls), calls
+        field_text = native_text + """
+class FieldAddressBox { var f: int; }
+def fieldAddressCalls(p: Pointer, box: FieldAddressBox) {
+    var addr = Pointer.atField(p.load<FieldAddressBox>().f);
+    var value = Pointer.load<int>(Pointer.atField(box.f /* é ) */));
+}
+"""
+        c.change(native, field_text)
+        hover = c.result('textDocument/hover', native, field_text, 'load<FieldAddressBox>')
+        assert hover is not None and hover['contents']['value'] == '```virgil\nvoid -> FieldAddressBox\n```', hover
+        assert c.published().get(native.as_uri(), []) == [], c.published()
+        for call, label in [('p.load<FieldAddressBox>(', 'void -> FieldAddressBox'),
+                            ('Pointer.load<int>(', 'Pointer -> int')]:
+            help = c.result('textDocument/signatureHelp', native, field_text, call, len(call))
+            assert help is not None and [g['label'] for g in help['signatures']] == [label], help
+        at_field = 'Pointer.atField('
+        assert c.result('textDocument/signatureHelp', native, field_text, at_field, len(at_field)) is None
         s.shutdown()
     except BaseException:
         print(json.dumps(s.transcript, indent=2)[-20000:], file=sys.stderr)

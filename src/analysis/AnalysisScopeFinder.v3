@@ -652,11 +652,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			return;
 		}
 		walk(e.func);
-		match (e.appbind) {
-			PtrAtComponentField, PtrAtObjectField, PtrAtRefLayoutField,
-			PtrAtUnboxedObjectField, PtrAtUnboxedComponentField => walk(e.target);
-			_ => walk(e.args);
-		}
+		walk(AnalysisApplications.arguments(e));
 	}
 	def visitIndex(e: IndexExpr, env: void) {
 		walk(e.expr);

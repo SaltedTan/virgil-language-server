@@ -648,7 +648,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		var close = call(e);
 		depth++;
-		expr(e.args);
+		expr(AnalysisApplications.arguments(e));
 		depth--;
 		lastCall = e;
 		lastClose = close;
@@ -716,12 +716,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// The end of the last argument, if endOf found it before, which is
 		// read first so that the next call finds its own.
 		var memo = callEnds.read(e);
+		if (AnalysisApplications.rewrittenFieldAddress(e)) return -1;
 		match (e.appbind) {
 			Void => return -1;
-			// Pointer.atField replaces its argument with an empty list; see
-			// Verifier.visitPtrAtField.
-			PtrAtComponentField, PtrAtObjectField, PtrAtRefLayoutField,
-			PtrAtUnboxedObjectField, PtrAtUnboxedComponentField => return -1;
 			None => if (VarExpr.?(e.func)) {
 				var v = VarExpr.!(e.func);
 				match (v.varbind) {
@@ -846,6 +843,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				x: AppExpr => {
 					if (x == lastCall && lastClose >= 0) return lastClose;
 					var args = x.args.exprs;
+					if (AnalysisApplications.rewrittenFieldAddress(x)) return rangeEnd(args.src);
 					if (args.list != null) {
 						// The call will need its last argument's end too.
 						var slot = if(suspended == 0, callEnds.reserve(x), -1), end = endOf(lastOf(args), -1);
@@ -1240,6 +1238,15 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 // OccurrenceCollector.parents).
 def NO_PARENTS: Array<int> = [];
 
+component AnalysisApplications {
+	def rewrittenFieldAddress(e: AppExpr) -> bool {
+		return e.target != e.func && VarExpr.?(e.func) && VarBinding.PtrAtField.?(VarExpr.!(e.func).varbind);
+	}
+	def arguments(e: AppExpr) -> Expr {
+		return if(rewrittenFieldAddress(e), e.target, e.args);
+	}
+}
+
 // The growable buffers of an OccurrenceCollector, which a program's
 // collectors use in turn, as they do its AnalysisCallEnds. Each file's
 // results leave them at their exact lengths, so the buffers grow only to the
@@ -1520,7 +1527,7 @@ class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void
 	def visitString(e: StringExpr, env: void) { }
 	def visitApp(e: AppExpr, env: void) {
 		expr(e.func);
-		expr(e.args);
+		expr(AnalysisApplications.arguments(e));
 	}
 	def visitIndex(e: IndexExpr, env: void) {
 		expr(e.expr);
