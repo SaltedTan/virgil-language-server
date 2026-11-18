@@ -156,7 +156,7 @@ class ProjectConfigValidator {
 		var name: string, sources: Array<ProjectPattern>;
 		var dependencies: Array<ProjectPattern> = [], exclude: Array<ProjectPattern> = [];
 		var virgilDependencies: Array<ProjectPattern> = [], args: Array<string> = [];
-		var seen = OrderedStringMap<bool>.new();
+		var seen = OrderedStringMap<bool>.new(), targetName: string;
 		missing(n, "name", "a project");
 		missing(n, "sources", "a project");
 		for (m in n.members) {
@@ -178,13 +178,15 @@ class ProjectConfigValidator {
 			} else if (Strings.equal(key, "compilerArgs")) {
 				args = compilerArgs(value);
 			} else if (Strings.equal(key, "target")) {
-				target(value);
+				targetName = target(value);
 			} else {
 				unknown(m, "a project", "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target");
 			}
 		}
 		if (name == null || sources == null || dependencies == null || exclude == null
 			|| virgilDependencies == null || args == null) return null;
+		// SPIKE: the target travels as a "-target=<name>" pseudo-option.
+		if (targetName != null) args = Arrays.append(Strings.format1("-target=%s", targetName), args);
 		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args);
 	}
 	private def projectName(n: ProjectJson) -> string {
@@ -260,10 +262,13 @@ class ProjectConfigValidator {
 		}
 		return if(ok, result);
 	}
-	private def target(n: ProjectJson) {
-		if (n.kind == ProjectJsonKind.NULL) return;
+	private def target(n: ProjectJson) -> string {
+		if (n.kind == ProjectJsonKind.NULL) return null;
+		// SPIKE: accept the name of a registered Aeneas target.
+		if (n.kind == ProjectJsonKind.STRING && AeneasAdapter.findTarget(n.text) != null) return n.text;
 		errorAt(ProjectConfigCode.INVALID_VALUE, n,
-			"target must be null; version 1 analyzes every project without a target");
+			"target must be null or a known target such as \"x86-64-linux\"");
+		return null;
 	}
 	// Reports a member whose key repeats an earlier one in the same object.
 	// Returns true for the first occurrence of a key.

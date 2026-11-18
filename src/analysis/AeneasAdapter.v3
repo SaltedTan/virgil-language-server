@@ -755,9 +755,13 @@ component AeneasAdapter {
 		setLanguageOptions(options);
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
+		// SPIKE: a "-target=<name>" pseudo-option selects a registered Aeneas
+		// target, whose configureProgram installs Pointer, AnyRef, CiRuntime,
+		// and the kernel component; its System comes from the rt/ sources.
+		var target = findTarget(targetOption(options));
 		// Without a target, Aeneas provides a synthetic System component, as
 		// it does for the interpreter (see Aeneas.makeProgram).
-		SystemCalls.install(prog);
+		if (target == null) SystemCalls.install(prog);
 		prog.files = Array<string>.new(sources.length);
 		prog.inputs = Array<Array<byte>>.new(sources.length);
 		for (i < sources.length) {
@@ -766,7 +770,7 @@ component AeneasAdapter {
 			var input = sources[i].input;
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
-		var compilation = Compilation.new(compiler, prog);
+		var compilation = Compilation.new(if(target != null, targetCompiler(target), compiler), prog);
 		if (BenchProbe.enabled) BenchProbe.classifyParse(prog.files, prog.inputs, languageFingerprint());
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
@@ -801,6 +805,28 @@ component AeneasAdapter {
 			ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog));
 		analysis.comments = comments;
 		return analysis;
+	}
+	// SPIKE: the name in a "-target=<name>" option, or null.
+	def targetOption(options: Array<string>) -> string {
+		for (o in options) if (Strings.startsWith(o, "-target=")) return Arrays.range(o, 8, o.length);
+		return null;
+	}
+	// SPIKE: the registered target named {name}, or null. Aeneas.getTarget
+	// would print to the terminal for an unknown name.
+	def findTarget(name: string) -> Target {
+		if (name == null) return null;
+		for (l = Aeneas.targets; l != null; l = l.tail) {
+			if (Strings.equal(l.head.name, name)) return l.head;
+		}
+		return null;
+	}
+	private var targetCompilers: List<(Target, Compiler)>;
+	// SPIKE: one Compiler per target, configured once (Target.configureCompiler).
+	private def targetCompiler(target: Target) -> Compiler {
+		for (l = targetCompilers; l != null; l = l.tail) if (l.head.0 == target) return l.head.1;
+		var c = Compiler.new(target);
+		targetCompilers = List.new((target, c), targetCompilers);
+		return c;
 	}
 	// Parses each file, and records the leading comments of the declarations
 	// of each that parses (AnalysisDeclarationComments) until one does not:

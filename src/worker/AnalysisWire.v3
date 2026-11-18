@@ -150,7 +150,8 @@ component AnalysisWire {
 		var options = Array<string>.new(r.readCount(1, 64)), seen = Strings.newMap<bool>();
 		for (i < options.length) {
 			var o = r.readString(1);
-			if (o == null || ProjectCompilerFlags.check(o, seen) != null) return null;
+			// SPIKE: a target pseudo-option passes through to the adapter.
+			if (o == null || (!Strings.startsWith(o, "-target=") && ProjectCompilerFlags.check(o, seen) != null)) return null;
 			options[i] = o;
 		}
 		var sources = Array<AnalysisSource>.new(r.readCount(2, 128));

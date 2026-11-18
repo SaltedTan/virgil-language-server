@@ -164,12 +164,15 @@ component VirgilLsp {
 	}
 	def analyze(args: Array<string>) -> int {
 		var bindings = false, display = false, stats = false, repeat = 1;
+		var options: Array<string> = [];
 		var limits = AnalysisWorkerLimits.new();
 		var paths = Vector<string>.new();
 		for (arg in args) {
 			if (Strings.equal(arg, "--bindings")) bindings = true;
 			else if (Strings.equal(arg, "--display")) display = true;
 			else if (Strings.equal(arg, "--stats")) stats = true;
+			// SPIKE: analyze for a target, e.g. --target=x86-64-linux.
+			else if (Strings.startsWith(arg, "--target=")) options = [Arrays.range(arg, 1, arg.length)];
 			else if (Strings.startsWith(arg, "--repeat=")) {
 				if ((repeat = positiveOption(arg, "--repeat=")) < 0) return 2;
 			} else if (Strings.startsWith(arg, "--worker-timeout-ms=")) {
@@ -204,7 +207,7 @@ component VirgilLsp {
 		var firstHash: u64, status = 0;
 		for (run < repeat) {
 			var snapshot: AnalysisSnapshot;
-			match (supervisor.analyze(sources, [], flags)) {
+			match (supervisor.analyze(sources, options, flags)) {
 				Completed(s) => snapshot = s;
 				Pending => {
 					Log.error("analysis returned without completing");
