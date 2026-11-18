@@ -258,7 +258,6 @@ type AnalysisMemberDetail {
 	case EnumSet(t: EnumSetType, onType: bool);
 	case Builtin(template: string, t: Type);
 	case System(call: SystemCall);
-	case Syscall(kernelType: Kernel_TypeCon);
 }
 
 // The members that the verifier resolves after "." in member expression {e}
@@ -569,11 +568,8 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 	// A kernel component's one member, "syscall" (Kernel_TypeCon.lookupMember).
 	private def kernel(kernelType: Kernel_TypeCon) {
 		steps++;
-		builtin("syscall", AnalysisDeclKind.METHOD, AnalysisMemberDetail.Syscall(kernelType));
-	}
-	private def kernelDetail(kernelType: Kernel_TypeCon) -> string {
-		var text = display.typeText(kernelType.retType);
-		return Strings.format1("def syscall<T>(number: int, args: T) -> %s", if(text != null, text, AnalysisDisplayText.UNKNOWN));
+		builtin("syscall", AnalysisDeclKind.METHOD,
+			AnalysisMemberDetail.Builtin("def syscall<T>(number: int, args: T) -> $", kernelType.retType));
 	}
 	// CiRuntime's addresses, each a constant of its pointer type, and its
 	// other members (CiRuntime_TypeCon.lookupMember).
@@ -581,7 +577,7 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		var t = runtimeType.ptrType;
 		CiRuntimeModule.map.apply(fun (name: string, a: CiRuntime_Address) {
 			steps++;
-			builtin(name, AnalysisDeclKind.FIELD, AnalysisMemberDetail.Builtin("def %: $", t));
+			builtin(name, AnalysisDeclKind.FIELD, AnalysisMemberDetail.Typed(t));
 		});
 		builtins(AnalysisMemberReceiver.CIRUNTIME, t);
 	}
@@ -622,13 +618,11 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		}
 		return null;
 	}
-	// {template} with "$" replaced by {receiver}, "#" by {own}, and "%" by
-	// the member's {name}.
-	private def detail(template: string, name: string, receiver: string, own: string) -> string {
+	// {template} with "$" replaced by {receiver} and "#" by {own}.
+	private def detail(template: string, receiver: string, own: string) -> string {
 		var buf = StringBuilder.new();
 		for (c in template) {
-			if (c == '%') buf.puts(name);
-			else if (c == '$') buf.puts(if(receiver != null, receiver, AnalysisDisplayText.UNKNOWN));
+			if (c == '$') buf.puts(if(receiver != null, receiver, AnalysisDisplayText.UNKNOWN));
 			else if (c == '#') buf.puts(if(own != null, own, AnalysisDisplayText.UNKNOWN));
 			else buf.putc(c);
 		}
@@ -665,9 +659,8 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 				var suffix = if(onType && text != null, Strings.format1("(set: %s) -> bool", text), ": bool");
 				return Strings.format2("def %s%s", labels[k], suffix);
 			}
-			Builtin(template, t) => return detail(template, labels[k], if(t != null, display.typeText(t)), ownType(labels[k], t));
+			Builtin(template, t) => return detail(template, if(t != null, display.typeText(t)), ownType(labels[k], t));
 			System(call) => return systemDetail(call);
-			Syscall(kernelType) => return kernelDetail(kernelType);
 		}
 	}
 	// Sorts the candidates, and caps them as AnalysisScopeFinder does: past

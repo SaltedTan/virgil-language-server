@@ -521,29 +521,40 @@ def describe(m: AnalysisMemberAnswer) -> string {
 // and CiRuntime its addresses and other names. AnyRef has none, and without
 // the target none of these receivers resolves, so none is offered.
 def test_target(t: Tester) {
+	var pointerValue = "cmpswp/0 load/0 store/0";
+	var pointerType = "NULL/0 SIZE/0 atContents/0 atElement/0 atEnd/0 atField/0 atLength/0 atObject/0 atRef/0 cmpswp/0 load/0 store/0 view/0";
 	var value = "def f(p: Pointer) { var x = p.$load<int>(); }\n";
-	t.assert_string("cmpswp/0 load/0 store/0", render(targetMembers(t, value)));
+	t.assert_string(pointerValue, render(targetMembers(t, value)));
 	t.assert_string(lines([
 		"cmpswp METHOD def cmpswp<T>(expected: T, value: T) -> bool",
 		"load METHOD def load<T>() -> T",
 		"store METHOD def store<T>(value: T)"]), describe(targetMembers(t, value)));
 	var onType = "def f() { var x = Pointer.$NULL; }\n";
-	t.assert_string("NULL/0 SIZE/0 atContents/0 atElement/0 atEnd/0 atField/0 atLength/0 atObject/0 atRef/0 cmpswp/0 load/0 store/0 view/0",
-		render(targetMembers(t, onType)));
+	t.assert_string(pointerType, render(targetMembers(t, onType)));
 	var d = describe(targetMembers(t, onType));
 	for (line in ["NULL FIELD def NULL: Pointer\n", "SIZE FIELD def SIZE: int\n",
 			"load METHOD def load<T>(pointer: Pointer) -> T\n", "atContents METHOD def atContents<T>(range: Range<T>) -> Pointer\n",
 			"atField METHOD def atField(receiver.field) -> Pointer\n"]) {
 		t.assert(contains(d, line), Strings.format2("%s not in\n%s", line, d));
 	}
+	for (sample in [
+		("p.$load<Box>()", pointerValue),
+		("Pointer.$load<Box>(p)", pointerType)
+	]) {
+		var m = unmark(Strings.format1("class Box { var f: int; }\ndef f(p: Pointer) { var x = Pointer.atField(%s.f); }\n", sample.0));
+		var a = analyzeTarget(t, m.0, [], true);
+		if (a == null) return;
+		t.assert(a.verified, m.0);
+		t.assert_string(sample.1, render(a.membersAt(MAIN, m.1, "")));
+	}
 	var linux = "def f() { var x = Linux.$syscall(1, ()); }\n";
 	t.assert_string("syscall METHOD def syscall<T>(number: int, args: T) -> (long, long)\n", describe(targetMembers(t, linux)));
 	// CiRuntime: each address of CiRuntimeModule, a constant Pointer, and
-	// each of the list's names, in the query's order.
+	// each of the names the verifier examples use.
 	var ci = targetMembers(t, "def f() { var x = CiRuntime.$CODE_START; }\n");
 	var expected = Vector<string>.new();
 	expected.puta(addresses());
-	for (b in AnalysisBuiltinMembers.LIST) if (b.receiver == AnalysisMemberReceiver.CIRUNTIME) expected.put(b.name);
+	for (u in targetMemberUses()) if (u.0 == AnalysisMemberReceiver.CIRUNTIME) expected.put(u.1);
 	if (ci == null) return t.fail("no CiRuntime members");
 	t.asserti(expected.length, ci.names.length);
 	for (name in expected.extract()) {
@@ -566,13 +577,9 @@ def test_target(t: Tester) {
 		t.assert_string("", render(membersAny(marked)));
 	}
 }
-// Each target member of the list verifies where the query offers it, as do
-// Linux.syscall and each of CiRuntime's addresses, in one program for
-// x86-64-linux that the verifier accepts whole; a sample of names that the
-// target's lookups lack does not verify.
-def test_target_builtins_verify(t: Tester) {
+def targetMemberUses() -> Array<(AnalysisMemberReceiver, string, string)> {
 	var P = AnalysisMemberReceiver.POINTER_TYPE, V = AnalysisMemberReceiver.POINTER, C = AnalysisMemberReceiver.CIRUNTIME;
-	var uses = [
+	return [
 		(P, "NULL", "var x = Pointer.NULL;"),
 		(P, "SIZE", "var x = Pointer.SIZE;"),
 		(P, "atContents", "var x = Pointer.atContents(\"ab\");"),
@@ -612,6 +619,13 @@ def test_target_builtins_verify(t: Tester) {
 		(C, "setRefTag", "var x = CiRuntime.setRefTag<u1>(Pointer.NULL, 1);"),
 		(C, "unpackClosure", "var f: int -> int; var x = CiRuntime.unpackClosure<Box, int, int>(f);")
 	];
+}
+// Each target member of the list verifies where the query offers it, as do
+// Linux.syscall and each of CiRuntime's addresses, in one program for
+// x86-64-linux that the verifier accepts whole; a sample of names that the
+// target's lookups lack does not verify.
+def test_target_builtins_verify(t: Tester) {
+	var uses = targetMemberUses();
 	var text = StringBuilder.new().puts(LAYOUT).puts("class Box { var f: int; }\n")
 		.puts("class DescribedDescriptor describes Described { }\nclass Described descriptor DescribedDescriptor { }\n");
 	var count = 0, listed = 0;

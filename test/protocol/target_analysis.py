@@ -17,8 +17,9 @@ doesn't parse, which run query analyses, see the target's types, and so does
 an analysis that substitutes a body that doesn't parse. Completion offers the
 target's builtin types, Pointer, AnyRef, CiRuntime, and Linux, with the
 runtime's System and not the synthetic one, and the members of a pointer, the
-Pointer type, Linux, and CiRuntime, whose uses hover and help as builtin uses
-do; implementation on Pointer is an empty list. A portable project still
+Pointer type, Linux, and CiRuntime. Hover covers Linux.syscall and a pointer's
+load, signature help covers Linux.syscall, and implementation on Pointer
+returns an empty list. A portable project still
 offers none of these, and the synthetic System with its calls. The
 development request for a document analyzes for the target, and explicit URIs
 don't. Setting the target to null in an unsaved project file brings back
@@ -189,8 +190,8 @@ def run(exe, root):
         assert members(c, native, native_text, 'Linux.syscall', 6) == ['syscall']
         runtime = members(c, native, native_text, 'CiRuntime.CODE_START', 10)
         assert {'CODE_START', 'CODE_END', 'STACK_SIZE', 'callerIp'} <= set(runtime), runtime
-        # Their uses hover and help as other builtin uses do, with the
-        # instantiated type that verification gave them.
+        # Hover shows the instantiated type of syscall and load. Signature
+        # help checks the Linux.syscall call.
         hover = c.result('textDocument/hover', native, native_text, 'syscall')
         assert hover['contents']['value'] == '```virgil\n(int, (int, Pointer, int)) -> (long, long)\n```', hover
         hover = c.result('textDocument/hover', native, native_text, 'load<')

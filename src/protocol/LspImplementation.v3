@@ -20,7 +20,7 @@ component LspImplementation {
 	def answer(at: LspSnapshotPosition, offset: int, limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
 		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
 		if (decl == null) {
-			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options, if(at.ctx != null, at.ctx.definition.target))) {
+			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options, at.ctx.definition.target)) {
 				return (false, JsonRpcReply.Result(JsonValue.Null));
 			}
 			return (true, JsonRpcReply.Result(JsonValue.JArray([])));

@@ -83,7 +83,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
 	// Null if verification did not reach the offset (see reached).
-	def find(offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+	def find(offset: int, kinds: int, prefix: string, target: AnalysisTarget) -> AnalysisScopeAnswer {
 		this.offset = offset;
 		locate();
 		if (!reached()) return null;
@@ -129,7 +129,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			var l = level;
 			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true));
 		}
-		return answer(thisLevel, prefix, values, types);
+		return answer(thisLevel, prefix, values, types, target);
 	}
 	// The members of the receiver of the member expression whose "." comes
 	// before {offset}, with only space, comments, and the start of its name
@@ -188,7 +188,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// Sorts the candidates, and caps them: past the cap, only those that
 	// start with {prefix} are kept, up to it.
-	private def answer(thisLevel: int, prefix: string, values: bool, types: bool) -> AnalysisScopeAnswer {
+	private def answer(thisLevel: int, prefix: string, values: bool, types: bool, target: AnalysisTarget) -> AnalysisScopeAnswer {
 		var order = Array<int>.new(found.length);
 		for (i < order.length) order[i] = i;
 		order = AnalysisTables.sort(order, fun (a: int, b: int) => AnalysisScopeOrder.before(
@@ -211,11 +211,8 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var hide = fun (name: string) {
 			if ((values || types) && (!values || valueNames.has(name)) && (!types || typeNames.has(name))) hidden.put(name);
 		};
-		// System and the targets' types are builtins only for some analyses;
-		// hiding a name that completion does not offer changes nothing.
 		for (name in AeneasAdapter.BUILTIN_TYPES) hide(name);
-		hide(SystemCalls.TYPECON.name);
-		for (target in AnalysisTargets.all) for (name in target.builtinTypes) hide(name);
+		for (name in AeneasAdapter.targetBuiltinTypes(target)) hide(name);
 		for (width = 1; width <= Int.MAX_WIDTH; width++) {
 			for (sign in ["i", "u"]) hide(Strings.format2("%s%d", sign, width));
 		}
@@ -655,7 +652,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			return;
 		}
 		walk(e.func);
-		walk(e.args);
+		match (e.appbind) {
+			PtrAtComponentField, PtrAtObjectField, PtrAtRefLayoutField,
+			PtrAtUnboxedObjectField, PtrAtUnboxedComponentField => walk(e.target);
+			_ => walk(e.args);
+		}
 	}
 	def visitIndex(e: IndexExpr, env: void) {
 		walk(e.expr);
