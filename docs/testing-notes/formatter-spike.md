@@ -22,7 +22,9 @@ Only files that the server's parser accepts with the default language options ar
 
 It changes only whitespace around tokens and comments, including at the start and end of a file. Tokens, comments, and string and character literals keep their bytes, except that trailing whitespace after a line comment is removed. `else` after a `}` that starts its line joins that line, and a body's `{` on a line of its own joins the line before. Each join crosses exactly one line end with only whitespace around it. The other exception to keeping line breaks is at EOF, where the last token or comment gets exactly one line end, as in `gofmt`. Whitespace-only files become empty. Every file the prototype formatted kept its token sequence, and formatting it again changed nothing. Its lexer couldn't read `vendor/virgil/test/core/parser/multiline00.v3`, which ends inside a block comment. The parser accepts that file, and the proposed formatter leaves the comment untouched through EOF.
 
-ADR-0019's decision 3 specifies the proposed rules. The prototype classifies each line by the tokens before it:
+The prototype's EOF rule matches the proposed command-line behavior. The proposed LSP request leaves a missing final line end to the editor. [ADR-0019](../decisions/0019-formatter.md#decision)
+
+The prototype classifies each line by the tokens before it:
 
 - A **block line** starts a statement, a declaration, an enum case, or a match case or one of its patterns: the line after `;`, `{`, or `}`, after a `,` in the braces of an `enum` or `match`, or after an enum case, whose comma is optional. It gets one tab more than the line where the statement holding its block started, and none at file level. A `}` line gets that line's indentation.
 - A **nested line** is a braceless body on the line after `if (...)`, `while (...)`, `for (...)`, `else`, or a match case's `=>`, or a match case's `=>` that starts a line. It gets one tab more than its statement's line.
