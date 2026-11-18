@@ -22,6 +22,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0016](0016-performance-budgets.md) | Adopt the performance budgets | Accepted |
 | [0017](0017-jvm-parser-stack-guard.md) | Bound the parser's recursion on the JVM target by frame depth | Accepted |
 | [0018](0018-native-target-analysis.md) | Analyze a project for a native target | Accepted; amends [0007](0007-bundled-virgil-library.md) and [0014](0014-compatibility-and-support-policy.md) |
-| [0019](0019-formatter.md) | Format Virgil code in its author's style, keeping line breaks | Proposed; supersedes the roadmap's formatter non-goal |
+| [0019](0019-formatter.md) | Format Virgil code in its author's style, keeping line breaks | Accepted; supersedes the roadmap's formatter non-goal |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.

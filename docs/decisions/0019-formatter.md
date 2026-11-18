@@ -1,8 +1,8 @@
 # 0019. Format Virgil code in its author's style, keeping line breaks
 
-- Status: Proposed; supersedes the roadmap's formatter non-goal
+- Status: Accepted; supersedes the roadmap's formatter non-goal
 - Date: 2026-11-18
-- Discussion: [#504](https://github.com/SaltedTan/virgil-language-server/issues/504)
+- Discussion: [#504](https://github.com/SaltedTan/virgil-language-server/issues/504), [#520](https://github.com/SaltedTan/virgil-language-server/pull/520)
 
 ## Context
 
@@ -120,7 +120,7 @@ Most of the changes to Titzer's code are whitespace at line ends and at the end 
 - The native platform layers in `src/os/` (`x86-64-linux` and `x86-64-darwin`) use nonblocking input opens and check descriptor type in all CLI modes. For `--write` they gain atomic rename and descriptor metadata. They also need a no-follow, nonblocking read-write input open that preserves contents, no-follow metadata lookups for the input and temporary names, and ways to read owner, group, and permission bits and detect ACLs and other extended attributes by descriptor and by path without following links. They create temporary files with owner-only access and set their group and permission bits. The formatter uses the existing JVM bridge for `--check` and standard-output mode, with no new JVM host support. The JVM build refuses `--write`. [#508](https://github.com/SaltedTan/virgil-language-server/issues/508)
 - This repository's sources need 35 lines changed once, mostly `{ if(c) stmt; }` in one-line blocks.
 - Pin updates gain a step: regenerate and review the corpus record. The [pin update steps](../../CONTRIBUTING.md#updating-the-pinned-virgil-revision) will name it.
-- The work is split into issues under [#504](https://github.com/SaltedTan/virgil-language-server/issues/504): the formatter's indentation and line rules, its spacing rules, the command, its `--write`, the corpus check, this repository's check, the LSP request, and the editors.
+- The work is split into issues under [#504](https://github.com/SaltedTan/virgil-language-server/issues/504): the formatter's indentation and line rules, its spacing rules, the command, its `--write`, the corpus check, this repository's check, the LSP request, and the editors. The maintainer accepted the design on 2026-11-18.
 
 ## Alternatives considered
 
