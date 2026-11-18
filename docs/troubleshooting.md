@@ -42,7 +42,7 @@ With the universal VSIX and an empty `virgil.server.path`, the extension looks f
 
 ### Apple Silicon without Rosetta 2
 
-There is no Apple Silicon build of the server yet: both macOS packages carry the Intel (`x86-64-darwin`) build, and an Apple Silicon Mac runs it under Rosetta 2. Without Rosetta 2, macOS can't run the server. In VS Code, a bundled server for `darwin-arm64` adds `The bundled x86-64 server requires Rosetta 2 on Apple Silicon.` to the channel after its `Server selection:` line, and the server then fails to start. In a terminal, `virgil-lsp --version` fails too. Install Rosetta 2, then restart the server:
+The default macOS packages carry the Intel build (`x86-64-darwin`), which an Apple Silicon Mac runs under Rosetta 2; without Rosetta 2, macOS can't run it. In VS Code, a bundled server for `darwin-arm64` adds `The bundled x86-64 server requires Rosetta 2 on Apple Silicon.` to the channel after its `Server selection:` line, and the server then fails to start. In a terminal, `virgil-lsp --version` fails too. The [JVM build](releasing.md#the-jvm-build-for-apple-silicon) runs without Rosetta 2. Otherwise, install Rosetta 2, then restart the server:
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
@@ -67,7 +67,7 @@ The server runs whole-program analysis in a separate process, `virgil-lsp-worker
 - **VS Code** checks for the worker before it starts the server: `<directory>/virgil-lsp-worker is missing or not executable (<path> resolves to <resolved path>). Keep virgil-lsp-worker in the same directory as virgil-lsp.` The part in parentheses appears when the server path is a symbolic link. A wrapper script needs the worker beside the script itself.
 - **Neovim** starts the server anyway. It parses open files and reports their syntax errors, but each analysis of a project fails, and the log shows `virgil-lsp: warning: cannot start the analysis worker: cannot execute <path> (errno <n>)`, followed by `virgil-lsp: warning: automatic analysis of project <name> failed: …`. The editor also shows a warning, "Semantic diagnostics for project <name> could not be updated: …", for the first failure.
 
-Move or copy `virgil-lsp-worker`, and the `virgil/` library directory, back beside the real `virgil-lsp`, or point a symbolic link at the original instead of copying the server ([Installing](releasing.md#installing)). A worker from another build or version is refused too, and the log says `analysis worker <pid> is from a different build; it ended with <status>`. Keep the executables of one archive together, and replace them together when upgrading.
+Move or copy `virgil-lsp-worker`, and the `virgil/` library directory, back beside the real `virgil-lsp`, or point a symbolic link at the original instead of copying the server ([Installing](releasing.md#installing)). The JVM build's launchers also need their jars and `runtime/` beside them, so keep its extracted directory whole and symlink to its `virgil-lsp` launcher. A worker from another build or version is refused too, and the log says `analysis worker <pid> is from a different build; it ended with <status>`. Keep the executables of one archive together, and replace them together when upgrading.
 
 ### Neovim doesn't find `virgil-lsp`
 
