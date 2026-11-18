@@ -21,7 +21,7 @@ Install the server from a release archive, and verify the archive against the re
 Download [`virgil-eglot.el`](virgil-eglot.el) into a directory on your `load-path`, such as `~/.emacs.d/lisp/`. The configuration is included from 0.1.0-alpha.6; earlier releases don't include it. The file is downloaded beside its destination and moved into place only once the download succeeds:
 
 ```sh
-config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.6/editors/emacs
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.7/editors/emacs
 mkdir -p ~/.emacs.d/lisp
 curl --fail --location "$config_url/virgil-eglot.el" -o ~/.emacs.d/lisp/virgil-eglot.el.part &&
 mv ~/.emacs.d/lisp/virgil-eglot.el.part ~/.emacs.d/lisp/virgil-eglot.el

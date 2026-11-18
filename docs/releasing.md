@@ -204,8 +204,8 @@ To check a Linux platform VSIX locally after building and smoke-testing the arch
 
 ```sh
 (cd clients/vscode && npm ci)
-scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.6-x86-64-linux.tar.gz --out build/vsix
-(cd clients/vscode && xvfb-run -a npm run test:e2e -- --vsix ../../build/vsix/virgil-lsp-vscode-0.1.5-linux-x64.vsix)
+scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.7-x86-64-linux.tar.gz --out build/vsix
+(cd clients/vscode && xvfb-run -a npm run test:e2e -- --vsix ../../build/vsix/virgil-lsp-vscode-0.1.6-linux-x64.vsix)
 ```
 
 For the universal fallback, package with `scripts/package-vsix.py universal --out build/vsix`, then pass its VSIX and an extracted archive's `virgil-lsp` as the test's positional argument. Platform checks can also be rerun with `scripts/check-vsix.py <vsix> --target <target> --archive <tested-archive>`; universal checks omit the last two options.
@@ -215,18 +215,18 @@ For the universal fallback, package with `scripts/package-vsix.py universal --ou
 Download the archive for your platform and `SHA256SUMS` from the release page, or with the GitHub CLI:
 
 ```sh
-gh release download v0.1.0-alpha.6 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.7 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' --pattern SHA256SUMS   # x86-64-darwin on macOS
 ```
 
 Then check the archive's line of `SHA256SUMS`:
 
 ```sh
-awk -v file=virgil-lsp-0.1.0-alpha.6-x86-64-linux.tar.gz '$2 == file' SHA256SUMS | sha256sum --check        # Linux
-awk -v file=virgil-lsp-0.1.0-alpha.6-x86-64-darwin.tar.gz '$2 == file' SHA256SUMS | shasum -a 256 --check   # macOS
+awk -v file=virgil-lsp-0.1.0-alpha.7-x86-64-linux.tar.gz '$2 == file' SHA256SUMS | sha256sum --check        # Linux
+awk -v file=virgil-lsp-0.1.0-alpha.7-x86-64-darwin.tar.gz '$2 == file' SHA256SUMS | shasum -a 256 --check   # macOS
 ```
 
-Both print `OK` for a good download. Check the VSIX the same way, with its own line: `awk -v file=virgil-lsp-vscode-0.1.5-linux-x64.vsix '$2 == file' SHA256SUMS | sha256sum --check`. Matching the whole file name, rather than a pattern in which `.` matches any character, keeps another file's line from checking the download. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
+Both print `OK` for a good download. Check the VSIX the same way, with its own line: `awk -v file=virgil-lsp-vscode-0.1.6-linux-x64.vsix '$2 == file' SHA256SUMS | sha256sum --check`. Matching the whole file name, rather than a pattern in which `.` matches any character, keeps another file's line from checking the download. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
 
 Releases published before the attestation step was added (through v0.1.0-alpha.5) have no attestations, and `SHA256SUMS` is the only check for them. Later releases are attested: the publish job attests each asset with the release workflow's identity before creating the release. Verify a download against its attestation with the GitHub CLI:
 
@@ -262,8 +262,8 @@ Extract the archive and put a symlink to `virgil-lsp` on your `PATH`. The worker
 
 ```sh
 mkdir -p ~/.local/opt ~/.local/bin
-tar -xzf virgil-lsp-0.1.0-alpha.6-x86-64-linux.tar.gz -C ~/.local/opt
-ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.6-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
+tar -xzf virgil-lsp-0.1.0-alpha.7-x86-64-linux.tar.gz -C ~/.local/opt
+ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.7-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
 virgil-lsp --version
 ```
 
@@ -282,7 +282,7 @@ softwareupdate --install-rosetta --agree-to-license
 The executables are unsigned. A web browser marks what it downloads as quarantined, and macOS may then refuse to run them. Download with `curl` or `gh`, which don't set the quarantine attribute, or remove it after extracting:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.6-x86-64-darwin
+xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.7-x86-64-darwin
 ```
 
 The same applies to the [JVM archive](#the-jvm-build-for-apple-silicon), which needs no Rosetta 2. On macOS 27.0.1, with network access, `tar -xzf` of a quarantined JVM archive marked every extracted file as quarantined, and the server and worker still ran: Gatekeeper accepted the runtime's signed `java`, while it killed a quarantined unsigned program in the same test. This was tested with network access; offline Gatekeeper behavior was not tested. The runtime's binaries had no stapled notarization ticket. Remove the attribute as above if macOS refuses to run the JVM archive. The JVM VSIX, installed from a quarantined download with `code --install-extension` in VS Code 1.144.1, had no quarantined files.
@@ -301,9 +301,9 @@ Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace 
 With Remote-SSH or WSL, install the package for the remote host in the remote window. VS Code or the extension's output channel rejects a mismatched bundle. Download and verify it against `SHA256SUMS`, then install it:
 
 ```sh
-gh release download v0.1.0-alpha.6 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.7 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-vscode-*.vsix' --pattern SHA256SUMS
-code --install-extension virgil-lsp-vscode-0.1.5-linux-x64.vsix
+code --install-extension virgil-lsp-vscode-0.1.6-linux-x64.vsix
 ```
 
 or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update an extension installed from a VSIX; install the next release's matching VSIX to upgrade. To roll back, install the older matching VSIX with `--force` and reload. An explicit `virgil.server.path` switches to an external server; clear it to use the bundle again. Bump the independent numeric extension version for any client or bundled-server change, and never reuse a version/target pair for different contents. [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix) covers remote windows, upgrading, and removal, and [compatibility](compatibility.md#editors) records which server versions each extension version works with.
