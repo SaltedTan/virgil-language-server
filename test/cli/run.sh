@@ -155,6 +155,13 @@ expect_bytes "format --check reports the first changed line" 1 "$F/unformatted.c
 expect "format --check passes a formatted file" 0 "" "" -- format --check "$F/formatted.v3"
 expect_bytes "format prints the formatted text" 0 "$F/unformatted.want" "" -- format "$F/unformatted.v3"
 expect_bytes "format prints a formatted file unchanged" 0 "$F/formatted.v3" "" -- format "$F/formatted.v3"
+ln -s unformatted.v3 "$F/regular-link.v3"
+want "$F/regular-link.check" "$F/regular-link.v3:2: not formatted"
+expect_bytes "format --check follows and names a symlink to a regular file" 1 "$F/regular-link.check" "" -- \
+    format --check "$F/regular-link.v3"
+expect_bytes "format prints the formatted text through a symlink" 0 "$F/unformatted.want" "" -- \
+    format "$F/regular-link.v3"
+[ "$(readlink "$F/regular-link.v3")" = unformatted.v3 ] || { fail=$((fail + 1)); echo "FAIL: format changed the symbolic link"; }
 cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
 cp "$F/unformatted.v3" "$F/with space.v3"
 want "$F/with-space.check" "$F/with space.v3:2: not formatted"
@@ -271,10 +278,10 @@ expect_bytes "format --check accepts a language option after the files" 1 "$F/un
 # A failed write to standard output is reported on standard error, with
 # status 1, in both modes: a full device, and a pipe whose read end was closed
 # before the command started, which must not end it with SIGPIPE.
-# expect_write_failure <name> <full|closed> -- <args...>
+# expect_write_failure <name> <full|closed> <expected-stderr-file> -- <args...>
 expect_write_failure() {
-    local name=$1 kind=$2
-    shift 3
+    local name=$1 kind=$2 want=$3
+    shift 4
     python3 -c '
 import os
 import subprocess
@@ -297,22 +304,22 @@ sys.exit(status if status >= 0 else 128 - status)
     local got=$?
     local ok=1
     [ "$got" -eq 1 ] || { ok=0; echo "  exit: expected 1, got $got"; }
-    check_stream stderr "$TMP/err" "error: cannot write to standard output" || ok=0
+    cmp -s "$want" "$TMP/err" || { ok=0; echo "  stderr: differs from"; sed 's/^/  expected| /' "$want"; }
     finish "$name" $ok
 }
+want "$F/write.err" "virgil-lsp: error: cannot write to standard output"
 for mode in --check ""; do
     if [ -c /dev/full ]; then
-        expect_write_failure "format ${mode:-without a flag} reports a full standard output" full -- \
+        expect_write_failure "format ${mode:-without a flag} reports a full standard output" full "$F/write.err" -- \
             format $mode "$F/no-eol.v3"
     fi
-    expect_write_failure "format ${mode:-without a flag} reports a closed standard output" closed -- \
+    expect_write_failure "format ${mode:-without a flag} reports a closed standard output" closed "$F/write.err" -- \
         format $mode "$F/no-eol.v3"
 done
-if [ -c /dev/full ]; then
-    expect_write_failure "format --check stops at a full standard output" full -- \
-        format --check "$F/no-eol.v3" "$F/unformatted.v3"
-    [ "$(wc -l < "$TMP/err")" -eq 1 ] || { fail=$((fail + 1)); echo "FAIL: format --check went on after a failed write"; }
-fi
+want "$F/batch-write.err" "virgil-lsp: error: cannot write to standard output" \
+    "virgil-lsp: error: cannot read file '$F/missing.v3'"
+expect_write_failure "format --check reports later file failures after standard output fails" closed "$F/batch-write.err" -- \
+    format --check "$F/no-eol.v3" "$F/unformatted.v3" "$F/missing.v3"
 
 # Invalid arguments: status 2, nothing on standard output.
 expect "format needs a file" 2 "" "format needs a file" -- format

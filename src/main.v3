@@ -190,8 +190,6 @@ component VirgilLsp {
 		var lang = options.extract(), status = 0;
 		for (i < paths.length) {
 			if (!formatFile(paths[i], lang, check)) status = 1;
-			// Once standard output fails, nothing more can be reported on it.
-			if (outputFailed) break;
 		}
 		return status;
 	}
@@ -238,8 +236,7 @@ component VirgilLsp {
 		return writeAll(out);
 	}
 	// The text of {path}, read as a project source is, or null after
-	// reporting why it can't be. The input is opened without blocking, and
-	// only a regular file is read, within FORMAT_MAX_BYTES.
+	// reporting why it can't be. Reads are bounded by FORMAT_MAX_BYTES.
 	private def readSource(path: string) -> Array<byte> {
 		var fd = HostOs.openRead(path);
 		// The JVM bridge checks the type before opening: EISDIR or EINVAL.
@@ -266,18 +263,18 @@ component VirgilLsp {
 		HostOs.close(fd);
 		return text;
 	}
-	// Whether a write to standard output failed, after which format stops.
 	private var outputFailed: bool;
 	// Writes {data} to standard output unbuffered, retrying an interrupted or
 	// partial write, or reports why it couldn't. Every write of format goes
 	// through here, since System.puts buffers and drops a failed write.
 	private def writeAll(data: Array<byte>) -> bool {
+		if (outputFailed) return false;
 		var at = 0;
 		while (at < data.length) {
 			var n = HostOs.write(STDOUT, data[at ..+ (data.length - at)]);
 			if (n == HostOs.EINTR) continue;
 			if (n <= 0) {
-				Log.error1("cannot write to standard output (errno %d)", if(n < 0, -n, 0));
+				Log.error("cannot write to standard output");
 				outputFailed = true;
 				return false;
 			}
