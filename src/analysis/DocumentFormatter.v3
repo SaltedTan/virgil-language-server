@@ -20,8 +20,9 @@ enum AnalysisFormatEnd {
 
 // A document formatted (AeneasAdapter.formatting), or a refusal that says why:
 // a carriage return without a line feed, the parse's first diagnostic, or the
-// parse budget. {size} is known before any replacement text is built, so a
-// caller can refuse a result that would not fit before calling {edits}.
+// parse budget. {size} and {firstChange} are known before any replacement
+// text is built, so a caller can refuse a result that would not fit, or
+// report where a text changes, without calling {edits}.
 class AnalysisFormatting {
 	// Why the document was not formatted, or null.
 	def refusal: string;
@@ -38,6 +39,11 @@ class AnalysisFormatting {
 	// The number of edits, or 0 for a refusal.
 	def editCount() -> int {
 		return if(formatter == null, 0, formatter.count);
+	}
+	// The byte offset where the first edit begins, or -1 for a refusal or a
+	// text that doesn't change.
+	def firstChange() -> int {
+		return if(formatter == null || formatter.count == 0, -1, formatter.first);
 	}
 	// The edits in byte order, which never overlap, or null for a refusal.
 	def edits() -> Array<AnalysisTextEdit> {
@@ -333,9 +339,11 @@ class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHead
 // See docs/architecture.md#formatting.
 class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<u16>,
 		funHeaders: Array<FormatterFunHeader>, eof: AnalysisFormatEnd) {
-	// After {measure}, the formatted text's length in bytes, and the number of edits.
+	// After {measure}, the formatted text's length in bytes, the number of
+	// edits, and the byte offset where the first edit begins.
 	var size: long;
 	var count: int;
+	var first: int;
 	// The edits, while {edits} runs.
 	private var out: Vector<AnalysisTextEdit>;
 	// A run's new line ends, or the single space of a join, before its indentation.
@@ -811,7 +819,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			suf--;
 		}
 		size += newLength - oldLength;
-		count++;
+		if (count++ == 0) first = s;
 		if (out == null) return;
 		var text = Array<byte>.new(newLength - suf - pre);
 		for (i < text.length) text[i] = at(pre + i, tabs, kb);

@@ -102,11 +102,175 @@ check_stream() {
 expect "version" 0 '^virgil-lsp [0-9]+\.[0-9]+\.[0-9]+' "" -- --version
 expect "version reports virgil revision" 0 'virgil revision: [0-9a-f]{40}' "" -- --version
 expect "help" 0 'Usage: virgil-lsp' "" -- --help
+expect "help lists format as a command" 0 '^  format \[options\] <file\.v3>\.\.\.$' "" -- --help
 expect "no arguments keeps stdout clean" 2 "" 'Usage: virgil-lsp' --
 expect "unknown argument keeps stdout clean" 2 "" "unknown argument" -- --bogus
 expect "parse clean file" 0 'ok, 2 top-level declarations' "" -- parse "$FIXTURES/syntax/clean.v3"
 expect "parse reports tab-expanded column" 1 'tab-error\.v3:3:17: ParseError' "" -- parse "$FIXTURES/syntax/tab-error.v3"
 expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
+
+# virgil-lsp format (ADR-0019 decision 6). Standard output holds only what
+# the mode prints: the formatted bytes, or one line for each file that would
+# change under --check. Failures are reported on standard error.
+# expect_bytes <name> <expected-exit> <expected-stdout-file> <stderr-pattern|-> -- <args...>
+# Standard output must equal the file byte for byte. The command must end
+# within 30 seconds, which a blocking open of a FIFO without a writer would
+# exceed, and which leaves the JVM time to start.
+expect_bytes() {
+    local name=$1 code=$2 want=$3 err_pat=$4
+    shift 5
+    python3 -c '
+import subprocess
+import sys
+
+try:
+    sys.exit(subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL, timeout=30).returncode)
+except subprocess.TimeoutExpired:
+    print("the command did not finish within 30 seconds", file=sys.stderr)
+    sys.exit(124)
+' "$EXE" "$@" > "$TMP/out" 2> "$TMP/err"
+    local got=$?
+    local ok=1
+    [ "$got" -eq "$code" ] || { ok=0; echo "  exit: expected $code, got $got"; }
+    cmp -s "$want" "$TMP/out" || { ok=0; echo "  stdout: differs from"; sed 's/^/  expected| /' "$want"; }
+    check_stream stderr "$TMP/err" "$err_pat" || ok=0
+    finish "$name" $ok
+}
+F=$TMP/format
+mkdir "$F"
+: > "$F/none"
+printf 'def f() {\n  var x=1;\n}\n' > "$F/unformatted.v3"
+printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/unformatted.want"
+printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/formatted.v3"
+expect "format --check reports the first changed line" 1 "^$F/unformatted\.v3:2: not formatted$" "" -- \
+    format --check "$F/unformatted.v3"
+expect "format --check passes a formatted file" 0 "" "" -- format --check "$F/formatted.v3"
+expect_bytes "format prints the formatted text" 0 "$F/unformatted.want" "" -- format "$F/unformatted.v3"
+expect_bytes "format prints a formatted file unchanged" 0 "$F/formatted.v3" "" -- format "$F/formatted.v3"
+cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
+cp "$F/unformatted.v3" "$F/with space.v3"
+expect "format --check names a path with a space" 1 "^$F/with space\.v3:2: not formatted$" "" -- \
+    format --check "$F/with space.v3"
+
+# The end of the file: exactly one final line end; a whitespace-only file
+# becomes empty; a block comment left open runs to the end untouched.
+printf 'def f() { }' > "$F/no-eol.v3"
+printf 'def f() { }\n' > "$F/no-eol.want"
+expect "format --check reports a missing final line end" 1 "^$F/no-eol\.v3:1: not formatted$" "" -- \
+    format --check "$F/no-eol.v3"
+expect_bytes "format adds the final line end" 0 "$F/no-eol.want" "" -- format "$F/no-eol.v3"
+printf '\n\n' > "$F/blank.v3"
+expect "format --check reports a whitespace-only file" 1 "^$F/blank\.v3:1: not formatted$" "" -- \
+    format --check "$F/blank.v3"
+expect_bytes "format empties a whitespace-only file" 0 "$F/none" "" -- format "$F/blank.v3"
+expect_bytes "format of an empty file prints nothing" 0 "$F/none" "" -- format "$F/none"
+printf '/* note\n\n' > "$F/open-comment.v3"
+expect "format --check passes an open block comment" 0 "" "" -- format --check "$F/open-comment.v3"
+expect_bytes "format keeps an open block comment byte for byte" 0 "$F/open-comment.v3" "" -- \
+    format "$F/open-comment.v3"
+
+# Files that can't be formatted: status 1, nothing on standard output.
+printf 'def f() // note\r -> int\n{\n\treturn;\n}\n' > "$F/lone-cr.v3"
+cp "$F/lone-cr.v3" "$F/lone-cr.orig"
+expect "format --check refuses a lone CR" 1 "" "cannot format '$F/lone-cr\.v3': .*carriage return" -- \
+    format --check "$F/lone-cr.v3"
+expect_bytes "format refuses a lone CR" 1 "$F/none" "cannot format '$F/lone-cr\.v3': .*carriage return" -- \
+    format "$F/lone-cr.v3"
+cmp -s "$F/lone-cr.orig" "$F/lone-cr.v3" || { fail=$((fail + 1)); echo "FAIL: format changed a file with a lone CR"; }
+printf 'def f() {\n  var x=;\n}\n' > "$F/syntax.v3"
+expect "format --check reports a syntax error" 1 "" "error: $F/syntax\.v3:2:9: ParseError" -- \
+    format --check "$F/syntax.v3"
+expect_bytes "format reports a syntax error" 1 "$F/none" "error: $F/syntax\.v3:2:9: ParseError" -- \
+    format "$F/syntax.v3"
+expect "format --check reports a missing file" 1 "" "cannot read file '$F/missing\.v3'" -- \
+    format --check "$F/missing.v3"
+expect_bytes "format reports a missing file" 1 "$F/none" "cannot read file '$F/missing\.v3'" -- \
+    format "$F/missing.v3"
+cp "$F/unformatted.v3" "$F/unreadable.v3"
+chmod 000 "$F/unreadable.v3"
+# Permissions don't stop a privileged user.
+if [ ! -r "$F/unreadable.v3" ]; then
+    expect "format --check reports an unreadable file" 1 "" "cannot read file '$F/unreadable\.v3'" -- \
+        format --check "$F/unreadable.v3"
+    expect_bytes "format reports an unreadable file" 1 "$F/none" "cannot read file '$F/unreadable\.v3'" -- \
+        format "$F/unreadable.v3"
+fi
+chmod 600 "$F/unreadable.v3"
+mkdir "$F/dir.v3"
+expect "format --check refuses a directory" 1 "" "cannot format '$F/dir\.v3': it is not a regular file" -- \
+    format --check "$F/dir.v3"
+expect_bytes "format refuses a directory" 1 "$F/none" "cannot format '$F/dir\.v3': it is not a regular file" -- \
+    format "$F/dir.v3"
+expect_bytes "format refuses a device" 1 "$F/none" "cannot format '/dev/null': it is not a regular file" -- \
+    format /dev/null
+# A FIFO with no writer, which a blocking open would wait on, is refused
+# promptly, directly and through a symbolic link, and is left as it was.
+mkfifo -m 600 "$F/fifo.v3"
+ln -s fifo.v3 "$F/fifo-link.v3"
+for mode in --check ""; do
+    for p in fifo.v3 fifo-link.v3; do
+        expect_bytes "format ${mode:-without a flag} refuses $p promptly" 1 "$F/none" \
+            "cannot format '$F/$p': it is not a regular file" -- format $mode "$F/$p"
+    done
+done
+[ -p "$F/fifo.v3" ] && [ "$(readlink "$F/fifo-link.v3")" = fifo.v3 ] || {
+    fail=$((fail + 1)); echo "FAIL: format changed the FIFO or its link"; }
+
+# The input bound is the server's source budget for a project's files, 4 MiB,
+# and the output bound is the same: a file over it is refused, and so is a
+# small one whose formatted text would grow past it: each of 42,000 empty
+# statements in 100 nested blocks gains 101 tabs. The nesting stays within
+# what the JVM build's parse admits.
+head -c 4194305 /dev/zero | tr '\0' ' ' > "$F/large.v3"
+expect "format --check refuses a file over the input bound" 1 "" \
+    "cannot format '$F/large\.v3': it is larger than 4194304 bytes" -- format --check "$F/large.v3"
+expect_bytes "format refuses a file over the input bound" 1 "$F/none" \
+    "cannot format '$F/large\.v3': it is larger than 4194304 bytes" -- format "$F/large.v3"
+rm "$F/large.v3"
+{
+    echo 'def f() {'
+    for ((i = 0; i < 100; i++)); do echo '{'; done
+    for ((i = 0; i < 42000; i++)); do echo ';'; done
+    for ((i = 0; i < 100; i++)); do echo '}'; done
+    echo '}'
+} > "$F/nested.v3"
+expect "format --check refuses formatted text over the output bound" 1 "" \
+    "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
+    format --check "$F/nested.v3"
+expect_bytes "format refuses formatted text over the output bound" 1 "$F/none" \
+    "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
+    format "$F/nested.v3"
+
+# --check goes on after a failure and reports every file that would change.
+expect "format --check checks every file" 1 \
+    "^$F/unformatted\.v3:2: not formatted
+$F/no-eol\.v3:1: not formatted$" "cannot read file '$F/missing\.v3'" -- \
+    format --check "$F/unformatted.v3" "$F/missing.v3" "$F/formatted.v3" "$F/no-eol.v3"
+[ "$(wc -l < "$TMP/out")" -eq 2 ] || { fail=$((fail + 1)); echo "FAIL: format --check printed other lines"; }
+
+# Language options, as a project file's compilerArgs accepts them, apply to
+# every file, before or after it.
+printf 'class D describes C { }\nclass C descriptor D { }\n' > "$F/descriptors.v3"
+expect "format needs a language option to parse" 1 "" "ParseError" -- format --check "$F/descriptors.v3"
+expect_bytes "format accepts a language option" 0 "$F/descriptors.v3" "" -- \
+    format -lang:descriptors "$F/descriptors.v3"
+expect "format --check accepts a language option after the files" 1 "^$F/unformatted\.v3:2: not formatted$" "" -- \
+    format --check "$F/descriptors.v3" "$F/unformatted.v3" -lang:descriptors=true
+
+# Invalid arguments: status 2, nothing on standard output.
+expect "format needs a file" 2 "" "format needs a file" -- format
+expect "format --check needs a file" 2 "" "format needs a file" -- format --check -lang:descriptors
+expect "format prints only one file" 2 "" "pass --check to check several" -- \
+    format "$F/formatted.v3" "$F/no-eol.v3"
+expect "format rejects an unknown option" 2 "" "unknown option '--bogus'" -- format --bogus "$F/formatted.v3"
+expect "format has no --write yet" 2 "" "unknown option '--write'" -- format --write "$F/unformatted.v3"
+expect "format rejects an unknown language option" 2 "" "unknown language option '-lang:bogus'" -- \
+    format -lang:bogus "$F/formatted.v3"
+expect "format rejects an invalid language option value" 2 "" "the value of '-lang:descriptors' must be true or false" -- \
+    format -lang:descriptors=yes "$F/formatted.v3"
+expect "format rejects a repeated language option" 2 "" "'-lang:descriptors' is given more than once" -- \
+    format --check -lang:descriptors "$F/formatted.v3" -lang:descriptors=false
+cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
 
 A=$FIXTURES/analysis
 expect "analyze clean two-file program" 0 '^ok: 2 files parsed and verified$' "" -- \
