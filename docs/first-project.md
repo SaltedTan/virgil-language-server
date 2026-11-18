@@ -84,7 +84,7 @@ Syntax diagnostics appear for any open `.v3` file, with no project file needed. 
 
 ## The Virgil root and the bundled library
 
-This project names no `virgilDependencies`, so it needs neither a [Virgil root](configuration.md#the-virgil-root) nor the bundled library. A project that uses Virgil's own libraries, such as `lib/util`, names them relative to a root, which release archives and development checkouts provide.
+This project uses only local sources and needs no [Virgil root](configuration.md#the-virgil-root). A project that uses Virgil's own libraries, such as `lib/util`, names them relative to a root, which release archives and development checkouts provide. For a project that needs native runtime sources, see [Target](configuration.md#target).
 
 ## Where to go next
 
