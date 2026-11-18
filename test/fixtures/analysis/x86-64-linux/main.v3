@@ -1,4 +1,4 @@
-// Analyzed for the x86-64-linux target, after its runtime sources
+// Analyzed for the x86-64-linux target, before its runtime sources
 // (AnalysisTargets): Pointer, CiRuntime, and Linux come from the target, and
 // RiUserCode, LinuxConst, and System from the runtime. Without the target,
 // RiUserCode and Pointer cannot be found.
