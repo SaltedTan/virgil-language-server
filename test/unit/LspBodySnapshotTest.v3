@@ -128,7 +128,7 @@ def test_cache_parse_progress(t: Tester) {
 			inputs.versions[i] = AnalysisDocumentVersion.new(ctx.sources[i].uri, 1, null);
 			inputs.sources[i] = AnalysisSource.new(paths[i], texts[i]);
 		}
-		var analysis = AeneasAdapter.analyzeProgram(inputs.sources, [], false);
+		var analysis = AeneasAdapter.analyzeProgram(inputs.sources, [], null, false);
 		t.assert(!analysis.parsed, "middle file has syntax errors");
 		t.assert_eq(limit, analysis.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS);
 		var snapshot = AnalysisSnapshot.new(1, paths, analysis.parsed, analysis.verified, analysis.diagnostics, null, false, []);

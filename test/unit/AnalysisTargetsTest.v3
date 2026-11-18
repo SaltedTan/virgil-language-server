@@ -1,0 +1,96 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisTargets:wrapper_runtime_files", test_wrapper_runtime_files),
+	T("AnalysisTargets:registered", test_registered),
+	T("AnalysisTargets:find", test_find),
+	()
+];
+
+// The pinned Virgil, from the repository root.
+def VIRGIL = "vendor/virgil";
+
+// Each entry matches its pinned wrapper, compared in full: its RT_FILES are
+// the entry's runtime patterns, in order, and it passes the entry's Aeneas
+// target and stack size. Of the wrapper's other options, -heap-size and the
+// -rt flags reach only the back end and the runtime's tables, never the
+// parser or the verifier (ADR-0018). Comparing the whole script, not its
+// parts, means that a pin update that changes anything in it, such as a
+// repeated or added option or a continued line, fails here until the change
+// is checked for what analysis reads and this text follows.
+def test_wrapper_runtime_files(t: Tester) {
+	for (target in AnalysisTargets.all) {
+		var path = Strings.format2("%s/bin/v3c-%s", VIRGIL, target.name), script = System.fileLoad(path);
+		if (script == null) return t.fail1("cannot read %s; run the unit tests from the repository root", path);
+		var rt = StringBuilder.new();
+		for (p in target.runtimePatterns) {
+			if (!Strings.startsWith(p, "rt/")) return t.fail1("pattern %s is not under rt/", p);
+			rt.puts(" $RT/").puts(Arrays.range(p, 3, p.length));
+		}
+		var expected = StringBuilder.new()
+			.puts("#!/usr/bin/env bash\n")
+			.puts("BIN=$(dirname ${BASH_SOURCE[0]})\n")
+			.puts("BIN=$(cd $BIN && pwd)\n")
+			.puts("RT=$(cd $BIN/../rt/ && pwd)\n")
+			.puts("V3C=${V3C:=$BIN/v3c}\n")
+			.put1("RT_FILES=$(echo%s)\n", rt.toString())
+			.put2("exec $V3C -heap-size=200m -stack-size=%s -target=%s", target.stackSize, target.aeneasName)
+			.puts(" -rt.sttables -rt.gc -rt.gctables -rt.files=\"$RT_FILES\" \"$@\"\n");
+		t.assert_string(expected.toString(), script);
+	}
+}
+
+// Every entry's Aeneas target is registered, so no analysis for it falls
+// back to none (AeneasAdapter.compilerFor).
+def test_registered(t: Tester) {
+	t.assert(AnalysisTargets.all.length > 0, "a supported target");
+	for (target in AnalysisTargets.all) {
+		t.assert(AeneasAdapter.registered(target), Strings.format1("Aeneas registers %s", target.aeneasName));
+	}
+	t.assertz(false, AeneasAdapter.registered(AnalysisTarget.new("none", "no-such-target", [], "2m")));
+}
+
+// Only supported names are found; Aeneas's other targets, including the
+// -test variant, are not supported.
+def test_find(t: Tester) {
+	t.assert(AnalysisTargets.find("x86-64-linux") == AnalysisTargets.X86_64_LINUX, "x86-64-linux");
+	for (name in [null, "", "x86-64-linux-test", "x86-linux", "jvm", "wasm", "X86-64-LINUX"]) {
+		if (AnalysisTargets.find(name) != null) t.fail1("\"%s\" is unsupported", Strings.nonnull(name));
+	}
+	var patterns = AnalysisTargets.X86_64_LINUX.runtimePatterns;
+	t.asserti(3, patterns.length);
+	t.assert_string("rt/x86-64-linux/*.v3", patterns[0]);
+	t.assert_string("rt/native/*.v3", patterns[1]);
+	t.assert_string("rt/gc/*.v3", patterns[2]);
+}
+
+// The runtime sources of a target from the pinned Virgil, as its wrapper
+// lists them: each pattern's directory's .v3 files in byte order.
+component AnalysisTargetFiles {
+	def runtimeSources(t: Tester, target: AnalysisTarget) -> Array<AnalysisSource> {
+		var sources = Vector<AnalysisSource>.new();
+		for (p in target.runtimePatterns) {
+			if (!Strings.endsWith(p, "/*.v3")) {
+				t.fail1("pattern %s is not a directory's .v3 files", p);
+				return null;
+			}
+			var dir = ProjectFiles.join(VIRGIL, Arrays.range(p, 0, p.length - 5)), listed = ProjectFiles.list(dir, 256);
+			if (listed.names == null) {
+				t.fail1("cannot list %s; run the unit tests from the repository root", dir);
+				return null;
+			}
+			for (name in listed.names) {
+				if (!Strings.endsWith(name, ".v3")) continue;
+				var path = ProjectFiles.join(dir, name), input = System.fileLoad(path);
+				if (input == null) {
+					t.fail1("cannot read %s", path);
+					return null;
+				}
+				sources.put(AnalysisSource.new(path, input));
+			}
+		}
+		return sources.extract();
+	}
+}

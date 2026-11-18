@@ -1,0 +1,12 @@
+// CiRuntime.STACK_SIZE is the wrapper's -stack-size (2m for x86-64-linux),
+// so it duplicates 2097152, as the pinned v3c-x86-64-linux reports.
+def f(x: int) -> int {
+	match (x) {
+		2097152 => return 1;
+		CiRuntime.STACK_SIZE => return 2;
+		_ => return 3;
+	}
+}
+def main() -> int {
+	return f(0);
+}

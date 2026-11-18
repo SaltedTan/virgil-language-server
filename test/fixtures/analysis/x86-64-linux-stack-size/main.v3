@@ -1,0 +1,12 @@
+// CiRuntime.STACK_SIZE is the wrapper's -stack-size (2m for x86-64-linux),
+// which the verifier compares with the other match values: 0 is distinct.
+def f(x: int) -> int {
+	match (x) {
+		0 => return 1;
+		CiRuntime.STACK_SIZE => return 2;
+		_ => return 3;
+	}
+}
+def main() -> int {
+	return f(0);
+}

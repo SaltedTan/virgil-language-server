@@ -65,7 +65,7 @@ def render(call: AnalysisCall) -> string {
 // label and parameters of its signature, or "none".
 def labelAt(marked: string) -> string {
 	var m = unmark(marked);
-	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], null, false);
 	var call = callOf(a, a.callAt(MAIN, m.1));
 	if (call == null) return "none";
 	if (call.signature == null) return "no signature";
@@ -80,8 +80,8 @@ def check(t: Tester, marked: string, expected: string) {
 // Checks that the query at each call of {path} in {sources} answers that
 // call as an ordinary analysis collects it, and returns how many it checked.
 def agree(t: Tester, sources: Array<AnalysisSource>, path: string) -> int {
-	var ordinary = AeneasAdapter.analyzeProgram(sources, [], false);
-	var scoped = AeneasAdapter.analyzeForScope(sources, [], false);
+	var ordinary = AeneasAdapter.analyzeProgram(sources, [], null, false);
+	var scoped = AeneasAdapter.analyzeForScope(sources, [], null, false);
 	var calls = ordinary.calls(path);
 	for (call in calls) {
 		var expected = render(call), got = render(callOf(scoped, scoped.callAt(path, call.open)));
@@ -178,7 +178,7 @@ def test_lambda_captures(t: Tester) {
 	var text = "component C {\n\tdef m(g: int -> int) {\n\t\tvar f = fun (x: int) => fun (y: int) => g(x + y);\n\t}\n}\n";
 	t.assert(agree(t, [AnalysisSource.new(MAIN, text)], MAIN) == 1, "one call");
 	var m = unmark("component C {\n\tdef m(g: int -> int) {\n\t\tvar f = fun (x: int) => fun (y: int) => g$(x + y);\n\t}\n}\n");
-	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], null, false);
 	var call = callOf(a, a.callAt(MAIN, m.1));
 	t.assert(call != null && call.target != null, "the callee's declaration");
 	if (call != null && call.target != null) {
@@ -256,7 +256,7 @@ def cost(t: Tester, fixture: (string, string)) -> (int, long) {
 		expr = Strings.format2("%s$%s", Arrays.range(expr, 0, i), Arrays.range(expr, i, expr.length));
 	}
 	var m = unmark(b.puts(expr).puts(";\n\t}\n}\n").toString());
-	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], null, false);
 	if (!a.verified) {
 		for (d in a.diagnostics) t.fail1("the fixture does not verify: %s", d.toString());
 		return (-1, -1);

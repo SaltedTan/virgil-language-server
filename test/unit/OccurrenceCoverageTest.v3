@@ -69,7 +69,7 @@ def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -
 // Analyzes {sources} with language options {options}, then encodes every
 // file's occurrences and decodes them as the server would.
 def analyze(t: Tester, sources: Array<AnalysisSource>, options: Array<string>) -> (ProgramAnalysis, AnalysisSnapshot) {
-	var a = AeneasAdapter.analyzeProgram(sources, options, false);
+	var a = AeneasAdapter.analyzeProgram(sources, options, null, false);
 	var paths = Array<string>.new(sources.length);
 	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
 	for (i < sources.length) {

@@ -125,7 +125,7 @@ def snapshot(t: Tester, sources: Array<(string, string)>) -> AnalysisSnapshot {
 		inputs[i] = AnalysisSource.new(sources[i].0, sources[i].1);
 		paths[i] = sources[i].0;
 	}
-	var a = AeneasAdapter.analyzeProgram(inputs, [], false);
+	var a = AeneasAdapter.analyzeProgram(inputs, [], null, false);
 	var files = Array<(string, Array<AnalysisOccurrence>)>.new(paths.length);
 	for (i < paths.length) files[i] = (paths[i], if(a.parsed, a.occurrences(paths[i]), []));
 	var data = Ranges.dup(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L)[4 ...]);

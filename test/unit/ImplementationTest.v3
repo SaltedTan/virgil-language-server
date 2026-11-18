@@ -33,7 +33,7 @@ def indexOf(text: Array<byte>, needle: string) -> int {
 	return -1;
 }
 def analyze(t: Tester, sources: Array<AnalysisSource>, options: Array<string>, verified: bool) -> ProgramAnalysis {
-	var a = AeneasAdapter.analyzeProgram(sources, options, false);
+	var a = AeneasAdapter.analyzeProgram(sources, options, null, false);
 	if (verified) {
 		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
 		t.assertz(true, a.verified);

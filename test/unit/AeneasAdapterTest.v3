@@ -41,6 +41,13 @@ def X = [
 	T("AeneasAdapter:language_options_parse", test_language_options_parse),
 	T("AeneasAdapter:language_options_verify", test_language_options_verify),
 	T("AeneasAdapter:language_options_order", test_language_options_order),
+	T("AeneasAdapter:target_runtime_resolves", test_target_runtime_resolves),
+	T("AeneasAdapter:target_absent_unresolved", test_target_absent_unresolved),
+	T("AeneasAdapter:target_type_error", test_target_type_error),
+	T("AeneasAdapter:target_interleaved", test_target_interleaved),
+	T("AeneasAdapter:target_front_end_only", test_target_front_end_only),
+	T("AeneasAdapter:target_stack_size", test_target_stack_size),
+	T("AeneasAdapter:target_stack_size_interleaved", test_target_stack_size_interleaved),
 	()
 ];
 
@@ -372,7 +379,7 @@ def analyzeFiles(t: Tester, paths: Array<string>) -> ProgramAnalysis {
 		}
 		sources[i] = AnalysisSource.new(paths[i], input);
 	}
-	return AeneasAdapter.analyzeProgram(sources, [], false);
+	return AeneasAdapter.analyzeProgram(sources, [], null, false);
 }
 def assertDiagnostic(t: Tester, a: ProgramAnalysis, kind: string, path: string, line: int, column: int) {
 	if (a.diagnostics.length == 0) return t.fail1("expected a %s diagnostic", kind);
@@ -458,7 +465,7 @@ def test_analyze_in_memory_only(t: Tester) {
 		AnalysisSource.new("no/such/dir/a.v3", "component A { def f() -> int { return B.new().g(); } }\n"),
 		AnalysisSource.new("no/such/dir/b.v3", "class B { def g() -> int { return 1; } }\n"),
 		AnalysisSource.new("no/such/dir/empty.v3", null)
-	], [], false);
+	], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertDefinition(t, a, "no/such/dir/a.v3", 1, 39, AnalysisDeclKind.CLASS, "B", "no/such/dir/b.v3", 1, 7);
@@ -468,7 +475,7 @@ def test_analyze_in_memory_only(t: Tester) {
 // ExceptionInInitialization if the adapter ran Compilation.init().
 def test_analyze_runs_no_initializers(t: Tester) {
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("init.v3",
-		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")], [], false);
+		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 }
@@ -499,7 +506,7 @@ def test_binding_lookup(t: Tester) {
 def test_binding_captured_local(t: Tester) {
 	var path = "captures.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], [], false);
+		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertSingleDefinition(t, a, path, 3, 23, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
@@ -517,7 +524,7 @@ def test_binding_capture_contexts(t: Tester) {
 		var a = AeneasAdapter.analyzeProgram([
 			AnalysisSource.new(path, source),
 			AnalysisSource.new("error.v3", if(broken == 0, "", "def broken() -> int { return missing; }\n"))
-		], [], false);
+		], [], null, false);
 		t.assertz(true, a.parsed);
 		t.assertz(broken == 0, a.verified);
 		t.assertz(broken != 0, a.diagnostics.length > 0);
@@ -538,7 +545,7 @@ def test_binding_capture_contexts(t: Tester) {
 def test_binding_explicit_constructor(t: Tester) {
 	var path = "constructor.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"class Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], false);
+		"class Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	assertDefinition(t, a, path, 2, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 1, 14);
 }
@@ -547,7 +554,7 @@ def test_binding_explicit_constructor(t: Tester) {
 def test_binding_exports(t: Tester) {
 	var path = "exports.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"export def main() { }\ndef helper() { }\nexport helper;\nexport \"alias\" = helper;\n")], [], false);
+		"export def main() { }\ndef helper() { }\nexport helper;\nexport \"alias\" = helper;\n")], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	t.assert(a.definitionAt(path, 1, 12) == null, "an export declaration is not a use of itself");
@@ -559,7 +566,7 @@ def test_binding_exports(t: Tester) {
 def test_binding_exports_after_semantic_errors(t: Tester) {
 	var path = "invalid-exports.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], false);
+		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], null, false);
 	t.assertz(true, a.parsed);
 	t.assertz(false, a.verified);
 	t.assert(a.diagnostics.length > 0, "expected semantic errors");
@@ -583,7 +590,7 @@ def test_binding_exports_after_semantic_errors(t: Tester) {
 def test_binding_this_class(t: Tester) {
 	var path = "this.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"class Rect(width: int) { def area() -> int { return this.width; } }\nclass Box {\n    var width: int;\n    new(width: int) { this.width = width; }\n    def area() -> int { var f = fun () => this.width; return f(); }\n}\n")], [], false);
+		"class Rect(width: int) { def area() -> int { return this.width; } }\nclass Box {\n    var width: int;\n    new(width: int) { this.width = width; }\n    def area() -> int { var f = fun () => this.width; return f(); }\n}\n")], [], null, false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertDefinition(t, a, path, 1, 53, AnalysisDeclKind.CLASS, "Rect", path, 1, 7);
@@ -662,7 +669,7 @@ def test_cached_binding_index(t: Tester) {
 	var broken = analyzeFiles(t, [SHAPES, SYNTAX_ERROR]);
 	if (broken == null) return;
 	t.assert(broken.definitionAt(SHAPES, 10, 24) == null, "parse failure has no binding index");
-	var empty = AeneasAdapter.analyzeProgram([AnalysisSource.new("empty.v3", "")], [], false);
+	var empty = AeneasAdapter.analyzeProgram([AnalysisSource.new("empty.v3", "")], [], null, false);
 	t.assert(empty.occurrences("empty.v3") == empty.occurrences("empty.v3"), "empty index is cached too");
 	t.assert(empty.definitionAt("empty.v3", 1, 1) == null, "empty index has no definition");
 }
@@ -673,14 +680,14 @@ def test_lazy_bindings_after_cache_cleanup(t: Tester) {
 	var path = "snapshot.v3";
 	var sources = [AnalysisSource.new(path,
 		"class Box<T>(value: T) {}\nenum E { A, B }\ncomponent C {\n    def id<T>(x: T) -> T { return x; }\n    def use(b: Box<E>) -> E { return id(b.value); }\n}\n")];
-	var first = AeneasAdapter.analyzeProgram(sources, [], false);
+	var first = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assertz(true, first.verified);
 	analyzeFiles(t, [SHAPES, MAIN]);
 	analyzeFiles(t, [SHAPES, UNRESOLVED]);
 	RiGc.forceGC();
 	assertDefinition(t, first, path, 5, 38, AnalysisDeclKind.METHOD, "id", path, 4, 9);
 	assertDefinition(t, first, path, 5, 43, AnalysisDeclKind.FIELD, "value", path, 1, 14);
-	var second = AeneasAdapter.analyzeProgram(sources, [], false);
+	var second = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assert_string(renderAnalysis(first, [path]), renderAnalysis(second, [path]));
 }
 
@@ -692,13 +699,13 @@ def test_shared_nested_tuple_cleanup(t: Tester) {
 	var sources = [AnalysisSource.new(path, buf.extract())];
 	for (collectStats in [false, true]) {
 		var start = System.ticksUs();
-		var nested = AeneasAdapter.analyzeProgram(sources, [], collectStats);
+		var nested = AeneasAdapter.analyzeProgram(sources, [], null, collectStats);
 		t.assert(System.ticksUs() - start < 5000000, "shared tuple analysis must finish within five seconds");
 		t.assertz(true, nested.verified);
 		t.asserti(0, nested.diagnostics.length);
 		start = System.ticksUs();
 		var tiny = AeneasAdapter.analyzeProgram(
-			[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], [], collectStats);
+			[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], [], null, collectStats);
 		t.assert(System.ticksUs() - start < 5000000, "subsequent tiny analysis must finish within five seconds");
 		t.assertz(true, tiny.verified);
 		t.asserti(0, tiny.diagnostics.length);
@@ -709,14 +716,14 @@ def test_shared_nested_tuple_cleanup(t: Tester) {
 
 def test_optional_global_stats(t: Tester) {
 	var sources = [AnalysisSource.new("stats.v3", "class C { }\ncomponent S { def f(c: C) -> C { return c; } }\n")];
-	var unmeasured = AeneasAdapter.analyzeProgram(sources, [], false);
+	var unmeasured = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.asserti(-1, unmeasured.stats.globalTypesAdded);
 	var before = AeneasAdapter.globalTypeCount();
-	var measured = AeneasAdapter.analyzeProgram(sources, [], true);
+	var measured = AeneasAdapter.analyzeProgram(sources, [], null, true);
 	t.asserti(AeneasAdapter.globalTypeCount() - before, measured.stats.globalTypesAdded);
 	t.assert(measured.stats.globalTypesAdded >= 0, "requested global stats must be available");
 	t.assert_string(renderAnalysis(unmeasured, ["stats.v3"]), renderAnalysis(measured, ["stats.v3"]));
-	var again = AeneasAdapter.analyzeProgram(sources, [], false);
+	var again = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.asserti(-1, again.stats.globalTypesAdded);
 	t.assert_string(renderAnalysis(measured, ["stats.v3"]), renderAnalysis(again, ["stats.v3"]));
 }
@@ -727,7 +734,7 @@ def test_program_error_limit(t: Tester) {
 	var source = StringBuilder.new().puts("component A {\n\tdef f() {\n");
 	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 5) source.put1("\t\tvar x%d: int = missing;\n", i);
 	source.puts("\t}\n}\ncomponent B {\n\tdef g() -> int { return later; }\n}\n");
-	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], [], false);
+	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], [], null, false);
 	t.assert(r.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS, "reaches the limit");
 	for (d in r.diagnostics) t.assert(!Strings.equal(d.message, "identifier \"later\" cannot be found"), "B is not verified");
 }
@@ -742,7 +749,7 @@ def test_file_diagnostic_cap(t: Tester) {
 		for (i < operators) chain.puts("+1");
 		var sources = [AnalysisSource.new("other.v3", "component D { def f() -> int { return missing; } }\n"),
 			AnalysisSource.new("chain.v3", chain.puts("; }\n").extract())];
-		var r = AeneasAdapter.analyzeProgram(sources, [], false);
+		var r = AeneasAdapter.analyzeProgram(sources, [], null, false);
 		// The other file's error comes first, then one for "c" and one for
 		// each operator, in source order.
 		var reported = 1 + operators, kept = Ints.min(reported, max);
@@ -814,7 +821,7 @@ def test_language_options_parse(t: Tester) {
 	assertDefaultOptions(t);
 	t.asserti(3, AeneasAdapter.documentSymbols("described.v3", DESCRIBED, ["-lang:descriptors"]).length);
 	assertDefaultOptions(t);
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("described.v3", DESCRIBED)], ["-lang:descriptors"], false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("described.v3", DESCRIBED)], ["-lang:descriptors"], null, false);
 	t.assertz(true, a.parsed);
 	assertDefaultOptions(t);
 }
@@ -823,21 +830,21 @@ def test_language_options_verify(t: Tester) {
 	// Analyses with different options alternate in one process, as projects
 	// do in one worker; each sees only its own options.
 	for (i < 2) {
-		var plain = AeneasAdapter.analyzeProgram(sources, [], false);
+		var plain = AeneasAdapter.analyzeProgram(sources, [], null, false);
 		t.assertz(false, plain.verified);
 		t.assert(plain.diagnostics.length > 0 && Strings.equal("UnresolvedType", plain.diagnostics[0].kind), "array is not a type by default");
-		var readOnly = AeneasAdapter.analyzeProgram(sources, ["-lang:read-only-arrays"], false);
+		var readOnly = AeneasAdapter.analyzeProgram(sources, ["-lang:read-only-arrays"], null, false);
 		t.assertz(true, readOnly.verified);
 		t.asserti(0, readOnly.diagnostics.length);
 		assertDefaultOptions(t);
 	}
 	sources = [AnalysisSource.new("nested.v3", NESTED_ARRAYS)];
-	var legacy = AeneasAdapter.analyzeProgram(sources, [], false);
+	var legacy = AeneasAdapter.analyzeProgram(sources, [], null, false);
 	t.assert_string("TypeError TypeError ", kinds(legacy.diagnostics));
-	var current = AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=false"], false);
+	var current = AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=false"], null, false);
 	t.assert_string("TypeInferError ", kinds(current.diagnostics));
 	assertDefaultOptions(t);
-	t.assert_string("TypeError TypeError ", kinds(AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=true"], false).diagnostics));
+	t.assert_string("TypeError TypeError ", kinds(AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=true"], null, false).diagnostics));
 }
 def test_language_options_order(t: Tester) {
 	// Flags apply in order, as in v3c; -lang:fun-exprs also sets -lang:simple-bodies.
@@ -860,4 +867,179 @@ def test_language_options_order(t: Tester) {
 	t.assertz(true, CLOptions.OPEN_TYPES.val);
 	AeneasAdapter.setLanguageOptions([]);
 	assertDefaultOptions(t);
+}
+
+def NATIVE = "test/fixtures/analysis/x86-64-linux/main.v3";
+def NATIVE_TYPE_ERROR = "test/fixtures/analysis/x86-64-linux-type-error/main.v3";
+def STACK_SIZE = "test/fixtures/analysis/x86-64-linux-stack-size/main.v3";
+def STACK_SIZE_DUPLICATE = "test/fixtures/analysis/x86-64-linux-stack-size-duplicate/main.v3";
+
+// {path} followed by {target}'s runtime sources, as v3c appends -rt.files, or
+// {path} alone for no target.
+def targetProgram(t: Tester, path: string, target: AnalysisTarget) -> Array<AnalysisSource> {
+	var input = System.fileLoad(path);
+	if (input == null) {
+		t.fail1("cannot read %s; run the unit tests from the repository root", path);
+		return null;
+	}
+	var main = [AnalysisSource.new(path, input)];
+	if (target == null) return main;
+	var runtime = AnalysisTargetFiles.runtimeSources(t, target);
+	return if(runtime != null, Arrays.concat(main, runtime));
+}
+def pathsOf(sources: Array<AnalysisSource>) -> Array<string> {
+	return Arrays.map(sources, fun (s: AnalysisSource) => s.path);
+}
+// Every use in {path} of a declaration named {name} resolves to a {kind}
+// declared in {declPath}, and there is at least one.
+def assertUsesIn(t: Tester, a: ProgramAnalysis, path: string, name: string, kind: AnalysisDeclKind, declPath: string) {
+	var count = 0;
+	for (o in a.occurrences(path)) {
+		var d = o.declaration;
+		if (!Strings.equal(d.name, name)) continue;
+		count++;
+		if (d.kind != kind) t.fail3("%s at line %d is a %s", name, o.range.beginLine, d.kind.name);
+		t.assert_string(declPath, d.range.path);
+	}
+	if (count == 0) t.fail2("no use of %s in %s", name, path);
+}
+
+// The fixture uses Pointer, CiRuntime, and Linux, which the target installs,
+// and RiUserCode, LinuxConst, and System, which its runtime declares, and
+// verifies as the pinned v3c-x86-64-linux does, with no errors.
+def test_target_runtime_resolves(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, sources = targetProgram(t, NATIVE, target);
+	if (sources == null) return;
+	t.asserti(13, sources.length);
+	var a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.assertz(true, a.parsed);
+	t.assertz(true, a.verified);
+	assertUsesIn(t, a, NATIVE, "RiUserCode", AnalysisDeclKind.CLASS, "vendor/virgil/rt/native/RiRuntime.v3");
+	assertUsesIn(t, a, NATIVE, "LinuxConst", AnalysisDeclKind.COMPONENT, "vendor/virgil/rt/x86-64-linux/LinuxConst.v3");
+	assertUsesIn(t, a, NATIVE, "SYS_write", AnalysisDeclKind.FIELD, "vendor/virgil/rt/x86-64-linux/LinuxConst.v3");
+	assertUsesIn(t, a, NATIVE, "System", AnalysisDeclKind.COMPONENT, "vendor/virgil/rt/x86-64-linux/System.v3");
+	assertUsesIn(t, a, NATIVE, "puts", AnalysisDeclKind.METHOD, "vendor/virgil/rt/x86-64-linux/System.v3");
+	// The scoped analysis agrees.
+	var scoped = AeneasAdapter.analyzeForScope(sources, [], target, false);
+	t.assert_string(renderAnalysis(a, [NATIVE]), renderAnalysis(scoped, [NATIVE]));
+}
+
+// Without the target, the same fixture cannot name the runtime's types or
+// the target's, as before targets.
+def test_target_absent_unresolved(t: Tester) {
+	var sources = targetProgram(t, NATIVE, null);
+	if (sources == null) return;
+	var a = AeneasAdapter.analyzeProgram(sources, [], null, false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	var messages = StringBuilder.new();
+	for (d in a.diagnostics) if (Strings.equal(d.kind, "UnresolvedType")) messages.puts(d.message).puts("; ");
+	var found = messages.toString();
+	for (m in ["type \"RiUserCode\" cannot be found; ", "type \"Pointer\" cannot be found; "]) {
+		t.assert(contains(found, m), Strings.format2("expected %s among %s", m, found));
+	}
+}
+
+// The error that the pinned bin/v3c-x86-64-linux reports for this variant:
+//   test/fixtures/analysis/x86-64-linux-type-error/main.v3 @ 8:24] TypeError:
+//   expected byte in return statement, got Pointer
+def test_target_type_error(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, sources = targetProgram(t, NATIVE_TYPE_ERROR, target);
+	if (sources == null) return;
+	var a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.asserti(1, a.diagnostics.length);
+	assertDiagnostic(t, a, "TypeError", NATIVE_TYPE_ERROR, 8, 24);
+	if (a.diagnostics.length > 0) t.assert_string("expected byte in return statement, got Pointer", a.diagnostics[0].message);
+}
+
+// Target and target-free analyses, interleaved, each answer as the first of
+// its kind did, and target analyses after the first intern no more types in
+// the process-wide cache.
+def test_target_interleaved(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX;
+	var native = targetProgram(t, NATIVE, target), plain = targetProgram(t, NATIVE, null);
+	var shapes = [AnalysisSource.new(SHAPES, System.fileLoad(SHAPES)), AnalysisSource.new(MAIN, System.fileLoad(MAIN))];
+	if (native == null || plain == null) return;
+	var nativePaths = pathsOf(native), plainPaths = [NATIVE], shapesPaths = [SHAPES, MAIN];
+	var nativeAlone = renderAnalysis(AeneasAdapter.analyzeProgram(native, [], target, false), nativePaths);
+	var plainAlone = renderAnalysis(AeneasAdapter.analyzeProgram(plain, [], null, false), plainPaths);
+	var shapesAlone = renderAnalysis(AeneasAdapter.analyzeProgram(shapes, [], null, false), shapesPaths);
+	var count = AeneasAdapter.globalTypeCount();
+	t.assert(contains(nativeAlone, "verified=true"), "the target analysis verifies");
+	t.assert(contains(plainAlone, "verified=false"), "the target-free analysis does not");
+	for (i < 3) {
+		t.assert_string(nativeAlone, renderAnalysis(AeneasAdapter.analyzeProgram(native, [], target, false), nativePaths));
+		t.assert_string(plainAlone, renderAnalysis(AeneasAdapter.analyzeProgram(plain, [], null, false), plainPaths));
+		var measured = AeneasAdapter.analyzeForScope(native, [], target, true);
+		t.asserti(0, measured.stats.globalTypesAdded);
+		t.assert_string(nativeAlone, renderAnalysis(measured, nativePaths));
+		t.assert_string(shapesAlone, renderAnalysis(AeneasAdapter.analyzeProgram(shapes, [], null, false), shapesPaths));
+		t.asserti(count, AeneasAdapter.globalTypeCount());
+	}
+}
+
+// A target analysis runs no back end and no initializer: a program without
+// a main, whose initializer divides by zero, verifies with no errors, though
+// v3c-x86-64-linux would require a main to emit a binary.
+def test_target_front_end_only(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, runtime = AnalysisTargetFiles.runtimeSources(t, target);
+	if (runtime == null) return;
+	var init = AnalysisSource.new("init.v3", "component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n");
+	var a = AeneasAdapter.analyzeProgram(Arrays.concat([init], runtime), [], target, false);
+	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.assertz(true, a.verified);
+}
+
+// CiRuntime.STACK_SIZE is the wrapper's -stack-size=2m, 2,097,152, as the
+// pinned bin/v3c-x86-64-linux reads it: distinct from 0, and for the
+// duplicate variant
+//   test/fixtures/analysis/x86-64-linux-stack-size-duplicate/main.v3 @ 6:17]
+//   MatchError: duplicate value (previous at 5:17)
+def test_target_stack_size(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, sources = targetProgram(t, STACK_SIZE, target);
+	if (sources == null) return;
+	var a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.assertz(true, a.verified);
+	sources = targetProgram(t, STACK_SIZE_DUPLICATE, target);
+	if (sources == null) return;
+	a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.asserti(1, a.diagnostics.length);
+	assertDiagnostic(t, a, "MatchError", STACK_SIZE_DUPLICATE, 6, 17);
+	if (a.diagnostics.length > 0) t.assert_string("duplicate value (previous at 5:17)", a.diagnostics[0].message);
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+}
+
+// A target-free analysis between two target analyses sees the default stack
+// size, and the second target analysis answers as the first did; the option
+// is back at its default after each.
+def test_target_stack_size_interleaved(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, native = targetProgram(t, STACK_SIZE_DUPLICATE, target);
+	if (native == null) return;
+	var paths = pathsOf(native), inline = "def f(x: int) -> int { match (x) { 0 => return 1; 2097152 => return 2; _ => return 3; } }\n";
+	var plain = [AnalysisSource.new("plain.v3", inline)];
+	var a = AeneasAdapter.analyzeProgram(native, [], target, false);
+	assertDiagnostic(t, a, "MatchError", STACK_SIZE_DUPLICATE, 6, 17);
+	var first = renderAnalysis(a, paths);
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	var free = AeneasAdapter.analyzeProgram(plain, [], null, false);
+	for (d in free.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	var scoped = AeneasAdapter.analyzeForScope(native, [], target, false);
+	t.assert_string(first, renderAnalysis(scoped, paths));
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	t.assert_string(first, renderAnalysis(AeneasAdapter.analyzeProgram(native, [], target, false), paths));
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+}
+
+def contains(s: string, part: string) -> bool {
+	for (i = 0; i + part.length <= s.length; i++) {
+		if (Arrays.equal(Arrays.range(s, i, i + part.length), part)) return true;
+	}
+	return false;
 }

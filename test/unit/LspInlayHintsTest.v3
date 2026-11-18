@@ -24,7 +24,7 @@ def target_identity_once(t: Tester) {
 	var paths = [main, library], keys = [ProjectFiles.uri(main), ProjectFiles.uri(library)];
 	var store = CountingDiskStampStore.new(), text = System.fileLoad(main);
 	t.assert(store.open(keys[0], "virgil", 1, text) == null, "main opens");
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(main, text), AnalysisSource.new(library, System.fileLoad(library))], [], false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(main, text), AnalysisSource.new(library, System.fileLoad(library))], [], null, false);
 	if (!a.verified) return t.fail("fixture verifies");
 	var data = Ranges.dup(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0,
 		[(main, a.occurrences(main)), (library, a.occurrences(library))]), 0L)[4 ...]);

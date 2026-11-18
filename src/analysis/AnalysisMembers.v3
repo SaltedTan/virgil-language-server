@@ -50,8 +50,8 @@ class AnalysisBuiltinMember(receiver: AnalysisMemberReceiver, name: string, kind
 // members that the query makes from the program instead are not listed:
 // tuple elements, System's calls (SystemCall), an enum set's cases, a class's
 // "new", and the "tag" and "name" of variants and enums, which are
-// declarations. Pointer members exist only for a compilation target, which
-// analyses have none of. See docs/architecture.md#member-completion.
+// declarations. Pointer members aren't listed here yet; see
+// docs/architecture.md#member-completion.
 component AnalysisBuiltinMembers {
 	def LIST = [
 		// lookupArrayTypeMember and lookupArrayExprMember.

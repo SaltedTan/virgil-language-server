@@ -84,7 +84,7 @@ def analyze(t: Tester, text: string, verified: bool) -> (ProgramAnalysis, Analys
 	return analyzeWith(t, text, [], verified);
 }
 def analyzeWith(t: Tester, text: string, options: Array<string>, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], options, false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], options, null, false);
 	t.assertz(true, a.parsed);
 	t.assertz(verified, a.verified);
 	var w = AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, [(PATH, a.occurrences(PATH))]);
@@ -818,7 +818,7 @@ def test_lambda_capture_sites(t: Tester) {
 
 // Without occurrences, a snapshot has no display data and answers null.
 def test_without_occurrences(t: Tester) {
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, SITES)], [], false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, SITES)], [], null, false);
 	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
 	var payload = Ranges.dup(AnalysisWire.finishResult(w, 0L)[WorkerFraming.HEADER_BYTES ...]);
 	match (AnalysisWire.decodeResult(payload, 1, [PATH])) {

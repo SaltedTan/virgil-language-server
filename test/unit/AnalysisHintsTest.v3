@@ -14,7 +14,7 @@ def X = [
 ];
 def PATH = "test/fixtures/analysis/inlay-hints/main.v3";
 def make(t: Tester, text: string, verified: bool) -> AnalysisSnapshot {
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], [], false);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], [], null, false);
 	if (verified) {
 		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
 		t.assert(a.verified, "fixture verifies");

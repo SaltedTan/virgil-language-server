@@ -513,9 +513,9 @@ component AeneasAdapter {
 	// (MAX_ERRORS). See docs/architecture.md#semantic-diagnostics.
 	def MAX_FILE_DIAGNOSTICS = 100;
 	// Parse/verify do not mutate compiler configuration. Each analysis still
-	// owns a fresh Program and Compilation; only this default configuration
-	// is reused. Language options live in CLOptions instead; see
-	// setLanguageOptions.
+	// owns a fresh Program and Compilation; only this default configuration,
+	// and one for each target (compilerFor), is reused. Language options live
+	// in CLOptions instead; see setLanguageOptions.
 	private def compiler = Compiler.new(null);
 
 	// Parse one file in isolation with language options {options} (see
@@ -737,27 +737,77 @@ component AeneasAdapter {
 		}
 	}
 	// Parse and verify a whole program from in-memory sources, in the given
-	// order, with language options {options} (see setLanguageOptions).
+	// order, with language options {options} (see setLanguageOptions), for
+	// {target}, or for no target if it is null. A target's runtime sources
+	// are among {sources}; the caller supplies them.
 	// Builds a fresh {Program} each time and runs only the shared parser and,
 	// if parsing succeeded, {Compilation.verify()}.
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
-	def analyzeProgram(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
-		return analyze(sources, options, collectStats, false);
+	def analyzeProgram(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, target, collectStats, false);
 	}
 	// Analyzes a program as {analyzeProgram} does, keeping it for scope
 	// queries (AnalysisScopedProgram).
-	def analyzeForScope(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
-		return analyze(sources, options, collectStats, true);
+	def analyzeForScope(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, target, collectStats, true);
 	}
-	private def analyze(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool, scoped: bool) -> ProgramAnalysis {
+	// Whether Aeneas registers the target that configures {target}'s
+	// programs. AnalysisTargets:registered checks every supported target.
+	def registered(target: AnalysisTarget) -> bool {
+		return registeredTarget(target.aeneasName) != null;
+	}
+	// The Compiler for {target}: {compiler} for none, or one made on first
+	// use with the registered Aeneas target, whose configureCompiler then
+	// runs once. Analysis reads none of what it configures (the back end's
+	// reachability, normalization, and linking model).
+	private def compilerFor(target: AnalysisTarget) -> Compiler {
+		if (target == null) return compiler;
+		for (l = targetCompilers; l != null; l = l.tail) if (l.head.0 == target) return l.head.1;
+		var aeneasTarget = registeredTarget(target.aeneasName);
+		// Unreachable at the pin: an unregistered target analyzes as none.
+		if (aeneasTarget == null) return compiler;
+		var c = Compiler.new(aeneasTarget);
+		targetCompilers = List.new((target, c), targetCompilers);
+		return c;
+	}
+	private var targetCompilers: List<(AnalysisTarget, Compiler)>;
+	// Sets the options that verification reads for {target}, or their
+	// defaults for none, as its wrapper passes them. Of bin/v3c-x86-64-linux's
+	// options, only -stack-size reaches the verifier, as the value of the
+	// constant CiRuntime.STACK_SIZE (CiRuntime_TypeCon.lookupMember), which a
+	// match compares with its other values; the others reach only the back end
+	// and the runtime's tables. Each analysis restores the defaults when it
+	// ends (resetTargetOptions), and nothing reads the option afterwards.
+	private def setTargetOptions(target: AnalysisTarget) {
+		resetTargetOptions();
+		if (target != null) CLOptions.STACK_SIZE.parse(target.stackSize);
+	}
+	private def resetTargetOptions() {
+		CLOptions.STACK_SIZE.val = CLOptions.STACK_SIZE.init;
+	}
+	// The target that Aeneas registers as {name}, or null. Aeneas.getTarget
+	// would print to standard output for an unknown name.
+	private def registeredTarget(name: string) -> Target {
+		for (l = Aeneas.targets; l != null; l = l.tail) {
+			if (Strings.equal(l.head.name, name)) return l.head;
+		}
+		return null;
+	}
+	private def analyze(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget,
+			collectStats: bool, scoped: bool) -> ProgramAnalysis {
+		var configured = compilerFor(target);
 		AnalysisTypeCache.prepare();
 		setLanguageOptions(options);
+		setTargetOptions(if(configured.target != null, target));
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
 		// Without a target, Aeneas provides a synthetic System component, as
-		// it does for the interpreter (see Aeneas.makeProgram).
-		SystemCalls.install(prog);
+		// it does for the interpreter (see Aeneas.makeProgram). A target's
+		// System is in its runtime sources, and Compilation.new below calls
+		// the target's configureProgram, which installs its builtin types,
+		// such as Pointer, CiRuntime, and Linux for x86-64-linux.
+		if (configured.target == null) SystemCalls.install(prog);
 		prog.files = Array<string>.new(sources.length);
 		prog.inputs = Array<Array<byte>>.new(sources.length);
 		for (i < sources.length) {
@@ -766,7 +816,7 @@ component AeneasAdapter {
 			var input = sources[i].input;
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
-		var compilation = Compilation.new(compiler, prog);
+		var compilation = Compilation.new(configured, prog);
 		if (BenchProbe.enabled) BenchProbe.classifyParse(prog.files, prog.inputs, languageFingerprint());
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
@@ -782,6 +832,7 @@ component AeneasAdapter {
 		var verified = parsed && compilation.verify();
 		var t2 = System.ticksUs();
 		resetLanguageOptions();
+		resetTargetOptions();
 		// Drop process-wide roots even when parsing or verification failed.
 		// The result still owns its VST; dropping that result makes it collectible.
 		AnalysisTypeCache.release();
