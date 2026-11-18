@@ -640,6 +640,7 @@ def arrows(t: Tester) {
 def commas(t: Tester) {
 	both(t, body("\tm.set(1,2);\n\tvar a = [1,2,\n\t\t3,  4], b = (1,\t2);\n"),
 		body("\tm.set(1, 2);\n\tvar a = [1, 2,\n\t\t3,  4], b = (1,\t2);\n"));
+	both(t, "def a = [1, 2,];\n", "def a = [1, 2, ];\n");
 	// Spaces before a comma align a table's columns (spike rule bug 10).
 	var input = body("\tput2(JMP , ref(label));\n\tput2(MSTB     , reg.tag);\n");
 	both(t, input, input);
@@ -750,6 +751,8 @@ def corpus_if_kinds(t: Tester) {
 		for (k < syntax.count) {
 			var b = syntax.begin(k);
 			if (syntax.end(k) - b != 2 || input[b] != 'i' || input[b + 1] != 'f') continue;
+			var bits = marks.bits[k];
+			if ((bits & AnalysisFormatMark.MATCH) != 0) t.fail2("%s: the \"if\" at offset %d is marked as a match", path, b);
 			var member = k > 0 && syntax.single(input, k - 1) == '.';
 			var expected = walk.kinds[k];
 			if (expected == IF_NONE && !member) {
@@ -759,7 +762,7 @@ def corpus_if_kinds(t: Tester) {
 			// The marks of a statement and an expression exclude each other,
 			// and the spacing rule's own reading of them gives the kind.
 			var both = AnalysisFormatMark.CONTROL | AnalysisFormatMark.IF_EXPR;
-			if ((marks.bits[k] & both) == both) t.fail2("%s: the \"if\" at offset %d is marked as both kinds", path, b);
+			if ((bits & both) == both) t.fail2("%s: the \"if\" at offset %d is marked as both kinds", path, b);
 			var space = f.keywordSpace(k);
 			var got = if(space > 0, IF_STATEMENT, if(space == 0, IF_EXPRESSION, IF_NONE));
 			if (got != expected) t.fail3("%s: the \"if\" at offset %d is the parse tree's %s", path, b, KIND_NAMES[expected]);
