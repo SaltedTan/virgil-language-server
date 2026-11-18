@@ -61,24 +61,31 @@ component AnalysisFormatMark {
 	def IF_ELSE: byte = 16;
 	// The "else" of a match's default case, which no if statement has.
 	def DEFAULT_ELSE: byte = 32;
-	// The '{' of a fun expression's body, after whose '}' the statement
-	// around it can continue.
-	def FUN_BODY: byte = 64;
+	// The ';' of a fun expression's empty body.
+	def FUN_SEMICOLON: byte = 64;
+	// A subsequent pattern of the same match case.
+	def PATTERN_START: byte = 128;
+}
+
+class FormatterFunHeader {
+	var tabs: int;
+	var anchor: (int, int, int);
 }
 
 // Marks the tokens of a file that parsed (AnalysisFormatMark). The walk keeps
 // its own stack of statements and expressions instead of recursing, so that a
 // deeply nested tree that the parser accepted can't exhaust the native stack.
 class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstVisitor<void, void> {
-	private var marks: Array<byte>;
+	def bits = Array<byte>.new(syntax.count);
+	def funHeaders = Array<FormatterFunHeader>.new(syntax.count);
 	private def stmts = Vector<Stmt>.new();
 	private def exprs = Vector<Expr>.new();
 
-	def collect() -> Array<byte> {
-		marks = Array<byte>.new(syntax.count);
+	def collect() -> this {
 		for (i < file.classes.length) compound(file.classes[i]);
 		for (i < file.components.length) compound(file.components[i]);
 		for (i < file.enums.length) compound(file.enums[i]);
+		for (i < file.layouts.length) compound(file.layouts[i]);
 		for (i < file.exports.length) expr(file.exports[i].expr);
 		while (true) {
 			if (exprs.length > 0) {
@@ -93,13 +100,14 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 				break;
 			}
 		}
-		return marks;
 	}
 	private def compound(d: VstCompound) {
+		hints(d.repHints);
 		if (d.superclause != null) expr(d.superclause.args);
 		for (l = d.members; l != null; l = l.tail) {
 			var m = l.head;
 			if (m.isSynthetic) continue;
+			if (!VstCaseMember.?(m)) hints(m.repHints);
 			match (m) {
 				x: VstNew => {
 					if (x.superclause != null) expr(x.superclause.args);
@@ -116,10 +124,21 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		}
 	}
 	private def mark(i: int, bit: byte) {
-		if (i >= 0) marks[i] |= bit;
+		if (i >= 0) bits[i] |= bit;
 	}
 	private def point(p: FilePoint, bit: byte) {
-		if (p != null) mark(syntax.findAt(p.beginLine, p.beginColumn), bit);
+		mark(index(p), bit);
+	}
+	private def index(p: FilePoint) -> int {
+		return if(p != null, syntax.findAt(p.beginLine, p.beginColumn), -1);
+	}
+	private def hints(h: List<VstRepHint>) {
+		for (l = h; l != null; l = l.tail) {
+			match (l.head) {
+				ExprHint(_, es) => list(es);
+				_ => ;
+			}
+		}
 	}
 	private def stmt(s: Stmt) {
 		if (s != null) stmts.put(s);
@@ -165,7 +184,11 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		stmt(s.body);
 	}
 	def visitLocal(s: LocalStmt, env: void) {
-		for (l = s.vars; l != null; l = l.tail) expr(l.head.init);
+		for (l = s.vars; l != null; l = l.tail) {
+			var v = l.head;
+			hints(v.repHints);
+			expr(v.init);
+		}
 	}
 	def visitBreak(s: BreakStmt, env: void) { }
 	def visitContinue(s: ContinueStmt, env: void) { }
@@ -187,12 +210,22 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 						&& file.input[syntax.begin(arrow)] == '=' && file.input[syntax.begin(arrow) + 1] == '>') {
 					mark(arrow, AnalysisFormatMark.CASE_ARROW);
 					mark(syntax.findAt(r.beginLine, r.beginColumn), AnalysisFormatMark.CASE_START);
+					for (p = c.patterns.list.tail; p != null; p = p.tail) pattern(p.head);
 				} else {
 					var k = syntax.findAt(r.beginLine, r.beginColumn);
 					if (k >= 0 && word(k, "else")) mark(k, AnalysisFormatMark.DEFAULT_ELSE);
 				}
 			}
 			stmt(c.stmt);
+		}
+	}
+	private def pattern(p: MatchPattern) {
+		if (p.vdecl != null) {
+			point(p.vdecl.token, AnalysisFormatMark.PATTERN_START);
+		} else {
+			var e = p.expr;
+			while (VarExpr.?(e) && VarExpr.!(e).expr != null) e = VarExpr.!(e).expr;
+			point(e.point(), AnalysisFormatMark.PATTERN_START);
 		}
 	}
 	def visitEmpty(s: EmptyStmt, env: void) { }
@@ -252,9 +285,16 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 	def visitFunExpr(e: FunExpr, env: void) {
 		if (e.func == null) return;
 		var body = e.func.body;
-		if (BlockStmt.?(body)) {
-			var r = BlockStmt.!(body).stmts.src;
-			if (r != null) mark(syntax.findAt(r.beginLine, r.beginColumn), AnalysisFormatMark.FUN_BODY);
+		var start = index(e.start);
+		if (start >= 0 && word(start, "fun")) {
+			match (body) {
+				b: BlockStmt => {
+					var brace = index(b.stmts.src);
+					if (brace >= 0) funHeaders[start] = funHeaders[brace] = FormatterFunHeader.new();
+				}
+				s: EmptyStmt => point(s.point, AnalysisFormatMark.FUN_SEMICOLON);
+				_ => ;
+			}
 		}
 		stmt(body);
 	}
@@ -268,13 +308,10 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 
 // An open bracket during the formatter's pass: its byte, and for a '{' the
 // tabs that indent its body and its '}'. A '(' after the keyword of an if,
-// while, or for statement holds that statement's header ({control}), and a
-// '{' marked FUN_BODY a fun expression's body ({control} too). A match's '{'
-// holds a case's patterns from the case's first token to its "=>"
-// ({patterns}), and {caseTabs} are the leading tabs of the line where the
-// current case started.
-class FormatterBracket(kind: byte, body: int, close: int, control: bool) {
-	var patterns: bool;
+// while, or for statement holds that statement's header ({control}). For a
+// fun expression's '{', {funHeader} holds the enclosing statement's anchor.
+// {caseTabs} are the leading tabs of the line where a match's current case started.
+class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader) {
 	var caseTabs: int;
 }
 
@@ -287,7 +324,8 @@ class FormatterBracket(kind: byte, body: int, close: int, control: bool) {
 // that a line feed doesn't follow (AeneasAdapter.formatting refuses those),
 // so each line end is LF or CR LF and is kept byte for byte.
 // See docs/architecture.md#formatting.
-class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<byte>, eof: AnalysisFormatEnd) {
+class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<byte>,
+		funHeaders: Array<FormatterFunHeader>, eof: AnalysisFormatEnd) {
 	// After {measure}, the formatted text's length in bytes, and the number of edits.
 	var size: long;
 	var count: int;
@@ -296,6 +334,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// A run's new line ends, or the single space of a join, before its indentation.
 	private def ends = Vector<byte>.new();
 	private def stack = Vector<FormatterBracket>.new();
+	private def comments = Vector<(int, int)>.new();
 	// The leading tabs of the line of each if statement with an else that
 	// hasn't been reached yet, innermost last. If statements nest, so each
 	// "else" belongs to the last.
@@ -312,21 +351,13 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var lastItem: int;
 	private var lastStartsLine: bool;
 	private var closedControl: bool;
-	private var closedFun: bool;
+	private var continues: bool;
+	private var closeTabs: int;
 	private var open: bool;
-	// The indentation that comment lines before the token {aheadToken} take
-	// when it starts a continuation line: comments don't change the pass's
-	// state, so every comment line before one token takes the same.
-	private var aheadToken: int;
-	private var aheadTabs: int;
-	private var aheadBegin: int;
-	private var aheadEnd: int;
 	// The old indentation (a range of {input}) and the new tabs of the line
 	// where the current statement started, and the new indentation's
 	// leading tabs on the current code line.
-	private var chunkBegin: int;
-	private var chunkEnd: int;
-	private var chunkTabs: int;
+	private var chunk: (int, int, int);
 	private var lineTabs: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
@@ -335,72 +366,106 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var keepEnd: int;
 
 	// Sets {size} and {count}, building no replacement text.
-	def measure() -> this {
-		pass();
+	def measure() -> AnalysisFormatting {
+		if (!pass()) return AnalysisFormatting.new("the parser left source text outside its tokens", null, null);
+		return AnalysisFormatting.new(null, null, this);
 	}
 	// The edits, in byte order.
 	def edits() -> Array<AnalysisTextEdit> {
 		out = Vector<AnalysisTextEdit>.new();
-		pass();
-		var result = out.extract();
+		var result = if(pass(), out.extract());
 		out = null;
 		return result;
 	}
 
-	private def pass() {
+	private def pass() -> bool {
 		size = input.length;
 		count = 0;
-		next = 0;
-		started = open = closedControl = closedFun = lastStartsLine = false;
-		last = lastItem = aheadToken = -1;
-		chunkBegin = chunkEnd = chunkTabs = lineTabs = 0;
+		started = open = closedControl = continues = lastStartsLine = false;
+		last = lastItem = -1;
+		chunk = (0, 0, 0);
+		lineTabs = closeTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
-		var max = input.length, pos = 0;
-		while (true) {
+		var pos = 0;
+		for (k < syntax.count) {
+			next = k;
+			if (!gap(pos, syntax.begin(k))) return false;
+			consume(k);
+			lastItem = k;
+			pos = syntax.end(k);
+		}
+		next = syntax.count;
+		return gap(pos, input.length);
+	}
+	private def gap(begin: int, end: int) -> bool {
+		if (end < begin) return false;
+		comments.length = 0;
+		var pos = begin, line = begin, crossing = false;
+		while (pos < end) {
+			if (space(input[pos])) {
+				if (input[pos] == '\n') {
+					line = pos + 1;
+					crossing = false;
+				}
+				pos++;
+				continue;
+			}
 			var i = pos;
-			while (i < max && space(input[i])) i++;
-			if (i >= max) break;
-			var e = i + 1, token = -1, comment = false;
 			open = false;
-			if (next < syntax.count && syntax.begin(next) == i) {
-				token = next++;
-				e = syntax.end(token);
-			} else if (input[i] == '/' && i + 1 < max && input[i + 1] == '/') {
+			if (input[i] == '/' && i + 1 < end && input[i + 1] == '/') {
 				// A line comment, less the trailing whitespace that its run removes.
-				comment = true;
-				e = i + 2;
-				while (e < max && input[e] != '\n') e++;
-				while (e > i + 2 && (input[e - 1] == ' ' || input[e - 1] == '\t' || input[e - 1] == '\r')) e--;
-			} else if (input[i] == '/' && i + 1 < max && input[i + 1] == '*') {
+				pos = i + 2;
+				while (pos < end && input[pos] != '\n') pos++;
+				while (pos > i + 2 && space(input[pos - 1])) pos--;
+			} else if (input[i] == '/' && i + 1 < end && input[i + 1] == '*') {
 				// A block comment ends at the first "*/", or runs to the end.
-				comment = true;
-				e = i + 2;
+				pos = i + 2;
 				open = true;
-				while (e < max) {
-					if (input[e] == '*' && e + 1 < max && input[e + 1] == '/') {
-						e += 2;
+				while (pos < end) {
+					if (input[pos] == '*' && pos + 1 < end && input[pos + 1] == '/') {
+						pos += 2;
 						open = false;
 						break;
 					}
-					e++;
+					if (input[pos++] == '\n') {
+						line = pos;
+						crossing = true;
+					}
 				}
+				if (open && next < syntax.count) return false;
+			} else {
+				return false;
 			}
-			var startsLine = run(pos, i, token, comment, e);
-			if (token >= 0) consume(token);
-			lastItem = token;
-			lastStartsLine = startsLine;
-			pos = e;
+			comments.put((i, pos));
 		}
-		finish(pos, max);
+		var indentEnd = line;
+		while (indentEnd < end && space(input[indentEnd])) indentEnd++;
+		var following: (int, int, int);
+		if (comments.length > 0) following = followingIndent(line, indentEnd, crossing);
+		pos = begin;
+		for (i < comments.length) {
+			var span = comments[i];
+			var leading = next < syntax.count && span.1 > line && span.0 <= indentEnd;
+			run(pos, span.0, true, leading, crossing, following);
+			lastItem = -1;
+			pos = span.1;
+		}
+		if (next == syntax.count) finish(pos, end);
+		else if (crossing) {
+			codeLine(next, line, indentEnd, false);
+			lastStartsLine = false;
+		} else {
+			lastStartsLine = run(pos, end, false, false, false, following);
+		}
+		return true;
 	}
 	private def space(b: byte) -> bool {
 		return b == ' ' || b == '\t' || b == '\n' || b == '\r';
 	}
-	// Formats the run from {begin} to {end} before an item, the token {token}
-	// or a comment ending at {itemEnd}, and returns whether the item then
-	// starts its line.
-	private def run(begin: int, end: int, token: int, comment: bool, itemEnd: int) -> bool {
+	// Formats the run from {begin} to {end} before an item and returns
+	// whether the item then starts its line.
+	private def run(begin: int, end: int, comment: bool, leading: bool, crossing: bool, following: (int, int, int)) -> bool {
 		var first = !started, lines = 0, lastEnd = -1;
 		started = true;
 		for (i = begin; i < end; i++) {
@@ -411,7 +476,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		if (lines == 0 && !first) return false; // spacing within a line (#506)
 		ends.length = 0;
-		if (lines == 1 && lastItem >= 0 && token >= 0 && joins(token)) {
+		if (lines == 1 && lastItem >= 0 && !comment && joins(next)) {
 			ends.put(' ');
 			change(begin, end, 0, 0, 0);
 			return false;
@@ -424,17 +489,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		var indent = if(lastEnd >= 0, lastEnd + 1, begin);
 		if (comment) {
-			// A line that starts with comments and then has code is a code line.
-			if (codeAfter(itemEnd)) codeLine(next, indent, end);
-			else commentIndent(indent, end);
-		} else if (token < 0) {
-			// A byte that the parser didn't consume, which a parse without
-			// errors leaves nowhere, keeps its indentation.
-			wantTabs = 0;
-			keepBegin = indent;
-			keepEnd = end;
+			if (!leading) commentIndent(indent, end, following);
+			else if (crossing) codeIndent(next, indent, end, true);
+			else codeLine(next, indent, end, true);
 		} else {
-			codeLine(token, indent, end);
+			codeLine(next, indent, end, true);
 		}
 		change(begin, end, wantTabs, keepBegin, keepEnd);
 		return true;
@@ -442,9 +501,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// Chooses the indentation of the code line whose first token is {k} and
 	// whose old indentation is from {begin} to {end}, and makes it the
 	// current line, and the statement's line unless it is a continuation.
-	private def codeLine(k: int, begin: int, end: int) {
-		if (classify(k) == CONTINUATION) {
-			shift(begin, end);
+	private def codeLine(k: int, begin: int, end: int, writable: bool) {
+		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
 			var t = wantTabs, i = keepBegin;
 			while (i < keepEnd && input[i] == '\t') {
 				t++;
@@ -452,20 +510,21 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			}
 			lineTabs = t;
 		} else {
-			chunkBegin = begin;
-			chunkEnd = end;
-			chunkTabs = lineTabs = wantTabs;
+			chunk = if(writable, (begin, end, wantTabs), (-1, -1, wantTabs));
+			lineTabs = wantTabs;
 		}
 	}
-	// Whether the next token is on the line where the comment ending at
-	// {from} ends. Only a comment that starts its line asks, and the scan
-	// stops at the first line end, so the pass stays linear.
-	private def codeAfter(from: int) -> bool {
-		if (next >= syntax.count) return false;
-		for (i = from; i < syntax.begin(next); i++) {
-			if (input[i] == '\n') return false;
+	private def codeIndent(k: int, begin: int, end: int, writable: bool) -> int {
+		var kind = classify(k);
+		if (kind == CONTINUATION) {
+			if (writable) shift(begin, end);
+			else {
+				wantTabs = 0;
+				keepBegin = begin;
+				keepEnd = end;
+			}
 		}
-		return true;
+		return kind;
 	}
 	// Whether the run of one line end before {token} joins its line to the
 	// line before: a body's '{', unless after ';', '{', or '}', which make it
@@ -480,28 +539,34 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def classify(k: int) -> int {
 		keepBegin = keepEnd = 0;
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
-		if (inner != null && inner.kind != '{') return CONTINUATION;
 		var c = ch(k), m = marks[k];
+		if (c == '{' && funHeaders[k] != null) {
+			wantTabs = funHeaders[k].tabs;
+			return BLOCK;
+		}
+		if (inner != null && inner.kind != '{') return CONTINUATION;
 		if (c == '}' && inner != null) {
 			wantTabs = inner.close;
 			return BLOCK;
 		}
 		// An if statement's "else" aligns with the line of its "if".
-		if (ifs.length > 0 && (m & AnalysisFormatMark.DEFAULT_ELSE) == 0 && isElse(k)) {
+		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
+			wantTabs = closeTabs;
+			return BLOCK;
+		}
+		if (ifs.length > 0 && isElse(k)) {
 			wantTabs = ifs[ifs.length - 1];
 			return BLOCK;
 		}
 		wantTabs = if(inner != null, inner.body);
 		if (last < 0) return BLOCK;
 		var p = ch(last);
-		// A '}' that closes a fun expression's body doesn't end the statement.
-		if (p == ';' || p == '{' || (p == '}' && !closedFun)) return BLOCK;
-		if ((m & (AnalysisFormatMark.ENUM_CASE | AnalysisFormatMark.CASE_START)) != 0) return BLOCK;
-		if (p == ',' && inner != null && inner.patterns) return BLOCK;
+		if (p == '{' || ((p == ';' || p == '}') && !continues)) return BLOCK;
+		if ((m & (AnalysisFormatMark.ENUM_CASE | AnalysisFormatMark.CASE_START | AnalysisFormatMark.PATTERN_START)) != 0) return BLOCK;
 		// A body's '{' that a comment or a blank line kept from joining the
 		// header stays at the header's indentation.
 		if (c == '{') {
-			wantTabs = chunkTabs;
+			wantTabs = chunk.2;
 			return BLOCK;
 		}
 		// A case's "=>" that starts a line is one tab deeper than the line
@@ -510,7 +575,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			wantTabs = inner.caseTabs + 1;
 			return NESTED;
 		}
-		wantTabs = chunkTabs + 1;
+		wantTabs = chunk.2 + 1;
 		if (closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0) return NESTED;
 		return CONTINUATION;
 	}
@@ -521,23 +586,24 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		wantTabs = 0;
 		keepBegin = begin;
 		keepEnd = end;
-		var n = chunkEnd - chunkBegin;
+		if (chunk.0 < 0) return;
+		var n = chunk.1 - chunk.0;
 		if (n > end - begin) return;
-		var same = n == chunkTabs;
+		var same = n == chunk.2;
 		for (i < n) {
-			var b = input[chunkBegin + i];
+			var b = input[chunk.0 + i];
 			if (b != input[begin + i]) return;
 			if (b != '\t') same = false;
 		}
 		if (same) return;
-		wantTabs = chunkTabs;
+		wantTabs = chunk.2;
 		keepBegin = begin + n;
 	}
 	// A comment that starts a line, with old indentation from {begin} to
 	// {end}, takes the indentation of the code line after it, or the
 	// block's before a '}'. One at column 0 stays, and one inside
 	// parentheses or brackets follows their continuation lines.
-	private def commentIndent(begin: int, end: int) {
+	private def commentIndent(begin: int, end: int, following: (int, int, int)) {
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
 		if (begin == end) {
 			wantTabs = 0;
@@ -545,61 +611,54 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			return;
 		}
 		if (inner != null && inner.kind != '{') return shift(begin, end);
-		if (next >= syntax.count) {
-			wantTabs = if(inner != null, inner.body);
-			keepBegin = keepEnd = 0;
-			return;
-		}
-		if (ch(next) == '}' && inner != null) {
-			wantTabs = inner.body;
-			keepBegin = keepEnd = 0;
-			return;
-		}
-		if (classify(next) != CONTINUATION) return;
-		if (aheadToken != next) {
-			// The code line's own indentation, if its token starts it, found
-			// once for every comment line before it.
-			aheadToken = next;
-			aheadBegin = -1;
-			var b = syntax.begin(next), s = b;
-			while (s > 0 && (input[s - 1] == ' ' || input[s - 1] == '\t')) s--;
-			if (s == 0 || input[s - 1] == '\n') {
-				shift(s, b);
-				aheadTabs = wantTabs;
-				aheadBegin = keepBegin;
-				aheadEnd = keepEnd;
-			}
-		}
-		if (aheadBegin < 0) return shift(begin, end);
-		wantTabs = aheadTabs;
-		keepBegin = aheadBegin;
-		keepEnd = aheadEnd;
+		wantTabs = following.0;
+		keepBegin = following.1;
+		keepEnd = following.2;
+	}
+	private def followingIndent(begin: int, end: int, crossing: bool) -> (int, int, int) {
+		var inner = if(stack.length > 0, stack[stack.length - 1]);
+		if (inner != null && inner.kind != '{') return (0, 0, 0);
+		if (next >= syntax.count || ch(next) == '}') return (if(inner != null, inner.body), 0, 0);
+		codeIndent(next, begin, end, !crossing);
+		return (wantTabs, keepBegin, keepEnd);
 	}
 	// Updates the brackets and the last token for the token {k}.
 	private def consume(k: int) {
 		var c = ch(k), m = marks[k];
-		closedControl = closedFun = false;
-		aheadToken = -1;
+		closedControl = false;
+		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
-			inner.patterns = true;
 			inner.caseTabs = lineTabs;
 		}
-		if ((m & AnalysisFormatMark.CASE_ARROW) != 0 && inner != null) inner.patterns = false;
 		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
-		if (ifs.length > 0 && (m & AnalysisFormatMark.DEFAULT_ELSE) == 0 && isElse(k)) ifs.length--;
+		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
+			chunk = (chunk.0, chunk.1, closeTabs);
+		} else if (ifs.length > 0 && isElse(k)) {
+			chunk = (chunk.0, chunk.1, ifs[ifs.length - 1]);
+			ifs.length--;
+		}
+		var header = funHeaders[k];
 		match (c) {
 			'{' => {
-				var base = if(inner != null && inner.kind != '{', lineTabs, chunkTabs);
-				stack.put(FormatterBracket.new('{', base + 1, base, (m & AnalysisFormatMark.FUN_BODY) != 0));
+				var base = if(inner != null && inner.kind != '{', lineTabs, chunk.2);
+				stack.put(FormatterBracket.new('{', base + 1, base, false, header));
 			}
 			'(', '[' => {
-				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0));
+				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null));
 			}
 			')', ']', '}' => if (inner != null) {
 				stack.length--;
 				closedControl = c == ')' && inner.control;
-				closedFun = c == '}' && inner.control;
+				if (c == '}') closeTabs = inner.close;
+				if (inner.funHeader != null) {
+					chunk = inner.funHeader.anchor;
+					continues = true;
+				}
+			}
+			_ => if (header != null) {
+				header.tabs = lineTabs;
+				header.anchor = chunk;
 			}
 		}
 		last = k;

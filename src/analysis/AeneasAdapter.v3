@@ -641,7 +641,7 @@ component AeneasAdapter {
 			return AnalysisFormatting.new(Strings.nonnull(first.message), first, null);
 		}
 		var marks = AnalysisFormatMarks.new(file, syntax).collect();
-		return AnalysisFormatting.new(null, null, DocumentFormatter.new(input, syntax, marks, eof).measure());
+		return DocumentFormatter.new(input, syntax, marks.bits, marks.funHeaders, eof).measure();
 	}
 	// All positions share one current-text parse and one syntax index. Only
 	// token recovery after the first error uses a conservative lexer. Null if
