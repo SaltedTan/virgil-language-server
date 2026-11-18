@@ -268,7 +268,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
 		if (BenchProbe.enabled) BenchProbe.server(0, "prepare_us", long.view(BenchProbe.now() - prepareStart));
-		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, null, AnalysisWire.WANT_OCCURRENCES);
+		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, ctx.definition.target,
+			AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => failed(ctx, reason);
 			_ => running = LspSemanticRun.new(ctx, keys, inputs);

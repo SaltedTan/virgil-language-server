@@ -278,6 +278,11 @@ if mode == "--run":
     sys.exit(128 - status if status < 0 else status)
 if mode is not None:
     sys.exit(f"error: unknown option {mode}")
+# A Virgil root with only part of x86-64-linux's runtime: rt/gc is missing.
+partial_runtime = root / "partial-runtime"
+for directory in ["rt/x86-64-linux", "rt/native"]:
+    (partial_runtime / directory).mkdir(parents=True, exist_ok=True)
+    (partial_runtime / directory / "Part.v3").write_text("def part = 1;\n", encoding="utf-8")
 closed_shared = root / "closed-shared"
 ownership_version = root / "ownership-version"
 (ownership_version / "sub").mkdir(parents=True, exist_ok=True)

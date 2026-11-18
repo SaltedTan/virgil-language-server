@@ -1,0 +1,6 @@
+// Analyzed without a target, with the synthetic System component.
+component Main {
+	def main() {
+		Words.say(Words.greeting);
+	}
+}

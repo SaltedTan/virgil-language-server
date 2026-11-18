@@ -23,7 +23,8 @@ enum ProjectConfigCode(code: string) {
 	EXPANSION_LIMIT("ExpansionLimit"),
 	SOURCE_BUDGET("SourceBudget"),
 	SOURCE_IO("SourceIO"),
-	MISSING_VIRGIL_ROOT("MissingVirgilRoot")
+	MISSING_VIRGIL_ROOT("MissingVirgilRoot"),
+	MISSING_TARGET_RUNTIME("MissingTargetRuntime")
 }
 
 // A problem in a project file, at its bytes from {begin} up to the exclusive
@@ -38,10 +39,13 @@ class ProjectPattern(text: string, begin: int, end: int) { }
 // contains the project file, and {virgilDependencies} to the Virgil root.
 // {compilerArgs} holds validated language options, in the order given.
 // {target} is null when the project is analyzed without a target, as every
-// version 1 project is, or the supported target that a version 2 file names.
+// version 1 project is, or the supported target that a version 2 file names,
+// whose JSON string covers {targetBegin} up to {targetEnd}. Expansion reports
+// a problem with the target's runtime sources there.
 class ProjectDefinition(name: string, begin: int, end: int,
 		sources: Array<ProjectPattern>, dependencies: Array<ProjectPattern>, exclude: Array<ProjectPattern>,
-		virgilDependencies: Array<ProjectPattern>, compilerArgs: Array<string>, target: AnalysisTarget) { }
+		virgilDependencies: Array<ProjectPattern>, compilerArgs: Array<string>, target: AnalysisTarget,
+		targetBegin: int, targetEnd: int) { }
 
 // A valid project file, of version 1 or 2. Programs keep the file's order.
 class ProjectConfig(projects: Array<ProjectDefinition>) { }
@@ -166,7 +170,7 @@ class ProjectConfigValidator {
 			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("a project must be an object, not %s", n.kind.article));
 			return null;
 		}
-		var name: string, sources: Array<ProjectPattern>, target: AnalysisTarget;
+		var name: string, sources: Array<ProjectPattern>, target: AnalysisTarget, targetAt: ProjectJson;
 		var dependencies: Array<ProjectPattern> = [], exclude: Array<ProjectPattern> = [];
 		var virgilDependencies: Array<ProjectPattern> = [], args: Array<string> = [];
 		var seen = OrderedStringMap<bool>.new();
@@ -192,13 +196,15 @@ class ProjectConfigValidator {
 				args = compilerArgs(value);
 			} else if (Strings.equal(key, "target")) {
 				target = targetValue(value);
+				targetAt = value;
 			} else {
 				unknown(m, "a project", "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target");
 			}
 		}
 		if (name == null || sources == null || dependencies == null || exclude == null
 			|| virgilDependencies == null || args == null) return null;
-		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args, target);
+		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args, target,
+			if(target != null, targetAt.begin), if(target != null, targetAt.end));
 	}
 	private def projectName(n: ProjectJson) -> string {
 		if (n.kind != ProjectJsonKind.STRING) {

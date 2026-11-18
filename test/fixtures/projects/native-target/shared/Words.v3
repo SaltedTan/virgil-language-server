@@ -1,0 +1,9 @@
+// Shared by the "native" and "portable" projects. Its System is the
+// runtime's source component in "native", and the synthetic one in
+// "portable".
+component Words {
+	def greeting = "hello\n";
+	def say(s: string) {
+		System.puts(s);
+	}
+}

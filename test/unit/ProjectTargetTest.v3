@@ -1,0 +1,247 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A target project's runtime sources (ADR-0018, decision 3): expansion adds
+// them after virgilDependencies, as dependencies, and reports their problems
+// at the target value; the workspace treats a change of target as a
+// configuration change.
+def T = UnitTests.register;
+def X = [
+	T("ProjectExpansion:target_runtime", test_target_runtime),
+	T("ProjectExpansion:target_runtime_selected_once", test_target_runtime_selected_once),
+	T("ProjectExpansion:target_runtime_diagnostics", test_target_runtime_diagnostics),
+	T("ProjectExpansion:target_runtime_limits", test_target_runtime_limits),
+	T("WorkspaceProjects:target_contexts", test_target_contexts),
+	()
+];
+def ROOT = "vendor/virgil";
+def BASE = "test/fixtures/projects/native-target";
+
+def targetConfig() -> (ProjectConfig, string) {
+	var text = System.fileLoad(ProjectFiles.join(BASE, ".virgil-lsp.json"));
+	return (ProjectConfigParser.parse(text).config, text);
+}
+def definition2(text: string) -> ProjectDefinition {
+	return ProjectConfigParser.parse(Strings.format1("{\"version\":2,\"projects\":[%s]}", text)).config.projects[0];
+}
+def expandWith(maxFiles: int, maxBytes: int, base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
+	return ProjectExpansion.new(null, maxFiles, maxBytes).expand(base, root, p);
+}
+def expandTarget(base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
+	return expandWith(ProjectLimits.MAX_FILES, ProjectLimits.MAX_BYTES, base, root, p);
+}
+// The files that x86-64-linux's runtime patterns select under {root}, in
+// expansion order: each pattern's matches in byte order.
+def runtimeFiles(root: string) -> Array<string> {
+	var result = Vector<string>.new();
+	for (pattern in AnalysisTargets.X86_64_LINUX.runtimePatterns) {
+		var dir = ProjectFiles.join(root, ProjectFiles.parent(pattern));
+		var names = ProjectFiles.list(dir, 1000).names, paths = Vector<string>.new();
+		for (name in names) { if(Strings.endsWith(name, ".v3")) paths.put(ProjectFiles.join(dir, name)); }
+		var sorted = paths.extract();
+		result.puta(Arrays.sort(sorted, 0, sorted.length, ProjectFiles.before));
+	}
+	return result.extract();
+}
+// The byte range of the target value "x86-64-linux" in the fixture's file.
+def targetRange(text: string) -> (int, int) {
+	var needle = "\"x86-64-linux\"";
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return (i, i + needle.length);
+	}
+	return (-1, -1);
+}
+def checkPaths(t: Tester, expected: Array<string>, members: int, got: Array<ProjectSource>) {
+	t.asserti(expected.length, got.length);
+	if (got.length != expected.length) return;
+	for (i < expected.length) {
+		if (!Strings.equal(expected[i], got[i].path)) {
+			t.fail3("source %d is %s, not %s", i, got[i].path, expected[i]);
+			return;
+		}
+		if (got[i].member != (i < members)) {
+			t.fail2("source %d (%s) has the wrong membership", i, got[i].path);
+			return;
+		}
+	}
+}
+def test_target_runtime(t: Tester) {
+	var config = targetConfig().0, runtime = runtimeFiles(ROOT);
+	// The runtime's 12 files at the pin, as ADR-0018 counts them.
+	t.asserti(12, runtime.length);
+	var native = config.projects[0], portable = config.projects[1];
+	t.assert(native.target == AnalysisTargets.X86_64_LINUX, "the native project names x86-64-linux");
+	var r = expandTarget(BASE, ROOT, native);
+	t.asserti(0, r.diagnostics.length);
+	var expected = Vector<string>.new()
+		.put(ProjectFiles.join(BASE, "native/Native.v3"))
+		.put(ProjectFiles.join(BASE, "shared/Words.v3"))
+		.puta(runtime).extract();
+	checkPaths(t, expected, 2, r.sources);
+	// A project without a target has no runtime sources.
+	r = expandTarget(BASE, ROOT, portable);
+	t.asserti(0, r.diagnostics.length);
+	checkPaths(t, [ProjectFiles.join(BASE, "portable/Main.v3"), ProjectFiles.join(BASE, "shared/Words.v3")], 2, r.sources);
+	// The runtime follows virgilDependencies.
+	var p = definition2("{\"name\":\"p\",\"target\":\"x86-64-linux\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"lib/util/Vector.v3\"]}");
+	r = expandTarget(BASE, ROOT, p);
+	t.asserti(0, r.diagnostics.length);
+	expected = Vector<string>.new()
+		.put(ProjectFiles.join(BASE, "native/Native.v3"))
+		.put(ProjectFiles.join(ROOT, "lib/util/Vector.v3"))
+		.puta(runtime).extract();
+	checkPaths(t, expected, 1, r.sources);
+}
+def test_target_runtime_selected_once(t: Tester) {
+	var runtime = runtimeFiles(ROOT), riRuntime = ProjectFiles.join(ROOT, "rt/native/RiRuntime.v3");
+	// A runtime file that virgilDependencies already lists keeps its place
+	// there and isn't added again.
+	var p = definition2("{\"name\":\"p\",\"target\":\"x86-64-linux\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"rt/native/RiRuntime.v3\"]}");
+	var r = expandTarget(BASE, ROOT, p);
+	t.asserti(0, r.diagnostics.length);
+	var expected = Vector<string>.new().put(ProjectFiles.join(BASE, "native/Native.v3")).put(riRuntime);
+	for (path in runtime) { if(!Strings.equal(path, riRuntime)) expected.put(path); }
+	checkPaths(t, expected.extract(), 1, r.sources);
+	// A project whose own sources are runtime files keeps them as members.
+	// Its runtime pattern still selects them, so there is no diagnostic.
+	p = definition2("{\"name\":\"gc\",\"target\":\"x86-64-linux\",\"sources\":[\"rt/gc/*.v3\"]}");
+	r = expandTarget(ROOT, ROOT, p);
+	t.asserti(0, r.diagnostics.length);
+	expected = Vector<string>.new();
+	for (path in runtime) { if(Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
+	var members = expected.length;
+	t.asserti(3, members);
+	for (path in runtime) { if(!Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
+	checkPaths(t, expected.extract(), members, r.sources);
+}
+def test_target_runtime_diagnostics(t: Tester) {
+	var loaded = targetConfig(), native = loaded.0.projects[0], at = targetRange(loaded.1);
+	t.assert(at.0 > 0, "the fixture names the target");
+	t.asserti(at.0, native.targetBegin);
+	t.asserti(at.1, native.targetEnd);
+	// No Virgil root.
+	var r = expandTarget(BASE, null, native);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		var d = r.diagnostics[0];
+		t.assert(d.code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "a target without a root is MissingVirgilRoot");
+		t.asserti(at.0, d.begin);
+		t.asserti(at.1, d.end);
+	}
+	// A root without rt/, as a release archive's bundle is until #494.
+	r = expandTarget(BASE, BASE, native);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		var d = r.diagnostics[0];
+		t.assert(d.code == ProjectConfigCode.MISSING_TARGET_RUNTIME, "a root without the runtime is MissingTargetRuntime");
+		t.asserti(at.0, d.begin);
+		t.asserti(at.1, d.end);
+		t.assert_string(Strings.format1(
+			"target x86-64-linux needs the runtime sources rt/x86-64-linux/*.v3, but %s has none; use a Virgil checkout as the Virgil root",
+			ProjectFiles.join(BASE, "rt/x86-64-linux")), d.message);
+	}
+	t.assert_string("MissingTargetRuntime", ProjectConfigCode.MISSING_TARGET_RUNTIME.code);
+	// A root with only part of the runtime names the directory that the
+	// first pattern without a file reads.
+	var partial = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/partial-runtime");
+	r = expandTarget(BASE, partial, native);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_TARGET_RUNTIME, "a partial runtime");
+		t.assert_string(Strings.format1(
+			"target x86-64-linux needs the runtime sources rt/gc/*.v3, but %s has none; use a Virgil checkout as the Virgil root",
+			ProjectFiles.join(partial, "rt/gc")), r.diagnostics[0].message);
+	}
+	// virgilDependencies without a root keep their own diagnostic, at their
+	// first pattern, and the target adds none.
+	var p = definition2("{\"name\":\"p\",\"target\":\"x86-64-linux\",\"sources\":[\"native/*.v3\"],\"virgilDependencies\":[\"lib/util/*.v3\"]}");
+	r = expandTarget(BASE, null, p);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "virgilDependencies without a root");
+		t.asserti(p.virgilDependencies[0].begin, r.diagnostics[0].begin);
+	}
+}
+def test_target_runtime_limits(t: Tester) {
+	var loaded = targetConfig(), native = loaded.0.projects[0], at = targetRange(loaded.1);
+	var full = expandTarget(BASE, ROOT, native);
+	t.asserti(0, full.diagnostics.length);
+	var count = full.sources.length, bytes = 32;
+	for (s in full.sources) bytes += System.fileLoad(s.path).length + s.path.length + 16;
+	// The runtime files count against the file limit...
+	var r = expandWith(count, ProjectLimits.MAX_BYTES, BASE, ROOT, native);
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(count, r.sources.length);
+	r = expandWith(count - 1, ProjectLimits.MAX_BYTES, BASE, ROOT, native);
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "the runtime counts against the file limit");
+		t.asserti(at.0, r.diagnostics[0].begin);
+	}
+	// ...and against the source budget, with their paths.
+	r = expandWith(ProjectLimits.MAX_FILES, bytes, BASE, ROOT, native);
+	t.asserti(0, r.diagnostics.length);
+	r = expandWith(ProjectLimits.MAX_FILES, bytes - 1, BASE, ROOT, native);
+	t.asserti(1, r.diagnostics.length);
+	if (r.diagnostics.length == 1) {
+		t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "the runtime counts against the source budget");
+		t.asserti(at.0, r.diagnostics[0].begin);
+	}
+}
+def rootParams(base: string, root: string) -> HashMap<string, JsonValue> {
+	var p = Strings.newMap<JsonValue>(), options = Strings.newMap<JsonValue>();
+	p["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	options["virgilRoot"] = JsonValue.String(root);
+	p["initializationOptions"] = JsonValue.JObject(options);
+	return p;
+}
+def test_target_contexts(t: Tester) {
+	var base = ProjectTestFiles.repository(BASE), root = ProjectTestFiles.repository(ROOT);
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	w.initialize(rootParams(base, root));
+	var doc = w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "shared/Words.v3")));
+	t.asserti(2, doc.contexts.length);
+	if (doc.contexts.length != 2) return;
+	var native = doc.contexts[0], portable = doc.contexts[1];
+	t.assert(doc.active == native, "the shared file's active project is native, declared first");
+	t.assert(native.definition.target == AnalysisTargets.X86_64_LINUX, "native's target");
+	t.assert(portable.definition.target == null, "portable has none");
+	t.asserti(14, native.sources.length);
+	t.asserti(2, portable.sources.length);
+	// A runtime file is a dependency of the native project only.
+	var riRuntime = ProjectFiles.join(root, "rt/native/RiRuntime.v3");
+	var owner = w.forDocument(ProjectFiles.uri(riRuntime));
+	t.asserti(1, owner.contexts.length);
+	t.assert(owner.active == native, "the runtime file's project");
+	t.assertz(true, native.contains(riRuntime, false));
+	t.assertz(false, native.contains(riRuntime, true));
+	// Another program's target selects its runtime files, as its
+	// virgilDependencies would.
+	var other = w.otherProgram(portable, [riRuntime], ProjectGlobMatcher.new(w.ownershipSteps));
+	t.assert(other.1 == native, "the runtime file belongs to the native program");
+	other = w.otherProgram(native, [riRuntime], ProjectGlobMatcher.new(w.ownershipSteps));
+	t.assert(other.1 == null, "and to no other");
+	// Changing the target is a configuration change: a new revision, and
+	// an expansion without the runtime.
+	var config = ProjectFiles.join(base, ".virgil-lsp.json"), uri = ProjectFiles.uri(config);
+	var c = w.load(config), old = c.revision, text = System.fileLoad(config), at = targetRange(text);
+	var untargeted = Strings.format2("%snull%s", Arrays.range(text, 0, at.0), Arrays.range(text, at.1, text.length));
+	store.open(uri, "json", 1, untargeted);
+	w.refresh();
+	t.assertz(false, old.current);
+	t.assert(c.revision.number > old.number, "a new revision");
+	t.asserti(0, c.diagnostics.length);
+	t.assert(c.contexts[0].definition.target == null, "no target now");
+	t.asserti(2, c.contexts[0].sources.length);
+	t.assert(w.forDocument(ProjectFiles.uri(riRuntime)).active == null, "the runtime file is in no project");
+	old = c.revision;
+	store.change(uri, 2, text);
+	w.refresh();
+	t.assertz(false, old.current);
+	t.assert(c.contexts[0].definition.target == AnalysisTargets.X86_64_LINUX, "the target again");
+	t.asserti(14, c.contexts[0].sources.length);
+}
