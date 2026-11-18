@@ -343,7 +343,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// A run's new line ends, or the single space of a join, before its indentation.
 	private def ends = Vector<byte>.new();
 	private def stack = Vector<FormatterBracket>.new();
-	private def comments = Vector<(int, int)>.new();
+	// The comments of a gap: each one's span, and whether a token precedes
+	// it on its line.
+	private def comments = Vector<(int, int, bool)>.new();
 	// The leading tabs of the line of each if statement with an else that
 	// hasn't been reached yet, innermost last. If statements nest, so each
 	// "else" belongs to the last.
@@ -363,6 +365,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var continues: bool;
 	private var closeTabs: int;
 	private var open: bool;
+	// Whether a token precedes the comment after the current run on its line.
+	private var commentAfterToken: bool;
 	// The old indentation range and new tabs of the continuation anchor,
 	// then the tabs of the statement that owns a body. {lineTabs} counts
 	// leading tabs on the current code line.
@@ -410,17 +414,18 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def gap(begin: int, end: int) -> bool {
 		if (end < begin) return false;
 		comments.length = 0;
-		var pos = begin, line = begin, crossing = false;
+		var pos = begin, line = begin, crossing = false, afterToken = next > 0;
 		while (pos < end) {
 			if (space(input[pos])) {
 				if (input[pos] == '\n') {
 					line = pos + 1;
 					crossing = false;
+					afterToken = false;
 				}
 				pos++;
 				continue;
 			}
-			var i = pos;
+			var i = pos, onLine = afterToken;
 			open = false;
 			if (input[i] == '/' && i + 1 < end && input[i + 1] == '/') {
 				// A line comment, less the trailing whitespace that its run removes.
@@ -440,13 +445,14 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 					if (input[pos++] == '\n') {
 						line = pos;
 						crossing = true;
+						afterToken = false;
 					}
 				}
 				if (open && next < syntax.count) return false;
 			} else {
 				return false;
 			}
-			comments.put((i, pos));
+			comments.put((i, pos, onLine));
 		}
 		var indentEnd = line;
 		while (indentEnd < end && space(input[indentEnd])) indentEnd++;
@@ -456,6 +462,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		for (i < comments.length) {
 			var span = comments[i];
 			var leading = next < syntax.count && span.1 > line && span.0 <= indentEnd;
+			commentAfterToken = span.2;
 			run(pos, span.0, true, leading, crossing, following);
 			lastItem = -1;
 			pos = span.1;
@@ -520,17 +527,15 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def spacing(begin: int, end: int, comment: bool) {
 		var empty = begin == end;
 		if (comment) {
-			// A line comment after code, or after a comment on its line.
-			if (empty && input[end] == '/' && input[end + 1] == '/') insert(begin);
+			// A line comment after code: after a token on its line, also with
+			// block comments between them, but not on a line of comments alone.
+			if (empty && commentAfterToken && input[end] == '/' && input[end + 1] == '/') insert(begin);
 			return;
 		}
 		var a = lastItem, b = next;
 		if (a < 0) return; // after a comment
-		var ca = ch(a), cb = ch(b);
-		if (cb == '(') {
-			if (isIfExpression(a)) return exact(begin, end, false);
-			if ((marks[a] & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) return exact(begin, end, true);
-		}
+		var ca = ch(a), cb = ch(b), keyword = keywordSpace(a);
+		if (cb == '(' && keyword >= 0) return exact(begin, end, keyword > 0);
 		if ((ca == '}' && isElse(b)) || (isElse(a) && (cb == '{' || isIfStatement(b))) || (ca == '{' && cb == '}')) {
 			return exact(begin, end, true);
 		}
@@ -560,10 +565,20 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		ends.put(' ');
 		change(at, at, 0, 0, 0);
 	}
+	// Whether the token {k} follows a '.', which makes it a member's name
+	// (Parser.addMemberSuffix): an identifier, or an operator such as the
+	// "+=" of "x.+=", the "!=" of "double.!=", or the "[]=" of "map.[]=",
+	// which the parser consumes as one token and which is never an operator
+	// here. Ranges' "..." and "..+" are tokens of their own, not '.'.
+	private def member(k: int) -> bool {
+		return k > 0 && ch(k - 1) == '.';
+	}
 	// Whether the token {k} is "=", a compound assignment, "->", or "=>",
-	// which take a space on each side. Operator member names, such as the
-	// "!=" of "double.!=" or the "[]=" of "map.[]=", are tokens of their own.
+	// which take a space on each side, and not a member's name. No other
+	// rule's token can be a member's name: the parser takes none of ',',
+	// ':', '{', '}', or a lone '=' after a '.'.
 	private def spaced(k: int) -> bool {
+		if (member(k)) return false;
 		var b = syntax.begin(k), n = syntax.end(k) - b;
 		if (n == 1) return input[b] == '=';
 		var last = input[b + n - 1];
@@ -582,13 +597,20 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		var c = input[syntax.begin(k)];
 		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 	}
-	// Whether the token {k} is the keyword of an if expression, which the
-	// parse tree says (AnalysisFormatMark.IF_EXPR), and not of a statement.
-	def isIfExpression(k: int) -> bool {
-		return (marks[k] & AnalysisFormatMark.IF_EXPR) != 0;
+	// The spaces that the token {k} takes before a '(' that follows it on
+	// its line: none for the keyword of an if expression, one for the
+	// keyword of an if, while, for, or match statement, which the parse tree
+	// marks (AnalysisFormatMark), or -1 for any other token, such as the
+	// member name of "x.if". The spacing rules and the corpus test of if
+	// kinds both read it, so they agree on which mark wins.
+	def keywordSpace(k: int) -> int {
+		var m = marks[k];
+		if ((m & AnalysisFormatMark.IF_EXPR) != 0) return 0;
+		if ((m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) return 1;
+		return -1;
 	}
 	// Whether the token {k} is the keyword of an if statement.
-	def isIfStatement(k: int) -> bool {
+	private def isIfStatement(k: int) -> bool {
 		return (marks[k] & AnalysisFormatMark.CONTROL) != 0 && word(k, "if");
 	}
 	private def word(k: int, w: string) -> bool {

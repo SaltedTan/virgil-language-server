@@ -47,6 +47,7 @@ def X = [
 	T("Formatting:else_spacing", else_spacing),
 	T("Formatting:empty_bodies", empty_bodies),
 	T("Formatting:trailing_comments", trailing_comments),
+	T("Formatting:comment_only_lines", comment_only_lines),
 	T("Formatting:spacing_next_to_comments", spacing_next_to_comments),
 	T("Formatting:spacing_keeps_line_breaks", spacing_keeps_line_breaks),
 	T("Formatting:spacing_unchanged", spacing_unchanged),
@@ -621,6 +622,12 @@ def operator_members(t: Tester) {
 	// Operator member names are single tokens (spike rule bug 2).
 	var input = body("\tvar d = double.!=, e = float.!=, g = m.[]=, h = Record.==, i = int.<=;\n");
 	both(t, input, input);
+	// A token after a '.' is a member's name, also one spelled as an
+	// assignment: "x.+=(1)" calls the member "+=".
+	input = "def f(x: int) {\n\tx.+=(1);\n\tx.-=(2);\n\tx.<<=(3);\n\tx.>>>=(4);\n\tvar g = x.|=, h = x.^=;\n\tx.->(5);\n}\n";
+	both(t, input, input);
+	// A member's name before '=' is a name, and the '=' an assignment.
+	both(t, "def f(x: int) {\n\tvar g=x.+=, h=x.y;\n\tx.y=1;\n}\n", "def f(x: int) {\n\tvar g = x.+=, h = x.y;\n\tx.y = 1;\n}\n");
 }
 def arrows(t: Tester) {
 	both(t, "def f(g: int->bool)->int=>0;\ndef h(x: int) {\n\tmatch (x) {\n\t\t1=>;\n\t\t2  =>  x++;\n\t\t_ =>\tx--;\n\t}\n\tvar k = fun(y: int)=>y, l: (int, int)->int;\n}\n",
@@ -661,12 +668,21 @@ def empty_bodies(t: Tester) {
 }
 def trailing_comments(t: Tester) {
 	// At least one space before a line comment after code, also after a
-	// block comment on its line; alignment before it stays.
+	// block comment that follows code on its line; alignment before it stays.
 	both(t, body("\tx++;// one\n\tx--;    // two\n\tx++;\t// three\n\tx--; /* four */// five\n\tm.set(1,// six\n\t\t2);\n"),
 		body("\tx++; // one\n\tx--;    // two\n\tx++;\t// three\n\tx--; /* four */ // five\n\tm.set(1, // six\n\t\t2);\n"));
 	// A block comment after code gets no space: the rule names only "//".
 	var input = body("\tx++;/* one */\n");
 	both(t, input, input);
+}
+def comment_only_lines(t: Tester) {
+	// A line comment after only comments on its line isn't after code, at
+	// file level, in a body, or after a block comment that ends a line
+	// with code before it.
+	var input = "/* heading */// notes\ndef f() {\n\t/* a */// b\n\tf(); /* c\n\t d *///e\n}\n/* f */ /* g *///h\n";
+	both(t, input, input);
+	// After code, with block comments between them.
+	both(t, "def x = 1; /* a */ /* b */// c\n", "def x = 1; /* a */ /* b */ // c\n");
 }
 def spacing_next_to_comments(t: Tester) {
 	// A gap next to a block comment is kept, so the comment keeps its
@@ -739,7 +755,12 @@ def corpus_if_kinds(t: Tester) {
 				t.fail2("%s: the walk doesn't reach the \"if\" at offset %d", path, b);
 				continue;
 			}
-			var got = if(f.isIfStatement(k), IF_STATEMENT, if(f.isIfExpression(k), IF_EXPRESSION, IF_NONE));
+			// The marks of a statement and an expression exclude each other,
+			// and the spacing rule's own reading of them gives the kind.
+			var both = AnalysisFormatMark.CONTROL | AnalysisFormatMark.IF_EXPR;
+			if ((marks.bits[k] & both) == both) t.fail2("%s: the \"if\" at offset %d is marked as both kinds", path, b);
+			var space = f.keywordSpace(k);
+			var got = if(space > 0, IF_STATEMENT, if(space == 0, IF_EXPRESSION, IF_NONE));
 			if (got != expected) t.fail3("%s: the \"if\" at offset %d is the parse tree's %s", path, b, KIND_NAMES[expected]);
 			if (expected == IF_STATEMENT) statements++;
 			else if (expected == IF_EXPRESSION) expressions++;
