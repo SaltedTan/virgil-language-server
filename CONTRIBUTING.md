@@ -108,9 +108,9 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 
 1. `git -C vendor/virgil fetch && git -C vendor/virgil checkout <sha>`
 2. Regenerate the benchmark corpus with `python3 scripts/bench-corpus.py --write`
-   and review the diff, including file hashes and query/edit anchors. The
-   corpus check reads the gitlink from the index, so stage the new gitlink
-   and the regenerated corpus together before running the checks below.
+   and review the diff, including file hashes and query/edit anchors. The corpus
+   check reads the gitlink from the index, so stage the new gitlink and the
+   regenerated corpus together before running the checks below.
 3. Update the revision in `THIRD_PARTY_NOTICES.md` and `docs/compatibility.md`.
 4. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
@@ -134,7 +134,7 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    - `build/virgil-lsp --version`, whose `virgil revision` comes from the checkout;
    - the staged gitlink, `git rev-parse :vendor/virgil`, and the pin tables in `THIRD_PARTY_NOTICES.md` and in the `main` row of the [Virgil revision table](docs/compatibility.md#virgil-revision);
    - the `virgil_source_revision` of the regenerated, reviewed corpus in `test/benchmarks/corpus.json`;
-   - after committing, package and smoke-test the archive as described in [Dry runs](docs/releasing.md#dry-runs). The smoke test runs [archive verification](docs/releasing.md#what-a-release-contains) to check the bundle's revision and runtime inventory against the committed pin. It then compares `--version` with the manifest.
+   - after committing, the packaged bundle and manifest: `scripts/package-release.sh build/release` refuses a Virgil checkout other than the gitlink, `scripts/check-release.sh --archive <archive>` checks the archive's `virgil/REVISION` and its manifest's `virgilRevision` and `library.revision` against the gitlink, and `scripts/smoke-test-release.sh <archive>` checks `--version` against the manifest.
 
    `make test` checks the gitlink against the pin tables and corpus above through [`test/release/check_pin.py`](test/release/check_pin.py). Confirm `build/virgil-lsp --version` by hand.
 7. In `CHANGELOG.md` under `## [Unreleased]`, name the old and new revisions and each language option that changed.

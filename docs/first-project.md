@@ -4,7 +4,7 @@ This walkthrough takes you from an installed release to your first working seman
 
 ## Prerequisites
 
-- **VS Code:** install the platform VSIX for your workspace platform. It bundles the server, so no separate server installation is needed ([Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)).
+- **VS Code:** install the platform VSIX for your workspace platform, as [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix) describes. The platform package includes the server, worker, and pinned library, so no separate server installation is needed.
 - **LazyVim:** start from an existing [LazyVim starter installation](https://www.lazyvim.org/installation), install the [Virgil plugin configuration](../editors/nvim/README.md#lazyvim), and make sure `virgil-lsp` is on your `PATH`, as the [editor setup](../README.md#editor-setup) describes.
 
 ## The example project
