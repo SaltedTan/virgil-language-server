@@ -69,7 +69,7 @@ The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encod
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `version` | integer | Yes | The format version. Must be the integer literal `1` or `2`; `1.0`, `2.0`, and `1e0` are unsupported. Version 2 has version 1's fields and rules, except that a project's [`target`](#target) may name a supported target. |
+| `version` | integer | Yes | The [format version](#stability-and-evolution). Use the literal `1` or `2`. Decimal and exponent spellings such as `2.0` and `2e0` are unsupported. |
 | `projects` | array of project objects | Yes | The programs, in order. It may be empty: documents under the file then stay in [single-file mode](#without-a-project-file). |
 
 ### Project
@@ -82,7 +82,7 @@ The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encod
 | `virgilDependencies` | array of patterns | `[]` | Files from Virgil's own sources, relative to the [Virgil root](#the-virgil-root), such as `lib/util/*.v3`. |
 | `exclude` | array of patterns | `[]` | Files removed from `sources` and `dependencies`, relative to the directory that holds the project file. |
 | `compilerArgs` | array of strings | `[]` | [Language options](#compiler-flags) for parsing and type checking. |
-| `target` | `null` or string | `null` | The [target](#target) to analyze the project for. Version 1 accepts only `null`; version 2 also accepts a supported target's name. |
+| `target` | `null` or string (version 2) | `null` | The [target](#target) to analyze the project for. |
 
 All files selected by `sources`, `dependencies`, and `virgilDependencies` form one program. The files selected by `sources` are the project's *members*. When a file is a member of one project and only a dependency of another, the server uses the distinction to choose its active project. A file's [semantic diagnostics](architecture.md#semantic-diagnostics), open or closed, come from its active project.
 
@@ -184,11 +184,11 @@ The server parses an open document with the flags of its active project, so that
 
 ### Target
 
-`target` selects the target that a project is analyzed for. In version 1 it must be `null` or absent. Every version 1 project is analyzed without a target, as `v3c` does for its interpreter: Aeneas supplies a synthetic `System` component, and machine-level types such as `Pointer` don't exist. Code written for a native target, such as Wizard engine's `src/engine/x86-64` or Virgil's `rt/` directories, then reports unresolved types, and a version 1 project can describe only a target-independent build, like the [example](#example).
+`target` selects the target that a project is analyzed for. Both versions accept `null` or an absent `target` for target-independent analysis, as in the [example](#example). In that mode Aeneas supplies a synthetic `System` component, and native code using machine-level types such as `Pointer` reports unresolved types.
 
-Version 2 also accepts a string that names a supported target. `null`, or no `target`, still means no target. The only supported target is `x86-64-linux`, which analysis treats as the pinned `bin/v3c-x86-64-linux` builds it: `Pointer`, `AnyRef`, `CiRuntime`, and `Linux` exist, and the target's runtime sources under the [Virgil root](#the-virgil-root), `rt/x86-64-linux/*.v3`, `rt/native/*.v3`, and `rt/gc/*.v3`, join the program as dependencies. They come after the project's `sources`, `dependencies`, and `virgilDependencies`, are not members, and aren't added twice when the project's own patterns already select a file. A missing Virgil root, or a root without those files, is a configuration diagnostic at the `target` value.
+Version 2 also accepts `"target": "x86-64-linux"`. Analysis uses the compiler target selected by the pinned `bin/v3c-x86-64-linux` wrapper, which provides `Pointer`, `AnyRef`, `CiRuntime`, and `Linux`. It appends `rt/x86-64-linux/*.v3`, `rt/native/*.v3`, and `rt/gc/*.v3` from the [Virgil root](#the-virgil-root) as dependencies after the project's `sources`, `dependencies`, and `virgilDependencies`. Each file appears once, even if one of the project's own patterns already selects it. If no root is selected or a runtime pattern selects no files, the server reports a configuration diagnostic at the `target` value.
 
-Any other name is an `InvalidValue` at the value, and the message names the supported targets. That includes Aeneas's other registered targets and its `-test` variants, such as `jvm` and `x86-64-linux-test`, which the server doesn't support. In version 2, a value that is neither a string nor `null` is a `WrongType`. [ADR-0018](decisions/0018-native-target-analysis.md) records the design, and each new supported target is a change of its own.
+In version 2, any other string, including the empty string and Aeneas targets such as `jvm` and `x86-64-linux-test`, produces `InvalidValue` at the value and the message lists the supported targets. Other JSON types produce `WrongType`. In version 1, every non-null value produces `InvalidValue`. [ADR-0018](decisions/0018-native-target-analysis.md) records the design.
 
 ## Configuration diagnostics
 
@@ -197,19 +197,19 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | Code | Reported for |
 | --- | --- |
 | `InvalidJson` | Text that isn't JSON or exceeds the nesting or value limits, or an open configuration buffer over the file-size limit that fits within configuration retention capacity |
-| `UnsupportedVersion` | A `version` other than 1 or 2. Nothing else is checked, because a later version may define other fields. |
+| `UnsupportedVersion` | A numeric `version` whose spelling is neither `1` nor `2`. Nothing else is checked, because a later version may define other fields. |
 | `UnknownField` | A field this version doesn't define, such as `virgilRoot` or `$schema` |
 | `DuplicateField` | A field that appears twice in one object, even if one spelling uses JSON escapes |
 | `MissingField` | A required field that is absent |
 | `WrongType` | A value of the wrong JSON type, including `null` for an optional array |
-| `InvalidValue` | A `name` with other characters, an empty `name` or `sources`, a non-null `target` in a version 1 file, or a version 2 `target` name that no supported target has |
+| `InvalidValue` | A `name` with other characters, an empty `name` or `sources`, or a non-null version 1 target or unsupported version 2 target name (see [Target](#target)) |
 | `DuplicateProjectName` | A `name` used by an earlier project |
 | `InvalidPattern` | A pattern that breaks the [pattern rules](#patterns) |
 | `UnsupportedCompilerFlag` | A `compilerArgs` entry that isn't a language option, or that repeats one or gives it a value other than true or false |
 | `ExpansionLimit` | Source count, traversal (including directory-entry overflow), project count, or retained source-list capacity exceeded |
 | `SourceBudget` | Aggregate source bytes, paths, and metadata exceed the analysis budget |
 | `SourceIO` | A selected, non-excluded source could not be opened or inspected, a selected file became nonregular, a directory required for traversal could not be listed, or configuration could not be read within its size/capacity limits |
-| `MissingVirgilRoot` | Nonempty `virgilDependencies` without a root selected by [the root-selection rules](#the-virgil-root) |
+| `MissingVirgilRoot` | Nonempty `virgilDependencies` or a named [target](#target) without a root selected by [the root-selection rules](#the-virgil-root) |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
 
@@ -265,7 +265,7 @@ The server falls back to single-file mode: parsing, syntax diagnostics, document
 
 Three version numbers apply to a project file, and each changes on its own:
 
-- The **project-file format version** is the file's `version` field. This page specifies versions 1 and 2. It changes only when what a file can say changes.
+- The **project-file format version** is the file's `version` field. It changes only when what a file can say changes.
 - The **server version**, such as `0.1.0-alpha.5`, is what `virgil-lsp --version` prints first. It follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the [changelog](../CHANGELOG.md) section for each release is its release notes.
 - The **pinned compiler revision** is the Virgil commit that the server is built with. `virgil-lsp --version` prints it as `virgil revision`, and the [Virgil revision table](compatibility.md#virgil-revision) lists it for each release. It decides which language options `compilerArgs` accepts and what they do.
 
@@ -306,7 +306,7 @@ When a new pin changes an option's default or meaning but keeps its name, the se
 | --- | --- |
 | The server disagrees with this page | A fix in any release, with a changelog entry |
 | A capacity limit changes | Any release, with a changelog entry |
-| A field is added, a new value is accepted (such as a target name, which version 2 adds), reserved pattern characters get a meaning, or comments are allowed | A new format version, which a 1.x server may read alongside version 1 |
+| A field is added, a new value is accepted, reserved pattern characters get a meaning, or comments are allowed | A new format version, which a 1.x server may read alongside version 1 |
 | A version 1 field is removed, renamed, or given another type or default; or validation is tightened; or patterns, ownership, exclusion, symbolic links, root precedence, or active-project choice change for version 1 | A new server major version |
 | A server stops reading version 1 | A new server major version |
 | A pin adds, removes, or changes a language option | A note in the release's changelog; no new format version |
@@ -316,7 +316,6 @@ A new field isn't forward-compatible. A server rejects a field that it doesn't k
 ### What stays as it is
 
 - Parsing stays strict. Making unknown fields warnings, or accepting a file with errors in part, needs its own approved issue.
-- Version 1 accepts only `null` for `target`, and analyzes every project without a target ([Target](#target)). Programs that need a native target aren't promised to analyze cleanly in version 1.
 - Reading `DEPS`, `TARGETS`, or other target-aware build manifests in place of a project file is outside this contract.
 
 ### Inventory
@@ -333,9 +332,8 @@ Each rule that the promise covers, the code that implements it, and the tests th
 | A repeated field is `DuplicateField`, even when spelled with escapes | [`ProjectConfigValidator.firstMember`](../src/workspace/ProjectConfig.v3), [`ProjectJsonParser.parseFile`](../src/workspace/ProjectJson.v3) | `ProjectConfig:duplicate_fields`, `ProjectConfigMaps:project_keys`, `ProjectConfigMaps:file_keys` | Format |
 | Project names: ASCII letters, digits, `.`, `_`, `-`; case-sensitive; unique in the file | [`ProjectConfigValidator.projectName`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:project_names`, `ProjectConfigMaps:project_names` | Format |
 | `sources` lists at least one pattern | [`ProjectConfigValidator.project`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:empty_sources` | Format |
-| `target` must be `null` or absent | [`ProjectConfigValidator.targetValue`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:target` | Format |
-| A version 2 `target` may be `null`, absent, or a supported target's name; both versions otherwise have the same fields, types, defaults, and checks | [`ProjectConfigValidator.targetValue`](../src/workspace/ProjectConfig.v3), [`AnalysisTargets.find`](../src/analysis/AnalysisTargets.v3) | `ProjectConfig:target_version_two` | Format |
-| A version 2 `target` that names no supported target is `InvalidValue` at the value, and the message names the supported targets; a non-string, non-null value is `WrongType` | [`ProjectConfigValidator.targetValue`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:target_version_two` | Format |
+| Version 1 [`target`](#target) values and diagnostics | [`ProjectConfigValidator.targetValue`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:target` | Format |
+| Version 2 [`target`](#target) values and diagnostics | [`ProjectConfigValidator.targetValue`](../src/workspace/ProjectConfig.v3), [`AnalysisTargets.find`](../src/analysis/AnalysisTargets.v3) | `ProjectConfig:target_version_two` | Format |
 | Strict JSON: no comments, trailing commas, or byte order mark | [`ProjectJsonParser.parseFile`](../src/workspace/ProjectJson.v3) | `ProjectConfig:invalid_json`, `ProjectConfig:byte_order_mark` | Format |
 | A file with any diagnostic defines no projects; diagnostics come in file order, at most 100 | [`ProjectConfigValidator.result`](../src/workspace/ProjectConfig.v3), [`ProjectConfigValidator.error`](../src/workspace/ProjectConfig.v3) | `ProjectConfig:diagnostic_order`, `ProjectConfig:diagnostic_limit`, `WorkspaceProjects:active_precedence` | Format; diagnostic cap: Limit |
 | Configuration diagnostics are published on the project file with `source: "virgil-lsp"` and their code, plus one warning when it becomes invalid; an unchanged list isn't sent again while the configuration's revision is unchanged, but each new revision sends its list, even an unchanged empty one | [`LspProjectDiagnostics.update`](../src/protocol/LspProjectDiagnostics.v3), [`WorkspaceProjects.publish`](../src/workspace/WorkspaceProjects.v3) | `LspProjectAnalysis:configuration_diagnostics`, [`watched-project-file.jsonl`](../test/diagnostics/watched-project-file.jsonl), [`compiler-flags.jsonl`](../test/diagnostics/compiler-flags.jsonl), [`project-version-2.jsonl`](../test/diagnostics/project-version-2.jsonl) | Behavior |
