@@ -22,7 +22,7 @@ Only files that the server's parser accepts with the default language options ar
 
 It changes only whitespace around tokens and comments, including at the start and end of a file. Tokens, comments, and string and character literals keep their bytes, except that trailing whitespace after a line comment is removed. `else` after a `}` that starts its line joins that line, and a body's `{` on a line of its own joins the line before. Each join crosses exactly one line end with only whitespace around it. The proposed formatter computes indentation from the lines after the joins. The other exception to keeping line breaks is at EOF, where the last token or comment gets exactly one line end, as in `gofmt`. Whitespace-only files become empty. Every file the prototype formatted kept its token sequence, and formatting it again changed nothing. Its lexer couldn't read `vendor/virgil/test/core/parser/multiline00.v3`, which ends inside a block comment. The parser accepts that file, and the proposed formatter leaves the comment untouched through EOF.
 
-The prototype's EOF rule matches the proposed command-line behavior. The proposed LSP request leaves a missing final line end to the editor. [ADR-0019](../decisions/0019-formatter.md#decision)
+The prototype's EOF rule matches the proposed command-line behavior for admitted files. The proposed LSP request leaves a missing final line end to the editor. Both proposed interfaces accept LF and CR LF, with each retained CR LF pair kept intact. They decline input with a CR that has no following LF because the folding parse ends a line comment there and the compiler's lexer continues it. [ADR-0019](../decisions/0019-formatter.md#decision)
 
 The prototype classifies each line by the tokens before it:
 
