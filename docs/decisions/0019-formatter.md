@@ -1,0 +1,115 @@
+# 0019. Format Virgil code in its author's style, keeping line breaks
+
+- Status: Proposed; supersedes the roadmap's formatter non-goal
+- Date: 2026-11-18
+- Discussion: [#504](https://github.com/SaltedTan/virgil-language-server/issues/504)
+
+## Context
+
+The [roadmap](../../ROADMAP.md) lists a formatter as a non-goal for the first release ("Formatting is a separate language-design/tooling project"), and its feature table defers `formatting` to "a future canonical formatter". Virgil has no formatter. Aeneas's `VstPrinter` reprints a syntax tree without its comments, so it can't format source. Editors therefore can't format Virgil: LazyVim's format on save and `<leader>cf` do nothing for `.v3` files, nor does VS Code's Format Document, and this repository's style is enforced only by review.
+
+Ben Titzer's code in Virgil and Wizard engine, about 160,000 lines, has a consistent style that a formatter can follow. Tabs indent 99% of indented lines. `{` ends its line, and `} else {` shares one. A statement is written `if (c)`, and the expression form `if(c, a, b)`. Annotations are `x: T`, and empty bodies `{ }`. There are many one-line braceless `if (...) stmt;` and hand-aligned columns of `=`, `=>`, `//`, and `:`. There is no line limit; with tabs eight columns wide, 99% of lines fit in 130 columns, and the longest has 239. A canonical reprinter, which chooses every line break and wraps long lines, would rewrite most of this code and lose its one-line forms and its alignment.
+
+The server already parses an open document's text without verifying it, for outlines, folding ranges, and selection ranges (`AeneasAdapter.foldingRanges`), under the 350,000-token [parse budget](../architecture.md#document-symbols). Its `SymbolSyntaxIndex` records each token the parser consumes, and after a parse without errors the gaps between those tokens hold only whitespace and comments; the folding collector relies on that.
+
+A spike ran a throwaway prototype of the rules below over `aeneas/src`, `lib`, `apps`, and `test` of the pinned Virgil (`b86f43f1`), over Wizard engine at `958c6ad5`, and over this repository. The [spike note](../testing-notes/formatter-spike.md) has the counts, the classification of every change, and sample diffs. In summary:
+
+| Corpus | Lines | Lines changed |
+| --- | ---: | ---: |
+| `aeneas/src` | 70,481 | 448 (0.64%) |
+| `lib` | 17,424 | 258 (1.48%) |
+| `apps` | 8,419 | 83 (0.99%) |
+| Wizard engine | 65,861 | 1,040 (1.58%) |
+| This repository's `src/` and `test/`, without `test/fixtures/` and `test/e2e/` | 63,939 | 35 (0.05%) |
+
+Most of the changes to Titzer's code are whitespace at line ends and at the end of files, and lines indented with spaces, many of them in files from other contributors. The rest bring a line to the form that the code itself uses nearly everywhere: for example, 41 statement `if(` against 13,692 `if (`, and 24 `}` and `else` on separate lines against 1,389 `} else`. Two places in 162,185 lines are judgment calls. Every file that the prototype formatted kept its tokens, and formatting it again changed nothing. The corpora and a review exposed fourteen rule bugs in the prototype, all fixed; the note lists them.
+
+## Decision
+
+1. **The server formats Virgil code in its author's style, keeping line breaks, as `gofmt` does for Go.** It keeps the author's line breaks, comments, blank lines, one-line braceless statements, and hand-aligned columns, and normalizes indentation, the spacing between tokens on a line, and the placement of `{` and `else`. It doesn't reprint the program, wrap or join lines otherwise, reorder anything, or take options. This supersedes the roadmap's non-goal.
+
+2. **Only whitespace between tokens changes.** The formatter reads the tokens that the parser consumed, and edits only the gaps between them, computing each gap's replacement once, so that edits never overlap. Each token and each comment keeps its bytes, except that trailing whitespace after a line comment is removed. Lines inside a block comment keep theirs, and a block comment left open at the end of the file, which the parser accepts, runs to the end untouched. Line breaks stay where they are, except for the two joins in decision 3. Line terminators are kept as they are; CR LF and a lone CR each count as one line end, as for the parse, and no edit starts or ends between a CR and its LF. A file that doesn't parse with its project's language options isn't changed, so a half-typed file is never mangled. A file with more tokens than the parse budget is refused, as an outline is.
+
+3. **The rules.** Each one is the majority form in Titzer's code; the [spike note](../testing-notes/formatter-spike.md#the-counts-behind-each-rule) gives the counts.
+
+   *Indentation*, in tabs:
+
+   - A file-level line has no indentation. A line that starts a statement, a declaration, an enum case, or a match case or one of its patterns gets one tab more than the line where the statement that holds its block started. A `}` line gets that line's indentation. A `{` inside parentheses, such as a `fun` body passed as an argument, indents from its own line. The parse tree, not the tokens, says where enum cases start, since their commas are optional.
+   - A braceless body on the line after `if (...)`, `while (...)`, `for (...)`, `else`, or a match case's `=>`, and a match case's `=>` at the start of a line, get one tab more than their statement's line.
+   - Any other line continues an expression, a parameter list, or a header. It keeps its indentation, including spaces that align it. When its statement's first line is reindented, and that line's old indentation is a prefix of this line's, the prefix is replaced by the first line's new indentation; otherwise this line is left alone. Titzer indents these lines in several ways (one tab 75%, two tabs 11%, aligned under a parenthesis), and a rule that made them uniform would change 1,769 lines of that code.
+   - A comment line takes the indentation of the code line after it, or the block's for a comment before `}`. A comment at column 0 stays there: 211 such lines in Titzer's code are section dividers and commented-out code. A comment inside parentheses or brackets follows that list's continuation lines.
+
+   *Spacing* within a line:
+
+   - `if (`, `while (`, `for (`, and `match (` for statements, and `if(` for an `if` expression. Whether an `if` is a statement or an expression comes from the parse tree: tokens alone misread an `if` expression in a `for` header after `;`, or in a `fun` body inside a match case.
+   - `x: T`: no space before a colon that follows a name, and at least one after it.
+   - At least one space on each side of `=` and the compound assignments, of `->`, including in function types such as `int -> bool`, and of `=>`. A layout's size, such as `=16;`, is not an assignment.
+   - At least one space after a comma, unless the line ends there. Spaces before a comma are left alone: 20 of the 23 in Titzer's code align the columns of a table.
+   - At least one space before a `{` that follows a token on its line, and before a `//` comment after code.
+   - Exactly one space in `if (`, `while (`, `for (`, `match (`, `} else`, `else {`, `else if`, and `{ }`, and none in `if(` for an expression. An empty body `{}` becomes `{ }`.
+   - Every other rule only inserts a missing space, or removes the single space before a colon. A gap of a tab or of two or more spaces is alignment and is kept, also before a colon, as in layout fields. Nothing else changes: `Array<int>`, `x.f(y)`, and `#hints` keep their spacing, and so do binary operators.
+
+   *Lines*:
+
+   - Trailing whitespace is removed, and whitespace-only lines become empty, including those before the first token. Runs of blank lines are kept.
+   - At the end of the file, the last token or comment is followed by exactly one line end: the first one after it, if there are several, and otherwise, if there is none, one of the kind the file's first line end uses, or a line feed. A file with no tokens or comments becomes empty.
+   - `else` after a `}` that starts its line joins it as `} else`. After a one-line block, `if (c) { ... }`, an `else` on the next line stays.
+   - A body's `{` on a line of its own joins the line before, which ends a header. A `{` after `;`, `{`, or `}` starts a block statement and stays.
+   - Both joins apply only across exactly one line end with nothing but whitespace around it: never across a blank line or a comment.
+   - An empty body whose `{` and `}` are on separate lines stays: 61 places in Titzer's code, mostly after long class or constructor headers.
+
+4. **The formatter lives in `src/analysis/`, beside the folding collector.** `DocumentFormatter` walks the input's tokens and the gaps between them, with the few facts it needs from the parse tree: each `if` keyword's kind and where enum cases start. It returns either byte-offset edits of a server-owned type or a refusal that says why: the parse's first error, or the parse budget. `AeneasAdapter.formatting(path, input, options)` parses the current text with the project's language options under the parse budget, as `foldingRanges` does. No Aeneas type leaves `src/analysis/` ([ADR-0002](0002-pinned-virgil-adapter-boundary.md)).
+
+5. **The server answers `textDocument/formatting`.** It formats the open document's current text, and replies with minimal edits: one for each changed gap, in document order, so that cursors, marks, and folds outside the changed whitespace stay put. More than 10,000 edits are merged into one edit from the first change to the last.
+
+   - Indentation can make a document grow: a small file of deeply nested empty statements can grow past 1 MiB. Before it builds edits, the server computes the formatted size, and refuses with `RequestFailed` if the document store, whose 1 MiB budget covers every open document and its metadata, couldn't accept the formatted text in place of the current one. It also refuses a reply whose JSON would exceed 4 MiB, the bound that document symbols use.
+   - The request's `FormattingOptions` must have their required members, `tabSize` and `insertSpaces`, or the request gets `InvalidParams`; their values are ignored, since Virgil is indented with tabs whatever the editor's settings.
+   - A document that doesn't parse gets no edits and no error, since format on save of a half-typed file shouldn't interrupt with an error, and its diagnostics already show the syntax error. A document over the parse budget gets `RequestFailed`, as an outline does. A document that isn't Virgil, such as a project file, gets no edits.
+
+   The server registers formatting dynamically for documents of the `virgil` language when the client supports `textDocument.formatting.dynamicRegistration`, as VS Code and Neovim do, so that VS Code doesn't offer it as a second formatter for `.virgil-lsp.json`. Otherwise it advertises `documentFormattingProvider` statically. Range formatting isn't offered. As [CONTRIBUTING](../../CONTRIBUTING.md#pull-requests) requires, the capability is advertised only by the change that implements and tests it.
+
+6. **The same code checks files from the command line.** `virgil-lsp format [--check | --write] [-lang:<option>...] <file.v3>...`:
+
+   - With neither flag, it prints one file's formatted text.
+   - `--check` names each file that would change, with its first changed line, and prints nothing for a formatted file.
+   - `--write` rewrites the files that change, and only those, so that a failed write leaves the original file in place.
+   - It exits with 0 on success, with 1 if any file would change under `--check` or can't be formatted (unreadable, with a syntax error, which it prints, or over the parse budget), and with 2 for invalid arguments.
+   - It accepts the language options that a project file's `compilerArgs` accepts, with the same rules for values and repetition.
+
+   `make check-format` runs `--check` on this repository's tracked `.v3` files, except `vendor/`, `test/fixtures/`, the editor tests' fixtures under `test/e2e/`, and `docs/examples/`, whose bytes and positions tests depend on. `make test` runs it as a suite, so CI fails on unformatted code.
+
+7. **Editors format through the server.** LazyVim needs no change: its default autoformat formats `.v3` files on save through the language server, and `<leader>cf` formats on demand. Plain Neovim formats on demand with `vim.lsp.buf.format()`, and Helix's `:format` uses the server too. In VS Code, Format Document works, and the extension contributes `"[virgil]": { "editor.formatOnSave": true, "editor.insertSpaces": false }` as configuration defaults, which users can override, so that both LazyVim and VS Code format on save; the maintainer chose this on 2026-11-18.
+
+8. **Tests.**
+
+   - Unit tests cover each rule, and each rule bug that the spike found.
+   - Every file that parses in the pinned `aeneas/src`, `lib`, `apps`, and `test` keeps its parser tokens when formatted, and formatting the result again changes nothing.
+   - A suite formats `aeneas/src`, `lib`, and `apps` at the pin and compares a checked-in record: the pin, every file with whether it formatted or why not, a hash of each formatted file, and each file's changed lines. A rule change that starts rewriting Titzer's code fails it, as does a file that no longer formats. A pin update regenerates and reviews the record.
+   - Protocol transcripts and an interactive test cover both registrations, beside the watched-files registration; UTF-16 edit positions; CR LF; the edit limit; the growth and reply bounds; syntax errors; project files; and the parse budget. The pinned `lspcheck` profile still passes with `--strict`.
+   - `make test-nvim` formats on demand; `make test-lazyvim` and the VS Code Extension Host test format on demand and on save, save a file with a syntax error unchanged and without an error, and show that the project file has no Virgil formatter.
+
+## Consequences
+
+- LazyVim and VS Code users get formatting with no setup, and it runs on every save. A team with another style turns off format on save, since the formatter has no options.
+- Titzer's code isn't format-clean: formatting the pinned Virgil sources would change 0.6–1.5% of their lines, and Wizard engine 1.6%. The corpus record makes each of those changes visible, and a pin update shows how they move.
+- The formatter's output is part of the server's behavior. A rule change that formats existing code differently is a user-visible change, recorded in the changelog.
+- Each request costs one parse of the document, as folding ranges do, and a linear pass over its tokens.
+- A file with a syntax error saves unformatted, with no message from the formatter. A file whose formatted text wouldn't fit in the document store is refused with a message.
+- `--write` needs a rename that the platform layers don't have yet, in `src/os/` for each target.
+- This repository's sources need 35 lines changed once, mostly `{ if(c) stmt; }` in one-line blocks.
+- Pin updates gain a step: regenerate and review the corpus record. The [pin update steps](../../CONTRIBUTING.md#updating-the-pinned-virgil-revision) will name it.
+- The work is split into issues under [#504](https://github.com/SaltedTan/virgil-language-server/issues/504): the formatter's indentation and line rules, its spacing rules, the command, its `--write`, the corpus check, this repository's check, the LSP request, and the editors.
+
+## Alternatives considered
+
+- **Reprint from the syntax tree, as `VstPrinter` does.** It drops comments, and a canonical reprint discards the author's line breaks, one-line forms, and alignment.
+- **A canonical formatter with a line limit, as `rustfmt` or Prettier do.** Titzer's code has no line limit and relies on hand alignment; such a formatter would rewrite most of it.
+- **Indent every continuation line one tab more than its statement.** That would change 1,769 lines of Titzer's code, which aligns these lines in several ways.
+- **Indent comments at column 0 like the code after them.** That would move 211 section dividers and commented-out lines in Titzer's code.
+- **Tell an `if` expression from its tokens.** A comma in its parentheses misreads type arguments, as in `if (eq<T, int>())`, 130 times in `vendor/virgil/test`, and a statement-start rule over tokens misreads `for` headers and `fun` bodies inside match cases. The parser already decides.
+- **Remove spaces before commas.** Twenty of the 23 in Titzer's code align a table's columns.
+- **A separate formatter, outside the server.** It would need its own parser; the server already parses current text with recovery and a budget, and one formatter serves the editors and the check.
+- **Replace the whole document.** Editors would lose cursors, marks, and folds across the file; minimal edits keep them.
+- **Answer a document with syntax errors with an error.** With format on save, every save of a half-typed file would show an error.
+- **Follow `FormattingOptions.insertSpaces`.** The result would depend on each editor's settings, and Virgil code is indented with tabs.
+- **Leave VS Code's format on save to each user.** LazyVim formats on save by default; the maintainer chose the same for VS Code.

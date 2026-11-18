@@ -5,7 +5,7 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, for `0.1.0
 ## Features not yet implemented
 
 - Completion suggests the keywords that can start where the cursor is, from the open document's text, even while the file has syntax errors. In a project, it also suggests the names in scope there, and after a `.`, the members of the receiver's type instead. It suggests nothing in comments or strings. A file that isn't open gets no suggestions ([Completion](architecture.md#completion)).
-- Formatting and debugging are out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
+- There is no formatter yet. [ADR-0019](decisions/0019-formatter.md) plans one that keeps the author's line breaks and formats on save in LazyVim and VS Code. Debugging is out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
 
 ## Performance budgets
 
