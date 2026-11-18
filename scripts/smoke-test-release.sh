@@ -24,7 +24,7 @@ name=$(basename "$ARCHIVE" .tar.gz)
 TMP=$(mktemp -d)
 # Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
 TMP=$(cd "$TMP" && pwd -P)
-trap 'chmod -R u+w "$TMP"; rm -rf "$TMP"' EXIT
+trap 'find "$TMP" -type d -exec chmod u+rwx {} \;; rm -rf "$TMP"' EXIT
 
 pass=0
 fail=0
@@ -70,9 +70,8 @@ fi
 # Move the installation, with spaces in the path, before using it.
 DIR=$TMP/moved\ install
 mv "$TMP/extract/$name" "$DIR"
-# Every library operation must work without write permissions.
-find "$DIR/virgil" -type f -exec chmod 444 {} +
-find "$DIR/virgil" -type d -exec chmod 555 {} +
+# Make the bundle read-only while preserving its read and search permissions.
+chmod -R a-w "$DIR/virgil" || exit 1
 ln -s "$DIR/virgil-lsp" "$TMP/bin/virgil-lsp"
 
 executables() {
