@@ -26,7 +26,7 @@ The prototype's EOF rule matches the proposed command-line behavior. The propose
 
 The prototype classifies each line by the tokens before it:
 
-- A **block line** starts a statement, a declaration, an enum case, or a match case or one of its patterns: the line after `;`, `{`, or `}`, after a `,` in the braces of an `enum` or `match`, or after an enum case, whose comma is optional. It gets one tab more than the line where the statement holding its block started, and none at file level. A `}` line gets that line's indentation.
+- A **block line** starts a statement, a declaration, an enum case, or a match case or one of its patterns: the line after `;`, `{`, or `}`, after a `,` in the braces of an `enum` or `match`, or after an enum case, whose comma is optional. It gets one tab more than the line where the statement holding its block started, and none at file level. A `}` line gets that line's indentation. If a match case's `=>` starts a line, its braced body is one tab deeper than the arrow line and its closing `}` aligns with that line.
 - A **nested line** is a braceless body on the line after `if (...)`, `while (...)`, `for (...)`, `else`, or a match case's `=>`, or a match case's `=>` that starts a line. It gets one tab more than its statement's line.
 - Any other line is a **continuation line**: it is inside parentheses or brackets, or follows a token that doesn't end a statement. It keeps its indentation. If its statement's first line was reindented, it moves with that line when the old indentation is a prefix of its own.
 - A **comment line** takes the indentation of the code line after it, or of the block for a comment before `}`, except a comment at column 0, which stays.
@@ -152,7 +152,7 @@ The corpora exposed the first ten in early versions of the prototype, and a revi
 3. **Colons that aren't type annotations.** A packing's `): 8` and a constructor's `) : super(...)` are left alone; the colon rule applies only to a colon after a name.
 4. **A layout's size**, `=16;`, isn't an assignment (90 lines), on a line of its own or after a field on the same line.
 5. **Enum cases and match cases separated by commas** are block lines, not continuations, and so is a `}` after an enum's last case.
-6. **A match case's `=>` at the start of a line** opens a body that is indented from that line, as `wasm/WasmGcLowering.v3:50` shows; a constructor's `super(...) {` on a continuation line opens a body indented from the constructor's first line, as `arm64/Arm64Backend.v3:53` and three other backends do.
+6. **A match case's `=>` at the start of a line** opens a body that is indented from that line, with the closing `}` aligned to the arrow, as `wasm/WasmGcLowering.v3:50` shows. A constructor's `super(...) {` on a continuation line opens a body indented from the constructor's first line, as `arm64/Arm64Backend.v3:53` and three other backends do.
 7. **Alignment gaps before `=`, `=>`, and `->`** were collapsed at first.
 8. **A comment inside parentheses or brackets**, such as one after a list's last element, belongs to the list and follows its continuation lines.
 9. **`}` and `else` on separate lines** are joined only when the `}` starts its line; a one-line block keeps its `else` on the next line.
