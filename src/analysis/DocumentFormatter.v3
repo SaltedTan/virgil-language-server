@@ -49,22 +49,28 @@ class AnalysisFormatting {
 // the tokens alone, as bits for each token of a SymbolSyntaxIndex.
 component AnalysisFormatMark {
 	// The name that starts an enum case, whose comma is optional.
-	def ENUM_CASE: byte = 1;
+	def ENUM_CASE: u16 = 1;
 	// The first token of a match case's patterns.
-	def CASE_START: byte = 2;
+	def CASE_START: u16 = 2;
 	// The "=>" that ends a match case's patterns.
-	def CASE_ARROW: byte = 4;
-	// The keyword of an if, while, or for statement: an "if" without it is
-	// an expression.
-	def CONTROL: byte = 8;
+	def CASE_ARROW: u16 = 4;
+	// The keyword of an if, while, or for statement.
+	def CONTROL: u16 = 8;
 	// The keyword of an if statement that has an else.
-	def IF_ELSE: byte = 16;
+	def IF_ELSE: u16 = 16;
 	// The "else" of a match's default case, which no if statement has.
-	def DEFAULT_ELSE: byte = 32;
+	def DEFAULT_ELSE: u16 = 32;
 	// The ';' of a fun expression's empty body.
-	def FUN_SEMICOLON: byte = 64;
+	def FUN_SEMICOLON: u16 = 64;
 	// A subsequent pattern of the same match case.
-	def PATTERN_START: byte = 128;
+	def PATTERN_START: u16 = 128;
+	// The keyword of an if expression (IfExpr), which takes no space
+	// before its '('. An "if" with neither this mark nor CONTROL is a
+	// member name, such as "x.if", and gets no spacing rule.
+	def IF_EXPR: u16 = 256;
+	// The keyword of a match statement. The pinned grammar has no match
+	// expression (Parser.parseTerm).
+	def MATCH: u16 = 512;
 }
 
 class FormatterFunHeader {
@@ -76,7 +82,7 @@ class FormatterFunHeader {
 // its own stack of statements and expressions instead of recursing, so that a
 // deeply nested tree that the parser accepted can't exhaust the native stack.
 class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstVisitor<void, void> {
-	def bits = Array<byte>.new(syntax.count);
+	def bits = Array<u16>.new(syntax.count);
 	def funHeaders = Array<FormatterFunHeader>.new(syntax.count);
 	private def stmts = Vector<Stmt>.new();
 	private def exprs = Vector<Expr>.new();
@@ -123,10 +129,10 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 			}
 		}
 	}
-	private def mark(i: int, bit: byte) {
+	private def mark(i: int, bit: u16) {
 		if (i >= 0) bits[i] |= bit;
 	}
-	private def point(p: FilePoint, bit: byte) {
+	private def point(p: FilePoint, bit: u16) {
 		mark(index(p), bit);
 	}
 	private def index(p: FilePoint) -> int {
@@ -200,6 +206,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 	// has a range of that keyword alone, and no arrow. Patterns hold only
 	// literals and names (Parser.parseMatchPattern), so the walk skips them.
 	def visitMatch(s: MatchStmt, env: void) {
+		point(s.src, AnalysisFormatMark.MATCH);
 		expr(s.expr);
 		if (s.cases == null) return;
 		for (l = s.cases.list; l != null; l = l.tail) {
@@ -279,6 +286,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 		expr(e.right);
 	}
 	def visitIfExpr(e: IfExpr, env: void) {
+		point(e.start, AnalysisFormatMark.IF_EXPR);
 		list(e.exprs);
 	}
 	// A block body's list starts at its '{' (Parser.parseList).
@@ -320,11 +328,12 @@ class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHead
 // errors hold only whitespace and comments. Only the whitespace runs between
 // tokens and comments change, at most one edit for each run, so edits never
 // overlap or cover a comment. Indentation is in tabs, by the line kinds of
-// ADR-0019 decision 3. {input} is the original text, with no carriage return
+// ADR-0019 decision 3, and a run within a line follows its spacing rules
+// ({spacing}). {input} is the original text, with no carriage return
 // that a line feed doesn't follow (AeneasAdapter.formatting refuses those),
 // so each line end is LF or CR LF and is kept byte for byte.
 // See docs/architecture.md#formatting.
-class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<byte>,
+class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Array<u16>,
 		funHeaders: Array<FormatterFunHeader>, eof: AnalysisFormatEnd) {
 	// After {measure}, the formatted text's length in bytes, and the number of edits.
 	var size: long;
@@ -474,8 +483,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 				lastEnd = i;
 			}
 		}
-		if (lines == 0 && !first) return false; // spacing within a line (#506)
 		ends.length = 0;
+		if (lines == 0 && !first) {
+			spacing(begin, end, comment);
+			return false;
+		}
 		if (lines == 1 && lastItem >= 0 && !comment && joins(next)) {
 			ends.put(' ');
 			change(begin, end, 0, 0, 0);
@@ -496,6 +508,93 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			codeLine(next, indent, end, true);
 		}
 		change(begin, end, wantTabs, keepBegin, keepEnd);
+		return true;
+	}
+	// Applies the spacing rules (ADR-0019 decision 3, Spacing) to the run
+	// from {begin} to {end} within a line, between the last item and the
+	// next: a comment if {comment}, or else the token {next}. Only a run
+	// between two tokens, or before a line comment, can change. An exact
+	// gap replaces the run; every other rule only inserts a missing space,
+	// or removes the single space before a colon after a name, so that a
+	// tab or two or more spaces, which align columns, stay.
+	private def spacing(begin: int, end: int, comment: bool) {
+		var empty = begin == end;
+		if (comment) {
+			// A line comment after code, or after a comment on its line.
+			if (empty && input[end] == '/' && input[end + 1] == '/') insert(begin);
+			return;
+		}
+		var a = lastItem, b = next;
+		if (a < 0) return; // after a comment
+		var ca = ch(a), cb = ch(b);
+		if (cb == '(') {
+			if (isIfExpression(a)) return exact(begin, end, false);
+			if ((marks[a] & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) return exact(begin, end, true);
+		}
+		if ((ca == '}' && isElse(b)) || (isElse(a) && (cb == '{' || isIfStatement(b))) || (ca == '{' && cb == '}')) {
+			return exact(begin, end, true);
+		}
+		if (cb == '{' || ca == ',') {
+			if (empty) insert(begin);
+			return;
+		}
+		if (cb == ':') {
+			if (end - begin == 1 && input[begin] == ' ' && name(a)) change(begin, end, 0, 0, 0);
+			return;
+		}
+		if (ca == ':') {
+			if (empty && a > 0 && name(a - 1)) insert(begin);
+			return;
+		}
+		// A layout's size, "=16;", follows a ';' or '{' and isn't an assignment.
+		if (cb == '=' && (ca == ';' || ca == '{')) return;
+		if (ca == '=' && a > 0 && (ch(a - 1) == ';' || ch(a - 1) == '{')) return;
+		if (empty && (spaced(a) || spaced(b))) insert(begin);
+	}
+	// Replaces the run from {begin} to {end} with one space, or with none.
+	private def exact(begin: int, end: int, space: bool) {
+		if (space) ends.put(' ');
+		change(begin, end, 0, 0, 0);
+	}
+	private def insert(at: int) {
+		ends.put(' ');
+		change(at, at, 0, 0, 0);
+	}
+	// Whether the token {k} is "=", a compound assignment, "->", or "=>",
+	// which take a space on each side. Operator member names, such as the
+	// "!=" of "double.!=" or the "[]=" of "map.[]=", are tokens of their own.
+	private def spaced(k: int) -> bool {
+		var b = syntax.begin(k), n = syntax.end(k) - b;
+		if (n == 1) return input[b] == '=';
+		var last = input[b + n - 1];
+		if (n == 2) {
+			var f = input[b];
+			if (last == '>') return f == '-' || f == '=';
+			if (last != '=') return false;
+			return f == '+' || f == '-' || f == '*' || f == '/' || f == '%' || f == '&' || f == '|' || f == '^';
+		}
+		if (last != '=') return false;
+		if (n == 3) return (input[b] == '<' && input[b + 1] == '<') || (input[b] == '>' && input[b + 1] == '>');
+		return n == 4 && input[b] == '>' && input[b + 1] == '>' && input[b + 2] == '>';
+	}
+	// Whether the token {k} is a name: an identifier or a keyword.
+	private def name(k: int) -> bool {
+		var c = input[syntax.begin(k)];
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+	}
+	// Whether the token {k} is the keyword of an if expression, which the
+	// parse tree says (AnalysisFormatMark.IF_EXPR), and not of a statement.
+	def isIfExpression(k: int) -> bool {
+		return (marks[k] & AnalysisFormatMark.IF_EXPR) != 0;
+	}
+	// Whether the token {k} is the keyword of an if statement.
+	def isIfStatement(k: int) -> bool {
+		return (marks[k] & AnalysisFormatMark.CONTROL) != 0 && word(k, "if");
+	}
+	private def word(k: int, w: string) -> bool {
+		var b = syntax.begin(k);
+		if (syntax.end(k) - b != w.length) return false;
+		for (i < w.length) if (input[b + i] != w[i]) return false;
 		return true;
 	}
 	// Chooses the indentation of the code line whose first token is {k} and

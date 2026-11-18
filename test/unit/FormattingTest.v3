@@ -35,6 +35,24 @@ def X = [
 	T("Formatting:case_arrow_anchor", case_arrow_anchor),
 	T("Formatting:foreach_initializer", foreach_initializer),
 	T("Formatting:representation_hints", representation_hints),
+	T("Formatting:control_keywords", control_keywords),
+	T("Formatting:if_kinds", if_kinds),
+	T("Formatting:colons", colons),
+	T("Formatting:assignments", assignments),
+	T("Formatting:layout_sizes", layout_sizes),
+	T("Formatting:operator_members", operator_members),
+	T("Formatting:arrows", arrows),
+	T("Formatting:commas", commas),
+	T("Formatting:braces", braces),
+	T("Formatting:else_spacing", else_spacing),
+	T("Formatting:empty_bodies", empty_bodies),
+	T("Formatting:trailing_comments", trailing_comments),
+	T("Formatting:spacing_next_to_comments", spacing_next_to_comments),
+	T("Formatting:spacing_keeps_line_breaks", spacing_keeps_line_breaks),
+	T("Formatting:spacing_unchanged", spacing_unchanged),
+	T("Formatting:spacing_crlf", spacing_crlf),
+	T("Formatting:spacing_in_one_run", spacing_in_one_run),
+	T("Formatting:corpus_if_kinds", corpus_if_kinds),
 	()
 ];
 def PATH = "format.v3";
@@ -322,9 +340,17 @@ def comment_gap_edits(t: Tester) {
 	var comment = 15;
 	t.assert(input[comment] == '/', "the comment's offset");
 	t.assert(edits[0].end <= comment && edits[1].begin >= comment + 7, "no edit covers the comment");
-	// "{// note" with a misindented line after it changes only after the comment.
-	edits = both(t, "def f() {// note  \n   var x = 1;\n}\n", "def f() {// note\n\tvar x = 1;\n}\n");
-	t.asserti(1, edits.length);
+	// "{// note" with a misindented line after it: a space inserted before
+	// the comment, and the line after it reindented, as two edits.
+	input = "def f() {// note  \n   var x = 1;\n}\n";
+	edits = both(t, input, "def f() { // note\n\tvar x = 1;\n}\n");
+	t.asserti(2, edits.length);
+	comment = 9;
+	t.assert(input[comment] == '/', "the comment's offset");
+	if (edits.length == 2) {
+		t.assert(edits[0].begin == comment && edits[0].end == comment, "an insertion before the comment");
+		t.assert(edits[1].begin >= comment + 7, "an edit after the comment");
+	}
 }
 def syntax_error(t: Tester) {
 	var input = "def f( {\n  var x = 1;\n}\n";
@@ -347,7 +373,7 @@ def syntax_error(t: Tester) {
 def parse_budget(t: Tester) {
 	var input = "component C {\n def f() {}\n}";
 	AnalysisParseBudget.maxTokens = 10;
-	format(t, ONE, input, "component C {\n\tdef f() {}\n}\n");
+	format(t, ONE, input, "component C {\n\tdef f() { }\n}\n");
 	AnalysisParseBudget.maxTokens = 9;
 	var r = AeneasAdapter.formatting(PATH, input, OPTIONS, ONE);
 	t.assert_string(AnalysisParseBudget.refusal(), r.refusal);
@@ -526,5 +552,373 @@ def representation_hints(t: Tester) {
 	]) {
 		both(t, Strings.format3("%s%s%s", parts.0, unindented, parts.1),
 			Strings.format3("%s%s%s", parts.0, indented, parts.1));
+	}
+}
+
+// Each case below formats one function or declaration; {body} wraps
+// statements in a function with the names that they use.
+def body(statements: string) -> string {
+	return Strings.format1("def f(c: bool, x: int, m: HashMap<int, int>) {\n%s}\n", statements);
+}
+def control_keywords(t: Tester) {
+	// One space after a statement's keyword, also replacing a tab or several
+	// spaces, which align nothing here.
+	both(t, body("\tif(c) x++;\n\tif  (c) x++;\n\tif\t(c) x++;\n\twhile(c) x++;\n\tfor(i < 3) x++;\n\tfor(y in [1]) x++;\n\tfor(i = 0; i < 3; i++) x++;\n\tmatch(x) {\n\t\t_ => ;\n\t}\n"),
+		body("\tif (c) x++;\n\tif (c) x++;\n\tif (c) x++;\n\twhile (c) x++;\n\tfor (i < 3) x++;\n\tfor (y in [1]) x++;\n\tfor (i = 0; i < 3; i++) x++;\n\tmatch (x) {\n\t\t_ => ;\n\t}\n"));
+	// None after an if expression's keyword.
+	both(t, body("\tvar y = if (c, 1, 2), z = if  (c, 1, 2) + if\t(c, 3, 4);\n"),
+		body("\tvar y = if(c, 1, 2), z = if(c, 1, 2) + if(c, 3, 4);\n"));
+	// Member names that are keywords aren't statements or expressions.
+	var input = body("\tm.if(1);\n\tm.while (2);\n\tm.match(3);\n\tm.for (4);\n");
+	both(t, input, input);
+}
+def if_kinds(t: Tester) {
+	// The parse tree, not a comma in the parentheses, tells the kinds apart
+	// (spike rule bugs 1 and 11).
+	both(t, "def f<T>() {\n\tif(eq<T, int>()) return;\n}\n", "def f<T>() {\n\tif (eq<T, int>()) return;\n}\n");
+	both(t, body("\tfor (i = 0; if (c, i < 3, i < 4); if (c, i++, i--)) { }\n"),
+		body("\tfor (i = 0; if(c, i < 3, i < 4); if(c, i++, i--)) { }\n"));
+	both(t, body("\tmatch (x) {\n\t\t1 => def g = fun() => if (c, 1, 2);\n\t\t_ => if(c) x++;\n\t}\n"),
+		body("\tmatch (x) {\n\t\t1 => def g = fun() => if(c, 1, 2);\n\t\t_ => if (c) x++;\n\t}\n"));
+	// An if expression in a statement's condition, and a statement in a fun
+	// body in an expression's arguments.
+	both(t, body("\tif(if (c, true, false)) x++;\n\tvar y = if (c, fun () {\n\t\tif(c) x++;\n\t}, null);\n\tif (c) x++; else if(c) x--;\n"),
+		body("\tif (if(c, true, false)) x++;\n\tvar y = if(c, fun () {\n\t\tif (c) x++;\n\t}, null);\n\tif (c) x++; else if (c) x--;\n"));
+	// Fields, simple method bodies, and representation hints.
+	both(t, "class C(c: bool) {\n\tdef x = if (c, 1, 2);\n\tdef m() -> int => if (c, 1, 2);\n}\ndef y = 0 #hint(if (true, 1, 2));\n",
+		"class C(c: bool) {\n\tdef x = if(c, 1, 2);\n\tdef m() -> int => if(c, 1, 2);\n}\ndef y = 0 #hint(if(true, 1, 2));\n");
+}
+def colons(t: Tester) {
+	// No space before a colon after a name, and at least one after it.
+	both(t, "def f(a:int, b : int, c :int, d: int) -> int {\n\tvar e:int = 1, g :  bool;\n\tmatch (a) {\n\t\tx : int => ;\n\t}\n\treturn a;\n}\n",
+		"def f(a: int, b: int, c: int, d: int) -> int {\n\tvar e: int = 1, g:  bool;\n\tmatch (a) {\n\t\tx: int => ;\n\t}\n\treturn a;\n}\n");
+	// A tab or two or more spaces before a colon, or a tab after one, is
+	// alignment (spike rule bug 13).
+	var input = "layout L {\n\t+0\twasm_func\t: i64;\n\t+8\tx        : u8;\n\t+9\ty:\tu8;\n\t=16;\n}\ndef f(a  : int, b:\tint) { }\n";
+	both(t, input, input);
+	// A packing's "): 8" and a constructor's ") : super(...)" follow no name
+	// (spike rule bug 3).
+	both(t, "packing P(a:4): 8 = 0b_aaaa_0000;\npacking Q(b: 4):8 = 0b_bbbb_0000;\nclass A(x: int) { }\nclass B extends A {\n\tnew(x: int) : super(x) { }\n}\nclass D extends A {\n\tnew(x: int):super(x) { }\n}\n",
+		"packing P(a: 4): 8 = 0b_aaaa_0000;\npacking Q(b: 4):8 = 0b_bbbb_0000;\nclass A(x: int) { }\nclass B extends A {\n\tnew(x: int) : super(x) { }\n}\nclass D extends A {\n\tnew(x: int):super(x) { }\n}\n");
+}
+def assignments(t: Tester) {
+	both(t, body("\tvar y=1;\n\tx=2;\n\tx+=1; x-=1; x*=2; x/=2; x%=2; x&=1; x|=1; x^=1; x <<=1; x>>=1; x>>>=1;\n"),
+		body("\tvar y = 1;\n\tx = 2;\n\tx += 1; x -= 1; x *= 2; x /= 2; x %= 2; x &= 1; x |= 1; x ^= 1; x <<= 1; x >>= 1; x >>>= 1;\n"));
+	// A tab or several spaces on either side align a column (spike rule bug
+	// 7), and comparisons aren't assignments.
+	var input = body("\tvar a   = 1;\n\tvar bb  = 2;\n\tvar ccc =\t3;\n\tvar d = x==1 || x!=2 || 3<=x || x>=4;\n");
+	both(t, input, input);
+	// A type's closing '>' and an initializer's '=' are two tokens.
+	both(t, "def z: Array<int>= [1];\n", "def z: Array<int> = [1];\n");
+}
+def layout_sizes(t: Tester) {
+	// A layout's size isn't an assignment, on its own line or after a field
+	// (spike rule bug 4).
+	var input = "layout L {\n\t+0 x: u8;\n\t=16;\n}\nlayout M {\n\t+0 x: u8;=16;\n}\nlayout N {=4; }\nlayout P { +0 x: u8; =8; }\n";
+	both(t, input, input);
+}
+def operator_members(t: Tester) {
+	// Operator member names are single tokens (spike rule bug 2).
+	var input = body("\tvar d = double.!=, e = float.!=, g = m.[]=, h = Record.==, i = int.<=;\n");
+	both(t, input, input);
+}
+def arrows(t: Tester) {
+	both(t, "def f(g: int->bool)->int=>0;\ndef h(x: int) {\n\tmatch (x) {\n\t\t1=>;\n\t\t2  =>  x++;\n\t\t_ =>\tx--;\n\t}\n\tvar k = fun(y: int)=>y, l: (int, int)->int;\n}\n",
+		"def f(g: int -> bool) -> int => 0;\ndef h(x: int) {\n\tmatch (x) {\n\t\t1 => ;\n\t\t2  =>  x++;\n\t\t_ =>\tx--;\n\t}\n\tvar k = fun(y: int) => y, l: (int, int) -> int;\n}\n");
+	// Columns of "=>" stay aligned.
+	var input = body("\tmatch (x) {\n\t\t1     => x++;\n\t\t22    => x--;\n\t\t_\t=> ;\n\t}\n");
+	both(t, input, input);
+}
+def commas(t: Tester) {
+	both(t, body("\tm.set(1,2);\n\tvar a = [1,2,\n\t\t3,  4], b = (1,\t2);\n"),
+		body("\tm.set(1, 2);\n\tvar a = [1, 2,\n\t\t3,  4], b = (1,\t2);\n"));
+	// Spaces before a comma align a table's columns (spike rule bug 10).
+	var input = body("\tput2(JMP , ref(label));\n\tput2(MSTB     , reg.tag);\n");
+	both(t, input, input);
+}
+def braces(t: Tester) {
+	both(t, "class C{\n\tdef m(){ }\n\tdef n()-> int{ return 1; }\n}\ndef f(c: bool) {\n\tif (c){ }\n\twhile (c){ }\n\tvar g = fun (){ };\n}\n",
+		"class C {\n\tdef m() { }\n\tdef n() -> int { return 1; }\n}\ndef f(c: bool) {\n\tif (c) { }\n\twhile (c) { }\n\tvar g = fun () { };\n}\n");
+	// The '{' columns of one-line methods stay aligned.
+	var input = "class C {\n\tdef a()     { }\n\tdef bcd()\t{ }\n\tdef e() -> int { return 1; }\n}\n";
+	both(t, input, input);
+}
+def else_spacing(t: Tester) {
+	// Exactly one space in "} else", "else {", and "else if", replacing
+	// any gap within the line.
+	both(t, body("\tif (c) { }else{ }\n\tif (c) { }  else\t{ }\n\tif (c) { }else if(c) { }\n\tif (c) x++; else  if (c) x--;\n\tmatch (x) {\n\t\t1 => ;\n\t}else{ }\n"),
+		body("\tif (c) { } else { }\n\tif (c) { } else { }\n\tif (c) { } else if (c) { }\n\tif (c) x++; else if (c) x--;\n\tmatch (x) {\n\t\t1 => ;\n\t} else { }\n"));
+	// "else" as a member name isn't the keyword.
+	var input = body("\tif (c) { }\n\tm.else  (1);\n");
+	both(t, input, input);
+}
+def empty_bodies(t: Tester) {
+	both(t, "class A {}\nclass B {   }\nclass C {\t}\ndef f() {\n\t{}\n\tvar g = fun () {};\n}\nenum E {}\n",
+		"class A { }\nclass B { }\nclass C { }\ndef f() {\n\t{ }\n\tvar g = fun () { };\n}\nenum E { }\n");
+	// An empty body over two lines stays.
+	var input = "class A {\n}\nclass B {\n\n}\n";
+	both(t, input, input);
+}
+def trailing_comments(t: Tester) {
+	// At least one space before a line comment after code, also after a
+	// block comment on its line; alignment before it stays.
+	both(t, body("\tx++;// one\n\tx--;    // two\n\tx++;\t// three\n\tx--; /* four */// five\n\tm.set(1,// six\n\t\t2);\n"),
+		body("\tx++; // one\n\tx--;    // two\n\tx++;\t// three\n\tx--; /* four */ // five\n\tm.set(1, // six\n\t\t2);\n"));
+	// A block comment after code gets no space: the rule names only "//".
+	var input = body("\tx++;/* one */\n");
+	both(t, input, input);
+}
+def spacing_next_to_comments(t: Tester) {
+	// A gap next to a block comment is kept, so the comment keeps its
+	// place: only gaps between two tokens change.
+	var input = body("\tx/* a */=1;\n\tif /* b */(c) x++;\n\tif (c) { }/* c */else { }\n\tvar y:/* d */int;\n\tm.set(1,/* e */2);\n");
+	both(t, input, body("\tx/* a */= 1;\n\tif /* b */(c) x++;\n\tif (c) { }/* c */else { }\n\tvar y:/* d */int;\n\tm.set(1,/* e */2);\n"));
+}
+def spacing_keeps_line_breaks(t: Tester) {
+	// The exact gaps apply only within a line: no line break is removed
+	// beyond the two joins.
+	var input = body("\tif\n\t\t(c) x++;\n\tmatch\n\t\t(x) {\n\t\t_ => ;\n\t}\n\tvar y = if\n\t\t(c, 1, 2);\n\tif (c) {\n\t}\n\n\telse\n\t\tif (c) x++;\n\tvar z =\n\t\t1, w\n\t\t= 2;\n\tm.set(1\n\t\t, 2);\n");
+	both(t, input, input);
+	// A join gives exactly one space, and the gaps after it follow the rules.
+	both(t, body("\tif (c) {\n\t}\n\telse{ }\n\tif (c)\n\t{ }\n"), body("\tif (c) {\n\t} else { }\n\tif (c) { }\n"));
+}
+def spacing_unchanged(t: Tester) {
+	// Spacing that ADR-0019 doesn't name stays.
+	var input = "type T #unboxed { case A; }\ndef f(x: Array< int >, y:Array<int>) -> int {\n\treturn ( x.length+y [0] )*2;\n}\n";
+	both(t, input, "type T #unboxed { case A; }\ndef f(x: Array< int >, y: Array<int>) -> int {\n\treturn ( x.length+y [0] )*2;\n}\n");
+}
+def spacing_crlf(t: Tester) {
+	both(t, "def f(c: bool) {\r\n\tif(c) { }else{}\r\n\tvar y=if (c, 1, 2);// note\r\n}\r\n",
+		"def f(c: bool) {\r\n\tif (c) { } else { }\r\n\tvar y = if(c, 1, 2); // note\r\n}\r\n");
+}
+def spacing_in_one_run(t: Tester) {
+	// Each changed run gets one edit, an insertion with an empty range, and
+	// runs on either side of a token get their own.
+	var input = "def x=1;\n";
+	var edits = both(t, input, "def x = 1;\n");
+	t.asserti(2, edits.length);
+	if (edits.length == 2) {
+		t.assert(edits[0].begin == 5 && edits[0].end == 5 && Strings.equal(" ", edits[0].text), "an insertion before '='");
+		t.assert(edits[1].begin == 6 && edits[1].end == 6 && Strings.equal(" ", edits[1].text), "an insertion after '='");
+	}
+	// A run whose line is reindented gets one edit for its line end and
+	// indentation, and the gaps within the line their own.
+	edits = both(t, "def f() {  \n      var y:int=1;\n}\n", "def f() {\n\tvar y: int = 1;\n}\n");
+	t.asserti(4, edits.length);
+}
+
+// Every "if" keyword of the pinned aeneas/src, lib, and apps that parse has
+// the kind that the parse tree gives it (IfStmt or IfExpr), by a walk of the
+// tree separate from AnalysisFormatMarks; one that the walk doesn't reach
+// fails, so a node that both walks miss can't pass unseen.
+def corpus_if_kinds(t: Tester) {
+	var paths = Vector<string>.new();
+	for (dir in ["vendor/virgil/aeneas/src", "vendor/virgil/lib", "vendor/virgil/apps"]) sources(t, dir, paths);
+	var parsed = 0, statements = 0, expressions = 0, members = 0;
+	var syntax = SymbolSyntaxIndex.new();
+	for (i < paths.length) {
+		var path = paths[i], text = System.fileLoad(path);
+		if (text == null) {
+			t.fail1("can't read %s", path);
+			continue;
+		}
+		var input = AeneasAdapter.normalizedRange(text, 0, text.length), errors = AnalysisParseErrors.new(1);
+		syntax.clear();
+		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
+		if (errors.numErrors > 0) continue;
+		parsed++;
+		var walk = IfKinds.new(syntax).file(file);
+		var marks = AnalysisFormatMarks.new(file, syntax).collect();
+		var f = DocumentFormatter.new(input, syntax, marks.bits, marks.funHeaders, ONE);
+		for (k < syntax.count) {
+			var b = syntax.begin(k);
+			if (syntax.end(k) - b != 2 || input[b] != 'i' || input[b + 1] != 'f') continue;
+			var member = k > 0 && syntax.single(input, k - 1) == '.';
+			var expected = walk.kinds[k];
+			if (expected == IF_NONE && !member) {
+				t.fail2("%s: the walk doesn't reach the \"if\" at offset %d", path, b);
+				continue;
+			}
+			var got = if(f.isIfStatement(k), IF_STATEMENT, if(f.isIfExpression(k), IF_EXPRESSION, IF_NONE));
+			if (got != expected) t.fail3("%s: the \"if\" at offset %d is the parse tree's %s", path, b, KIND_NAMES[expected]);
+			if (expected == IF_STATEMENT) statements++;
+			else if (expected == IF_EXPRESSION) expressions++;
+			else members++;
+		}
+	}
+	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
+	// with 9,854 if statements and 1,139 if expressions.
+	t.assert(parsed >= 290, Strings.format1("only %d files parse", parsed));
+	t.assert(statements > 9000 && expressions > 1000, Strings.format2("%d statements and %d expressions", statements, expressions));
+}
+def IF_NONE: byte = 0;
+def IF_STATEMENT: byte = 1;
+def IF_EXPRESSION: byte = 2;
+def KIND_NAMES = ["member name", "if statement", "if expression"];
+// Adds the .v3 files under {dir} to {paths}, in name order.
+def sources(t: Tester, dir: string, paths: Vector<string>) {
+	var listing = ProjectFiles.list(dir, 4096);
+	if (listing.names == null) return t.fail1("%s is not listed", dir);
+	for (i < listing.names.length) {
+		var name = listing.names[i], path = ProjectFiles.join(dir, name);
+		if (listing.types[i] == DT_DIR) sources(t, path, paths);
+		else if (Strings.endsWith(name, ".v3")) paths.put(path);
+	}
+}
+def DT_DIR: byte = 4;
+// The kind of each "if" token, by a recursive walk of every declaration,
+// statement, and expression of a file.
+class IfKinds(syntax: SymbolSyntaxIndex) extends VstVisitor<void, void> {
+	def kinds = Array<byte>.new(syntax.count);
+
+	def file(f: VstFile) -> this {
+		for (i < f.classes.length) compound(f.classes[i]);
+		for (i < f.components.length) compound(f.components[i]);
+		for (i < f.enums.length) compound(f.enums[i]);
+		for (i < f.layouts.length) compound(f.layouts[i]);
+		for (i < f.exports.length) expr(f.exports[i].expr);
+	}
+	private def at(p: FilePoint, kind: byte) {
+		var k = syntax.findAt(p.beginLine, p.beginColumn);
+		if (k >= 0) kinds[k] = kind;
+	}
+	private def compound(d: VstCompound) {
+		hints(d.repHints);
+		if (d.superclause != null) expr(d.superclause.args);
+		for (l = d.members; l != null; l = l.tail) {
+			var m = l.head;
+			hints(m.repHints);
+			match (m) {
+				x: VstNew => {
+					if (x.superclause != null) expr(x.superclause.args);
+					stmt(x.func.body);
+				}
+				x: VstMethod => stmt(x.func.body);
+				x: VstField => expr(x.init);
+				x: VstEnumCase => exprs(x.args);
+				_ => ;
+			}
+		}
+	}
+	private def hints(h: List<VstRepHint>) {
+		for (l = h; l != null; l = l.tail) {
+			match (l.head) {
+				ExprHint(_, es) => exprs(es);
+				_ => ;
+			}
+		}
+	}
+	private def stmt(s: Stmt) {
+		if (s != null) s.accept(this, ());
+	}
+	private def expr(e: Expr) {
+		if (e != null) e.accept(this, ());
+	}
+	private def exprs(l: VstList<Expr>) {
+		if (l != null) for (e = l.list; e != null; e = e.tail) expr(e.head);
+	}
+	private def local(v: VarDecl) {
+		if (v != null) expr(v.init);
+	}
+
+	def visitIf(s: IfStmt, env: void) {
+		at(s.start, IF_STATEMENT);
+		expr(s.cond);
+		stmt(s.tbranch);
+		stmt(s.fbranch);
+	}
+	def visitBlock(s: BlockStmt, env: void) {
+		if (s.stmts != null) for (l = s.stmts.list; l != null; l = l.tail) stmt(l.head);
+	}
+	def visitWhile(s: WhileStmt, env: void) {
+		expr(s.cond);
+		stmt(s.body);
+	}
+	def visitFor(s: ForStmt, env: void) {
+		local(s.varDecl);
+		expr(s.cond);
+		expr(s.update);
+		stmt(s.body);
+	}
+	def visitForeach(s: ForeachStmt, env: void) {
+		local(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitForLess(s: ForLessStmt, env: void) {
+		local(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitLocal(s: LocalStmt, env: void) {
+		for (l = s.vars; l != null; l = l.tail) {
+			hints(l.head.repHints);
+			local(l.head);
+		}
+	}
+	def visitBreak(s: BreakStmt, env: void) { }
+	def visitContinue(s: ContinueStmt, env: void) { }
+	def visitExpr(s: ExprStmt, env: void) {
+		expr(s.expr);
+	}
+	def visitMatch(s: MatchStmt, env: void) {
+		expr(s.expr);
+		if (s.cases != null) for (l = s.cases.list; l != null; l = l.tail) stmt(l.head.stmt);
+	}
+	def visitEmpty(s: EmptyStmt, env: void) { }
+	def visitReturn(s: ReturnStmt, env: void) {
+		expr(s.expr);
+	}
+	def visitTuple(e: TupleExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitParamExpr(e: ParamExpr, env: void) { }
+	def visitAutoExpr(e: AutoExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitArray(e: ArrayExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitVar(e: VarExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitLiteral(e: Literal, env: void) { }
+	def visitString(e: StringExpr, env: void) { }
+	def visitApp(e: AppExpr, env: void) {
+		expr(e.func);
+		expr(e.args);
+	}
+	def visitIndex(e: IndexExpr, env: void) {
+		expr(e.expr);
+		exprs(e.exprs);
+	}
+	def visitRange(e: RangeExpr, env: void) {
+		expr(e.expr);
+		expr(e.start);
+		expr(e.end);
+	}
+	def visitNot(e: NotExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitNeg(e: NegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitBitwiseNeg(e: BitwiseNegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitAssign(e: AssignExpr, env: void) {
+		expr(e.target);
+		expr(e.expr);
+	}
+	def visitBinOp(e: BinOpExpr, env: void) {
+		expr(e.left);
+		expr(e.right);
+	}
+	def visitIfExpr(e: IfExpr, env: void) {
+		at(e.start, IF_EXPRESSION);
+		exprs(e.exprs);
+	}
+	def visitFunExpr(e: FunExpr, env: void) {
+		if (e.func != null) stmt(e.func.body);
 	}
 }
