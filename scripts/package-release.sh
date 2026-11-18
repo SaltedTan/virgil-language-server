@@ -10,7 +10,8 @@
 # virgil-lsp-<version>-<target>.manifest.json, to the output directory, and
 # prints their paths. The archive holds one directory of the same name with
 # virgil-lsp, virgil-lsp-worker, LICENSE, THIRD_PARTY_NOTICES.md, README.md,
-# manifest.json, and virgil/{lib/,LICENSE,REVISION}.
+# manifest.json, and virgil/{lib/,rt/,LICENSE,REVISION}, where rt/ holds the
+# runtime sources that the supported targets' runtime patterns select.
 #
 # --tag checks the tag with scripts/check-release.sh and records it in the
 # manifest; without it, the manifest's tag is null. The checkout must be clean
@@ -57,6 +58,7 @@ OUT=$(cd "$1" && pwd)
 # record their source paths, so an absolute one would make them differ from
 # the ones that make test builds.
 cd "$ROOT"
+export GIT_NO_REPLACE_OBJECTS=1
 virgil=${VIRGIL:-vendor/virgil}
 
 if [ -n "$tag" ]; then
@@ -199,7 +201,8 @@ $platform
 - \`virgil-lsp-worker\` is its analysis worker. The server starts the worker from
   the directory that holds the server's real path, so keep the two together. A
   symlink to \`virgil-lsp\` from a directory on your \`PATH\` works.
-- \`virgil/\` holds the complete pinned \`lib/\`, its Apache-2.0 license, and
+- \`virgil/\` holds the complete pinned \`lib/\`, the runtime sources that the
+  \`x86-64-linux\` target uses under \`rt/\`, their Apache-2.0 license, and
   \`REVISION\`. Keep it beside the executables.
 - \`manifest.json\` records the version, the exact server and Virgil revisions,
   and how the executables were built.
@@ -214,9 +217,10 @@ To install:
     virgil-lsp --version
 
 With no client Virgil root, the server uses the bundled library beside its
-resolved executable after checking its revision. A client root takes precedence;
-an invalid override never falls back. Projects needing sources outside \`lib/\`
-(such as \`rt/\` or \`aeneas/\`) still need an explicit checkout. The release
+resolved executable after checking its revision, for \`lib/\` and for
+\`x86-64-linux\` target projects. A client root takes precedence; an invalid
+override never falls back. Projects needing other sources outside \`lib/\`
+(such as \`aeneas/\`) still need an explicit checkout. The release
 documentation covers checksums, editors, remote machines, and root selection:
 https://github.com/SaltedTan/virgil-language-server/blob/${tag:-$revision}/docs/releasing.md#installing
 README

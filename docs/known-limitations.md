@@ -48,7 +48,7 @@ Without a `.virgil-lsp.json` that selects it, a document stays in [single-file m
 ## Native targets
 
 - Only version 2 project files can name a target, and `x86-64-linux` is the only supported name. Any other name produces an `InvalidValue` configuration error. In a project with no target selected, code for another native target reports unresolved types for that target's builtins ([Target](configuration.md#target)).
-- A target project's runtime sources come from the Virgil root's `rt/`, which the bundled library in release archives doesn't have yet, so such a project needs a Virgil checkout as its root, supplied by the client. With the bundle, it gets a `MissingTargetRuntime` configuration error.
+- Release archives bundle only Virgil's `lib/` and the supported targets' runtime sources, for `x86-64-linux` the `.v3` files of `rt/x86-64-linux`, `rt/native`, and `rt/gc`. Projects selecting `aeneas/`, other files of `rt/`, or other sources outside `lib/` still need a client-supplied checkout at the revision that `virgil-lsp --version` prints. Development builds have no bundle by default. Missing or mismatched bundles leave no root, and invalid client overrides block fallback ([The Virgil root](configuration.md#the-virgil-root)).
 - An edit analyzes every project that contains the edited file. Target programs are large, so several target projects that share most of their files make each edit's background analysis take several times as long, and their snapshots compete for the retained-snapshot budget, so moving between them analyzes them again more often.
 
 ## Inlay hints
@@ -169,7 +169,6 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 
 - The server executables are unsigned and not notarized. On macOS, a browser marks a download as quarantined, and macOS may then refuse to run it: download with `curl` or `gh`, or remove the attribute as [Installing on macOS](releasing.md#macos) shows. [Verifying a download](releasing.md#verifying-a-download) checks an archive against `SHA256SUMS`.
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the extension from its platform VSIX by hand ([Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)), and the server for Neovim, LazyVim, or an external-server setup from a release archive ([Installing](releasing.md#installing)). VS Code doesn't update an extension installed from a VSIX: install the next release's VSIX to update.
-- Release archives bundle only Virgil's `lib/`. Projects selecting `rt/`, `aeneas/`, or other sources outside it still need a client-supplied checkout at the revision that `virgil-lsp --version` prints. Development builds have no bundle by default. Missing or mismatched bundles leave no root, and invalid client overrides block fallback ([The Virgil root](configuration.md#the-virgil-root)).
 
 ## Protocol numbers and synchronization
 

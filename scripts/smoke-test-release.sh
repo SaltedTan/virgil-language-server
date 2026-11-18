@@ -8,7 +8,9 @@
 # the manifest, --version must report the manifest's version and Virgil
 # revision, and the analyze command, which needs the worker, must verify one
 # program and report the errors in another. The working program is also checked
-# through a symlink as docs/releasing.md installs it. For a JVM archive, the
+# through a symlink as docs/releasing.md installs it. With no client root, the
+# bundled virgil/ must serve both a lib/util project and an x86-64-linux target
+# project, whose runtime sources it holds. For a JVM archive, the
 # jars must match the manifest too, and its bundled Java runtime must run and
 # report the pinned Temurin version; the archive's platform must be the host's.
 # Usage: smoke-test-release.sh <archive>
@@ -22,7 +24,7 @@ name=$(basename "$ARCHIVE" .tar.gz)
 TMP=$(mktemp -d)
 # Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
 TMP=$(cd "$TMP" && pwd -P)
-trap 'chmod -R u+w "$TMP"; rm -rf "$TMP"' EXIT
+trap 'find "$TMP" -type d -exec chmod u+rwx {} \;; rm -rf "$TMP"' EXIT
 
 pass=0
 fail=0
@@ -68,9 +70,8 @@ fi
 # Move the installation, with spaces in the path, before using it.
 DIR=$TMP/moved\ install
 mv "$TMP/extract/$name" "$DIR"
-# Every library operation must work without write permissions.
-find "$DIR/virgil" -type f -exec chmod 444 {} +
-find "$DIR/virgil" -type d -exec chmod 555 {} +
+# Make the bundle read-only while preserving its read and search permissions.
+chmod -R a-w "$DIR/virgil" || exit 1
 ln -s "$DIR/virgil-lsp" "$TMP/bin/virgil-lsp"
 
 executables() {
@@ -166,6 +167,8 @@ check "analyze works through a symlink on PATH" \
 
 check "no-root lib/util diagnostics, hover, and definition through a symlink in a moved, read-only install" \
     python3 "$ROOT/test/release/bundled-library.py" "$TMP/bin/virgil-lsp"
+check "no-root x86-64-linux project: no diagnostics, Pointer hover, and definition into the bundled rt/" \
+    python3 "$ROOT/test/release/bundled-library.py" --target "$TMP/bin/virgil-lsp"
 
 echo "$name: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

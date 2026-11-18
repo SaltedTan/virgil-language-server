@@ -16,7 +16,10 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
+
+from test_library import RUNTIME as RUNTIME_PATHS
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('check_vsix', ROOT / 'scripts/check-vsix.py')
@@ -26,6 +29,15 @@ spec.loader.exec_module(check)
 spec = importlib.util.spec_from_file_location('jvm_package', Path(__file__).with_name('test_jvm_package.py'))
 jvm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jvm)
+# The release-library.py module that vsix-payload.py checks the runtime with.
+library = sys.modules.get('virgil_lsp_release_library')
+if library is None:
+    spec = importlib.util.spec_from_file_location('virgil_lsp_release_library', ROOT / 'scripts/release-library.py')
+    library = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(library)
+    sys.modules['virgil_lsp_release_library'] = library
+RUNTIME = tuple('virgil/' + path for path in RUNTIME_PATHS)
+PINNED = {n[len('virgil/'):]: hashlib.sha256(n.encode()).hexdigest() for n in RUNTIME}
 
 
 class PayloadTests(unittest.TestCase):
@@ -33,13 +45,22 @@ class PayloadTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.revision = library.pinned_revision()
+        patcher = mock.patch.object(library, 'pinned_runtime', side_effect={self.revision: PINNED}.__getitem__)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def fixture(self, target='linux-x64'):
+    def fixture(self, target='linux-x64', revision=None, revision_file=None, library_revision=None):
+        revision = self.revision if revision is None else revision
+        revision_file = self.revision if revision_file is None else revision_file
+        library_revision = self.revision if library_revision is None else library_revision
         files = {n: (n.encode(), 0o644) for n in (
-            'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE', 'virgil/REVISION',
-            'virgil/lib/util/StringBuilder.v3')}
+            'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE',
+            'virgil/lib/util/StringBuilder.v3', *RUNTIME)}
+        files['virgil/REVISION'] = ((revision_file + '\n').encode(), 0o644)
         files.update({n: (n.encode(), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         manifest = {'target': 'x86-64-linux' if target == 'linux-x64' else 'x86-64-darwin',
+                    'virgilRevision': revision, 'library': {'revision': library_revision},
                     'sha256': {n: hashlib.sha256(files[n][0]).hexdigest()
                                for n in ('virgil-lsp', 'virgil-lsp-worker')}}
         files['manifest.json'] = (json.dumps(manifest).encode(), 0o644)
@@ -60,14 +81,16 @@ class PayloadTests(unittest.TestCase):
         archive's manifest is generated from the runtime given."""
         jvm.pin_runtime(self, jvm.runtime_fixture())
         files = {n: (n.encode(), 0o644) for n in (
-            'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE', 'virgil/REVISION',
-            'virgil/lib/util/StringBuilder.v3', 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}
+            'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE',
+            'virgil/lib/util/StringBuilder.v3', *RUNTIME, 'virgil-lsp.jar', 'virgil-lsp-worker.jar')}
+        files['virgil/REVISION'] = ((self.revision + '\n').encode(), 0o644)
         files.update({n: (jvm.launcher(n), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         runtime = jvm.runtime_fixture() if runtime is None else runtime
         files.update({'runtime/' + n: v for n, v in runtime.items()})
         digests = {n: hashlib.sha256(d).hexdigest() for n, (d, _) in runtime.items()}
         host = jvm.PIN['jdks']['linux-x64']
         manifest = {'target': 'jvm', 'platform': 'arm64-darwin',
+                    'virgilRevision': self.revision, 'library': {'revision': self.revision},
                     'runtime': {**jvm.runtime.metadata_from_pin('arm64-darwin'),
                                 'jlink': {'name': host['name'], 'sha256': host['sha256']},
                                 'files': digests, 'treeSha256': jvm.runtime.tree_digest(digests)},
@@ -109,21 +132,32 @@ class PayloadTests(unittest.TestCase):
                 self.check(entries, target, archive)
         self.check({'extension.vsixmanifest': (self.xml(None), 0o644)}, 'universal', None)
 
+    def test_wrong_archive_revision_is_rejected(self):
+        for field in ('revision', 'revision_file', 'library_revision'):
+            with self.subTest(field=field):
+                archive, entries = self.fixture(**{field: '0' * 40})
+                with self.assertRaisesRegex(SystemExit, 'bundle revision does not match the pinned Virgil revision'):
+                    self.check(entries, 'linux-x64', archive)
+
     def test_mutated_payload_and_metadata_are_rejected(self):
-        for mutation in ('server', 'worker', 'library', 'notice', 'manifest', 'mode',
-                         'missing', 'extra', 'target', 'marker', 'prerelease', 'universal'):
+        for mutation in ('server', 'worker', 'library', 'runtime', 'notice', 'manifest', 'mode', 'runtime-mode',
+                         'missing', 'missing-runtime', 'extra', 'target', 'marker', 'prerelease', 'universal'):
             with self.subTest(mutation=mutation):
                 archive, entries = self.fixture()
                 changed = {'server': 'virgil-lsp', 'worker': 'virgil-lsp-worker',
-                           'library': 'virgil/lib/util/StringBuilder.v3',
+                           'library': 'virgil/lib/util/StringBuilder.v3', 'runtime': RUNTIME[-1],
                            'notice': 'THIRD_PARTY_NOTICES.md', 'manifest': 'manifest.json'}
                 if mutation in changed:
                     name = 'extension/server/' + changed[mutation]
                     entries[name] = (b'changed', entries[name][1])
                 elif mutation == 'mode':
                     entries['extension/server/virgil-lsp'] = (b'virgil-lsp', 0o644)
+                elif mutation == 'runtime-mode':
+                    entries['extension/server/' + RUNTIME[0]] = (RUNTIME[0].encode(), 0)
                 elif mutation == 'missing':
                     del entries['extension/server/virgil/LICENSE']
+                elif mutation == 'missing-runtime':
+                    del entries['extension/server/' + RUNTIME[0]]
                 elif mutation == 'extra':
                     entries['extension/server/unexpected'] = (b'', 0o644)
                 elif mutation == 'target':
@@ -137,10 +171,64 @@ class PayloadTests(unittest.TestCase):
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     self.check(entries, 'universal' if mutation == 'universal' else 'linux-x64', archive)
 
+    def test_archive_runtime_sources_are_checked(self):
+        # An archive whose rt/ files aren't exactly the pinned runtime is
+        # refused, even with a VSIX to match: one of a pattern's files
+        # missing, changed bytes, or an extra file, whether a pattern would
+        # select it or not, hidden files included.
+        directory = RUNTIME[0].rsplit('/', 1)[0]
+        for change, error in (('missing', 'missing ' + RUNTIME[-1][len('virgil/'):]),
+                              ('changed', 'changed ' + RUNTIME[0][len('virgil/'):]),
+                              (directory + '/Extra.v3', 'unexpected'), (directory + '/.Hidden.v3', 'unexpected'),
+                              (directory + '/DEPS', 'unexpected'), (directory + '/nested/Deep.v3', 'unexpected'),
+                              ('virgil/rt/other-target/Other.v3', 'unexpected')):
+            for target in ('linux-x64', 'darwin-arm64-jvm'):
+                with self.subTest(change=change, target=target):
+                    archive, entries = self.fixture() if target == 'linux-x64' else self.jvm_fixture()
+                    with tarfile.open(archive, 'r:gz') as t:
+                        members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
+                    if change == 'missing':
+                        members = [(m, d) for m, d in members if m.name != 'release/' + RUNTIME[-1]]
+                        del entries['extension/server/' + RUNTIME[-1]]
+                    elif change == 'changed':
+                        members = [(m, b'changed' if m.name == 'release/' + RUNTIME[0] else d) for m, d in members]
+                        for member, data in members:
+                            member.size = len(data)
+                        entries['extension/server/' + RUNTIME[0]] = (b'changed', 0o644)
+                    else:
+                        extra = tarfile.TarInfo('release/' + change)
+                        extra.size, extra.mode = 5, 0o644
+                        members.append((extra, b'extra'))
+                        entries['extension/server/' + change] = (b'extra', 0o644)
+                    with tarfile.open(archive, 'w:gz') as t:
+                        for member, data in members:
+                            t.addfile(member, io.BytesIO(data))
+                    err = io.StringIO()
+                    with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(err):
+                        self.check(entries, target, archive)
+                    message = str(raised.exception) + err.getvalue()
+                    self.assertIn('differ from the pinned Virgil runtime', message)
+                    self.assertIn(error, message)
+
     def test_jvm_target(self):
         archive, entries = self.jvm_fixture()
         self.check(entries, 'darwin-arm64-jvm', archive)
         self.assertEqual(check.ROOT, str(ROOT))
+
+    def test_unreadable_archive_runtime_is_rejected(self):
+        for target in ('linux-x64', 'darwin-arm64-jvm'):
+            with self.subTest(target=target):
+                archive, entries = self.fixture() if target == 'linux-x64' else self.jvm_fixture()
+                with tarfile.open(archive, 'r:gz') as t:
+                    members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
+                with tarfile.open(archive, 'w:gz') as t:
+                    for member, data in members:
+                        if member.name == 'release/' + RUNTIME[0]:
+                            member.mode = 0
+                        t.addfile(member, io.BytesIO(data))
+                entries['extension/server/' + RUNTIME[0]] = (RUNTIME[0].encode(), 0)
+                with self.assertRaisesRegex(SystemExit, 'has mode 0, expected 644'):
+                    self.check(entries, target, archive)
 
     def test_jvm_payload_and_metadata_mutations_are_rejected(self):
         java = 'extension/server/runtime/bin/java'
