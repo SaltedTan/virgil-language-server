@@ -180,44 +180,37 @@ def test_analyze_frame_size(t: Tester) {
 	}
 }
 
-// A request carries the supported target's name, empty for none, and the
-// frame size counts it.
+// A version 18 ANALYZE frame from the wire layout in ADR-0004.
 def test_analyze_target_round_trip(t: Tester) {
-	var sources = [AnalysisSource.new("a.v3", "class A { }\n")], target = AnalysisTargets.X86_64_LINUX;
+	var expected = "\x39\x00\x00\x00\x02\x05\x01\x20\x01\x13-lang:simple-bodies\x0Cx86-64-linux\x01\x04a.v3\x0Cclass A { }\n";
+	var sources = [AnalysisSource.new("a.v3", "class A { }\n")];
+	var options = ["-lang:simple-bodies"];
 	var flags = AnalysisWire.WANT_OCCURRENCES;
-	var frame = AnalysisWire.encodeAnalyze(5, flags, 1000, [], target.name, sources, null);
-	t.assertl(long.view(frame.length),
-		AnalysisWire.analyzeFrameSize(5, flags, 1000, [], target.name, sources, null));
-	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
+	var frame = AnalysisWire.encodeAnalyze(5, flags, 32, options, "x86-64-linux", sources, null);
+	t.assertb(expected, Ranges.dup(frame));
+	t.assertl(long.view(expected.length),
+		AnalysisWire.analyzeFrameSize(5, flags, 32, options, "x86-64-linux", sources, null));
+	var r = AnalysisWire.decodeAnalyze(Arrays.range(expected, 4, expected.length));
 	if (r == null) return t.fail("a request with a target did not decode");
-	var decodedTarget = r.target;
-	if (decodedTarget == null) return t.fail("the target did not decode");
-	t.assert_string(target.name, decodedTarget.name);
+	t.assert(r.target == AnalysisTargets.X86_64_LINUX, "the request selects x86-64-linux");
 	t.asserti(5, r.id);
 	t.asserti(flags, r.flags);
+	t.asserti(32, r.timeoutMs);
+	t.asserti(1, r.options.length);
+	t.assert_string("-lang:simple-bodies", r.options[0]);
 	t.asserti(1, r.sources.length);
 	t.assert_string("a.v3", r.sources[0].path);
-	// The name's bytes are all that its field adds.
-	t.assertl(AnalysisWire.analyzeFrameSize(1, 0, 1000, [], "", [], null) + long.view(target.name.length),
-		AnalysisWire.analyzeFrameSize(1, 0, 1000, [], target.name, [], null));
+	t.assert_string("class A { }\n", r.sources[0].input);
 }
 
 def test_invalid_analyze_target(t: Tester) {
-	var sources = [AnalysisSource.new("a.v3", "class A { }\n")];
 	// Aeneas registers other targets, such as jvm, but the server supports
 	// only those that AnalysisTargets lists.
-	var unknown = AnalysisWire.encodeAnalyze(1, 0, 1000, [], "jvm", sources, null);
-	t.assert(AnalysisWire.decodeAnalyze(payloadOf(unknown)) == null, "unknown target");
-	var named = AnalysisWire.encodeAnalyze(1, 0, 1000, [], "x86-64-linux", sources, null);
-	var supported = AnalysisWire.decodeAnalyze(payloadOf(named));
-	if (supported == null) return t.fail("a supported target was rejected");
-	var supportedTarget = supported.target;
-	if (supportedTarget == null) return t.fail("the supported target did not decode");
-	t.assert_string("x86-64-linux", supportedTarget.name);
+	var unknown = "\x02\x01\x00\x20\x00\x03jvm\x00";
+	t.assert(AnalysisWire.decodeAnalyze(unknown) == null, "unknown target");
 	// A null target, whose length is -1, is not a name.
-	var w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(0);
-	w.put_sleb32(-1).put_sleb32(0);
-	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "non-string target");
+	var nullTarget = "\x02\x01\x00\x20\x00\x7F\x00";
+	t.assert(AnalysisWire.decodeAnalyze(nullTarget) == null, "non-string target");
 }
 
 // The snapshot answers every query as the analysis it was encoded from does.
