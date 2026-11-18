@@ -158,7 +158,7 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 
 ## Platforms and editors
 
-- Supported hosts are Linux x86-64, including SSH remotes, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)). The [JVM build](releasing.md#the-jvm-build-for-apple-silicon) for Apple Silicon without Rosetta 2 is a preview with advisory CI.
+- Supported hosts are Linux x86-64, including SSH remotes, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)). Releases also attach a [JVM build](releasing.md#the-jvm-build-for-apple-silicon) for Apple Silicon without Rosetta 2, as a preview whose CI jobs are advisory.
 - WSL 2 on x86-64 Windows is best effort. The Linux build is expected to run inside it, but nobody tests it there, and CI runs only on Linux itself ([host platforms](compatibility.md#host-platforms)).
 - Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2, on a best-effort basis; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
 - The default macOS assets need Rosetta 2 on Apple Silicon until Virgil can build for `arm64-darwin`; the JVM build doesn't. Apple has said that macOS 27 is the last release with full Rosetta 2 support ([ADR-0003](decisions/0003-supported-platforms.md)).

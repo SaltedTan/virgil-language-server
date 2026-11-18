@@ -15,7 +15,7 @@ Every release is a GitHub **prerelease**. Before v1.0, use tags such as `vX.Y.Z-
 | `virgil-lsp-vscode-<extension version>.vsix` | The VS Code extension, a preview, for every platform. It holds no server. |
 | `SHA256SUMS` | The SHA-256 of every other asset, in `sha256sum` format |
 
-Starting with `0.1.0-alpha.7`, releases also attach the [JVM build for Apple Silicon](#the-jvm-build-for-apple-silicon), including its archive and manifest, its VSIX, and the source archive of its Java runtime.
+Starting with `0.1.0-alpha.7`, each release also attaches the [JVM build for Apple Silicon](#the-jvm-build-for-apple-silicon): its archive and manifest, its VSIX, and the source archive of its Java runtime.
 
 Each archive holds one directory, `virgil-lsp-<version>-<target>/`, with:
 
@@ -48,7 +48,7 @@ The VSIX files are packaged by `scripts/package-vsix.py`, using `npm run package
 
 ### The JVM build for Apple Silicon
 
-The JVM build runs on Apple Silicon without Rosetta 2 and without an installed Java. Its archive and VSIX are listed below. See [which releases include them](#what-a-release-contains). `V3C_TARGET=jvm scripts/package-release.sh <output-directory>` packages it on a Linux x86-64 host, and `scripts/package-vsix.py darwin-arm64-jvm --archive <archive> --out <directory>` packages its VSIX. The [release workflow](#how-the-workflow-works) builds and tests both packages and requires the Java runtime's source archive to accompany them, as stated in their notices.
+The JVM build runs on Apple Silicon without Rosetta 2 and without an installed Java. It has an archive and a VSIX of its own, beside the default darwin assets, which stay the Intel build. `V3C_TARGET=jvm scripts/package-release.sh <output-directory>` packages it, on a Linux x86-64 host, and `scripts/package-vsix.py darwin-arm64-jvm --archive <archive> --out <directory>` packages its VSIX. The [release workflow](#how-the-workflow-works) builds, tests, and attaches them in every release, with the runtime's source archive, below, which the notices in both say is attached to the same release; the workflow fails rather than publish them without it.
 
 | Asset | Contents |
 | --- | --- |
@@ -268,13 +268,13 @@ ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.6-x86-64-linux/virgil-lsp ~/.local/bi
 virgil-lsp --version
 ```
 
-Make sure `~/.local/bin` is on the `PATH` that the editor sees. If you copy the Intel macOS or Linux `virgil-lsp` elsewhere, copy `virgil-lsp-worker` and `virgil/` beside it too. For the JVM archive, keep the extracted directory intact and symlink to its `virgil-lsp` launcher. The launchers need their JARs and `runtime/` beside them. A wrapper that starts the original server can leave the files in the original directory.
+Make sure `~/.local/bin` is on the `PATH` that the editor sees. If you copy `virgil-lsp` elsewhere, copy `virgil-lsp-worker` and `virgil/` beside it too; a wrapper that starts the original server can leave them in the original directory. The JVM archive's launchers also need their jars and `runtime/` beside them, so keep its extracted directory whole and symlink to its `virgil-lsp` launcher.
 
 To upgrade, extract the new archive next to the old one and point the symlink at it. To roll back, point the symlink at the old directory again. To uninstall, remove the symlink and the directory. The [upgrade and rollback rehearsal](#upgrade-and-rollback-rehearsal) checks these steps, and the VSIX upgrade and rollback below, on Linux.
 
 ### macOS
 
-On Apple Silicon without Rosetta 2, use the [JVM archive](#the-jvm-build-for-apple-silicon). To run the Intel build on Apple Silicon, install Rosetta 2 first.
+On Apple Silicon, install Rosetta 2 first, unless you install the [JVM archive](#the-jvm-build-for-apple-silicon):
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
@@ -297,7 +297,7 @@ The editors start `virgil-lsp --stdio`:
 
 ### VS Code extension
 
-Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host. The platform VSIX includes the tested archive's server, worker, and pinned library. Use `linux-x64` on Linux x86-64, `darwin-x64` on Intel macOS, or `darwin-arm64` on Apple Silicon with Rosetta 2. On Apple Silicon without Rosetta 2, install `virgil-lsp-vscode-<extension version>-darwin-arm64-jvm.vsix`, the [JVM build](#the-jvm-build-for-apple-silicon). Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
+Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host: `linux-x64`, `darwin-arm64`, or `darwin-x64`. The platform VSIX includes the tested archive's server, worker, and pinned library. Both Darwin packages contain an Intel server, with Rosetta 2 required on Apple Silicon. On Apple Silicon without Rosetta 2, install `virgil-lsp-vscode-<extension version>-darwin-arm64-jvm.vsix`, the [JVM build](#the-jvm-build-for-apple-silicon), instead. Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
 
 With Remote-SSH or WSL, install the package for the remote host in the remote window. VS Code or the extension's output channel rejects a mismatched bundle. Download and verify it against `SHA256SUMS`, then install it:
 

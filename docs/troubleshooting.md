@@ -30,7 +30,7 @@ To go back to the bundled server, clear the setting. It is a machine setting, so
 
 ### A bundled server for another platform
 
-`This VSIX bundles a server for <target>, but the workspace extension host is <host>. Install the VSIX for the workspace host (including Remote-SSH or WSL), or set virgil.server.path.` The installed platform VSIX doesn't match the machine where the extension runs. VS Code may refuse to install such a VSIX in the first place. With Remote-SSH or Remote-WSL, that is the remote machine or the WSL distribution, not the computer showing the editor. Install the [VSIX for that machine](../clients/vscode/README.md#installing-from-a-vsix) in a window connected to it. `Invalid bundled server metadata: <reason>. Reinstall the VSIX.` means that the VSIX's record of its target is damaged; reinstall the VSIX.
+`This VSIX bundles a server for <target>, but the workspace extension host is <host>. Install the VSIX for the workspace host (including Remote-SSH or WSL), or set virgil.server.path.` The installed platform VSIX doesn't match the machine where the extension runs. VS Code may refuse to install such a VSIX in the first place. With Remote-SSH or Remote-WSL, that is the remote machine or the WSL distribution, not the computer showing the editor. Install the VSIX whose target matches that machine, `linux-x64`, `darwin-arm64`, or `darwin-x64`, in a window connected to it ([Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)). `Invalid bundled server metadata: <reason>. Reinstall the VSIX.` means that the VSIX's record of its target is damaged; reinstall the VSIX.
 
 ### No bundle, and nothing on `PATH`
 
@@ -42,7 +42,7 @@ With the universal VSIX and an empty `virgil.server.path`, the extension looks f
 
 ### Apple Silicon without Rosetta 2
 
-The default macOS server (`x86-64-darwin`) requires Rosetta 2 on Apple Silicon. Without it, the `darwin-arm64` VSIX logs `The bundled x86-64 server requires Rosetta 2 on Apple Silicon.` after its `Server selection:` line and the Intel server fails to start. In a terminal, `virgil-lsp --version` also fails for the Intel build. Use the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) on Apple Silicon without Rosetta 2. For the Intel build, install Rosetta 2 and restart the server.
+The default macOS packages carry the Intel build (`x86-64-darwin`), which an Apple Silicon Mac runs under Rosetta 2; without Rosetta 2, macOS can't run it. In VS Code, a bundled server for `darwin-arm64` adds `The bundled x86-64 server requires Rosetta 2 on Apple Silicon.` to the channel after its `Server selection:` line, and the server then fails to start. In a terminal, `virgil-lsp --version` fails too. The [JVM build](releasing.md#the-jvm-build-for-apple-silicon) runs without Rosetta 2. Otherwise, install Rosetta 2, then restart the server:
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
@@ -67,7 +67,7 @@ The server runs whole-program analysis in a separate process, `virgil-lsp-worker
 - **VS Code** checks for the worker before it starts the server: `<directory>/virgil-lsp-worker is missing or not executable (<path> resolves to <resolved path>). Keep virgil-lsp-worker in the same directory as virgil-lsp.` The part in parentheses appears when the server path is a symbolic link. A wrapper script needs the worker beside the script itself.
 - **Neovim** starts the server anyway. It parses open files and reports their syntax errors, but each analysis of a project fails, and the log shows `virgil-lsp: warning: cannot start the analysis worker: cannot execute <path> (errno <n>)`, followed by `virgil-lsp: warning: automatic analysis of project <name> failed: …`. The editor also shows a warning, "Semantic diagnostics for project <name> could not be updated: …", for the first failure.
 
-For the Intel macOS or Linux build, move `virgil-lsp-worker` and `virgil/` back beside the real `virgil-lsp`, or symlink to the original server. For the JVM build, restore the extracted directory and symlink to its launcher so both launchers can find their JARs and `runtime/` beside them ([Installing](releasing.md#installing)). A worker from another build or version is refused too, and the log says `analysis worker <pid> is from a different build; it ended with <status>`. Keep the executables of one archive together, and replace them together when upgrading.
+Move or copy `virgil-lsp-worker`, and the `virgil/` library directory, back beside the real `virgil-lsp`, or point a symbolic link at the original instead of copying the server ([Installing](releasing.md#installing)). The JVM build's launchers also need their jars and `runtime/` beside them, so keep its extracted directory whole and symlink to its `virgil-lsp` launcher. A worker from another build or version is refused too, and the log says `analysis worker <pid> is from a different build; it ended with <status>`. Keep the executables of one archive together, and replace them together when upgrading.
 
 ### Neovim doesn't find `virgil-lsp`
 

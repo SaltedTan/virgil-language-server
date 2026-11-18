@@ -100,7 +100,7 @@ The [repository setup script](../scripts/github-setup.sh) configures both pinned
 
 CI runs on every pull request, by hand, and for each push to `main`. The push trigger keeps the README's CI badge current. Because `main` requires pull requests to be up to date and merges squash them, a push usually carries exactly the tree that its pull request's CI passed on. A push-only check skips the build and test jobs only when a merged pull request associated with the pushed commit has the same tree at its head and a successful `pull_request` run of `ci.yml` on that head; the push run then reports success for that commit. Without that evidence, or if the check fails, the normal jobs remain eligible. Pull requests and manual runs skip the check and keep the normal jobs eligible too. Dependent editor jobs still require their build job to succeed, and cancellation prevents guarded jobs from starting. Required check names are unchanged.
 
-Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Use the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) on Apple Silicon without Rosetta 2. For the default macOS build on Apple Silicon, install Rosetta 2 with the following command.
+Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Until then, the default macOS assets need Rosetta 2, and the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) is the option for a Mac without it. Install Rosetta 2 with:
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
