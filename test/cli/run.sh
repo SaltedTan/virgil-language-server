@@ -40,13 +40,34 @@ expect() {
     finish "$name" $ok
 }
 
-# expect_stdio <name> <expected-exit> <expected-stdout-file> <stderr-pattern|-> -- <args...>
+# expect_stdio <name> <expected-exit> <expected-stdout-file> <stderr-pattern|-> -- [--hold-input-open] <args...>
 # Runs "--stdio <args...>" with the caller's standard input. Standard output
 # must equal the file byte for byte, so it can hold nothing but framed messages.
 expect_stdio() {
     local name=$1 code=$2 want=$3 err_pat=$4
     shift 5
-    "$EXE" --stdio "$@" > "$TMP/out" 2> "$TMP/err"
+    if [ "${1:-}" = "--hold-input-open" ]; then
+        shift
+        # Keep the server's input pipe open until it exits or the watchdog fires.
+        python3 -c '
+import subprocess
+import sys
+
+data = sys.stdin.buffer.read()
+with subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE) as server:
+    server.stdin.write(data)
+    server.stdin.flush()
+    try:
+        status = server.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        print("server did not exit while stdin was open", file=sys.stderr)
+        status = 124
+sys.exit(status)
+' "$EXE" --stdio "$@"
+    else
+        "$EXE" --stdio "$@"
+    fi > "$TMP/out" 2> "$TMP/err"
     local got=$?
     local ok=1
     [ "$got" -eq "$code" ] || { ok=0; echo "  exit: expected $code, got $got"; }
@@ -405,27 +426,26 @@ expect_stdio "stdio rejects a message with too many values and keeps going" 0 "$
 
 # A bare LF proves the header is malformed, so the server must stop while the
 # client still holds the pipe open. If it waited for more input instead, it
-# would report the input ending inside a message once the pipe closed.
-held_open() {
+# would still be running when --hold-input-open's 30-second watchdog fires.
+{
     frame "$INITIALIZE"
     printf 'Content-Length: 2\n\n{}'
-    sleep 3
-}
+} > "$TMP/in"
 frame "$INIT_RESULT" > "$TMP/want"
 expect_stdio "stdio stops at a bare LF without waiting for more input" 1 "$TMP/want" \
-    'error: malformed message header: header has an LF without a CR before it' -- < <(held_open)
+    'error: malformed message header: header has an LF without a CR before it' -- --hold-input-open < "$TMP/in"
 
-# exit ends the process even while the client holds the pipe open.
-exit_held_open() {
+# exit ends the process even while the client holds the pipe open; the
+# watchdog, not a wall-clock bound, catches a server that waits for the end
+# of input, so a slow start (the JVM build on macOS) doesn't fail it.
+{
     frame "$INITIALIZE"
     frame "$(request 2 shutdown)"
     frame "$EXIT"
-    sleep 3
-}
+} > "$TMP/in"
 { frame "$INIT_RESULT"; frame '{"jsonrpc":"2.0","id":2,"result":null}'; } > "$TMP/want"
-SECONDS=0
-expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" '^virgil-lsp: Virgil root: ' -- < <(exit_held_open)
-[ "$SECONDS" -lt 3 ] || { fail=$((fail + 1)); echo "FAIL: stdio waited for the end of input after exit"; }
+expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" \
+    '^virgil-lsp: Virgil root: ' -- --hold-input-open < "$TMP/in"
 
 : > "$TMP/empty"
 expect "stdio rejects a bad message limit" 2 "" "invalid option" -- --stdio --max-message-bytes=0
