@@ -185,9 +185,13 @@ component VirgilLsp {
 			Log.error1("format prints one file; pass --check to check several; run '%s --help'", BuildInfo.NAME);
 			return 2;
 		}
+		// A closed pipe must fail a write, reported, rather than end this process.
+		HostOs.ignoreSigpipe();
 		var lang = options.extract(), status = 0;
 		for (i < paths.length) {
 			if (!formatFile(paths[i], lang, check)) status = 1;
+			// Once standard output fails, nothing more can be reported on it.
+			if (outputFailed) break;
 		}
 		return status;
 	}
@@ -216,7 +220,7 @@ component VirgilLsp {
 			if (first < 0) return true;
 			var line = 1;
 			for (i < first) if (input[i] == '\n') line++;
-			System.puts(Strings.format2("%s:%d: not formatted\n", path, line));
+			writeAll(Strings.format2("%s:%d: not formatted\n", path, line));
 			return false;
 		}
 		var edits = r.edits();
@@ -262,14 +266,19 @@ component VirgilLsp {
 		HostOs.close(fd);
 		return text;
 	}
-	// Writes {data} to standard output, or reports why it couldn't.
+	// Whether a write to standard output failed, after which format stops.
+	private var outputFailed: bool;
+	// Writes {data} to standard output unbuffered, retrying an interrupted or
+	// partial write, or reports why it couldn't. Every write of format goes
+	// through here, since System.puts buffers and drops a failed write.
 	private def writeAll(data: Array<byte>) -> bool {
 		var at = 0;
 		while (at < data.length) {
 			var n = HostOs.write(STDOUT, data[at ..+ (data.length - at)]);
 			if (n == HostOs.EINTR) continue;
 			if (n <= 0) {
-				Log.error1("cannot write standard output (errno %d)", -n);
+				Log.error1("cannot write to standard output (errno %d)", if(n < 0, -n, 0));
+				outputFailed = true;
 				return false;
 			}
 			at += n;

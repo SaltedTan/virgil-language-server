@@ -142,25 +142,36 @@ mkdir "$F"
 printf 'def f() {\n  var x=1;\n}\n' > "$F/unformatted.v3"
 printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/unformatted.want"
 printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/formatted.v3"
-expect "format --check reports the first changed line" 1 "^$F/unformatted\.v3:2: not formatted$" "" -- \
+# want <file> <line>...: writes the lines, each ending with LF, as the
+# expected standard output.
+want() {
+    local file=$1
+    shift
+    printf '%s\n' "$@" > "$file"
+}
+want "$F/unformatted.check" "$F/unformatted.v3:2: not formatted"
+expect_bytes "format --check reports the first changed line" 1 "$F/unformatted.check" "" -- \
     format --check "$F/unformatted.v3"
 expect "format --check passes a formatted file" 0 "" "" -- format --check "$F/formatted.v3"
 expect_bytes "format prints the formatted text" 0 "$F/unformatted.want" "" -- format "$F/unformatted.v3"
 expect_bytes "format prints a formatted file unchanged" 0 "$F/formatted.v3" "" -- format "$F/formatted.v3"
 cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
 cp "$F/unformatted.v3" "$F/with space.v3"
-expect "format --check names a path with a space" 1 "^$F/with space\.v3:2: not formatted$" "" -- \
+want "$F/with-space.check" "$F/with space.v3:2: not formatted"
+expect_bytes "format --check names a path with a space" 1 "$F/with-space.check" "" -- \
     format --check "$F/with space.v3"
 
 # The end of the file: exactly one final line end; a whitespace-only file
 # becomes empty; a block comment left open runs to the end untouched.
 printf 'def f() { }' > "$F/no-eol.v3"
 printf 'def f() { }\n' > "$F/no-eol.want"
-expect "format --check reports a missing final line end" 1 "^$F/no-eol\.v3:1: not formatted$" "" -- \
+want "$F/no-eol.check" "$F/no-eol.v3:1: not formatted"
+expect_bytes "format --check reports a missing final line end" 1 "$F/no-eol.check" "" -- \
     format --check "$F/no-eol.v3"
 expect_bytes "format adds the final line end" 0 "$F/no-eol.want" "" -- format "$F/no-eol.v3"
 printf '\n\n' > "$F/blank.v3"
-expect "format --check reports a whitespace-only file" 1 "^$F/blank\.v3:1: not formatted$" "" -- \
+want "$F/blank.check" "$F/blank.v3:1: not formatted"
+expect_bytes "format --check reports a whitespace-only file" 1 "$F/blank.check" "" -- \
     format --check "$F/blank.v3"
 expect_bytes "format empties a whitespace-only file" 0 "$F/none" "" -- format "$F/blank.v3"
 expect_bytes "format of an empty file prints nothing" 0 "$F/none" "" -- format "$F/none"
@@ -241,12 +252,12 @@ expect_bytes "format refuses formatted text over the output bound" 1 "$F/none" \
     "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
     format "$F/nested.v3"
 
-# --check goes on after a failure and reports every file that would change.
-expect "format --check checks every file" 1 \
-    "^$F/unformatted\.v3:2: not formatted
-$F/no-eol\.v3:1: not formatted$" "cannot read file '$F/missing\.v3'" -- \
+# --check goes on after a failure and reports every file that would change,
+# in order, and only the failure goes to standard error.
+want "$F/several.check" "$F/unformatted.v3:2: not formatted" "$F/no-eol.v3:1: not formatted"
+expect_bytes "format --check checks every file" 1 "$F/several.check" "cannot read file '$F/missing\.v3'" -- \
     format --check "$F/unformatted.v3" "$F/missing.v3" "$F/formatted.v3" "$F/no-eol.v3"
-[ "$(wc -l < "$TMP/out")" -eq 2 ] || { fail=$((fail + 1)); echo "FAIL: format --check printed other lines"; }
+[ "$(wc -l < "$TMP/err")" -eq 1 ] || { fail=$((fail + 1)); echo "FAIL: format --check reported more than the missing file"; }
 
 # Language options, as a project file's compilerArgs accepts them, apply to
 # every file, before or after it.
@@ -254,8 +265,54 @@ printf 'class D describes C { }\nclass C descriptor D { }\n' > "$F/descriptors.v
 expect "format needs a language option to parse" 1 "" "ParseError" -- format --check "$F/descriptors.v3"
 expect_bytes "format accepts a language option" 0 "$F/descriptors.v3" "" -- \
     format -lang:descriptors "$F/descriptors.v3"
-expect "format --check accepts a language option after the files" 1 "^$F/unformatted\.v3:2: not formatted$" "" -- \
+expect_bytes "format --check accepts a language option after the files" 1 "$F/unformatted.check" "" -- \
     format --check "$F/descriptors.v3" "$F/unformatted.v3" -lang:descriptors=true
+
+# A failed write to standard output is reported on standard error, with
+# status 1, in both modes: a full device, and a pipe whose read end was closed
+# before the command started, which must not end it with SIGPIPE.
+# expect_write_failure <name> <full|closed> -- <args...>
+expect_write_failure() {
+    local name=$1 kind=$2
+    shift 3
+    python3 -c '
+import os
+import subprocess
+import sys
+
+kind = sys.argv[1]
+if kind == "full":
+    out = os.open("/dev/full", os.O_WRONLY)
+else:
+    r, out = os.pipe()
+    os.close(r)
+try:
+    # restore_signals leaves SIGPIPE at its default in the command.
+    status = subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=out, timeout=30).returncode
+except subprocess.TimeoutExpired:
+    print("the command did not finish within 30 seconds", file=sys.stderr)
+    status = 124
+sys.exit(status if status >= 0 else 128 - status)
+' "$kind" "$EXE" "$@" > "$TMP/out" 2> "$TMP/err"
+    local got=$?
+    local ok=1
+    [ "$got" -eq 1 ] || { ok=0; echo "  exit: expected 1, got $got"; }
+    check_stream stderr "$TMP/err" "error: cannot write to standard output" || ok=0
+    finish "$name" $ok
+}
+for mode in --check ""; do
+    if [ -c /dev/full ]; then
+        expect_write_failure "format ${mode:-without a flag} reports a full standard output" full -- \
+            format $mode "$F/no-eol.v3"
+    fi
+    expect_write_failure "format ${mode:-without a flag} reports a closed standard output" closed -- \
+        format $mode "$F/no-eol.v3"
+done
+if [ -c /dev/full ]; then
+    expect_write_failure "format --check stops at a full standard output" full -- \
+        format --check "$F/no-eol.v3" "$F/unformatted.v3"
+    [ "$(wc -l < "$TMP/err")" -eq 1 ] || { fail=$((fail + 1)); echo "FAIL: format --check went on after a failed write"; }
+fi
 
 # Invalid arguments: status 2, nothing on standard output.
 expect "format needs a file" 2 "" "format needs a file" -- format
