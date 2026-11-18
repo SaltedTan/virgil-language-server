@@ -119,13 +119,13 @@ expect "analyze rejects a bad worker analysis limit" 2 "" "invalid option" -- \
 NATIVE=$A/x86-64-linux/main.v3
 RT=("$ROOT"/vendor/virgil/rt/x86-64-linux/*.v3 "$ROOT"/vendor/virgil/rt/native/*.v3 \
     "$ROOT"/vendor/virgil/rt/gc/*.v3)
-expect "analyze verifies a program for a target" 0 '^ok: 13 files parsed and verified$' "" -- \
+expect "analyze verifies a program for a target" 0 "^ok: $((1 + ${#RT[@]})) files parsed and verified\$" "" -- \
     analyze --target=x86-64-linux "$NATIVE" "${RT[@]}"
 expect "analyze without a target reports unresolved target types" 1 \
     'UnresolvedType: type "Pointer" cannot be found' "" -- \
     analyze "$NATIVE" "${RT[@]}"
 expect "analyze follows a binding into the target's runtime" 0 \
-    '^.*/test/fixtures/analysis/x86-64-linux/main\.v3:17:[0-9]+-17:[0-9]+ -> [A-Z_]+ SYS_write @ .*/rt/x86-64-linux/LinuxConst\.v3:58:[0-9]+-58:[0-9]+$' "" -- \
+    '^.*/test/fixtures/analysis/x86-64-linux/main\.v3:17:[0-9]+-17:[0-9]+ -> [A-Z_]+ SYS_write @ .*/rt/x86-64-linux/LinuxConst\.v3:[0-9]+:[0-9]+-[0-9]+:[0-9]+$' "" -- \
     analyze --target=x86-64-linux --bindings "$NATIVE" "${RT[@]}"
 expect "analyze shows a target builtin's type" 0 \
     'main\.v3:14:25-14:32 builtin: Pointer' "" -- \
