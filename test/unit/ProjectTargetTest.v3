@@ -12,6 +12,7 @@ def X = [
 	T("ProjectExpansion:target_runtime_diagnostics", test_target_runtime_diagnostics),
 	T("ProjectExpansion:target_runtime_limits", test_target_runtime_limits),
 	T("WorkspaceProjects:target_contexts", test_target_contexts),
+	T("WorkspaceProjects:target_without_root", test_target_without_root),
 	()
 ];
 def ROOT = "vendor/virgil";
@@ -244,4 +245,26 @@ def test_target_contexts(t: Tester) {
 	t.assertz(false, old.current);
 	t.assert(c.contexts[0].definition.target == AnalysisTargets.X86_64_LINUX, "the target again");
 	t.asserti(14, c.contexts[0].sources.length);
+}
+// A server with no Virgil root reports MissingVirgilRoot on the project file
+// at the target value, and the file defines no projects.
+def test_target_without_root(t: Tester) {
+	var base = ProjectTestFiles.repository(BASE);
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var params = Strings.newMap<JsonValue>();
+	params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	w.initialize(params);
+	t.assert(w.virgilRoot == null, "a development build has no bundle");
+	var config = ProjectFiles.join(base, ".virgil-lsp.json"), at = targetRange(System.fileLoad(config));
+	var c = w.load(config);
+	t.asserti(1, c.diagnostics.length);
+	if (c.diagnostics.length == 1) {
+		var d = c.diagnostics[0];
+		t.assert(d.code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "MissingVirgilRoot");
+		t.asserti(at.0, d.begin);
+		t.asserti(at.1, d.end);
+		t.assert_string("target x86-64-linux needs the runtime sources under a Virgil root (initializationOptions.virgilRoot)", d.message);
+	}
+	for (ctx in c.contexts) t.asserti(0, ctx.sources.length);
+	t.assert(w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "shared/Words.v3"))).active == null, "single-file mode");
 }
