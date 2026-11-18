@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 
@@ -44,25 +45,76 @@ def metadata(root, revision):
     return {'revision': revision, 'treeSha256': sha(lines.encode()), 'files': files}
 
 
+ROOT = Path(__file__).resolve().parents[1]
 # The supported-target table, whose runtime patterns select the rt/ sources
 # that the bundle holds beside lib/ (ADR-0018, decision 7).
-TARGETS_SOURCE = Path(__file__).resolve().parents[1] / 'src/analysis/AnalysisTargets.v3'
+TARGETS_SOURCE = ROOT / 'src/analysis/AnalysisTargets.v3'
+# The pinned Virgil submodule, whose objects give the runtime files that the
+# bundle must hold.
+VIRGIL = ROOT / 'vendor/virgil'
+
+
+def strip_comments(text, source):
+    """text with each // and /* */ comment replaced by a space, leaving string
+    and character literals, which may hold "//" or "/*", unchanged."""
+    result = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c in '"\'':
+            j = i + 1
+            while j < len(text) and text[j] != c and text[j] != '\n':
+                j += 2 if text[j] == '\\' else 1
+            if j >= len(text) or text[j] != c:
+                raise ValueError(f'unterminated literal in {source}')
+            result.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith('//', i):
+            j = text.find('\n', i)
+            i = len(text) if j < 0 else j
+            result.append(' ')
+        elif text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            if j < 0:
+                raise ValueError(f'unterminated comment in {source}')
+            i = j + 2
+            result.append(' ')
+        else:
+            result.append(c)
+            i += 1
+    return ''.join(result)
+
+
+STRING = r'"([^"\\\n]*)"'
+# The two declaration shapes of the table, outside comments.
+TARGET_DEF = re.compile(r'\bdef\s+([A-Z][A-Z0-9_]*)\s*=\s*AnalysisTarget\.new\(\s*' + STRING + r'\s*,\s*'
+                        + STRING + r'\s*,\s*\[\s*("[^"\\\n]*"(?:\s*,\s*"[^"\\\n]*")*)\s*\]\s*,\s*'
+                        + STRING + r'\s*\)\s*;')
+ALL_DEF = re.compile(r'\bdef\s+all\s*:\s*Array<AnalysisTarget>\s*=\s*\[\s*([A-Z][A-Z0-9_]*(?:\s*,\s*[A-Z][A-Z0-9_]*)*)'
+                     r'\s*\]\s*;')
 
 
 def runtime_patterns(source=TARGETS_SOURCE):
     """The runtime patterns of the targets in AnalysisTargets.all, in order and
-    without duplicates, read from the Virgil table itself."""
-    text = Path(source).read_text(encoding='utf-8')
-    entries = dict(re.findall(r'def\s+(\w+)\s*=\s*AnalysisTarget\.new\(\s*"[^"]*"\s*,'
-                              r'\s*"[^"]*"\s*,\s*\[([^\]]*)\]', text))
-    supported = re.search(r'def\s+all\s*:\s*Array<AnalysisTarget>\s*=\s*\[([^\]]*)\]', text)
-    if not entries or supported is None:
-        raise ValueError(f'no supported targets found in {source}')
+    without duplicates, read from the Virgil table itself. Comments don't
+    count, and a declaration of another shape is an error rather than skipped."""
+    text = strip_comments(Path(source).read_text(encoding='utf-8'), source)
+    entries = {}
+    for match in TARGET_DEF.finditer(text):
+        if match.group(1) in entries:
+            raise ValueError(f'target {match.group(1)} is declared twice in {source}')
+        entries[match.group(1)] = re.findall(STRING, match.group(4))
+    if len(entries) != len(re.findall(r'\bAnalysisTarget\.new\b', text)):
+        raise ValueError(f'an AnalysisTarget.new entry in {source} is not `def NAME = AnalysisTarget.new('
+                         f'"name", "aeneas", ["pattern", ...], "stack");`')
+    supported = ALL_DEF.findall(text)
+    if len(supported) != 1 or len(re.findall(r'\bdef\s+all\b', text)) != 1:
+        raise ValueError(f'{source} needs exactly one `def all: Array<AnalysisTarget> = [NAME, ...];`')
     patterns = []
-    for name in re.findall(r'\w+', supported.group(1)):
+    for name in re.findall(r'\w+', supported[0]):
         if name not in entries:
             raise ValueError(f'supported target {name} has no AnalysisTarget.new entry in {source}')
-        for pattern in re.findall(r'"([^"]*)"', entries[name]):
+        for pattern in entries[name]:
             parts = pattern.split('/')
             if (parts[0] != 'rt' or len(parts) < 3 or any(p in ('', '.', '..') for p in parts)
                     or any(c in p for p in parts[:-1] for c in '*?[')):
@@ -74,12 +126,19 @@ def runtime_patterns(source=TARGETS_SOURCE):
     return patterns
 
 
+def name_match(name, pattern):
+    """Whether one path segment matches one pattern segment. As in the shell
+    glob of the bin/v3c-<target> wrappers, a wildcard never matches a leading
+    "."."""
+    return fnmatch.fnmatchcase(name, pattern) and (not name.startswith('.') or pattern.startswith('.'))
+
+
 def runtime_match(path, patterns):
     """Whether a bundle path is selected by one of the runtime patterns, whose
     wildcards, as in project patterns, never match a "/"."""
     parts = path.split('/')
     return any(len(parts) == len(p.split('/')) and
-               all(fnmatch.fnmatchcase(a, b) for a, b in zip(parts, p.split('/')))
+               all(name_match(a, b) for a, b in zip(parts, p.split('/')))
                for p in patterns)
 
 
@@ -95,7 +154,7 @@ def runtime_files(source, patterns):
             path = path / part
             if not stat.S_ISDIR(path.lstat().st_mode):
                 raise ValueError(f'not a physical directory: {path}')
-        matched = sorted(p for p in path.iterdir() if fnmatch.fnmatchcase(p.name, name))
+        matched = sorted(p for p in path.iterdir() if name_match(p.name, name))
         if not matched:
             raise ValueError(f'runtime pattern {pattern} selects no files in {source}')
         for entry in matched:
@@ -105,6 +164,77 @@ def runtime_files(source, patterns):
             if relative not in files:
                 files.append(relative)
     return sorted(files)
+
+
+def runtime_digests(source, patterns=None):
+    """The runtime files that the patterns select under a source directory,
+    mapped to their SHA-256s."""
+    patterns = runtime_patterns() if patterns is None else patterns
+    return {path: sha((source / path).read_bytes()) for path in runtime_files(source, patterns)}
+
+
+def pinned_revision():
+    """The Virgil revision that this checkout pins, its vendor/virgil gitlink."""
+    result = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:vendor/virgil'],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(f'cannot read the vendor/virgil gitlink: {result.stderr.strip()}')
+    return result.stdout.strip()
+
+
+def pinned_runtime(revision, patterns=None, virgil=VIRGIL):
+    """The runtime files that the patterns select in Virgil's tree at revision,
+    mapped to their SHA-256s. They are read from the submodule's objects, so
+    the state of its working tree doesn't matter; without the submodule, or
+    without that commit in it, this is an error, never an empty map."""
+    patterns = runtime_patterns() if patterns is None else patterns
+
+    def git(*args, data=None):
+        result = subprocess.run(['git', '-C', str(virgil), *args], input=data, capture_output=True)
+        if result.returncode != 0:
+            raise ValueError(f'cannot read the runtime sources of Virgil {revision} from {virgil}; '
+                             f'initialize the vendor/virgil submodule: '
+                             f'{result.stderr.decode(errors="replace").strip()}')
+        return result.stdout
+
+    # An uninitialized submodule directory belongs to the server's repository.
+    top = git('rev-parse', '--show-toplevel').decode().strip()
+    if Path(top).resolve() != Path(virgil).resolve():
+        raise ValueError(f'{virgil} is not an initialized Virgil checkout; '
+                         f'initialize the vendor/virgil submodule')
+    objects = {}
+    for record in git('ls-tree', '-r', '-z', '--full-tree', revision + '^{commit}', '--', 'rt').split(b'\0'):
+        if not record:
+            continue
+        meta, path = record.split(b'\t', 1)
+        mode, _, oid = meta.decode().split()
+        path = path.decode()
+        if runtime_match(path, patterns):
+            if mode not in ('100644', '100755'):
+                raise ValueError(f'pinned runtime entry is not a regular file: {path}')
+            objects[path] = oid
+    for pattern in patterns:
+        if not any(runtime_match(path, [pattern]) for path in objects):
+            raise ValueError(f'runtime pattern {pattern} selects no files in Virgil {revision}')
+    out = git('cat-file', '--batch', data=''.join(oid + '\n' for oid in objects.values()).encode())
+    result = {}
+    for path, oid in objects.items():
+        header, out = out.split(b'\n', 1)
+        size = int(header.split()[2])
+        if header.split()[0].decode() != oid:
+            raise ValueError(f'unexpected git cat-file output for {path}')
+        result[path] = sha(out[:size])
+        out = out[size + 1:]
+    return result
+
+
+def compare_runtime(actual, expected, what):
+    """Refuse a runtime map, path to SHA-256, that isn't exactly the expected one."""
+    problems = [f'missing {p}' for p in sorted(expected.keys() - actual.keys())]
+    problems += [f'changed {p}' for p in sorted(expected.keys() & actual.keys()) if actual[p] != expected[p]]
+    problems += [f'unexpected {p}' for p in sorted(actual.keys() - expected.keys())]
+    if problems:
+        raise ValueError(f'{what} runtime sources differ from the pinned Virgil runtime: ' + ', '.join(problems))
 
 
 def stage(source, destination, revision, patterns=None):
@@ -175,8 +305,10 @@ def check_jvm(name, manifest, entries, modes, directories):
     return {prefix + path for path in files}
 
 
-def check_archive(archive, revision, patterns=None):
-    patterns = runtime_patterns() if patterns is None else patterns
+def check_archive(archive, revision, runtime=None):
+    """Check a release archive against its manifest and the pin. The bundle's
+    rt/ files must be exactly runtime, path to SHA-256, by default the files
+    that the runtime patterns select in Virgil at revision (pinned_runtime)."""
     name = archive.name.removesuffix('.tar.gz')
     with tarfile.open(archive, 'r:gz') as tar:
         entries = {}
@@ -207,12 +339,10 @@ def check_archive(archive, revision, patterns=None):
             raise ValueError('bundle files/checksums do not match the manifest')
         if not files.get('LICENSE') or not any(p.startswith('lib/') for p in files):
             raise ValueError('bundle must include LICENSE and lib sources')
-        if any(p not in ('LICENSE', 'REVISION') and not p.startswith('lib/')
-               and not runtime_match(p, patterns) for p in files):
-            raise ValueError('bundle includes files outside lib, the runtime patterns, LICENSE, and REVISION')
-        for pattern in patterns:
-            if not any(runtime_match(p, [pattern]) for p in files):
-                raise ValueError(f'bundle has no runtime sources for {pattern}')
+        if any(p not in ('LICENSE', 'REVISION') and not p.startswith(('lib/', 'rt/')) for p in files):
+            raise ValueError('bundle includes files outside lib, rt, LICENSE, and REVISION')
+        compare_runtime({p: d for p, d in files.items() if p.startswith('rt/')},
+                        pinned_runtime(revision) if runtime is None else runtime, 'bundle')
         lines = ''.join(f'{digest}  {path}\n' for path, digest in sorted(files.items()))
         if sha(lines.encode()) != library['treeSha256']:
             raise ValueError('bundle tree digest does not match the manifest')

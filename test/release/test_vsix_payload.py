@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,11 +27,19 @@ spec.loader.exec_module(check)
 spec = importlib.util.spec_from_file_location('jvm_package', Path(__file__).with_name('test_jvm_package.py'))
 jvm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jvm)
-spec = importlib.util.spec_from_file_location('release_library', ROOT / 'scripts/release-library.py')
-library = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(library)
-# One bundled runtime source for each of the supported targets' patterns.
+# The release-library.py module that vsix-payload.py checks the runtime with.
+library = sys.modules.get('virgil_lsp_release_library')
+if library is None:
+    spec = importlib.util.spec_from_file_location('virgil_lsp_release_library', ROOT / 'scripts/release-library.py')
+    library = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(library)
+    sys.modules['virgil_lsp_release_library'] = library
+# One bundled runtime source for each of the supported targets' patterns, and
+# a second one for the last pattern. Each holds its own name, and the tests
+# pin these files in place of the pin's runtime (pin_runtime_sources).
 RUNTIME = ['virgil/' + p.replace('*', 'Fixture') for p in library.runtime_patterns()]
+RUNTIME.append('virgil/' + library.runtime_patterns()[-1].replace('*', 'Second'))
+PINNED = {n[len('virgil/'):]: hashlib.sha256(n.encode()).hexdigest() for n in RUNTIME}
 
 
 class PayloadTests(unittest.TestCase):
@@ -38,6 +47,9 @@ class PayloadTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        patcher = mock.patch.object(library, 'pinned_runtime', lambda revision, *args, **kwargs: dict(PINNED))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def fixture(self, target='linux-x64'):
         files = {n: (n.encode(), 0o644) for n in (
@@ -145,19 +157,29 @@ class PayloadTests(unittest.TestCase):
                     self.check(entries, 'universal' if mutation == 'universal' else 'linux-x64', archive)
 
     def test_archive_runtime_sources_are_checked(self):
-        # An archive without a pattern's runtime sources, or with an rt/ file
-        # that no pattern selects, is refused even with a VSIX to match.
+        # An archive whose rt/ files aren't exactly the pinned runtime is
+        # refused, even with a VSIX to match: one of a pattern's files
+        # missing, changed bytes, or an extra file, whether a pattern would
+        # select it or not, hidden files included.
         directory = RUNTIME[0].rsplit('/', 1)[0]
-        for change in ('missing', directory + '/DEPS', directory + '/nested/Deep.v3',
-                       'virgil/rt/other-target/Other.v3'):
+        for change, error in (('missing', 'missing ' + RUNTIME[-1][len('virgil/'):]),
+                              ('changed', 'changed ' + RUNTIME[0][len('virgil/'):]),
+                              (directory + '/Extra.v3', 'unexpected'), (directory + '/.Hidden.v3', 'unexpected'),
+                              (directory + '/DEPS', 'unexpected'), (directory + '/nested/Deep.v3', 'unexpected'),
+                              ('virgil/rt/other-target/Other.v3', 'unexpected')):
             for target in ('linux-x64', 'darwin-arm64-jvm'):
                 with self.subTest(change=change, target=target):
                     archive, entries = self.fixture() if target == 'linux-x64' else self.jvm_fixture()
                     with tarfile.open(archive, 'r:gz') as t:
                         members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
                     if change == 'missing':
-                        members = [(m, d) for m, d in members if m.name != 'release/' + RUNTIME[0]]
-                        del entries['extension/server/' + RUNTIME[0]]
+                        members = [(m, d) for m, d in members if m.name != 'release/' + RUNTIME[-1]]
+                        del entries['extension/server/' + RUNTIME[-1]]
+                    elif change == 'changed':
+                        members = [(m, b'changed' if m.name == 'release/' + RUNTIME[0] else d) for m, d in members]
+                        for member, data in members:
+                            member.size = len(data)
+                        entries['extension/server/' + RUNTIME[0]] = (b'changed', 0o644)
                     else:
                         extra = tarfile.TarInfo('release/' + change)
                         extra.size, extra.mode = 5, 0o644
@@ -169,8 +191,9 @@ class PayloadTests(unittest.TestCase):
                     err = io.StringIO()
                     with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(err):
                         self.check(entries, target, archive)
-                    self.assertIn('runtime sources' if change == 'missing' else 'unexpected archive file',
-                                  str(raised.exception) + err.getvalue())
+                    message = str(raised.exception) + err.getvalue()
+                    self.assertIn('differ from the pinned Virgil runtime', message)
+                    self.assertIn(error, message)
 
     def test_jvm_target(self):
         archive, entries = self.jvm_fixture()

@@ -115,6 +115,11 @@ class JvmArchiveTest(unittest.TestCase):
         self.stage = self.root / 'virgil-lsp-1.2.3-jvm-arm64-darwin'
         self.stage.mkdir()
         lib.stage(source, self.stage / 'virgil', REVISION)
+        # The fixture runtime sources stand in for the pin's.
+        digests = lib.runtime_digests(source)
+        patcher = mock.patch.object(lib, 'pinned_runtime', lambda revision, *args, **kwargs: dict(digests))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.files = {'LICENSE': b'license', 'README.md': b'readme', 'THIRD_PARTY_NOTICES.md': b'notices',
                       'virgil-lsp': launcher('virgil-lsp'), 'virgil-lsp-worker': launcher('virgil-lsp-worker'),
                       'virgil-lsp.jar': b'server jar', 'virgil-lsp-worker.jar': b'worker jar'}
@@ -188,7 +193,7 @@ class JvmArchiveTest(unittest.TestCase):
                      and m.name.startswith(self.stage.name + '/virgil/rt/')}
         self.assertEqual({p.replace('*', 'Fixture') for p in lib.runtime_patterns()}, names)
         shutil.rmtree(self.stage / 'virgil/rt')
-        self.rejects('no runtime sources for ')
+        self.rejects('differ from the pinned Virgil runtime: missing ')
 
     def test_pin_is_one_temurin_release(self):
         self.assertEqual(PIN['distribution'], 'Temurin')

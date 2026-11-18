@@ -6,7 +6,9 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -15,8 +17,10 @@ spec = importlib.util.spec_from_file_location('release_library', ROOT / 'scripts
 lib = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lib)
 PATTERNS = lib.runtime_patterns()
-# One fixture runtime source for each of the supported targets' patterns.
-RUNTIME = [p.replace('*', 'Fixture') for p in PATTERNS]
+# One fixture runtime source for each of the supported targets' patterns, and
+# a second one for the last pattern, so that a pattern still selects a file
+# when one of its files is missing.
+RUNTIME = [p.replace('*', 'Fixture') for p in PATTERNS] + [PATTERNS[-1].replace('*', 'Second')]
 
 
 class LibraryTest(unittest.TestCase):
@@ -35,7 +39,7 @@ class LibraryTest(unittest.TestCase):
             (self.source / path).write_text(f'// {path}\ncomponent C {{}}\n')
         # Upstream rt/ files that no pattern selects.
         directory = self.source / RUNTIME[0].rsplit('/', 1)[0]
-        for name in ('DEPS', 'Native.c', 'nested/Deep.v3'):
+        for name in ('DEPS', 'Native.c', 'nested/Deep.v3', '.Hidden.v3'):
             (directory / name).parent.mkdir(parents=True, exist_ok=True)
             (directory / name).write_text(name)
         (self.source / 'rt/other-target').mkdir()
@@ -45,6 +49,8 @@ class LibraryTest(unittest.TestCase):
         self.stage.mkdir()
         self.bundle = self.stage / 'virgil'
         lib.stage(self.source, self.bundle, self.revision)
+        # The runtime that the archive check expects, in place of the pin's.
+        self.runtime = lib.runtime_digests(self.source, PATTERNS)
         for name in ('virgil-lsp', 'virgil-lsp-worker', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md'):
             (self.stage / name).write_text(name)
         self.manifest = {'virgilRevision': self.revision,
@@ -60,7 +66,7 @@ class LibraryTest(unittest.TestCase):
     def check(self):
         self.pack()
         with contextlib.redirect_stdout(io.StringIO()):
-            lib.check_archive(self.archive, self.revision)
+            lib.check_archive(self.archive, self.revision, self.runtime)
 
     def test_unchanged_sources_and_license(self):
         self.check()
@@ -77,6 +83,7 @@ class LibraryTest(unittest.TestCase):
         staged = sorted(p.relative_to(self.bundle).as_posix() for p in (self.bundle / 'rt').rglob('*')
                         if p.is_file())
         self.assertEqual(sorted(RUNTIME), staged)
+        self.assertEqual(sorted(RUNTIME), sorted(self.runtime))
         for path in RUNTIME:
             self.assertEqual((self.source / path).read_bytes(), (self.bundle / path).read_bytes())
             self.assertEqual((self.bundle / path).stat().st_mode & 0o777, 0o644)
@@ -102,6 +109,66 @@ class LibraryTest(unittest.TestCase):
             # x86-64-linux alone: rt/x86-64-linux, rt/native, and rt/gc.
             self.assertEqual(12, len(staged), staged)
 
+    def test_pinned_runtime(self):
+        # The pin's runtime, read from the submodule's objects, is the
+        # runtime staged from its working tree at the pin.
+        virgil = ROOT / 'vendor/virgil'
+        pin = lib.pinned_revision()
+        head = subprocess.run(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+        if head.stdout.strip() != pin:
+            self.skipTest(f'vendor/virgil is not at the pinned {pin}')
+        pinned = lib.pinned_runtime(pin)
+        self.assertEqual(lib.runtime_digests(virgil), pinned)
+        bundle = self.root / 'pinned'
+        lib.stage(virgil, bundle, pin)
+        lib.compare_runtime(lib.runtime_digests(bundle), pinned, 'bundle')
+
+    def git_virgil(self, files, links=()):
+        """A Virgil repository with one commit of files and symlinks; its SHA."""
+        virgil = self.root / 'git-virgil'
+        for name, data in files.items():
+            (virgil / name).parent.mkdir(parents=True, exist_ok=True)
+            (virgil / name).write_text(data)
+        for name, target in links:
+            (virgil / name).parent.mkdir(parents=True, exist_ok=True)
+            (virgil / name).symlink_to(target)
+        env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+        for command in (['init', '-q'], ['add', '-A'],
+                        ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
+                         'commit', '-q', '-m', 'fixture']):
+            subprocess.run(['git', '-C', str(virgil), *command], check=True, env=env)
+        return virgil, subprocess.run(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], check=True,
+                                      capture_output=True, text=True, env=env).stdout.strip()
+
+    def test_pinned_runtime_from_objects(self):
+        # Only the selected regular files of the commit, without hidden files,
+        # whatever the working tree holds now.
+        files = {'rt/a/A.v3': 'a', 'rt/a/B.v3': 'b', 'rt/a/DEPS': 'deps', 'rt/a/.Hidden.v3': 'hidden',
+                 'rt/a/nested/C.v3': 'c', 'rt/b/D.v3': 'd', 'rt/other/E.v3': 'e'}
+        virgil, revision = self.git_virgil(files)
+        (virgil / 'rt/a/A.v3').write_text('changed in the working tree')
+        (virgil / 'rt/b/D.v3').unlink()
+        self.assertEqual({'rt/a/A.v3': lib.sha(b'a'), 'rt/a/B.v3': lib.sha(b'b'), 'rt/b/D.v3': lib.sha(b'd')},
+                         lib.pinned_runtime(revision, ['rt/a/*.v3', 'rt/b/*.v3'], virgil))
+        with self.assertRaisesRegex(ValueError, 'selects no files'):
+            lib.pinned_runtime(revision, ['rt/a/*.v3', 'rt/c/*.v3'], virgil)
+
+    def test_pinned_runtime_symlink(self):
+        virgil, revision = self.git_virgil({'rt/a/A.v3': 'a'}, [('rt/a/Link.v3', 'A.v3')])
+        with self.assertRaisesRegex(ValueError, 'not a regular file: rt/a/Link.v3'):
+            lib.pinned_runtime(revision, ['rt/a/*.v3'], virgil)
+
+    def test_pinned_runtime_unavailable(self):
+        # A missing commit, a directory that isn't a repository, and an
+        # uninitialized submodule directory inside the server's repository
+        # are errors, never an empty runtime.
+        virgil, _ = self.git_virgil({'rt/a/A.v3': 'a'})
+        for directory, revision in ((virgil, '0' * 40), (self.root / 'source', '0' * 40),
+                                    (ROOT / 'test/release', lib.pinned_revision())):
+            with self.subTest(directory=directory):
+                with self.assertRaisesRegex(ValueError, 'initialize the vendor/virgil submodule'):
+                    lib.pinned_runtime(revision, ['rt/a/*.v3'], directory)
+
     def test_runtime_patterns(self):
         # Only the targets in AnalysisTargets.all count, each pattern once.
         table = self.root / 'AnalysisTargets.v3'
@@ -118,8 +185,41 @@ class LibraryTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'unsupported runtime pattern'):
                     lib.runtime_patterns(table)
         table.write_text('def all: Array<AnalysisTarget> = [A];\n')
-        with self.assertRaisesRegex(ValueError, 'no supported targets'):
+        with self.assertRaisesRegex(ValueError, 'A has no AnalysisTarget.new entry'):
             lib.runtime_patterns(table)
+
+    def test_runtime_pattern_comments(self):
+        # Comments can't add a pattern or a target, nor replace the real
+        # list of supported targets; strings may hold "/*" and "//".
+        table = self.root / 'AnalysisTargets.v3'
+        table.write_text('// def all: Array<AnalysisTarget> = [B];\n'
+                         '/* def all: Array<AnalysisTarget> = [B]; */\n'
+                         'def A = AnalysisTarget.new("a//b", "a", ["rt/a/*.v3" /*, "rt/x86-64-darwin/*.v3" */,\n'
+                         '\t"rt/native/*.v3" // , "rt/gc/*.v3"\n\t], "2m");\n'
+                         '// def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m");\n'
+                         'def B = AnalysisTarget.new("b", "b", ["rt/b/*.v3"], "1m");\n'
+                         'def all: Array<AnalysisTarget> = [A];\n')
+        self.assertEqual(['rt/a/*.v3', 'rt/native/*.v3'], lib.runtime_patterns(table))
+
+    def test_runtime_pattern_shapes(self):
+        # Any other shape of a target or of the supported list is an error.
+        good = 'def A = AnalysisTarget.new("a", "a", ["rt/a/*.v3"], "2m");\n'
+        for text, error in (
+                (good.replace('["rt/a/*.v3"]', 'PATTERNS'), 'is not `def NAME'),
+                (good.replace('"2m");', '"2m")'), 'is not `def NAME'),
+                (good + 'def C = AnalysisTarget.new("c", "c", ["rt/" + "c/*.v3"], "1m");\n', 'is not `def NAME'),
+                (good, 'exactly one `def all'),
+                (good + 'def all: Array<AnalysisTarget> = [A];\ndef all: Array<AnalysisTarget> = [A];\n',
+                 'exactly one `def all'),
+                (good + 'def all: Array<AnalysisTarget> = targets();\n', 'exactly one `def all'),
+                (good + good + 'def all: Array<AnalysisTarget> = [A];\n', 'declared twice'),
+                (good + 'def all: Array<AnalysisTarget> = [A]; /* unterminated\n', 'unterminated comment'),
+                (good + 'def all: Array<AnalysisTarget> = [A];\ndef s = "unterminated\n', 'unterminated literal')):
+            with self.subTest(text=text):
+                table = self.root / 'AnalysisTargets.v3'
+                table.write_text(text)
+                with self.assertRaisesRegex(ValueError, error):
+                    lib.runtime_patterns(table)
 
     def test_reproducible_archive(self):
         self.pack()
@@ -150,40 +250,47 @@ class LibraryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'files/checksums'):
             self.check()
 
+    def runtime_rejected(self, mutate):
+        """A runtime mutation is refused both with the original manifest and
+        with one regenerated from the mutated bundle."""
+        mutate()
+        with self.subTest(manifest='original'):
+            with self.assertRaisesRegex(ValueError, 'files/checksums'):
+                self.check()
+        self.manifest['library'] = lib.metadata(self.bundle, self.revision)
+        with self.subTest(manifest='regenerated'):
+            with self.assertRaisesRegex(ValueError, 'differ from the pinned Virgil runtime'):
+                self.check()
+
     def test_changed_runtime_source(self):
-        (self.bundle / RUNTIME[-1]).write_text('changed')
-        with self.assertRaisesRegex(ValueError, 'files/checksums'):
-            self.check()
+        self.runtime_rejected(lambda: (self.bundle / RUNTIME[0]).write_text('changed'))
 
     def test_missing_runtime_source(self):
-        (self.bundle / RUNTIME[-1]).unlink()
-        with self.assertRaisesRegex(ValueError, 'files/checksums'):
-            self.check()
+        # The last pattern still selects its second file.
+        self.runtime_rejected(lambda: (self.bundle / RUNTIME[-1]).unlink())
+
+    def test_missing_pattern_sources(self):
+        def remove():
+            (self.bundle / RUNTIME[-1]).unlink()
+            (self.bundle / RUNTIME[-2]).unlink()
+        self.runtime_rejected(remove)
 
     def test_extra_runtime_source(self):
-        (self.bundle / RUNTIME[0]).with_name('Extra.v3').write_text('extra')
-        with self.assertRaisesRegex(ValueError, 'files/checksums'):
-            self.check()
+        # A file that the pattern would select, but that isn't the pin's.
+        self.runtime_rejected(lambda: (self.bundle / RUNTIME[0]).with_name('Extra.v3').write_text('extra'))
 
     def test_unselected_runtime_file(self):
-        # Even with a manifest that lists them, the bundle holds no rt/ file
-        # that the runtime patterns don't select.
-        for path in (RUNTIME[0].rsplit('/', 1)[0] + '/DEPS', RUNTIME[0].rsplit('/', 1)[0] + '/nested/Deep.v3',
+        # No rt/ file that the runtime patterns don't select, hidden ones
+        # included, as the wrapper's shell glob skips them.
+        directory = RUNTIME[0].rsplit('/', 1)[0]
+        for path in (directory + '/DEPS', directory + '/nested/Deep.v3', directory + '/.Hidden.v3',
                      'rt/other-target/Other.v3'):
             with self.subTest(path=path):
-                (self.bundle / path).parent.mkdir(parents=True, exist_ok=True)
-                (self.bundle / path).write_text('extra')
-                self.manifest['library'] = lib.metadata(self.bundle, self.revision)
-                with self.assertRaisesRegex(ValueError, 'outside lib'):
-                    self.check()
-                (self.bundle / path).unlink()
-
-    def test_runtime_pattern_without_sources(self):
-        # A manifest regenerated without a pattern's files is still refused.
-        (self.bundle / RUNTIME[-1]).unlink()
-        self.manifest['library'] = lib.metadata(self.bundle, self.revision)
-        with self.assertRaisesRegex(ValueError, 'no runtime sources for ' + PATTERNS[-1].replace('*', r'\*')):
-            self.check()
+                self.setUp()
+                def add():
+                    (self.bundle / path).parent.mkdir(parents=True, exist_ok=True)
+                    (self.bundle / path).write_text('extra')
+                self.runtime_rejected(add)
 
     def test_runtime_source_symlink(self):
         source = self.source / RUNTIME[0]
