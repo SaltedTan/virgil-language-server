@@ -156,16 +156,17 @@ For the last item, use the per-document `PositionMap`; [Coordinates](docs/archit
 
 Virgil is a whole-program compiler: all participating `.v3` files are passed together. Recursively analyzing every `.v3` file in a repository is unsafe because one repository can contain separate programs, tests with duplicate declarations, and multiple targets.
 
-The [.virgil-lsp.json format](docs/configuration.md) was designed after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)).
+Versions 1 and 2 of `.virgil-lsp.json` are specified in [Configuration](docs/configuration.md), including examples, implementation status, and remaining work. Version 1's fields were chosen after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)).
 
 Preserve these principles:
 
 - Without a config, provide single-file parsing, syntax diagnostics, and document symbols; clearly report that semantic workspace features are limited.
-- With a config, analyze exactly that project using the [pattern and root rules](docs/configuration.md#patterns) and the project's [target](docs/configuration.md#target).
+- With a config, analyze exactly that project using the [configuration's pattern and root rules](docs/configuration.md#patterns).
 - Open documents override disk content.
 - Unknown compiler flags produce a configuration diagnostic rather than silently changing semantics.
 - A file that belongs to more than one project gets one analysis context per project, with a deterministic active context.
 - `virgilRoot` or compiler-source discovery is explicit and inspectable. Do not silently download or execute code from the workspace.
+- Multi-target analysis is later work. First establish one target-independent parse/verify snapshot; add per-target snapshots only for features whose semantics actually differ.
 
 Where possible, align this manifest with Aeneas's emerging query-mode concepts rather than inventing an unrelated build system.
 

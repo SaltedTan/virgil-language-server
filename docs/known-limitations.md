@@ -45,7 +45,7 @@ fix-all or action on save ([Code actions](architecture.md#code-actions)).
 
 Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, type definition, inlay hints, hover, references, document highlights, implementations, type hierarchy, call hierarchy, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs a Virgil root: the one the editor sends, or else the library that a release archive bundles. With neither, as with a development build and no root set, or when the editor sends a root that isn't an absolute path, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
 
-See [Target](configuration.md#target) for supported target names and runtime requirements. Completion still uses target-independent builtin names and members ([Completion](architecture.md#completion)).
+The compiler adapter can verify `x86-64-linux` programs with their runtime sources, but the worker protocol, command line, and project files don't pass a target yet. Editor analyses still run without a target, so native code that needs `Pointer`, `AnyRef`, `CiRuntime`, or `Linux` reports unresolved types. Adding runtime files alone doesn't supply those builtin types, and completion's builtin names remain independent of the target ([Target](configuration.md#target)).
 
 ## Inlay hints
 

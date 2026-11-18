@@ -6,7 +6,7 @@
 
 ## Context
 
-[ADR-0005](0005-project-file-format.md) defined target-independent analysis, which [ADR-0012](0012-project-configuration-stability.md) preserves for version 1. Without a target, Aeneas installs a synthetic `System` component, and `Pointer`, `AnyRef`, `CiRuntime`, and the `Linux` kernel component don't exist. Adding Virgil's `rt/` files doesn't help, because `rt/native/RiRuntime.v3` itself needs `CiRuntime` and `Pointer`.
+[ADR-0005](0005-project-file-format.md) analyzes every project without a target, and its project files must say `"target": null`. [ADR-0012](0012-project-configuration-stability.md) keeps that for version 1 and leaves open how a later version would add targets. Without a target, Aeneas installs a synthetic `System` component, and `Pointer`, `AnyRef`, `CiRuntime`, and the `Linux` kernel component don't exist. Adding Virgil's `rt/` files doesn't help, because `rt/native/RiRuntime.v3` itself needs `CiRuntime` and `Pointer`.
 
 Native code is where this matters. Wizard engine's x86-64-linux unit-test program (`build.sh unittest x86-64-linux`, 174 files at `titzer/wizard-engine` `958c6ad5`) stops at the compiler's 15-error limit in its first x86-64 files (`type "RiUserCode" cannot be found`, `type "Pointer" cannot be found`) and resolves 1,928 uses, 28 of them in `src/engine/x86-64`. On a development branch with more x86-64 code, 17 of the 27 files in `src/engine/x86-64` and 18 of the 27 in `test/unittest/x86-64-linux` name `Pointer`, `RiUserCode`, `RiRuntime`, or `Linux`, and its largest x86-64-linux program resolves 2,430 uses without a target, against 182,437 with one.
 

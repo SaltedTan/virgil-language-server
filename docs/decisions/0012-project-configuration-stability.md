@@ -21,7 +21,7 @@ Three version numbers are involved: the project file's `version`, the server's v
 3. **A pin that removes or changes a language option is announced, not versioned.** The release notes say so, and the configuration diagnostic for a file that still lists a removed option names it. That alone doesn't change the format version. The server can't tell when an option keeps its name but changes its default or meaning, so it reports nothing. That is a limitation, and the release notes are the only notice.
 4. **New fields and new accepted values need a new format version.** A server may read that version alongside version 1. Version 1 itself doesn't grow, because a strict server rejects fields that it doesn't know.
 5. **Capacity limits may change in any release, with a changelog entry.** A file is kept working only while its programs stay within the documented limits.
-6. **The strict parser and `target: null` stay for version 1.** Relaxing either needs its own approved issue. [ADR-0018](0018-native-target-analysis.md) defines target selection for version 2. Importing target-aware build manifests is outside this contract.
+6. **The strict parser and `target: null` stay.** Relaxing either needs its own approved issue. Per-target analysis and importing target-aware build manifests are outside this contract, and how a later version would add them is undecided.
 
 [Stability and evolution](../configuration.md#stability-and-evolution) states the promise for users. Its inventory records each rule's code and test coverage.
 
