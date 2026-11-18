@@ -139,9 +139,11 @@ except subprocess.TimeoutExpired:
 F=$TMP/format
 mkdir "$F"
 : > "$F/none"
-printf 'def f() {\n  var x=1;\n}\n' > "$F/unformatted.v3"
+printf 'def f() {\n  var x=1;\n}\n' > "$F/unformatted.orig"
+cp "$F/unformatted.orig" "$F/unformatted.v3"
 printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/unformatted.want"
-printf 'def f() {\n\tvar x = 1;\n}\n' > "$F/formatted.v3"
+cp "$F/unformatted.want" "$F/formatted.orig"
+cp "$F/formatted.orig" "$F/formatted.v3"
 # want <file> <line>...: writes the lines, each ending with LF, as the
 # expected standard output.
 want() {
@@ -154,7 +156,7 @@ expect_bytes "format --check reports the first changed line" 1 "$F/unformatted.c
     format --check "$F/unformatted.v3"
 expect "format --check passes a formatted file" 0 "" "" -- format --check "$F/formatted.v3"
 expect_bytes "format prints the formatted text" 0 "$F/unformatted.want" "" -- format "$F/unformatted.v3"
-expect_bytes "format prints a formatted file unchanged" 0 "$F/formatted.v3" "" -- format "$F/formatted.v3"
+expect_bytes "format prints a formatted file unchanged" 0 "$F/formatted.orig" "" -- format "$F/formatted.v3"
 ln -s unformatted.v3 "$F/regular-link.v3"
 want "$F/regular-link.check" "$F/regular-link.v3:2: not formatted"
 expect_bytes "format --check follows and names a symlink to a regular file" 1 "$F/regular-link.check" "" -- \
@@ -162,40 +164,45 @@ expect_bytes "format --check follows and names a symlink to a regular file" 1 "$
 expect_bytes "format prints the formatted text through a symlink" 0 "$F/unformatted.want" "" -- \
     format "$F/regular-link.v3"
 [ "$(readlink "$F/regular-link.v3")" = unformatted.v3 ] || { fail=$((fail + 1)); echo "FAIL: format changed the symbolic link"; }
-cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
-cp "$F/unformatted.v3" "$F/with space.v3"
+cp "$F/unformatted.orig" "$F/with space.orig"
+cp "$F/with space.orig" "$F/with space.v3"
 want "$F/with-space.check" "$F/with space.v3:2: not formatted"
 expect_bytes "format --check names a path with a space" 1 "$F/with-space.check" "" -- \
     format --check "$F/with space.v3"
 
 # The end of the file: exactly one final line end; a whitespace-only file
 # becomes empty; a block comment left open runs to the end untouched.
-printf 'def f() { }' > "$F/no-eol.v3"
+printf 'def f() { }' > "$F/no-eol.orig"
+cp "$F/no-eol.orig" "$F/no-eol.v3"
 printf 'def f() { }\n' > "$F/no-eol.want"
 want "$F/no-eol.check" "$F/no-eol.v3:1: not formatted"
 expect_bytes "format --check reports a missing final line end" 1 "$F/no-eol.check" "" -- \
     format --check "$F/no-eol.v3"
 expect_bytes "format adds the final line end" 0 "$F/no-eol.want" "" -- format "$F/no-eol.v3"
-printf '\n\n' > "$F/blank.v3"
+printf '\n\n' > "$F/blank.orig"
+cp "$F/blank.orig" "$F/blank.v3"
 want "$F/blank.check" "$F/blank.v3:1: not formatted"
 expect_bytes "format --check reports a whitespace-only file" 1 "$F/blank.check" "" -- \
     format --check "$F/blank.v3"
 expect_bytes "format empties a whitespace-only file" 0 "$F/none" "" -- format "$F/blank.v3"
-expect_bytes "format of an empty file prints nothing" 0 "$F/none" "" -- format "$F/none"
-printf '/* note\n\n' > "$F/open-comment.v3"
+: > "$F/empty.orig"
+cp "$F/empty.orig" "$F/empty.v3"
+expect_bytes "format of an empty file prints nothing" 0 "$F/none" "" -- format "$F/empty.v3"
+printf '/* note\n\n' > "$F/open-comment.orig"
+cp "$F/open-comment.orig" "$F/open-comment.v3"
 expect "format --check passes an open block comment" 0 "" "" -- format --check "$F/open-comment.v3"
-expect_bytes "format keeps an open block comment byte for byte" 0 "$F/open-comment.v3" "" -- \
+expect_bytes "format keeps an open block comment byte for byte" 0 "$F/open-comment.orig" "" -- \
     format "$F/open-comment.v3"
 
 # Files that can't be formatted: status 1, nothing on standard output.
-printf 'def f() // note\r -> int\n{\n\treturn;\n}\n' > "$F/lone-cr.v3"
-cp "$F/lone-cr.v3" "$F/lone-cr.orig"
+printf 'def f() // note\r -> int\n{\n\treturn;\n}\n' > "$F/lone-cr.orig"
+cp "$F/lone-cr.orig" "$F/lone-cr.v3"
 expect "format --check refuses a lone CR" 1 "" "cannot format '$F/lone-cr\.v3': .*carriage return" -- \
     format --check "$F/lone-cr.v3"
 expect_bytes "format refuses a lone CR" 1 "$F/none" "cannot format '$F/lone-cr\.v3': .*carriage return" -- \
     format "$F/lone-cr.v3"
-cmp -s "$F/lone-cr.orig" "$F/lone-cr.v3" || { fail=$((fail + 1)); echo "FAIL: format changed a file with a lone CR"; }
-printf 'def f() {\n  var x=;\n}\n' > "$F/syntax.v3"
+printf 'def f() {\n  var x=;\n}\n' > "$F/syntax.orig"
+cp "$F/syntax.orig" "$F/syntax.v3"
 expect "format --check reports a syntax error" 1 "" "error: $F/syntax\.v3:2:9: ParseError" -- \
     format --check "$F/syntax.v3"
 expect_bytes "format reports a syntax error" 1 "$F/none" "error: $F/syntax\.v3:2:9: ParseError" -- \
@@ -204,7 +211,8 @@ expect "format --check reports a missing file" 1 "" "cannot read file '$F/missin
     format --check "$F/missing.v3"
 expect_bytes "format reports a missing file" 1 "$F/none" "cannot read file '$F/missing\.v3'" -- \
     format "$F/missing.v3"
-cp "$F/unformatted.v3" "$F/unreadable.v3"
+cp "$F/unformatted.orig" "$F/unreadable.orig"
+cp "$F/unreadable.orig" "$F/unreadable.v3"
 chmod 000 "$F/unreadable.v3"
 # Permissions don't stop a privileged user.
 if [ ! -r "$F/unreadable.v3" ]; then
@@ -239,19 +247,20 @@ done
 # small one whose formatted text would grow past it: each of 42,000 empty
 # statements in 100 nested blocks gains 101 tabs. The nesting stays within
 # what the JVM build's parse admits.
-head -c 4194305 /dev/zero | tr '\0' ' ' > "$F/large.v3"
+head -c 4194305 /dev/zero | tr '\0' ' ' > "$F/large.orig"
+cp "$F/large.orig" "$F/large.v3"
 expect "format --check refuses a file over the input bound" 1 "" \
     "cannot format '$F/large\.v3': it is larger than 4194304 bytes" -- format --check "$F/large.v3"
 expect_bytes "format refuses a file over the input bound" 1 "$F/none" \
     "cannot format '$F/large\.v3': it is larger than 4194304 bytes" -- format "$F/large.v3"
-rm "$F/large.v3"
 {
     echo 'def f() {'
     for ((i = 0; i < 100; i++)); do echo '{'; done
     for ((i = 0; i < 42000; i++)); do echo ';'; done
     for ((i = 0; i < 100; i++)); do echo '}'; done
     echo '}'
-} > "$F/nested.v3"
+} > "$F/nested.orig"
+cp "$F/nested.orig" "$F/nested.v3"
 expect "format --check refuses formatted text over the output bound" 1 "" \
     "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
     format --check "$F/nested.v3"
@@ -268,9 +277,10 @@ expect_bytes "format --check checks every file" 1 "$F/several.check" "cannot rea
 
 # Language options, as a project file's compilerArgs accepts them, apply to
 # every file, before or after it.
-printf 'class D describes C { }\nclass C descriptor D { }\n' > "$F/descriptors.v3"
+printf 'class D describes C { }\nclass C descriptor D { }\n' > "$F/descriptors.orig"
+cp "$F/descriptors.orig" "$F/descriptors.v3"
 expect "format needs a language option to parse" 1 "" "ParseError" -- format --check "$F/descriptors.v3"
-expect_bytes "format accepts a language option" 0 "$F/descriptors.v3" "" -- \
+expect_bytes "format accepts a language option" 0 "$F/descriptors.orig" "" -- \
     format -lang:descriptors "$F/descriptors.v3"
 expect_bytes "format --check accepts a language option after the files" 1 "$F/unformatted.check" "" -- \
     format --check "$F/descriptors.v3" "$F/unformatted.v3" -lang:descriptors=true
@@ -334,7 +344,11 @@ expect "format rejects an invalid language option value" 2 "" "the value of '-la
     format -lang:descriptors=yes "$F/formatted.v3"
 expect "format rejects a repeated language option" 2 "" "'-lang:descriptors' is given more than once" -- \
     format --check -lang:descriptors "$F/formatted.v3" -lang:descriptors=false
-cmp -s "$F/unformatted.v3" <(printf 'def f() {\n  var x=1;\n}\n') || { fail=$((fail + 1)); echo "FAIL: format changed its input"; }
+for original in "$F"/*.orig; do
+    input=${original%.orig}.v3
+    [ -f "$input" ] && [ ! -L "$input" ] && cmp -s "$original" "$input" || {
+        fail=$((fail + 1)); echo "FAIL: format changed ${input##*/}"; }
+done
 
 A=$FIXTURES/analysis
 expect "analyze clean two-file program" 0 '^ok: 2 files parsed and verified$' "" -- \
