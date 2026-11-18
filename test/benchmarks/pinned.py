@@ -8,12 +8,14 @@ The advisory Virgil-master workflow checks `vendor/virgil` out at upstream
 sources cannot match another revision, so its check skips there and names both
 revisions instead of reporting breakage.
 """
+import sys
 
 
 def skip_away_from_pin(case, corpus):
     """Skip the calling test unless vendor/virgil is the revision in the index."""
     gitlink, checkout = corpus.revisions()
     if checkout != gitlink:
-        case.skipTest("the committed inventory belongs to the pinned Virgil "
-                      + (gitlink or "unknown") + "; vendor/virgil is checked out at "
-                      + (checkout or "unknown"))
+        reason = (f"the committed inventory belongs to the pinned Virgil {gitlink}; "
+                  f"vendor/virgil is checked out at {checkout}")
+        print(reason, file=sys.stderr)
+        case.skipTest(reason)

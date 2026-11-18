@@ -81,9 +81,10 @@ def records(inventory=INVENTORY, blocks=1):
 
 
 class Inventory(unittest.TestCase):
-    @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_checked_in_inventory_matches_its_definitions(self):
         pinned.skip_away_from_pin(self, cursor.bench.corpus)
+        if not VENDORED:
+            self.skipTest("vendor/virgil is not initialized")
         self.assertEqual(cursor.frozen(build()), INVENTORY)
 
     def test_inventory_has_the_seventeen_named_histories(self):
@@ -194,9 +195,10 @@ class Inventory(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "cursor histories changed"):
             cursor.frozen(build(Changed))
 
-    @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_real_histories_pin_the_compiler_and_its_sources(self):
         pinned.skip_away_from_pin(self, cursor.bench.corpus)
+        if not VENDORED:
+            self.skipTest("vendor/virgil is not initialized")
         self.assertEqual(INVENTORY["virgil_revision"],
                          cursor.bench.corpus.git_revision(cursor.VIRGIL, "rev-parse", "HEAD"))
         files = cursor.states.repair.aeneas_files()
