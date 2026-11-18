@@ -106,14 +106,15 @@ component AnalysisBuiltinMembers {
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.LAYOUT_FIELD, "offset", AnalysisDeclKind.FIELD, "def offset: int"),
 		// lookupTypeParamMember.
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.TYPE_PARAM, "default", AnalysisDeclKind.FIELD, "def default: $"),
-		// lookupPointerTypeMember; "atField" takes a field, as in
-		// Pointer.atField(o.f), whose value is not read.
+		// lookupPointerTypeMember. "atField" takes a field reference, as in
+		// Pointer.atField(o.f), not a value (Verifier.visitPtrAtField), and
+		// only as a call.
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "NULL", AnalysisDeclKind.FIELD, "def NULL: $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "SIZE", AnalysisDeclKind.FIELD, "def SIZE: int"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atContents", AnalysisDeclKind.METHOD, "def atContents<T>(range: Range<T>) -> $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atElement", AnalysisDeclKind.METHOD, "def atElement<T>(range: Range<T>, index: int) -> $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atEnd", AnalysisDeclKind.METHOD, "def atEnd<T>(object: T) -> $"),
-		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atField", AnalysisDeclKind.METHOD, "def atField<T>(field: T) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atField", AnalysisDeclKind.METHOD, "def atField(receiver.field) -> $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atLength", AnalysisDeclKind.METHOD, "def atLength<T>(array: Array<T>) -> $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atObject", AnalysisDeclKind.METHOD, "def atObject<T>(object: T) -> $"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER_TYPE, "atRef", AnalysisDeclKind.METHOD, "def atRef<T>(ref: T) -> $"),
@@ -126,9 +127,9 @@ component AnalysisBuiltinMembers {
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER, "load", AnalysisDeclKind.METHOD, "def load<T>() -> T"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.POINTER, "store", AnalysisDeclKind.METHOD, "def store<T>(value: T)"),
 		// CiRuntime_TypeCon.lookupMember, other than the addresses of
-		// CiRuntimeModule, which are read from it, and the FEATURE_ names
-		// that it accepts by prefix, of which those that it gives a value are
-		// offered.
+		// CiRuntimeModule, which are read from it. It matches FEATURE_ names
+		// by prefix: any other FEATURE_ name is false, and a flag's name with
+		// a suffix is that flag; only the six flags' own names are offered.
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.CIRUNTIME, "AUX_TAG_MASK", AnalysisDeclKind.FIELD, "def AUX_TAG_MASK: #"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.CIRUNTIME, "AUX_TAG_WIDTH", AnalysisDeclKind.FIELD, "def AUX_TAG_WIDTH: int"),
 		AnalysisBuiltinMember.new(AnalysisMemberReceiver.CIRUNTIME, "FEATURE_ALIGN_EX_ENTRIES", AnalysisDeclKind.FIELD, "def FEATURE_ALIGN_EX_ENTRIES: bool"),

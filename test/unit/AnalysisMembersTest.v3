@@ -532,7 +532,8 @@ def test_target(t: Tester) {
 		render(targetMembers(t, onType)));
 	var d = describe(targetMembers(t, onType));
 	for (line in ["NULL FIELD def NULL: Pointer\n", "SIZE FIELD def SIZE: int\n",
-			"load METHOD def load<T>(pointer: Pointer) -> T\n", "atContents METHOD def atContents<T>(range: Range<T>) -> Pointer\n"]) {
+			"load METHOD def load<T>(pointer: Pointer) -> T\n", "atContents METHOD def atContents<T>(range: Range<T>) -> Pointer\n",
+			"atField METHOD def atField(receiver.field) -> Pointer\n"]) {
 		t.assert(contains(d, line), Strings.format2("%s not in\n%s", line, d));
 	}
 	var linux = "def f() { var x = Linux.$syscall(1, ()); }\n";
@@ -631,7 +632,8 @@ def test_target_builtins_verify(t: Tester) {
 	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
 	t.assert(a.verified, "the target's members verify");
 	for (use in ["var p = Pointer.NULL; var x = p.SIZE;", "var p = Pointer.NULL; var x = p.atEnd;", "var x = Pointer.length;",
-			"var x = Linux.open;", "var x = CiRuntime.nothing;", "var x = CiRuntime.load<int>(Pointer.NULL);"]) {
+			"var x = Linux.open;", "var x = CiRuntime.nothing;",
+			"var f = Pointer.atField;", "var x = Pointer.atField(3);", "var x = CiRuntime.load<int>(Pointer.NULL);"]) {
 		a = analyzeTarget(t, Strings.format1("def f() { %s }\n", use), [], false);
 		if (a != null) t.assert(!a.verified, Strings.format1("%s verifies", use));
 	}
