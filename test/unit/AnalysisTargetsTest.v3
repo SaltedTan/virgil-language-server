@@ -12,42 +12,33 @@ def X = [
 // The pinned Virgil, from the repository root.
 def VIRGIL = "vendor/virgil";
 
-// Each entry's runtime patterns are the directories of its wrapper's
-// RT_FILES, in order, and the wrapper passes the entry's Aeneas target, so a
-// pin update that changes either fails here until the entry follows.
+// Each entry matches its pinned wrapper, compared in full: its RT_FILES are
+// the entry's runtime patterns, in order, and it passes the entry's Aeneas
+// target and stack size. Of the wrapper's other options, -heap-size and the
+// -rt flags reach only the back end and the runtime's tables, never the
+// parser or the verifier (ADR-0018). Comparing the whole script, not its
+// parts, means that a pin update that changes anything in it, such as a
+// repeated or added option or a continued line, fails here until the change
+// is checked for what analysis reads and this text follows.
 def test_wrapper_runtime_files(t: Tester) {
 	for (target in AnalysisTargets.all) {
 		var path = Strings.format2("%s/bin/v3c-%s", VIRGIL, target.name), script = System.fileLoad(path);
 		if (script == null) return t.fail1("cannot read %s; run the unit tests from the repository root", path);
-		var rtFiles: string, exec: string;
-		for (line in lines(script)) {
-			if (Strings.startsWith(line, "RT_FILES=")) rtFiles = line;
-			if (Strings.startsWith(line, "exec ")) exec = line;
-		}
-		if (rtFiles == null || exec == null) return t.fail1("%s has no RT_FILES or exec line", path);
-		var expected = StringBuilder.new().puts("RT_FILES=$(echo");
+		var rt = StringBuilder.new();
 		for (p in target.runtimePatterns) {
 			if (!Strings.startsWith(p, "rt/")) return t.fail1("pattern %s is not under rt/", p);
-			expected.puts(" $RT/").puts(Arrays.range(p, 3, p.length));
+			rt.puts(" $RT/").puts(Arrays.range(p, 3, p.length));
 		}
-		t.assert_string(expected.puts(")").toString(), rtFiles);
-		var flag = Strings.format1(" -target=%s ", target.aeneasName);
-		t.assert(contains(exec, flag), Strings.format2("%s passes %s", path, flag));
-		t.assert(contains(exec, " -rt.files=\"$RT_FILES\" "), Strings.format1("%s passes RT_FILES", path));
-		var stack = Strings.format1(" -stack-size=%s ", target.stackSize);
-		t.assert(contains(exec, stack), Strings.format2("%s passes %s", path, stack));
-		// Of these, only -stack-size reaches the verifier (see
-		// AeneasAdapter.setTargetOptions). A new option must be checked for
-		// the same before it is added here.
-		for (word in words(exec)) {
-			if (word.length < 2 || word[0] != '-') continue;
-			var name = word;
-			for (i < word.length) if (word[i] == '=') { name = Arrays.range(word, 1, i); break; }
-			if (name == word) name = Arrays.range(word, 1, word.length);
-			var known = false;
-			for (k in WRAPPER_OPTIONS) if (Strings.equal(k, name)) known = true;
-			if (!known) t.fail2("%s passes -%s, which analysis does not account for", path, name);
-		}
+		var expected = StringBuilder.new()
+			.puts("#!/usr/bin/env bash\n")
+			.puts("BIN=$(dirname ${BASH_SOURCE[0]})\n")
+			.puts("BIN=$(cd $BIN && pwd)\n")
+			.puts("RT=$(cd $BIN/../rt/ && pwd)\n")
+			.puts("V3C=${V3C:=$BIN/v3c}\n")
+			.put1("RT_FILES=$(echo%s)\n", rt.toString())
+			.put2("exec $V3C -heap-size=200m -stack-size=%s -target=%s", target.stackSize, target.aeneasName)
+			.puts(" -rt.sttables -rt.gc -rt.gctables -rt.files=\"$RT_FILES\" \"$@\"\n");
+		t.assert_string(expected.toString(), script);
 	}
 }
 
@@ -73,35 +64,6 @@ def test_find(t: Tester) {
 	t.assert_string("rt/x86-64-linux/*.v3", patterns[0]);
 	t.assert_string("rt/native/*.v3", patterns[1]);
 	t.assert_string("rt/gc/*.v3", patterns[2]);
-}
-
-// The options that the supported targets' wrappers pass at the pin.
-def WRAPPER_OPTIONS = ["heap-size", "stack-size", "target", "rt.sttables", "rt.gc", "rt.gctables", "rt.files"];
-def words(line: string) -> Array<string> {
-	var v = Vector<string>.new(), start = 0;
-	for (i = 0; i <= line.length; i++) {
-		if (i == line.length || line[i] == ' ') {
-			if (i > start) v.put(Arrays.range(line, start, i));
-			start = i + 1;
-		}
-	}
-	return v.extract();
-}
-def lines(text: Array<byte>) -> Array<string> {
-	var v = Vector<string>.new(), start = 0;
-	for (i = 0; i <= text.length; i++) {
-		if (i == text.length || text[i] == '\n') {
-			if (i > start) v.put(Arrays.range(text, start, i));
-			start = i + 1;
-		}
-	}
-	return v.extract();
-}
-def contains(s: string, part: string) -> bool {
-	for (i = 0; i + part.length <= s.length; i++) {
-		if (Arrays.equal(Arrays.range(s, i, i + part.length), part)) return true;
-	}
-	return false;
 }
 
 // The runtime sources of a target from the pinned Virgil, as its wrapper

@@ -12,8 +12,8 @@
 class AnalysisTarget(name: string, aeneasName: string, runtimePatterns: Array<string>, stackSize: string) { }
 
 // The supported targets. AnalysisTargets:wrapper_runtime_files compares each
-// entry's runtime patterns, Aeneas target, and stack size with its wrapper at
-// the pin.
+// entry's runtime patterns, Aeneas target, and stack size with its whole
+// wrapper at the pin.
 component AnalysisTargets {
 	def X86_64_LINUX = AnalysisTarget.new("x86-64-linux", "x86-64-linux",
 		["rt/x86-64-linux/*.v3", "rt/native/*.v3", "rt/gc/*.v3"], "2m");
