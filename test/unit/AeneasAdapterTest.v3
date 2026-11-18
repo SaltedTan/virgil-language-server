@@ -46,6 +46,8 @@ def X = [
 	T("AeneasAdapter:target_type_error", test_target_type_error),
 	T("AeneasAdapter:target_interleaved", test_target_interleaved),
 	T("AeneasAdapter:target_front_end_only", test_target_front_end_only),
+	T("AeneasAdapter:target_stack_size", test_target_stack_size),
+	T("AeneasAdapter:target_stack_size_interleaved", test_target_stack_size_interleaved),
 	()
 ];
 
@@ -869,6 +871,8 @@ def test_language_options_order(t: Tester) {
 
 def NATIVE = "test/fixtures/analysis/x86-64-linux/main.v3";
 def NATIVE_TYPE_ERROR = "test/fixtures/analysis/x86-64-linux-type-error/main.v3";
+def STACK_SIZE = "test/fixtures/analysis/x86-64-linux-stack-size/main.v3";
+def STACK_SIZE_DUPLICATE = "test/fixtures/analysis/x86-64-linux-stack-size-duplicate/main.v3";
 
 // {path} followed by {target}'s runtime sources, as v3c appends -rt.files, or
 // {path} alone for no target.
@@ -987,6 +991,50 @@ def test_target_front_end_only(t: Tester) {
 	var a = AeneasAdapter.analyzeProgram(Arrays.concat([init], runtime), [], target, false);
 	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
 	t.assertz(true, a.verified);
+}
+
+// CiRuntime.STACK_SIZE is the wrapper's -stack-size=2m, 2,097,152, as the
+// pinned bin/v3c-x86-64-linux reads it: distinct from 0, and for the
+// duplicate variant
+//   test/fixtures/analysis/x86-64-linux-stack-size-duplicate/main.v3 @ 6:17]
+//   MatchError: duplicate value (previous at 5:17)
+def test_target_stack_size(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, sources = targetProgram(t, STACK_SIZE, target);
+	if (sources == null) return;
+	var a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.assertz(true, a.verified);
+	sources = targetProgram(t, STACK_SIZE_DUPLICATE, target);
+	if (sources == null) return;
+	a = AeneasAdapter.analyzeProgram(sources, [], target, false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.asserti(1, a.diagnostics.length);
+	assertDiagnostic(t, a, "MatchError", STACK_SIZE_DUPLICATE, 6, 17);
+	if (a.diagnostics.length > 0) t.assert_string("duplicate value (previous at 5:17)", a.diagnostics[0].message);
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+}
+
+// A target-free analysis between two target analyses sees the default stack
+// size, and the second target analysis answers as the first did; the option
+// is back at its default after each.
+def test_target_stack_size_interleaved(t: Tester) {
+	var target = AnalysisTargets.X86_64_LINUX, native = targetProgram(t, STACK_SIZE_DUPLICATE, target);
+	if (native == null) return;
+	var paths = pathsOf(native), inline = "def f(x: int) -> int { match (x) { 0 => return 1; 2097152 => return 2; _ => return 3; } }\n";
+	var plain = [AnalysisSource.new("plain.v3", inline)];
+	var a = AeneasAdapter.analyzeProgram(native, [], target, false);
+	assertDiagnostic(t, a, "MatchError", STACK_SIZE_DUPLICATE, 6, 17);
+	var first = renderAnalysis(a, paths);
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	var free = AeneasAdapter.analyzeProgram(plain, [], null, false);
+	for (d in free.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	var scoped = AeneasAdapter.analyzeForScope(native, [], target, false);
+	t.assert_string(first, renderAnalysis(scoped, paths));
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
+	t.assert_string(first, renderAnalysis(AeneasAdapter.analyzeProgram(native, [], target, false), paths));
+	t.asserti(int.!(CLOptions.STACK_SIZE.init), int.!(CLOptions.STACK_SIZE.get()));
 }
 
 def contains(s: string, part: string) -> bool {

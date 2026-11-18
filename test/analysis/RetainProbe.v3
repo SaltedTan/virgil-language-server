@@ -54,12 +54,16 @@ component AnalysisRetainProbe {
 			// and its sources stay live here.
 			native = targetProgram(TARGET_FIXTURE, AnalysisTargets.X86_64_LINUX);
 			if (native == null) return 1;
+			var plateau = 0L;
 			for (i < 4) {
 				if (!analyzeFor(native, AnalysisTargets.X86_64_LINUX, 0)) return 1;
 				if (!checkHeap("after dropped target analysis", before)) return 1;
+				if (i == 0) plateau = lastLive;
+				else if (!checkPlateau(plateau)) return 1;
 			}
 			if (!analyze(sources, 0)) return 1;
 			if (!checkHeap("after target-free analysis", before)) return 1;
+			if (!checkPlateau(plateau)) return 1;
 		}
 		// Keep the caller's source bytes live across every GC, including the last.
 		var bytes = 0;
@@ -141,8 +145,25 @@ component AnalysisRetainProbe {
 		System.puts(Strings.format2("%s: %d bytes live\n", label, bytes));
 	}
 
+	// The live heap that the last checkHeap measured.
+	var lastLive: long;
+	// After the first target analysis has made the target's Compiler, each
+	// later dropped analysis must leave the heap where that one did, within
+	// PLATEAU_SLACK, so that growth below the 256 KiB ceiling still fails. At
+	// the pin, the four target readings and the target-free one after them
+	// are all 132,840 bytes, 0 apart: target analyses after the first intern
+	// no types (AeneasAdapter:target_interleaved), so no cache bucket grows.
+	// One retained target analysis of the fixture adds about 2,037,000 bytes
+	// (2,170,176 live). 4 KiB leaves room for a small builtin cache entry.
+	def PLATEAU_SLACK = 4 * 1024;
+	def checkPlateau(plateau: long) -> bool {
+		if (lastLive - plateau <= PLATEAU_SLACK) return true;
+		System.puts(Strings.format2("FAIL: %d bytes live, more than 4 KiB above the first target analysis's %d\n", lastLive, plateau));
+		return false;
+	}
+
 	def checkHeap(label: string, before: long) -> bool {
-		var after = liveBytes();
+		var after = lastLive = liveBytes();
 		report(label, after);
 		// Allow builtin operator caches and bounded bucket-table growth, but not
 		// a verified VST. This fixture retains megabytes without the workaround.

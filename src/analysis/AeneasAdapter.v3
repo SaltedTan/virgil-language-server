@@ -772,6 +772,20 @@ component AeneasAdapter {
 		return c;
 	}
 	private var targetCompilers: List<(AnalysisTarget, Compiler)>;
+	// Sets the options that verification reads for {target}, or their
+	// defaults for none, as its wrapper passes them. Of bin/v3c-x86-64-linux's
+	// options, only -stack-size reaches the verifier, as the value of the
+	// constant CiRuntime.STACK_SIZE (CiRuntime_TypeCon.lookupMember), which a
+	// match compares with its other values; the others reach only the back end
+	// and the runtime's tables. Each analysis restores the defaults when it
+	// ends (resetTargetOptions), and nothing reads the option afterwards.
+	private def setTargetOptions(target: AnalysisTarget) {
+		resetTargetOptions();
+		if (target != null) CLOptions.STACK_SIZE.parse(target.stackSize);
+	}
+	private def resetTargetOptions() {
+		CLOptions.STACK_SIZE.val = CLOptions.STACK_SIZE.init;
+	}
 	// The target that Aeneas registers as {name}, or null. Aeneas.getTarget
 	// would print to standard output for an unknown name.
 	private def registeredTarget(name: string) -> Target {
@@ -785,6 +799,7 @@ component AeneasAdapter {
 		var configured = compilerFor(target);
 		AnalysisTypeCache.prepare();
 		setLanguageOptions(options);
+		setTargetOptions(if(configured.target != null, target));
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
 		// Without a target, Aeneas provides a synthetic System component, as
@@ -817,6 +832,7 @@ component AeneasAdapter {
 		var verified = parsed && compilation.verify();
 		var t2 = System.ticksUs();
 		resetLanguageOptions();
+		resetTargetOptions();
 		// Drop process-wide roots even when parsing or verification failed.
 		// The result still owns its VST; dropping that result makes it collectible.
 		AnalysisTypeCache.release();
