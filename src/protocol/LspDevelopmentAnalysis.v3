@@ -72,7 +72,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		// Explicit URIs form no project, so they use the default language options.
 		var options: Array<string> = if(pendingProject != null, pendingProject.definition.compilerArgs, []);
 		if (BenchProbe.enabled) BenchProbe.server(0, "prepare_us", long.view(BenchProbe.now() - prepareStart));
-		var outcome = supervisor.begin(inputs.sources, options, AnalysisWire.WANT_OCCURRENCES);
+		var outcome = supervisor.begin(inputs.sources, options, null, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
 			_ => {

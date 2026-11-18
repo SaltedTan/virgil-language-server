@@ -81,8 +81,8 @@ component SyntheticAnalysisWorker {
 	}
 	// The result of the real worker for {request}, without its statistics.
 	private def analyze(request: AnalysisWorkerRequest) -> Range<byte> {
-		var analysis = if(request.scope() != null, AeneasAdapter.analyzeForScope(request.sources, request.options, null, false),
-			AeneasAdapter.analyzeProgram(request.sources, request.options, null, false));
+		var analysis = if(request.scope() != null, AeneasAdapter.analyzeForScope(request.sources, request.options, request.target, false),
+			AeneasAdapter.analyzeProgram(request.sources, request.options, request.target, false));
 		var files: Array<(string, Array<AnalysisOccurrence>)>;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
 			files = request.occurrences(analysis);

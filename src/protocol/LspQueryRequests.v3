@@ -165,7 +165,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		analyses++;
 		var query = AnalysisScopeRequest.new(index, r.offset, r.kinds, r.prefix);
 		// No occurrences: the result holds only the answer's declarations.
-		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, 0, query);
+		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, null, 0, query);
 	}
 	// Whether {r}'s document is open with the identity it was requested at,
 	// including across version-only changes, in the same current project.

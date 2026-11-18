@@ -291,19 +291,9 @@ class ProjectConfigValidator {
 		var target = AnalysisTargets.find(n.text);
 		if (target == null) {
 			errorAt(ProjectConfigCode.INVALID_VALUE, n, Strings.format2(
-				"unknown target '%s'; the supported targets are %s", n.text, targetNames()));
+				"unknown target '%s'; the supported targets are %s", n.text, AnalysisTargets.names()));
 		}
 		return target;
-	}
-	// The supported target names, as a diagnostic lists them.
-	private def targetNames() -> string {
-		var buf = StringBuilder.new();
-		var targets = AnalysisTargets.all;
-		for (i < targets.length) {
-			if (i > 0) buf.puts(", ");
-			buf.puts(targets[i].name);
-		}
-		return buf.toString();
 	}
 	// Reports a member whose key repeats an earlier one in the same object.
 	// Returns true for the first occurrence of a key.

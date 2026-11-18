@@ -67,11 +67,14 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// Returns an immediate failure or Pending if accepted. A busy rejection never
 	// disturbs the existing request; there is no unbounded analysis queue.
 	// {options} are the program's language options, which apply only to this
-	// analysis: the worker restores the defaults after each one.
-	def begin(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
-		return start(sources, options, flags, null);
+	// analysis: the worker restores the defaults after each one. {target} is
+	// the target to analyze the program for, or null for none.
+	def begin(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget,
+			flags: int) -> AnalysisOutcome {
+		return start(sources, options, target, flags, null);
 	}
-	private def start(sources: Array<AnalysisSource>, options: Array<string>, flags: int, scope: AnalysisScopeRequest) -> AnalysisOutcome {
+	private def start(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget, flags: int,
+			scope: AnalysisScopeRequest) -> AnalysisOutcome {
 		if (pending) return AnalysisOutcome.Failed(AnalysisFailure.BUSY, "an analysis is already running");
 		if (scope != null) flags |= AnalysisWire.WANT_SCOPE;
 		if (BenchProbe.enabled) {
@@ -80,7 +83,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			BenchProbe.serverAllocatedStart = BenchProbe.allocated();
 		}
 		var id = nextId++;
-		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, sources, scope) - WorkerFraming.HEADER_BYTES;
+		var targetName = if(target == null, "", target.name);
+		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, targetName, sources, scope)
+			- WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE,
 				Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD));
@@ -111,7 +116,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			lengths[i] = if(sources[i].input != null, sources[i].input.length);
 		}
 		var encodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
-		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
+		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, targetName, sources, scope);
 		if (BenchProbe.enabled) {
 			BenchProbe.server(id, "request_encode_us", long.view(BenchProbe.now() - encodeStart));
 		}
@@ -132,9 +137,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// without WANT_OCCURRENCES too, its snapshot has only the candidates'
 	// declarations, no files, and no diagnostics, and its result is decoded
 	// within AnalysisWire.MAX_QUERY_ALLOCATION.
-	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int,
+	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget, flags: int,
 			scope: AnalysisScopeRequest) -> AnalysisOutcome {
-		var outcome = start(sources, options, flags, scope);
+		var outcome = start(sources, options, target, flags, scope);
 		if (AnalysisOutcome.Pending.?(outcome)) temporary = true;
 		return outcome;
 	}
@@ -214,8 +219,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		}
 	}
 	// Synchronous development CLI and unit-test client.
-	def analyze(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
-		var outcome = begin(sources, options, flags);
+	def analyze(sources: Array<AnalysisSource>, options: Array<string>, target: AnalysisTarget,
+			flags: int) -> AnalysisOutcome {
+		var outcome = begin(sources, options, target, flags);
 		var fds = Array<int>.new(4);
 		while (AnalysisOutcome.Pending.?(outcome)) {
 			var count = pollFds(fds, 0);

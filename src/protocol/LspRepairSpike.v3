@@ -102,7 +102,7 @@ class LspRepairSpike(supervisor: AnalysisSupervisor, sources: Array<AnalysisSour
 	def analyze(a: LspRepairAttempt) -> LspRepairOutcome {
 		var outcome = LspRepairOutcome.new(a);
 		var snapshot: AnalysisSnapshot;
-		match (supervisor.analyze(repaired(a), options, AnalysisWire.WANT_OCCURRENCES)) {
+		match (supervisor.analyze(repaired(a), options, null, AnalysisWire.WANT_OCCURRENCES)) {
 			Completed(s) => snapshot = s;
 			Failed(failure, reason) => outcome.failed = reason;
 			Pending => outcome.failed = "the analysis did not complete";
@@ -224,7 +224,7 @@ class LspRepairSpike(supervisor: AnalysisSupervisor, sources: Array<AnalysisSour
 	// The wall-clock microseconds of one analysis of {inputs} with occurrences.
 	private def time(inputs: Array<AnalysisSource>) -> int {
 		var start = System.ticksUs();
-		supervisor.analyze(inputs, options, AnalysisWire.WANT_OCCURRENCES);
+		supervisor.analyze(inputs, options, null, AnalysisWire.WANT_OCCURRENCES);
 		return System.ticksUs() - start;
 	}
 	private def percentiles(us: Array<int>) -> string {

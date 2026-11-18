@@ -216,7 +216,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
-		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES, null);
+		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, null, AnalysisWire.WANT_OCCURRENCES, null);
 	}
 	// Replies to {r} once its preflight ends: the edit, if the analysis of the
 	// edits binds as the snapshot does and nothing changed meanwhile, and

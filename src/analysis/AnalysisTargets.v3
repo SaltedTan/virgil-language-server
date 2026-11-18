@@ -26,4 +26,13 @@ component AnalysisTargets {
 		for (t in all) if (Strings.equal(t.name, name)) return t;
 		return null;
 	}
+
+	def names() -> string {
+		var buf = StringBuilder.new();
+		for (i < all.length) {
+			if (i > 0) buf.puts(", ");
+			buf.puts(all[i].name);
+		}
+		return buf.toString();
+	}
 }

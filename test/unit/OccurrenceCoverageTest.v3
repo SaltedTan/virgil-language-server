@@ -997,7 +997,7 @@ def test_layout_and_packing_fixtures(t: Tester) {
 		if (sources == null) break;
 		var known = false;
 		for (f in CRASHING_FIXTURES) if (Strings.equal(path, Strings.format2("%s/%s", VIRGIL, f))) known = true;
-		match (s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS)) {
+		match (s.analyze(sources, [], null, AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS)) {
 			Completed(snapshot) => {
 				if (known) t.fail1("%s analyzed; update CRASHING_FIXTURES", path);
 				var error = soundnessError(snapshot, sources);
@@ -1036,7 +1036,7 @@ def test_packing_at_error_limit_repeated_path(t: Tester) {
 		AnalysisSource.new(path, second)
 	];
 	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
-	var outcome = s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
+	var outcome = s.analyze(sources, [], null, AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
 	s.close();
 	match (outcome) {
 		Completed(snapshot) => {
@@ -1086,7 +1086,7 @@ def test_aeneas_sources(t: Tester) {
 	var sources = load(t, paths.extract());
 	if (sources == null) return;
 	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
-	var outcome = s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
+	var outcome = s.analyze(sources, [], null, AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
 	s.close();
 	match (outcome) {
 		Completed(snapshot) => {
