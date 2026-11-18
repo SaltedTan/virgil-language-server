@@ -21,5 +21,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0015](0015-gc-global-register-allocation.md) | Compile the runtime's GC with the global register allocator | Accepted |
 | [0016](0016-performance-budgets.md) | Adopt the performance budgets | Accepted |
 | [0017](0017-jvm-parser-stack-guard.md) | Bound the parser's recursion on the JVM target by frame depth | Accepted |
+| [0018](0018-native-target-analysis.md) | Analyze a project for a native target | Proposed; would amend [0007](0007-bundled-virgil-library.md) |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
