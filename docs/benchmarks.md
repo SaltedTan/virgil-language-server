@@ -3136,6 +3136,9 @@ Fully exact state totals are informational baselines, not enforced floors.
 Regenerate the inventory after a corpus change with
 `python3 scripts/tolerance-inventory.py --write`, which needs a built server;
 its `--check` default replays the recorded parse verdicts, so it needs none.
+Away from the pin, the tolerance and cursor tolerance inventory checks skip
+with both revisions named, because each inventory records the pinned Virgil's
+sources.
 
 The full run on 2026-10-29 at `ced30385` (server
 `d585307457921dda3bdb19ae0177f5cdc9a0367e119d9b282a321e6edbcab88d`,

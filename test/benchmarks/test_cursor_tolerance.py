@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cursor", ROOT / "scripts/bench-cursor-tolerance.py")
 cursor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cursor)
+spec = importlib.util.spec_from_file_location("pinned", Path(__file__).with_name("pinned.py"))
+pinned = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pinned)
 INVENTORY = json.loads(cursor.INVENTORY.read_text())
 HISTORIES = {h["id"]: h for h in INVENTORY["histories"]}
 THIRD = HISTORIES["third-damaged-body"]
@@ -80,6 +83,7 @@ def records(inventory=INVENTORY, blocks=1):
 class Inventory(unittest.TestCase):
     @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_checked_in_inventory_matches_its_definitions(self):
+        pinned.skip_away_from_pin(self, cursor.bench.corpus)
         self.assertEqual(cursor.frozen(build()), INVENTORY)
 
     def test_inventory_has_the_seventeen_named_histories(self):
@@ -192,6 +196,7 @@ class Inventory(unittest.TestCase):
 
     @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_real_histories_pin_the_compiler_and_its_sources(self):
+        pinned.skip_away_from_pin(self, cursor.bench.corpus)
         self.assertEqual(INVENTORY["virgil_revision"],
                          cursor.bench.corpus.git_revision(cursor.VIRGIL, "rev-parse", "HEAD"))
         files = cursor.states.repair.aeneas_files()
