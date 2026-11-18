@@ -125,7 +125,7 @@ expect "analyze without a target reports unresolved target types" 1 \
     'UnresolvedType: type "Pointer" cannot be found' "" -- \
     analyze "$NATIVE" "${RT[@]}"
 expect "analyze follows a binding into the target's runtime" 0 \
-    'SYS_write @ .*rt/x86-64-linux/LinuxConst\.v3' "" -- \
+    '^.*/test/fixtures/analysis/x86-64-linux/main\.v3:17:[0-9]+-17:[0-9]+ -> [A-Z_]+ SYS_write @ .*/rt/x86-64-linux/LinuxConst\.v3:58:[0-9]+-58:[0-9]+$' "" -- \
     analyze --target=x86-64-linux --bindings "$NATIVE" "${RT[@]}"
 expect "analyze shows a target builtin's type" 0 \
     'main\.v3:14:25-14:32 builtin: Pointer' "" -- \
