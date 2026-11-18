@@ -173,8 +173,10 @@ class Inventory(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "fixture differs from its seed hash"):
             build(Changed)
 
-    @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_a_changed_definition_is_refused(self):
+        pinned.skip_away_from_pin(self, cursor.bench.corpus)
+        if not VENDORED:
+            self.skipTest("vendor/virgil is not initialized")
         changed = copy.deepcopy(INVENTORY)
         changed["histories"][6]["steps"][1]["edits"][0][2] = "def edit(n: bool)"
         built = build()
@@ -182,8 +184,10 @@ class Inventory(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "cursor histories changed"):
                 cursor.frozen(built)
 
-    @unittest.skipUnless(VENDORED, "vendor/virgil is not initialized")
     def test_a_changed_aeneas_source_that_no_step_tracks_is_refused(self):
+        pinned.skip_away_from_pin(self, cursor.bench.corpus)
+        if not VENDORED:
+            self.skipTest("vendor/virgil is not initialized")
         changed = "aeneas/src/types/Int.v3"
         self.assertIn(changed, INVENTORY["aeneas_sources"])
         self.assertFalse(any(changed in h.get("sources", {}) for h in INVENTORY["histories"]))
