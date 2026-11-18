@@ -58,6 +58,8 @@ Release archives and platform VSIX payloads that contain a `virgil-lsp` binary m
 
 `src/os/jvm/V3S_System.java`, the runtime class for Virgil's JVM target, is adapted from [`rt/jvm/src/V3S_System.java`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/rt/jvm/src/V3S_System.java) at Virgil revision `b86f43f102406e94dc2ac4a85909c38ef414e214`, under Apache License 2.0. Its arithmetic, conversion, byte-access, time, `chmod`, and `error` methods are copied unchanged, and `test/jvm/V3SSystemTest.java` checks them against the pinned copy. Its file and output methods are rewritten around a descriptor table, and the host operations after them are this repository's. Its original notice, **Copyright 2008 Google Inc. All rights reserved.**, is preserved in the adapted file. Its compiled classes are in both JVM jars, which the JVM release archive and VSIX redistribute with the Apache License 2.0 and this notice file.
 
+[`docs/testing-notes/formatter-spike.md`](docs/testing-notes/formatter-spike.md) quotes two short excerpts to show the formatter's changes. They are from [`aeneas/src/mach/MachProgram.v3`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/mach/MachProgram.v3#L409-L415) and [`aeneas/src/mach/LinearScanRegAlloc.v3`](https://github.com/titzer/virgil/blob/b86f43f102406e94dc2ac4a85909c38ef414e214/aeneas/src/mach/LinearScanRegAlloc.v3#L513-L516) at Virgil revision `b86f43f102406e94dc2ac4a85909c38ef414e214`, under Apache License 2.0. Both files carry the notice **Copyright 2011 Google Inc. All rights reserved.**
+
 ## Eclipse Temurin Java runtime (JVM assets only)
 
 | Field | Value |
