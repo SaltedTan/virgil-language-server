@@ -688,14 +688,22 @@ if runtime.is_dir():
     runtime_entries = sum(
         1 for name in ("x86-64-linux", "native", "gc") for _ in (runtime / name).iterdir()
     )
-    local_walk_states = 2
-    remaining_visits = runtime_entries - 1
+    patterns = ["Main.v3"] + [f"missing-{index}.v3" for index in range(102)]
+    scans = len(patterns)
+    visits_per_scan = (max_visits - runtime_entries + scans - 1) // scans
+    directory_entries = visits_per_scan - 1
     traversal = root / "target-runtime-traversal"
     if traversal.exists():
         shutil.rmtree(traversal)
     traversal.mkdir()
     (traversal / "Main.v3").write_text("def value = 1;\n", encoding="utf-8")
-    for index in range(max_visits - local_walk_states - remaining_visits - 1):
+    (traversal / ".virgil-lsp.json").write_text(
+        json.dumps({"version": 2, "projects": [
+            {"name": "p", "sources": patterns, "target": "x86-64-linux"},
+        ]}),
+        encoding="utf-8",
+    )
+    for index in range(directory_entries - 2):
         (traversal / f"entry-{index}").touch()
 other = root / "scan-b"
 other.mkdir(exist_ok=True)

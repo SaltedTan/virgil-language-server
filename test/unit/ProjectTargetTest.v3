@@ -212,13 +212,14 @@ def test_target_runtime_limits(t: Tester) {
 }
 def test_target_runtime_traversal(t: Tester) {
 	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/target-runtime-traversal");
-	var fields = "\"name\":\"p\",\"sources\":[\"*.v3\"]";
-	var plain = definition2(Strings.format1("{%s}", fields));
+	var text = System.fileLoad(ProjectFiles.join(base, ".virgil-lsp.json"));
+	var at = targetRange(text);
+	var portable = Strings.format2("%snull%s", Arrays.range(text, 0, at.0), Arrays.range(text, at.1, text.length));
+	var plain = ProjectConfigParser.parse(portable).config.projects[0];
 	var r = expandTarget(base, ROOT, plain);
 	t.asserti(0, r.diagnostics.length);
 	checkPaths(t, [ProjectFiles.join(base, "Main.v3")], 1, r.sources);
-	var text = Strings.format1("{\"version\":2,\"projects\":[{%s,\"target\":\"x86-64-linux\"}]}", fields);
-	var native = ProjectConfigParser.parse(text).config.projects[0], at = targetRange(text);
+	var native = ProjectConfigParser.parse(text).config.projects[0];
 	r = expandTarget(base, ROOT, native);
 	t.asserti(0, r.sources.length);
 	t.asserti(1, r.diagnostics.length);
