@@ -386,8 +386,10 @@ def test_target_version_two(t: Tester) {
 	}
 	// null, or no target, means no target, as in version 1.
 	config = valid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": null"));
+	t.asserti(1, config.projects.length);
 	if (config.projects.length == 1) t.assert(config.projects[0].target == null, "null target");
 	config = valid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"]"));
+	t.asserti(1, config.projects.length);
 	if (config.projects.length == 1) t.assert(config.projects[0].target == null, "absent target");
 	// A name that the supported-target table doesn't list is reported at the
 	// value, naming the supported targets.
