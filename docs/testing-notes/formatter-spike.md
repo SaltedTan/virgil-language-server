@@ -1,6 +1,6 @@
 # Formatter spike: rules measured on Titzer's code (2026-11-18)
 
-This note records the spike behind [ADR-0019](../decisions/0019-formatter.md): a throwaway Python prototype of the formatting rules, not committed, run over Ben Titzer's Virgil and Wizard engine code and over this repository. It gives the counts that settled each rule, the rule bugs that the corpora and a review exposed, and how every remaining change to Titzer's code was classified.
+This note records a spike using a throwaway Python prototype of the formatting rules, run over Ben Titzer's Virgil and Wizard engine code and over this repository. It gives line-diff totals, counts by edit kind, and the rule bugs that the corpora and a review exposed. [ADR-0019](../decisions/0019-formatter.md)
 
 ## Corpora
 
@@ -20,9 +20,9 @@ Only files that the server's parser accepts with the default language options ar
 
 ## How the prototype works
 
-It changes only the whitespace between tokens. Tokens, comments, and string and character literals keep their bytes, except that trailing whitespace after a line comment is removed. Line breaks stay where they are, with two exceptions, each across exactly one line end with only whitespace around it: `else` after a `}` that starts its line joins that line, and a body's `{` on a line of its own joins the line before. Every formatted file was checked for two properties: its token sequence is unchanged, and formatting it again changes nothing. Both held for every file that the prototype formatted. Its lexer couldn't read one file, `vendor/virgil/test/core/parser/multiline00.v3`, which ends inside a block comment; the parser accepts that.
+It changes only whitespace around tokens and comments, including at the start and end of a file. Tokens, comments, and string and character literals keep their bytes, except that trailing whitespace after a line comment is removed. `else` after a `}` that starts its line joins that line, and a body's `{` on a line of its own joins the line before. Each join crosses exactly one line end with only whitespace around it. The other exception to keeping line breaks is at EOF, where the last token or comment gets exactly one line end, as in `gofmt`. Whitespace-only files become empty. Every file the prototype formatted kept its token sequence, and formatting it again changed nothing. Its lexer couldn't read `vendor/virgil/test/core/parser/multiline00.v3`, which ends inside a block comment. The parser accepts that file, and the proposed formatter leaves the comment untouched through EOF.
 
-The rules are those of ADR-0019's decision 3. Each line is classified by the tokens before it:
+ADR-0019's decision 3 specifies the proposed rules. The prototype classifies each line by the tokens before it:
 
 - A **block line** starts a statement, a declaration, an enum case, or a match case or one of its patterns: the line after `;`, `{`, or `}`, after a `,` in the braces of an `enum` or `match`, or after an enum case, whose comma is optional. It gets one tab more than the line where the statement holding its block started, and none at file level. A `}` line gets that line's indentation.
 - A **nested line** is a braceless body on the line after `if (...)`, `while (...)`, `for (...)`, `else`, or a match case's `=>`, or a match case's `=>` that starts a line. It gets one tab more than its statement's line.
@@ -43,9 +43,9 @@ Lines changed, with the files that change:
 | This repository's `src/` | 28 | 0.10% | 10 |
 | This repository's `test/`, without `test/fixtures/` and `test/e2e/` | 7 | 0.02% | 3 |
 
-Lines changed come from a line diff of the input and the output, so a join counts as two lines.
+The totals come from a line diff of each file's input and output. A join counts as two lines, and each blank line removed at EOF counts separately. Kinds A–D count each edit once, at the line where it starts. A line with edits of two kinds counts under both. Even with that overlap, the different units give different sums, for example 441 against 448 in `aeneas/src` and 257 against 258 in `lib`.
 
-The changed lines in Titzer's code, by kind (lines, then files; a line can count in two kinds):
+The counts by edit kind in Titzer's code (lines where edits start, then files):
 
 | Kind | `aeneas/src` | `lib` | `apps` | Wizard engine |
 | --- | ---: | ---: | ---: | ---: |
@@ -78,7 +78,9 @@ Every change in kinds A, B, and D makes a line follow the majority form measured
 - Genuine inconsistencies: a comment one tab short (`ir/Normalization.v3:556`); two stray extra tabs (`ir/SsaNormalizer.v3:1201`, `1219`); match cases at the same indentation as their `match` (`vst/Vst.v3:155`, `wasm/WasmGcTarget.v3:17`, against more than 1,300 indented matches); a file-level method whose body has two tabs (`lib/asm/x86/X86Assembler.v3:23`); a loop at its enclosing loop's indentation inside that loop's braces (`apps/ZiVm/ZiVmTest.v3:204`); section comments one tab in among file-level definitions (`apps/ZiVm/ZiVm.v3:15`); and in Wizard engine, match cases two tabs in (`src/engine/CodeValidator.v3:236`), block bodies two tabs in (`src/engine/x86-64/X86_64Interpreter.v3:1940`, `2147`), a stray tab (`src/modules/wasi/x86-64-linux/WspOneErrors-x86-64-linux.v3:63`), and a braceless body at its `if`'s indentation (`src/monitors/IfMonitor.v3:16`).
 - Judgment calls, two places in 162,185 lines: stacked loops, `for (f in pop.families)` with `for (z in f.zoomers) {` below it at the same indentation (`apps/Zoomers/Zoomers.v3:298`, 10 lines), which the formatter indents as a nested body; and a comment that annotates the continuation line above it (`src/engine/x86-64/X86_64Interpreter.v3:330`), which moves to the indentation of the declaration below it.
 
-Two examples of kind D, from `aeneas/src/mach/MachProgram.v3` and `aeneas/src/mach/LinearScanRegAlloc.v3`:
+Two examples of kind D at Virgil revision `b86f43f1`.
+
+`aeneas/src/mach/MachProgram.v3`, lines 409–415
 
 ```diff
  		if (PrimType.?(t)) return PrimType.!(t).byteSize;
@@ -91,6 +93,8 @@ Two examples of kind D, from `aeneas/src/mach/MachProgram.v3` and `aeneas/src/ma
 -			VARIANT => return if (prog.ir.isEnum(t), V3.getVariantTagType(t).byteSize, refSize);
 +			VARIANT => return if(prog.ir.isEnum(t), V3.getVariantTagType(t).byteSize, refSize);
 ```
+
+`aeneas/src/mach/LinearScanRegAlloc.v3`, lines 513–516
 
 ```diff
  				else next = USE_FIXED;
@@ -152,6 +156,6 @@ The corpora exposed the first ten in early versions of the prototype, and a revi
 9. **`}` and `else` on separate lines** are joined only when the `}` starts its line; a one-line block keeps its `else` on the next line.
 10. **Removing the space before a comma** broke that table in `apps/ZiVm/ZiVm.v3:119`, changing 20 lines; a single space can be part of an alignment, so spaces before a comma are left alone.
 11. **Statement starts that tokens alone misread.** In `for (i = 0; if(c, a, b); if(c, i++, i--))`, the `if`s after `;` are expressions, and in a match case `1 => def g = fun() => if(c, a, b);`, the `if` after the second `=>` is one too. The prototype now ignores a `;` inside parentheses and an `=>` that follows another `=>`, `fun`, or `def` in the same case; the implementation reads each `if`'s kind from the parse tree instead.
-12. **Overlapping edits.** A `}` with trailing spaces before an `else` on the next line got both a trim and a join over the same bytes, and a body's `{` was joined across a blank line, deleting it. Joins now apply only across exactly one line end with only whitespace around it, and each gap gets a single replacement.
+12. **Overlapping edits.** A `}` with trailing spaces before an `else` on the next line got both a trim and a join over the same bytes, and a body's `{` was joined across a blank line, deleting it. Joins now apply only across exactly one line end with only whitespace around it. The proposed formatter combines rules into one edit per changed whitespace run, with separate edits on either side of a comment. The LSP reply merges the edits into one only above 10,000 edits.
 13. **A tab before a layout field's colon**, as in `+0\twasm_func\t: i64;`, was still removed by the colon rule, in 13 lines of Wizard engine's `src/engine/x86-64/X86_64Stack.v3`. Like other alignment, it is kept now, and the counts above no longer include those lines.
 14. **Enum cases without commas.** A case's comma is optional, so `B(2)` on the line after `A(1)` starts a case too.
