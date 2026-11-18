@@ -21,6 +21,7 @@ def X = [
 	T("ProjectConfig:project_names", test_project_names),
 	T("ProjectConfig:empty_sources", test_empty_sources),
 	T("ProjectConfig:target", test_target),
+	T("ProjectConfig:target_version_two", test_target_version_two),
 	T("ProjectConfig:pattern_syntax", test_pattern_syntax),
 	T("ProjectConfig:invalid_patterns", test_invalid_patterns),
 	T("ProjectConfig:compiler_flags", test_compiler_flags),
@@ -35,6 +36,10 @@ def X = [
 // Wraps {project}, the members of one project object, in a valid file.
 def oneProject(project: string) -> string {
 	return Strings.format1("{\"version\": 1, \"projects\": [{%s}]}", project);
+}
+// Wraps {project}, the members of one project object, in a version 2 file.
+def twoProject(project: string) -> string {
+	return Strings.format1("{\"version\": 2, \"projects\": [{%s}]}", project);
 }
 // Parses {text}, failing {t} unless it is a valid project file.
 def valid(t: Tester, text: string) -> ProjectConfig {
@@ -268,11 +273,11 @@ def test_version(t: Tester) {
 	invalid(t, "{\"version\": 1.0, \"projects\": []}", "UnsupportedVersion:1.0");
 	invalid(t, "{\"version\": 4294967297, \"projects\": []}", "UnsupportedVersion:4294967297");
 	// A later version may define other fields, so nothing else is checked.
-	var d = invalid(t, "{\"projects\": 5, \"version\": 2, \"future\": true}", "UnsupportedVersion:2");
-	if (d.length == 1) assertContains(t, d[0].message, "reads version 1 project files");
+	var d = invalid(t, "{\"projects\": 5, \"version\": 3, \"future\": true}", "UnsupportedVersion:3");
+	if (d.length == 1) assertContains(t, d[0].message, "reads version 1 and version 2 project files");
 	// The first version member decides; the repeat is still reported.
 	invalid(t, "{\"version\": 1, \"version\": 2, \"projects\": []}", "DuplicateField:\"version\"");
-	invalid(t, "{\"version\": 2, \"version\": 1, \"projects\": []}", "UnsupportedVersion:2");
+	invalid(t, "{\"version\": 3, \"version\": 1, \"projects\": []}", "UnsupportedVersion:3");
 }
 
 def test_unknown_fields(t: Tester) {
@@ -364,6 +369,48 @@ def test_target(t: Tester) {
 	if (d.length == 1) assertContains(t, d[0].message, "target must be null; version 1 analyzes every project without a target");
 	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": false"), "InvalidValue:false");
 	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": [\"wasm\"]"), "InvalidValue:[\"wasm\"]");
+}
+
+// Version 2 is version 1 except that a project's target may name a supported
+// target. The supported-target table decides which names those are, so a
+// target it doesn't name is an invalid value, and anything else non-null is a
+// wrong type.
+def test_target_version_two(t: Tester) {
+	var text = twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": \"x86-64-linux\"");
+	var config = valid(t, text);
+	t.asserti(1, config.projects.length);
+	if (config.projects.length == 1) {
+		var target = config.projects[0].target;
+		t.assert(target == AnalysisTargets.X86_64_LINUX, "version 2 records the supported target");
+		if (target != null) t.assert_string("x86-64-linux", target.name);
+	}
+	// null, or no target, means no target, as in version 1.
+	config = valid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": null"));
+	if (config.projects.length == 1) t.assert(config.projects[0].target == null, "null target");
+	config = valid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"]"));
+	if (config.projects.length == 1) t.assert(config.projects[0].target == null, "absent target");
+	// A name that the supported-target table doesn't list is reported at the
+	// value, naming the supported targets.
+	for (name in ["jvm", "x86-64-linux-test", ""]) {
+		var d = invalid(t, twoProject(Strings.format1(
+			"\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": \"%s\"", name)),
+			Strings.format1("InvalidValue:\"%s\"", name));
+		if (d.length == 1) {
+			t.assert_string(Strings.format1(
+				"unknown target '%s'; the supported targets are x86-64-linux", name), d[0].message);
+		}
+	}
+	// A non-string, non-null value is a wrong type.
+	var d = invalid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": 1"), "WrongType:1");
+	if (d.length == 1) t.assert_string("target must be a string or null, not a number", d[0].message);
+	d = invalid(t, twoProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": []"), "WrongType:[]");
+	if (d.length == 1) t.assert_string("target must be a string or null, not an array", d[0].message);
+	// Version 1 still accepts only null.
+	d = invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": \"x86-64-linux\""),
+		"InvalidValue:\"x86-64-linux\"");
+	if (d.length == 1) {
+		t.assert_string("target must be null; version 1 analyzes every project without a target", d[0].message);
+	}
 }
 
 def checkPattern(t: Tester, pattern: string, sourceFiles: bool, problem: string) {
