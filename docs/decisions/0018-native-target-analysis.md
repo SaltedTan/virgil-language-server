@@ -1,8 +1,8 @@
 # 0018. Analyze a project for a native target
 
-- Status: Proposed
+- Status: Accepted; amends [ADR-0007](0007-bundled-virgil-library.md)
 - Date: 2026-11-18
-- Discussion: [#489](https://github.com/SaltedTan/virgil-language-server/issues/489)
+- Discussion: [#489](https://github.com/SaltedTan/virgil-language-server/issues/489), [#496](https://github.com/SaltedTan/virgil-language-server/pull/496)
 
 ## Context
 
@@ -68,7 +68,7 @@ A spike (branch `spike/x86-64-target-analysis`, `0a05b786`) passed the registere
 - The release archive grows by the runtime's 12 files: 80,837 bytes, 22,122 bytes compressed, beside the 135,527 bytes of the compressed `lib/`. The worker executable grows by 59,144 bytes, to 978,376, since target configuration becomes reachable.
 - Pin updates gain a step: the wrapper test compares each target's runtime patterns, and the bundle check covers the new files. The [pin update steps](../../CONTRIBUTING.md#updating-the-pinned-virgil-revision) will name both.
 - A client-supplied Virgil root supplies its own `rt/`, as it supplies its own `lib/`, so a checkout at another revision can disagree with the pin about the runtime as about the library ([Compatibility](../compatibility.md)).
-- The work is split into issues under [#489](https://github.com/SaltedTan/virgil-language-server/issues/489): the adapter, the worker protocol and command line, project file version 2, the runtime sources in expansion and analysis, the bundle, and target-aware builtins.
+- The work is split into issues under [#489](https://github.com/SaltedTan/virgil-language-server/issues/489): the adapter, the worker protocol and command line, project file version 2, the runtime sources in expansion and analysis, the bundle, and target-aware builtins. The maintainer accepted the design on 2026-11-18 with the bundle limited to the supported targets' runtime files, as decision 7 says, and with target-aware builtins (decision 6) in the first milestone.
 
 ## Alternatives considered
 

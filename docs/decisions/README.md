@@ -10,7 +10,7 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0004](0004-analysis-worker-process.md) | Run whole-program analysis in a replaceable worker process | Accepted |
 | [0005](0005-project-file-format.md) | Project file format, version 1 | Accepted |
 | [0006](0006-incomplete-code-repair.md) | Semantic context for completion in incomplete code | Accepted; amended by [0009](0009-current-text-repair.md) and [0013](0013-recover-other-files-in-query-analyses.md) |
-| [0007](0007-bundled-virgil-library.md) | Bundled Virgil library and root precedence | Accepted |
+| [0007](0007-bundled-virgil-library.md) | Bundled Virgil library and root precedence | Accepted; amended by [0018](0018-native-target-analysis.md) |
 | [0008](0008-method-body-fallback.md) | Reanalyze last-parseable text for contained method-body edits | Accepted; amended by [0009](0009-current-text-repair.md) and [0013](0013-recover-other-files-in-query-analyses.md) |
 | [0009](0009-current-text-repair.md) | Analyze a broken open file from a bounded repair of its current text | Accepted; amended by [0010](0010-analyze-unrepairable-files.md) and [0013](0013-recover-other-files-in-query-analyses.md) |
 | [0010](0010-analyze-unrepairable-files.md) | Analyze files that bounded repair can't fix | Accepted; amends [0009](0009-current-text-repair.md) |
@@ -21,6 +21,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0015](0015-gc-global-register-allocation.md) | Compile the runtime's GC with the global register allocator | Accepted |
 | [0016](0016-performance-budgets.md) | Adopt the performance budgets | Accepted |
 | [0017](0017-jvm-parser-stack-guard.md) | Bound the parser's recursion on the JVM target by frame depth | Accepted |
-| [0018](0018-native-target-analysis.md) | Analyze a project for a native target | Proposed; would amend [0007](0007-bundled-virgil-library.md) |
+| [0018](0018-native-target-analysis.md) | Analyze a project for a native target | Accepted; amends [0007](0007-bundled-virgil-library.md) |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
