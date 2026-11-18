@@ -49,7 +49,7 @@ cd virgil-language-server
 make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs available tests
 ```
 
-Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables. New release archives also include `virgil/` with the pinned library and the `x86-64-linux` runtime sources: keep it beside the executables to analyze `virgilDependencies` under `lib/` and `x86-64-linux` target projects without a separate checkout. An optional client root overrides the bundle; other sources outside `lib/` still need a checkout ([root selection](docs/configuration.md#the-virgil-root)). [Releases](docs/releasing.md) describes the release archives, how to verify them, and how to install them.
+When moving the executables, keep `virgil-lsp-worker` beside `virgil-lsp`. For a release install, keep `virgil/` beside them too. Its pinned library and `x86-64-linux` runtime sources let projects use those dependencies without a separate Virgil checkout. See [The Virgil root](docs/configuration.md#the-virgil-root) for client overrides and [Releases](docs/releasing.md) for installation and verification.
 
 Try the current development command:
 
@@ -63,7 +63,7 @@ See [docs/development.md](docs/development.md) for details.
 
 ## Editor setup
 
-For VS Code, [install the VSIX for your workspace platform](clients/vscode/README.md#installing-from-a-vsix): `linux-x64`, `darwin-arm64` (requires Rosetta 2), or `darwin-x64`. It includes the server, worker, and pinned library. No separate server installation or path setting is needed. The universal VSIX is available for external-server installations.
+For VS Code, [install the VSIX for your workspace platform](clients/vscode/README.md#installing-from-a-vsix): `linux-x64`, `darwin-arm64` (requires Rosetta 2), or `darwin-x64`. It includes the server, worker, and Virgil source bundle. No separate server installation or path setting is needed. The universal VSIX is available for external-server installations.
 
 For Neovim, LazyVim, Emacs, or an external VS Code server, install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
 

@@ -174,7 +174,7 @@ CI type-checks and tests the client, and runs the Extension Host suite from sour
 
 `npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.5.vsix`; `npx vsce ls` lists what the next package would contain.
 
-To package a platform VSIX from a tested archive, run from the repository root after `npm ci` in `clients/vscode`:
+To package a platform VSIX from a tested archive, use a checkout that meets the [release bundle verification requirements](../../docs/releasing.md#what-a-release-contains). Run from the repository root after `npm ci` in `clients/vscode`:
 
 ```sh
 scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.6-x86-64-linux.tar.gz --out build/vsix

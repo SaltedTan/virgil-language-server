@@ -11,7 +11,7 @@ Every release is a GitHub **prerelease**. Before v1.0, use tags such as `vX.Y.Z-
 | `virgil-lsp-<version>-x86-64-linux.tar.gz` | Linux x86-64; WSL 2 on x86-64 Windows on a best-effort basis |
 | `virgil-lsp-<version>-x86-64-darwin.tar.gz` | macOS. This is the Intel (`x86-64-darwin`) build, which Apple Silicon runs under Rosetta 2; it is not a native arm64 build ([ADR-0003](decisions/0003-supported-platforms.md)). |
 | `virgil-lsp-<version>-<target>.manifest.json` | A copy of each archive's build manifest |
-| `virgil-lsp-vscode-<extension version>-<target>.vsix` | Bundled server, worker, and library for `linux-x64`, `darwin-arm64` (Rosetta 2), or `darwin-x64` |
+| `virgil-lsp-vscode-<extension version>-<target>.vsix` | Bundled server, worker, and Virgil sources for `linux-x64`, `darwin-arm64` (Rosetta 2), or `darwin-x64` |
 | `virgil-lsp-vscode-<extension version>.vsix` | The VS Code extension, a preview, for every platform. It holds no server. |
 | `SHA256SUMS` | The SHA-256 of every other asset, in `sha256sum` format |
 
@@ -33,14 +33,18 @@ Each archive holds one directory, `virgil-lsp-<version>-<target>/`, with:
 | `sourceRevision` | The full commit SHA of the server source |
 | `dirty` | `true` only for local builds with `--allow-dirty`; releases are always `false` |
 | `virgilRevision` | The full commit SHA of the Virgil checkout compiled into the server |
-| `library` | `revision`, `files` (SHA-256s keyed by path relative to `virgil/`, including `LICENSE` and `REVISION`), and `treeSha256` |
+| `library` | `revision`, `files` (SHA-256s keyed by path relative to `virgil/`, covering the library and runtime sources, `LICENSE`, and `REVISION`), and `treeSha256` |
 | `workerHeap` | The analysis worker's heap size, `WORKER_HEAP` in the `Makefile` |
 | `compiler` | `path`, the Aeneas binary that compiled the executables, relative to the Virgil checkout when inside it and otherwise absolute, and its `sha256` |
 | `sha256` | The SHA-256 of `virgil-lsp` and `virgil-lsp-worker`, and in a JVM archive also of `virgil-lsp.jar` and `virgil-lsp-worker.jar` |
 | `platform` | JVM archives only: where the archive runs, `arm64-darwin` |
 | `runtime` | JVM archives only: the bundled Java runtime. `backend` (`jvm`), `vendor` (`Eclipse Adoptium`), `distribution` (`Temurin`), `version` (such as `21.0.13+9`), `javaVersion`, `os` and `arch` (`Darwin`, `aarch64`), `modules` (`["java.base"]`), `jdk` (the `name` and `sha256` of the JDK archive whose modules were linked), `source` (the `name` and `sha256` of the runtime's source archive), `jlink` (the `name` and `sha256` of the JDK that ran `jlink`, and its `options`), `files` (SHA-256s keyed by path relative to `runtime/`), and `treeSha256`, computed as for the library |
 
-The bundle tree digest is SHA-256 of LF-terminated `<sha256>  <path>` lines sorted by path relative to `virgil/`, matching the [result-event tree digest](../test/e2e/RESULTS.md#result-events) for regular files. Packaging rejects symlinks and nonregular library and runtime entries. The runtime patterns come from the supported-target table, [`AnalysisTargets.v3`](../src/analysis/AnalysisTargets.v3), which `scripts/release-library.py` reads, ignoring comments and refusing any declaration of another shape. Each runtime pattern has the form `rt/<directory>/*.v3`. As in the `bin/v3c-<target>` wrappers' shell globs, the wildcard skips names that start with `.`. Packaging stages the runtime sources from the Virgil commit's Git objects. Archives sort members and normalize ownership, mtimes to the server commit time, and the gzip header. `scripts/check-release.sh --archive <archive>` verifies the layout, entry types, bundle files and license hashes, tree digest, and pinned revision before extraction. It also requires the bundle's `rt/` files to match the paths and SHA-256s selected in the pinned Virgil commit and to have mode `0644`. `scripts/package-vsix.py` and `scripts/check-vsix.py` apply the same comparison to the archive that a VSIX bundles. These checks take the revision from the server's `vendor/virgil` gitlink and read its Git objects from the checkout selected by `VIRGIL`, which defaults to `vendor/virgil`. Relative paths are resolved from the server repository root.
+The bundle tree digest is SHA-256 of LF-terminated `<sha256>  <path>` lines sorted by path relative to `virgil/`, matching the [result-event tree digest](../test/e2e/RESULTS.md#result-events) for regular files. Archives sort members and normalize ownership, mtimes to the server commit time, and the gzip header.
+
+The runtime patterns come from the supported-target table, [`AnalysisTargets.v3`](../src/analysis/AnalysisTargets.v3), which `scripts/release-library.py` reads. Each pattern has the form `rt/<directory>/*.v3` and must select at least one regular file in the Virgil commit. As in the `bin/v3c-<target>` wrappers' shell globs, the wildcard skips names that start with `.`. Packaging stages the runtime bytes from the original Git blobs, ignoring Git replacement objects. A sparse checkout can omit the selected runtime directories and files if it still provides `lib/`, `rt/LICENSE`, and the build inputs. Packaging rejects symlinks and nonregular entries in `lib/` and among the runtime sources. It also rejects symlinked runtime directories and nonregular matches present in the checkout.
+
+`scripts/check-release.sh --archive <archive>` verifies the layout, entry types, bundle files and license hashes, tree digest, and pinned revision before extraction. It requires the bundle's `rt/` files to match the paths and SHA-256s selected in the pinned Virgil commit and to have permission bits of `0644`, even if the archive's manifest agrees with a different runtime inventory. `scripts/package-vsix.py` and `scripts/check-vsix.py` apply the same runtime checks to the archive that a platform VSIX bundles. These checks read the `vendor/virgil` gitlink from the server repository's `HEAD` and look up the original objects in the Virgil checkout selected by `VIRGIL` (default `vendor/virgil`). Relative paths are resolved from the server repository root. The checkout must contain the pinned commit and its runtime objects.
 
 The executables are unsigned and not notarized. Nothing is published to the VS Code Marketplace or a package manager.
 
@@ -296,7 +300,7 @@ The editors start `virgil-lsp --stdio`:
 
 ### VS Code extension
 
-Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host: `linux-x64`, `darwin-arm64`, or `darwin-x64`. The platform VSIX includes the tested archive's server, worker, and pinned library. Both Darwin packages contain an Intel server, with Rosetta 2 required on Apple Silicon. Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
+Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace host: `linux-x64`, `darwin-arm64`, or `darwin-x64`. The platform VSIX includes the tested archive's server, worker, and [Virgil source bundle](#what-a-release-contains). Both Darwin packages contain an Intel server, with Rosetta 2 required on Apple Silicon. Intel macOS remains best effort. The universal `virgil-lsp-vscode-<extension version>.vsix` contains no server and needs a compatible external server. Native Windows remains unsupported; use WSL 2.
 
 With Remote-SSH or WSL, install the package for the remote host in the remote window. VS Code or the extension's output channel rejects a mismatched bundle. Download and verify it against `SHA256SUMS`, then install it:
 
@@ -310,9 +314,9 @@ or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update a
 
 ### The Virgil root
 
-New archives include the complete pinned `lib/` and the supported targets' runtime sources under executable-adjacent `virgil/`. With no client root, projects selecting `lib/util/*.v3` and projects with the `x86-64-linux` [target](configuration.md#target) work without a checkout. See [The Virgil root](configuration.md#the-virgil-root) for root selection and errors.
+The [release bundle](#what-a-release-contains) beside the executable supplies the library and target runtime sources. With no client root, projects selecting `lib/util/*.v3` and projects with the `x86-64-linux` [target](configuration.md#target) can use this bundle. See [The Virgil root](configuration.md#the-virgil-root) for root selection and errors.
 
-Projects selecting other sources outside `lib/`, such as `aeneas/` or files of `rt/` that the bundle lacks, and development builds without a bundle still need a checkout. Use the Virgil revision that `virgil-lsp --version` prints:
+For projects that need a checkout, use the Virgil revision that `virgil-lsp --version` prints:
 
 ```sh
 git clone https://github.com/titzer/virgil.git ~/src/virgil
@@ -320,4 +324,4 @@ git -C ~/src/virgil checkout <virgil revision>
 export VIRGIL_LOC=~/src/virgil    # or set virgil.virgilRoot in VS Code
 ```
 
-With Remote-SSH or WSL, the server's `virgil/` library must be on the same machine as the server: install the whole archive on the remote machine or in the WSL distribution, or the platform VSIX for that host. Any optional checkout and client root must also be on that machine.
+With Remote-SSH or WSL, install the whole archive or the platform VSIX on the remote host or in the WSL distribution. Put any optional checkout and client root on the same host as the server.
