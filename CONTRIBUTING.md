@@ -120,7 +120,15 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    entry of `src/analysis/AnalysisTargets.v3` to match
    ([Analysis targets](docs/architecture.md#analysis-targets)). For any other
    change, such as a new option, check whether the parser or verifier reads it
-   before updating the test's expected text.
+   before updating the test's expected text. Member completion lists builtin
+   members from fixed lists in `src/analysis/AnalysisMembers.v3`, and a name
+   that the new compiler adds would verify without being offered, with no test
+   failing. So re-read, at the old and new revisions, the lookups that the
+   lists come from, for new or removed names: `MethodEnv`'s builtin member
+   lookups for `AnalysisBuiltinMembers`, and for a target's members,
+   `MethodEnv.lookupPointerTypeMember` and `lookupPointerExprMember`,
+   `Kernel_TypeCon`, `CiRuntime_TypeCon.lookupMember`, and `CiRuntimeModule`
+   ([Member completion](docs/architecture.md#member-completion)).
 5. Review the language options as [Project file compatibility review](#project-file-compatibility-review) says.
 6. Check that every record of the pin agrees on the new full SHA, as the [support policy](docs/compatibility.md#support-policy) requires:
    - `build/virgil-lsp --version`, whose `virgil revision` comes from the checkout;

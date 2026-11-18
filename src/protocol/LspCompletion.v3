@@ -339,7 +339,7 @@ class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
 	def CLASS_KIND = 7;	// CompletionItemKind.Class, for builtin types
-	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System
+	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System and a target's components
 	// The client's textDocument.completion.completionItemKind.
 	var clientKinds = LspSymbolKind.completions(null);
 	// Whether the client sets
@@ -441,11 +441,14 @@ class LspCompletion extends LspQueryRequests {
 			groups.put(AnalysisScopeOrder.group(AnalysisDeclKind.PARAMETER));
 		}
 		if ((r.kinds & (AnalysisScopeKinds.VALUES | AnalysisScopeKinds.TYPES)) != 0) {
-			for (name in AeneasAdapter.builtinTypes(r.context.definition.compilerArgs)) {
+			var definition = r.context.definition, components = AeneasAdapter.builtinComponents(definition.target);
+			for (name in AeneasAdapter.builtinTypes(definition.compilerArgs, definition.target)) {
 				if (names.has(name) || filtered(name)) continue;
 				declared.put(null);
 				labels.put(name);
-				kinds.put(if(Strings.equal(name, "System"), MODULE_KIND, CLASS_KIND));
+				var module = false;
+				for (c in components) module = module || Strings.equal(c, name);
+				kinds.put(if(module, MODULE_KIND, CLASS_KIND));
 				details.put(null);
 				levels.put(last + 1);
 				groups.put(AnalysisScopeOrder.BUILTIN_GROUP);

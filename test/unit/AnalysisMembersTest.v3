@@ -24,6 +24,8 @@ def X = [
 	T("AnalysisMembers:builtins", test_builtins),
 	T("AnalysisMembers:builtins_verify", test_builtins_verify),
 	T("AnalysisMembers:system", test_system),
+	T("AnalysisMembers:target", test_target),
+	T("AnalysisMembers:target_builtins_verify", test_target_builtins_verify),
 	T("AnalysisMembers:this", test_this),
 	T("AnalysisMembers:descriptors", test_descriptors),
 	T("AnalysisMembers:type_names", test_type_names),
@@ -453,6 +455,8 @@ def test_builtins_verify(t: Tester) {
 	];
 	var listed = 0;
 	for (b in AnalysisBuiltinMembers.LIST) {
+		// A target's are checked with it (test_target_builtins_verify).
+		if (targetReceiver(b.receiver)) continue;
 		var found = false;
 		for (u in uses) {
 			if (u.0 != b.receiver || !Strings.equal(u.1, b.name)) continue;
@@ -474,6 +478,178 @@ def test_builtins_verify(t: Tester) {
 		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN,
 			Strings.format2("enum Flag { A, B }\n%sdef f<T>() { %s }\n", LAYOUT, text))], [], null, false);
 		t.assert(!a.verified, Strings.format1("%s verifies", text));
+	}
+}
+// The names of CiRuntime's addresses (CiRuntimeModule).
+def addresses() -> Array<string> {
+	var names = Vector<string>.new();
+	CiRuntimeModule.map.apply(fun (name: string, a: CiRuntime_Address) { names.put(name); });
+	return names.extract();
+}
+// The receivers whose members only a target installs.
+def targetReceiver(r: AnalysisMemberReceiver) -> bool {
+	return r == AnalysisMemberReceiver.POINTER_TYPE || r == AnalysisMemberReceiver.POINTER || r == AnalysisMemberReceiver.CIRUNTIME;
+}
+// The x86-64-linux target's runtime sources, read once.
+var targetRuntime: Array<AnalysisSource>;
+def runtimeOf(t: Tester) -> Array<AnalysisSource> {
+	if (targetRuntime == null) targetRuntime = AnalysisTargetFiles.runtimeSources(t, AnalysisTargets.X86_64_LINUX);
+	return targetRuntime;
+}
+// {text} analyzed for x86-64-linux with its runtime, with language options
+// {options}, kept for scope queries if {scoped}.
+def analyzeTarget(t: Tester, text: string, options: Array<string>, scoped: bool) -> ProgramAnalysis {
+	var runtime = runtimeOf(t);
+	if (runtime == null) return null;
+	var sources = Arrays.concat([AnalysisSource.new(MAIN, text)], runtime), target = AnalysisTargets.X86_64_LINUX;
+	return if(scoped, AeneasAdapter.analyzeForScope(sources, options, target, false),
+		AeneasAdapter.analyzeProgram(sources, options, target, false));
+}
+// The members at the "$" in {marked}, analyzed for x86-64-linux.
+def targetMembers(t: Tester, marked: string) -> AnalysisMemberAnswer {
+	var m = unmark(marked), a = analyzeTarget(t, m.0, [], true);
+	return if(a != null, a.membersAt(MAIN, m.1, ""));
+}
+def describe(m: AnalysisMemberAnswer) -> string {
+	if (m == null) return null;
+	var buf = StringBuilder.new();
+	for (i < m.names.length) buf.put3("%s %s %s\n", m.names[i], m.kinds[i].name, if(m.details[i] != null, m.details[i], "-"));
+	return buf.toString();
+}
+// In an analysis for x86-64-linux, a pointer value offers load, store, and
+// cmpswp; the Pointer type its constants and functions; Linux its syscall;
+// and CiRuntime its addresses and other names. AnyRef has none, and without
+// the target none of these receivers resolves, so none is offered.
+def test_target(t: Tester) {
+	var pointerValue = "cmpswp/0 load/0 store/0";
+	var pointerType = "NULL/0 SIZE/0 atContents/0 atElement/0 atEnd/0 atField/0 atLength/0 atObject/0 atRef/0 cmpswp/0 load/0 store/0 view/0";
+	var value = "def f(p: Pointer) { var x = p.$load<int>(); }\n";
+	t.assert_string(pointerValue, render(targetMembers(t, value)));
+	t.assert_string(lines([
+		"cmpswp METHOD def cmpswp<T>(expected: T, value: T) -> bool",
+		"load METHOD def load<T>() -> T",
+		"store METHOD def store<T>(value: T)"]), describe(targetMembers(t, value)));
+	var onType = "def f() { var x = Pointer.$NULL; }\n";
+	t.assert_string(pointerType, render(targetMembers(t, onType)));
+	var d = describe(targetMembers(t, onType));
+	for (line in ["NULL FIELD def NULL: Pointer\n", "SIZE FIELD def SIZE: int\n",
+			"load METHOD def load<T>(pointer: Pointer) -> T\n", "atContents METHOD def atContents<T>(range: Range<T>) -> Pointer\n",
+			"atField METHOD def atField(receiver.field) -> Pointer\n"]) {
+		t.assert(contains(d, line), Strings.format2("%s not in\n%s", line, d));
+	}
+	for (sample in [
+		("p.$load<Box>()", pointerValue),
+		("Pointer.$load<Box>(p)", pointerType)
+	]) {
+		var m = unmark(Strings.format1("class Box { var f: int; }\ndef f(p: Pointer) { var x = Pointer.atField(%s.f); }\n", sample.0));
+		var a = analyzeTarget(t, m.0, [], true);
+		if (a == null) return;
+		t.assert(a.verified, m.0);
+		t.assert_string(sample.1, render(a.membersAt(MAIN, m.1, "")));
+	}
+	var linux = "def f() { var x = Linux.$syscall(1, ()); }\n";
+	t.assert_string("syscall METHOD def syscall<T>(number: int, args: T) -> (long, long)\n", describe(targetMembers(t, linux)));
+	// CiRuntime: each address of CiRuntimeModule, a constant Pointer, and
+	// each of the names the verifier examples use.
+	var ci = targetMembers(t, "def f() { var x = CiRuntime.$CODE_START; }\n");
+	var expected = Vector<string>.new();
+	expected.puta(addresses());
+	for (u in targetMemberUses()) if (u.0 == AnalysisMemberReceiver.CIRUNTIME) expected.put(u.1);
+	if (ci == null) return t.fail("no CiRuntime members");
+	t.asserti(expected.length, ci.names.length);
+	for (name in expected.extract()) {
+		var found = false;
+		for (n in ci.names) found = found || Strings.equal(n, name);
+		t.assert(found, name);
+	}
+	d = describe(ci);
+	for (line in ["CODE_START FIELD def CODE_START: Pointer\n", "heapCurLoc FIELD def heapCurLoc: Pointer\n",
+			"STACK_SIZE FIELD def STACK_SIZE: int\n", "AUX_TAG_MASK FIELD def AUX_TAG_MASK: u64\n",
+			"getAuxTag METHOD def getAuxTag(pointer: Pointer) -> u64\n", "callerIp METHOD def callerIp() -> Pointer\n",
+			"forgeRange METHOD def forgeRange<T>(start: Pointer, length: int) -> Range<T>\n"]) {
+		t.assert(contains(d, line), Strings.format2("%s not in\n%s", line, d));
+	}
+	// AnyRef, as a type or a value, has no members.
+	t.assert_string("", render(targetMembers(t, "def f() { var x = AnyRef.$y; }\n")));
+	t.assert_string("", render(targetMembers(t, "def f(a: AnyRef) { var x = a.$y; }\n")));
+	// Without the target, none of these names resolves.
+	for (marked in [value, onType, linux, "def f() { var x = CiRuntime.$CODE_START; }\n"]) {
+		t.assert_string("", render(membersAny(marked)));
+	}
+}
+def targetMemberUses() -> Array<(AnalysisMemberReceiver, string, string)> {
+	var P = AnalysisMemberReceiver.POINTER_TYPE, V = AnalysisMemberReceiver.POINTER, C = AnalysisMemberReceiver.CIRUNTIME;
+	return [
+		(P, "NULL", "var x = Pointer.NULL;"),
+		(P, "SIZE", "var x = Pointer.SIZE;"),
+		(P, "atContents", "var x = Pointer.atContents(\"ab\");"),
+		(P, "atElement", "var a = \"ab\"; var x = Pointer.atElement(a[0 ...], 1);"),
+		(P, "atEnd", "var x = Pointer.atEnd(Box.new());"),
+		(P, "atField", "var b = Box.new(); var x = Pointer.atField(b.f);"),
+		(P, "atLength", "var x = Pointer.atLength([1]);"),
+		(P, "atObject", "var x = Pointer.atObject(Box.new());"),
+		(P, "atRef", "var x = Pointer.atRef(Ref<Header>.at(Array<byte>.new(8), 0));"),
+		(P, "cmpswp", "var x = Pointer.cmpswp<int>(Pointer.NULL, 0, 1);"),
+		(P, "load", "var x = Pointer.load<int>(Pointer.NULL);"),
+		(P, "store", "Pointer.store<int>(Pointer.NULL, 1);"),
+		(P, "view", "var x = Pointer.view(0uL);"),
+		(V, "cmpswp", "var p = Pointer.NULL; var x = p.cmpswp<int>(0, 1);"),
+		(V, "load", "var p = Pointer.NULL; var x = p.load<int>();"),
+		(V, "store", "var p = Pointer.NULL; p.store<int>(1);"),
+		(C, "AUX_TAG_MASK", "var x = CiRuntime.AUX_TAG_MASK;"),
+		(C, "AUX_TAG_WIDTH", "var x = CiRuntime.AUX_TAG_WIDTH;"),
+		(C, "FEATURE_ALIGN_EX_ENTRIES", "var x = CiRuntime.FEATURE_ALIGN_EX_ENTRIES;"),
+		(C, "FEATURE_DESCRIPTORS", "var x = CiRuntime.FEATURE_DESCRIPTORS;"),
+		(C, "FEATURE_FRAME_POINTER", "var x = CiRuntime.FEATURE_FRAME_POINTER;"),
+		(C, "FEATURE_MIXED_ARRAYS", "var x = CiRuntime.FEATURE_MIXED_ARRAYS;"),
+		(C, "FEATURE_TABLE_REL_ADDR", "var x = CiRuntime.FEATURE_TABLE_REL_ADDR;"),
+		(C, "FEATURE_TAGGED_REFS", "var x = CiRuntime.FEATURE_TAGGED_REFS;"),
+		(C, "STACK_SIZE", "var x = CiRuntime.STACK_SIZE;"),
+		(C, "callerIp", "var x = CiRuntime.callerIp();"),
+		(C, "callerSp", "var x = CiRuntime.callerSp();"),
+		(C, "clearAuxTag", "var x = CiRuntime.clearAuxTag(Pointer.NULL);"),
+		(C, "forgeClosure", "var x = CiRuntime.forgeClosure<Box, int, int>(Pointer.NULL, Box.new());"),
+		(C, "forgeRange", "var x = CiRuntime.forgeRange<byte>(Pointer.NULL, 0);"),
+		(C, "getAuxTag", "var x = CiRuntime.getAuxTag(Pointer.NULL);"),
+		(C, "getRefTag", "var x = CiRuntime.getRefTag(Pointer.NULL);"),
+		(C, "isOop", "var x = CiRuntime.isOop(Pointer.NULL);"),
+		(C, "returnTo", "CiRuntime.returnTo<int>(Pointer.NULL, 0);"),
+		(C, "setAuxTag", "var x = CiRuntime.setAuxTag<u1>(Pointer.NULL, 0);"),
+		(C, "setDescriptorExtension", "CiRuntime.setDescriptorExtension(DescribedDescriptor.new(), 0, 0);"),
+		(C, "setRefTag", "var x = CiRuntime.setRefTag<u1>(Pointer.NULL, 1);"),
+		(C, "unpackClosure", "var f: int -> int; var x = CiRuntime.unpackClosure<Box, int, int>(f);")
+	];
+}
+// Each target member of the list verifies where the query offers it, as do
+// Linux.syscall and each of CiRuntime's addresses, in one program for
+// x86-64-linux that the verifier accepts whole; a sample of names that the
+// target's lookups lack does not verify.
+def test_target_builtins_verify(t: Tester) {
+	var uses = targetMemberUses();
+	var text = StringBuilder.new().puts(LAYOUT).puts("class Box { var f: int; }\n")
+		.puts("class DescribedDescriptor describes Described { }\nclass Described descriptor DescribedDescriptor { }\n");
+	var count = 0, listed = 0;
+	for (b in AnalysisBuiltinMembers.LIST) {
+		if (!targetReceiver(b.receiver)) continue;
+		listed++;
+		var found = false;
+		for (u in uses) if (u.0 == b.receiver && Strings.equal(u.1, b.name)) found = true;
+		if (!found) t.fail2("no use of %s.%s", b.receiver.name, b.name);
+	}
+	t.asserti(uses.length, listed);
+	for (u in uses) text.put2("def u%d() { %s }\n", count++, u.2);
+	text.put1("def u%d() { var x = Linux.syscall(1, (2, 3)); }\n", count++);
+	for (name in addresses()) text.put2("def u%d() { var x = CiRuntime.%s; }\n", count++, name);
+	// setDescriptorExtension needs a class with a descriptor.
+	var a = analyzeTarget(t, text.toString(), ["-lang:descriptors"], false);
+	if (a == null) return;
+	for (d in a.diagnostics) t.fail1("unexpected %s", d.toString());
+	t.assert(a.verified, "the target's members verify");
+	for (use in ["var p = Pointer.NULL; var x = p.SIZE;", "var p = Pointer.NULL; var x = p.atEnd;", "var x = Pointer.length;",
+			"var x = Linux.open;", "var x = CiRuntime.nothing;",
+			"var f = Pointer.atField;", "var x = Pointer.atField(3);", "var x = CiRuntime.load<int>(Pointer.NULL);"]) {
+		a = analyzeTarget(t, Strings.format1("def f() { %s }\n", use), [], false);
+		if (a != null) t.assert(!a.verified, Strings.format1("%s verifies", use));
 	}
 }
 def test_system(t: Tester) {

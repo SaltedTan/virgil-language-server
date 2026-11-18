@@ -14,6 +14,7 @@ def X = [
 	T("AnalysisScope:unbraced_bodies", test_unbraced_bodies),
 	T("AnalysisScope:deep_nesting", test_deep_nesting),
 	T("AnalysisScope:excluded_shadowing", test_excluded_shadowing),
+	T("AnalysisScope:hidden_target_builtins", test_hidden_target_builtins),
 	T("AnalysisScope:matches", test_matches),
 	T("AnalysisScope:lambdas", test_lambdas),
 	T("AnalysisScope:type_parameters", test_type_parameters),
@@ -415,6 +416,30 @@ def test_excluded_shadowing(t: Tester) {
 	if (both != null) t.asserti(0, Arrays.filter(both.hiddenBuiltins, fun (name: string) => Strings.equal(name, "int")).length);
 }
 
+def test_hidden_target_builtins(t: Tester) {
+	var portable = unmark("def f(Pointer: int, System: int) -> int { return $Pointer + System; }");
+	var native = unmark("def f(Pointer: int) -> int { return $Pointer; }");
+	var target = AnalysisTargets.X86_64_LINUX;
+	var runtime = AnalysisTargetFiles.runtimeSources(t, target);
+	if (runtime == null) return;
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, portable.0)], [], null, false);
+	var b = AeneasAdapter.analyzeForScope(Arrays.concat([AnalysisSource.new(MAIN, native.0)], runtime), [], target, false);
+	t.assert(a.verified, "portable fixture verifies");
+	t.assert(b.verified, "target fixture verifies");
+	for (kinds in [V, TY, V | TY]) {
+		var p = a.scopeAt(MAIN, portable.1, kinds, "");
+		var n = b.scopeAt(MAIN, native.1, kinds, "");
+		if (p == null || n == null) return t.fail("no scope answer");
+		t.asserti(if(kinds == V, 1, 0), p.hiddenBuiltins.length);
+		t.asserti(if(kinds == V, 1, 0), n.hiddenBuiltins.length);
+		if (kinds == V && p.hiddenBuiltins.length == 1 && n.hiddenBuiltins.length == 1) {
+			t.assert_string("System", p.hiddenBuiltins[0]);
+			t.assert_string("Pointer", n.hiddenBuiltins[0]);
+		}
+		t.asserti(1, Arrays.filter(n.declarations, fun (d: AnalysisDeclaration) => Strings.equal(d.name, "System")).length);
+	}
+}
+
 def test_matches(t: Tester) {
 	var variant = "type Shape {\n\tcase Circle(r: int);\n\tcase Square(side: int);\n\tcase Empty;\n}\n";
 	// A case with one pattern sees its parameters; a sibling case does not.
@@ -778,7 +803,7 @@ def test_implicit_members(t: Tester) {
 // The builtin integer types are those that Aeneas's type lookup accepts: iN
 // and uN for each width from 1 to 64, checked here against the verifier.
 def test_builtin_types(t: Tester) {
-	var names = AeneasAdapter.builtinTypes([]);
+	var names = AeneasAdapter.builtinTypes([], null);
 	var count = 0;
 	for (name in names) {
 		if (name.length < 2 || (name[0] != 'i' && name[0] != 'u') || name[1] < '0' || name[1] > '9') continue;

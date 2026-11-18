@@ -20,7 +20,7 @@ component LspImplementation {
 	def answer(at: LspSnapshotPosition, offset: int, limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
 		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
 		if (decl == null) {
-			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options)) {
+			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options, at.ctx.definition.target)) {
 				return (false, JsonRpcReply.Result(JsonValue.Null));
 			}
 			return (true, JsonRpcReply.Result(JsonValue.JArray([])));
@@ -58,16 +58,16 @@ component LspImplementation {
 	// start, such as "int" in "var n: int" or in "Array<int>". The occurrence
 	// index records no use there, since the type has no source declaration,
 	// so the name is checked against the builtin types that completion offers
-	// with the project's compiler options {options} (AeneasAdapter.builtinTypes),
-	// and its place in {text} with completion's scanner. A source type or type
-	// parameter of that name that verification resolved would be an
-	// occurrence instead.
-	def builtinTypeName(text: Array<byte>, offset: int, options: Array<string>) -> bool {
+	// with the project's compiler options {options} and target {target}
+	// (AeneasAdapter.builtinTypes), and its place in {text} with completion's
+	// scanner. A source type or type parameter of that name that verification
+	// resolved would be an occurrence instead.
+	def builtinTypeName(text: Array<byte>, offset: int, options: Array<string>, target: AnalysisTarget) -> bool {
 		if (offset < 0 || offset >= text.length || !nameByte(text[offset])) return false;
 		var begin = offset, end = offset + 1;
 		while (begin > 0 && nameByte(text[begin - 1])) begin--;
 		while (end < text.length && nameByte(text[end])) end++;
-		if (!builtinType(AeneasAdapter.builtinTypes(options), text, begin, end)) return false;
+		if (!builtinType(AeneasAdapter.builtinTypes(options, target), text, begin, end)) return false;
 		var context = LspCursorScanner.new(text).scan(begin);
 		return context.place == LspCursorPlace.CODE && (context.syntax & LspCursorSyntax.TYPE) != 0;
 	}

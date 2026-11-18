@@ -9,14 +9,24 @@
 // which the verifier reads as the constant CiRuntime.STACK_SIZE. The rest of
 // the server sees only this entry; the adapter finds the Aeneas target and
 // applies the stack size (AeneasAdapter.analyzeProgram).
-class AnalysisTarget(name: string, aeneasName: string, runtimePatterns: Array<string>, stackSize: string) { }
+// {builtinTypes} are the names, in byte order, of the types that the Aeneas
+// target's configureProgram installs, which a name resolves to, and
+// {builtinComponents} those of them that are components, whose members the
+// verifier binds by name (Member_TypeCon); AeneasAdapter.builtinTypes lists
+// them for completion and implementation (ADR-0018, decision 6).
+class AnalysisTarget(name: string, aeneasName: string, runtimePatterns: Array<string>, stackSize: string,
+	builtinTypes: Array<string>, builtinComponents: Array<string>) { }
 
 // The supported targets. AnalysisTargets:wrapper_runtime_files compares each
 // entry's runtime patterns, Aeneas target, and stack size with its whole
-// wrapper at the pin.
+// wrapper at the pin, and AnalysisTargets:builtin_types its builtin names with
+// those that its Aeneas target installs.
 component AnalysisTargets {
+	// MachModule installs Pointer and AnyRef, LinuxTarget.configureProgram
+	// the Linux kernel component, and MachRuntime the CiRuntime component.
 	def X86_64_LINUX = AnalysisTarget.new("x86-64-linux", "x86-64-linux",
-		["rt/x86-64-linux/*.v3", "rt/native/*.v3", "rt/gc/*.v3"], "2m");
+		["rt/x86-64-linux/*.v3", "rt/native/*.v3", "rt/gc/*.v3"], "2m",
+		["AnyRef", "CiRuntime", "Linux", "Pointer"], ["CiRuntime", "Linux"]);
 	def all: Array<AnalysisTarget> = [X86_64_LINUX];
 
 	// The supported target named {name}, or null for any other name,

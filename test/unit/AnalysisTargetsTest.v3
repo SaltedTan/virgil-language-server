@@ -6,6 +6,7 @@ def X = [
 	T("AnalysisTargets:wrapper_runtime_files", test_wrapper_runtime_files),
 	T("AnalysisTargets:registered", test_registered),
 	T("AnalysisTargets:find", test_find),
+	T("AnalysisTargets:builtin_types", test_builtin_types),
 	()
 ];
 
@@ -49,7 +50,7 @@ def test_registered(t: Tester) {
 	for (target in AnalysisTargets.all) {
 		t.assert(AeneasAdapter.registered(target), Strings.format1("Aeneas registers %s", target.aeneasName));
 	}
-	t.assertz(false, AeneasAdapter.registered(AnalysisTarget.new("none", "no-such-target", [], "2m")));
+	t.assertz(false, AeneasAdapter.registered(AnalysisTarget.new("none", "no-such-target", [], "2m", [], [])));
 }
 
 // Only supported names are found; Aeneas's other targets, including the
@@ -64,6 +65,46 @@ def test_find(t: Tester) {
 	t.assert_string("rt/x86-64-linux/*.v3", patterns[0]);
 	t.assert_string("rt/native/*.v3", patterns[1]);
 	t.assert_string("rt/gc/*.v3", patterns[2]);
+}
+
+// Each entry's builtin types are the names that its Aeneas target's
+// configureProgram installs in a program's type environment, in byte order,
+// and its components those of them whose type constructor binds members by
+// name (Member_TypeCon). Each name resolves as a type in a target analysis,
+// with the runtime, and none without the target.
+def test_builtin_types(t: Tester) {
+	for (target in AnalysisTargets.all) {
+		var aeneas: Target;
+		for (l = Aeneas.targets; l != null; l = l.tail) if (Strings.equal(l.head.name, target.aeneasName)) aeneas = l.head;
+		if (aeneas == null) return t.fail1("Aeneas does not register %s", target.aeneasName);
+		var prog = Program.new();
+		Compilation.new(Compiler.new(aeneas), prog);
+		var types = Vector<string>.new(), components = Vector<string>.new();
+		prog.typeEnv.typecons.apply(fun (name: string, tc: TypeCon) {
+			types.put(name);
+			if (Member_TypeCon.?(tc)) components.put(name);
+		});
+		var sorted = fun (v: Vector<string>) => AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+		t.assert_string(joined(sorted(types)), joined(target.builtinTypes));
+		t.assert_string(joined(sorted(components)), joined(target.builtinComponents));
+		var runtime = AnalysisTargetFiles.runtimeSources(t, target);
+		if (runtime == null) return;
+		for (name in target.builtinTypes) {
+			var main = [AnalysisSource.new("main.v3", Strings.format1("var x: %s;\n", name))];
+			var a = AeneasAdapter.analyzeProgram(Arrays.concat(main, runtime), [], target, false);
+			for (d in a.diagnostics) t.fail2("%s: unexpected %s", name, d.toString());
+			t.assert(a.verified, Strings.format2("%s is a type for %s", name, target.name));
+			t.assert(!AeneasAdapter.analyzeProgram(main, [], null, false).verified, Strings.format1("%s is a type without a target", name));
+		}
+	}
+}
+def joined(names: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (i < names.length) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(names[i]);
+	}
+	return buf.toString();
 }
 
 // The runtime sources of a target from the pinned Virgil, as its wrapper

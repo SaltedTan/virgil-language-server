@@ -49,7 +49,6 @@ Without a `.virgil-lsp.json` that selects it, a document stays in [single-file m
 
 - Only version 2 project files can name a target, and `x86-64-linux` is the only supported name. Any other name produces an `InvalidValue` configuration error. In a project with no target selected, code for another native target reports unresolved types for that target's builtins ([Target](configuration.md#target)).
 - A target project's runtime sources come from the Virgil root's `rt/`, which the bundled library in release archives doesn't have yet, so such a project needs a Virgil checkout as its root, supplied by the client. With the bundle, it gets a `MissingTargetRuntime` configuration error.
-- Completion doesn't suggest the target's builtin names, such as `Pointer`, `CiRuntime`, and `Linux`, or the members of pointers and of `Linux` and `CiRuntime`, and implementation's check for a builtin type's name doesn't know them.
 - An edit analyzes every project that contains the edited file. Target programs are large, so several target projects that share most of their files make each edit's background analysis take several times as long, and their snapshots compete for the retained-snapshot budget, so moving between them analyzes them again more often.
 
 ## Inlay hints
@@ -128,7 +127,7 @@ After a `.`, completion suggests the members that the type checker would accept 
 - **Integer values.** A value of an integer type, such as `x.` for an `x: int`, has no members to suggest. `int.max`, `int.view`, and the other integer members belong to the type, so `int.` suggests them.
 - **Type positions.** Where a type goes, as in `var s: Flag.` before `set`, nothing is suggested; members are suggested only in expressions.
 - **Operators.** Casts, queries, comparisons, and index methods, such as `int.!`, `int.?`, `==`, and `[]`, are written with symbols, not names, so they aren't suggested.
-- **Pointers.** Pointer members aren't suggested, even in a project with a [target](configuration.md#target), because completion doesn't know the target's builtin members yet.
+- **Pointers and the runtime's builtins.** `Pointer`, `CiRuntime`, and `Linux` and their members are suggested only in a project with a [target](configuration.md#target); without one, those names aren't types. Their descriptions are fixed, so `CiRuntime.STACK_SIZE` and the `FEATURE_` flags show their types but not their values. The compiler matches `FEATURE_` names by prefix: any other name that starts with `FEATURE_` is accepted and is `false`, and a known flag's name with something after it, such as `FEATURE_TABLE_REL_ADDR_X`, is that flag. Only the six flags' own names are suggested.
 - **Strings.** A member's description shows types as the type checker resolved them, so a `string` appears as `Array<byte>`.
 
 ## Stale results
@@ -238,6 +237,7 @@ A completion item's details show the same documentation that hover shows for its
 - How a client shows an active parameter past the list varies: LSP 3.17 specifies that it defaults to parameter 0, VS Code highlights no parameter, and Neovim 0.11.6 highlights the last.
 - A client without `labelOffsetSupport` gets each parameter's label as a string, and finds it in the signature's label itself: in `(int, int) -> int`, both parameters are `int`, and such a client may highlight the first for either. VS Code and Neovim both support label offsets, which are exact.
 - A call without a known signature gets nothing: an unresolved callee, and the calls in its arguments, which verification doesn't check either.
+- Signature help shows nothing for `Pointer.atField(...)` itself, because its argument is a field reference, which verification replaces with an empty argument list. Calls in its receiver and calls that take its result still show their signatures ([Call sites](architecture.md#call-sites)).
 - A call you are still typing needs its own analysis of the project, about 140 ms on the Aeneas sources, as a completion does. An operator-named member's call is found like any other: a cast's `B.!(`, a type test's `B.?(`, a builtin operator's `int.+(`, or a variant case's `V.One.!(`, alone or within another call's arguments, gets that call's signature. A cast's or a generic call's inferred types show `?` until you type the argument that infers them: `B.!(|` gets `? -> B`, and `id(|` gets `def id(v: ?) -> ?`. It gets nothing in an if expression's first argument, as in `if(f(` while you type `f`'s arguments, since the type checker skips an if expression with too few arguments. After `>`, as in `a > (b`, and in a constructor's `super(` clause, it gets nothing rather than the call around the cursor ([Incomplete calls](architecture.md#incomplete-calls)).
 - There is no documentation, since the analysis doesn't keep doc comments.
 

@@ -22,6 +22,7 @@ def X = [
 	T("Implementation:reverse_index_charge", reverse_index_charge),
 	T("Implementation:builtin_type_names", builtin_type_names),
 	T("Implementation:builtin_type_name_options", builtin_type_name_options),
+	T("Implementation:builtin_type_name_target", builtin_type_name_target),
 	()
 ];
 def SHAPES = "test/fixtures/analysis/implementation/shapes.v3";
@@ -338,12 +339,12 @@ def builtin_type_names(t: Tester) {
 	for (spot in [("n: int", 3), ("Array<int>;", 0), ("Array<int>;", 6), ("u32", 0), ("u32", 2), ("x: byte", 3),
 			("g: int", 3), ("-> bool", 3), ("(bool, string)", 1), ("(bool, string)", 7), ("-> void", 3), ("Array<int>.new", 6)]) {
 		var at = indexOf(text, spot.0) + spot.1;
-		if (!LspImplementation.builtinTypeName(text, at, [])) t.fail(Strings.format2("no builtin type at %s +%d", spot.0, spot.1));
+		if (!LspImplementation.builtinTypeName(text, at, [], null)) t.fail(Strings.format2("no builtin type at %s +%d", spot.0, spot.1));
 	}
 	for (spot in [("// int", 3), ("\"int\"", 1), ("Missing", 0), ("var n", 4), ("component C", 10), ("(x == 0", 1),
 			("h<T>(t: T)", 2), ("h<T>(t: T)", 8)]) {
 		var at = indexOf(text, spot.0) + spot.1;
-		if (LspImplementation.builtinTypeName(text, at, [])) t.fail(Strings.format2("a builtin type at %s +%d", spot.0, spot.1));
+		if (LspImplementation.builtinTypeName(text, at, [], null)) t.fail(Strings.format2("a builtin type at %s +%d", spot.0, spot.1));
 	}
 }
 // The builtin type names are those of the project's language options, as
@@ -353,13 +354,28 @@ def builtin_type_name_options(t: Tester) {
 	var readOnly = ["-lang:read-only-arrays"], none: Array<string> = [];
 	for (spot in [("array<", 0), ("range<", 0)]) {
 		var at = indexOf(text, spot.0) + spot.1;
-		if (!LspImplementation.builtinTypeName(text, at, readOnly)) t.fail1("no builtin type at %s with read-only arrays", spot.0);
-		if (LspImplementation.builtinTypeName(text, at, none)) t.fail1("a builtin type at %s without options", spot.0);
+		if (!LspImplementation.builtinTypeName(text, at, readOnly, null)) t.fail1("no builtin type at %s with read-only arrays", spot.0);
+		if (LspImplementation.builtinTypeName(text, at, none, null)) t.fail1("a builtin type at %s without options", spot.0);
 	}
 	for (spot in ["array<int>", "range<int>"]) {
 		var at = indexOf(text, spot) + 6;
 		for (options in [readOnly, none]) {
-			if (!LspImplementation.builtinTypeName(text, at, options)) t.fail1("no builtin type at the int of %s", spot);
+			if (!LspImplementation.builtinTypeName(text, at, options, null)) t.fail1("no builtin type at the int of %s", spot);
 		}
 	}
+}
+// The builtin type names are those of the project's target, as completion's
+// are: x86-64-linux adds Pointer, AnyRef, CiRuntime, and Linux, and System is
+// its runtime's component, not a builtin.
+def builtin_type_name_target(t: Tester) {
+	var text = "component C { var p: Pointer; var a: AnyRef; var k: CiRuntime; var l: Linux; var s: System; }";
+	var target = AnalysisTargets.X86_64_LINUX;
+	for (name in ["Pointer", "AnyRef", "CiRuntime", "Linux"]) {
+		var at = indexOf(text, Strings.format1(": %s", name)) + 2;
+		if (!LspImplementation.builtinTypeName(text, at, [], target)) t.fail1("no builtin type at %s for the target", name);
+		if (LspImplementation.builtinTypeName(text, at, [], null)) t.fail1("a builtin type at %s without a target", name);
+	}
+	var at = indexOf(text, ": System") + 2;
+	if (LspImplementation.builtinTypeName(text, at, [], target)) t.fail("a builtin type at System for the target");
+	if (!LspImplementation.builtinTypeName(text, at, [], null)) t.fail("no builtin type at System without a target");
 }

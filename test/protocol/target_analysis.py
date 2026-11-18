@@ -13,12 +13,18 @@ rt/native and rt/x86-64-linux, and references answer in the target project,
 and the shared file answers from its active project, "native". An unsaved
 type error is published and cleared. Rename refuses a runtime declaration and
 renames one of the project's own. Signature help and completion in text that
-doesn't parse, which run query analyses, see the target's types, and so does an analysis that substitutes a body
-that doesn't parse. The development request for a document analyzes for the
-target, and explicit URIs don't. Setting the target to null in an unsaved
-project file brings back UnresolvedType, and restoring it clears it. Without
-a Virgil root, a target project with virgilDependencies gets MissingVirgilRoot
-at its target value.
+doesn't parse, which run query analyses, see the target's types, and so does
+an analysis that substitutes a body that doesn't parse. Completion offers the
+target's builtin types, Pointer, AnyRef, CiRuntime, and Linux, with the
+runtime's System and not the synthetic one, and the members of a pointer, the
+Pointer type, Linux, and CiRuntime. Hover covers Linux.syscall and a pointer's
+load. Signature help covers Linux.syscall and calls within and around
+Pointer.atField. Implementation on Pointer returns an empty list. A portable
+project omits the target's builtins and offers the synthetic System and its
+calls. The development request for a document analyzes for the target, and
+explicit URIs don't. Setting the target to null in an unsaved project file
+brings back UnresolvedType, and restoring it clears it. Without a Virgil root,
+a target project with virgilDependencies gets MissingVirgilRoot at its target value.
 """
 import json
 from pathlib import Path
@@ -78,6 +84,14 @@ class Client:
             if direction == 'recv' and m.get('method') == 'textDocument/publishDiagnostics':
                 lists[m['params']['uri']] = m['params']['diagnostics']
         return lists
+
+
+CLASS, MODULE = 7, 9
+
+
+def members(c, path, text, needle, skip):
+    """The labels that member completion offers at {needle} + {skip}, in order."""
+    return [i['label'] for i in c.result('textDocument/completion', path, text, needle, skip)['items']]
 
 
 def codes(diagnostics):
@@ -160,6 +174,33 @@ def run(exe, root):
         details = {i['label']: i.get('detail') for i in items['items']}
         assert details.get('nextFrame') == 'def nextFrame(ip: Pointer, sp: Pointer) -> (Pointer, Pointer)', details
         assert details.get('start') == 'var start: Pointer', details
+        c.change(native, native_text)
+        # Completion offers the target's builtin types among the names, and
+        # its runtime's System, not the synthetic one; the members of a
+        # pointer value, the Pointer type, Linux, and CiRuntime.
+        names = c.result('textDocument/completion', native, native_text, 'Pointer.atContents')['items']
+        system_item, = (i for i in names if i['label'] == 'System')
+        assert system_item.get('detail') == 'component System', system_item
+        kinds = {i['label']: i.get('kind') for i in names}
+        expected_kinds = {'AnyRef': CLASS, 'CiRuntime': MODULE, 'Linux': MODULE, 'Pointer': CLASS, 'System': MODULE}
+        assert {name: kinds.get(name) for name in expected_kinds} == expected_kinds, kinds
+        assert members(c, native, native_text, 'sp.load', 3) == ['cmpswp', 'load', 'store']
+        on_type = members(c, native, native_text, 'Pointer.SIZE', 8)
+        assert {'NULL', 'SIZE', 'atContents', 'atField', 'load'} <= set(on_type), on_type
+        assert members(c, native, native_text, 'Linux.syscall', 6) == ['syscall']
+        runtime = members(c, native, native_text, 'CiRuntime.CODE_START', 10)
+        assert {'CODE_START', 'CODE_END', 'STACK_SIZE', 'callerIp'} <= set(runtime), runtime
+        # Hover shows the instantiated type of syscall and load. Signature
+        # help checks the Linux.syscall call.
+        hover = c.result('textDocument/hover', native, native_text, 'syscall')
+        assert hover['contents']['value'] == '```virgil\n(int, (int, Pointer, int)) -> (long, long)\n```', hover
+        hover = c.result('textDocument/hover', native, native_text, 'load<')
+        assert hover['contents']['value'] == '```virgil\nvoid -> Pointer\n```', hover
+        help = c.result('textDocument/signatureHelp', native, native_text, 'Linux.syscall(', len('Linux.syscall('))
+        assert [g['label'] for g in help['signatures']] == ['(int, (int, Pointer, int)) -> (long, long)'], help
+        # Implementation on Pointer where a type goes is an empty list, as
+        # for any builtin type.
+        assert c.result('textDocument/implementation', native, native_text, 'ip: Pointer', 4) == []
         # Method-body fallback still analyzes for the target. Only the syntax
         # error is published, and nextFrame keeps its Pointer types.
         inserted = 'var bad = ;\n\t\t'
@@ -216,6 +257,51 @@ def run(exe, root):
         assert c.published().get(portable.as_uri(), []) == [], c.published()
         rt = [uri for uri, d in c.published().items() if uri.startswith(VIRGIL.as_uri() + '/') and d]
         assert rt == [], rt
+        # A portable project offers none of the target's names, and System
+        # is the synthetic one, with its calls; Pointer is no builtin type.
+        portable_text2 = portable_text.replace('Words.say(Words.greeting);', 'Words.say(Words.greeting);\n\t\tSystem.puts("");')
+        assert portable_text2 != portable_text
+        c.change(portable, portable_text2)
+        names = c.result('textDocument/completion', portable, portable_text2, 'Words.say')['items']
+        labels = [i['label'] for i in names]
+        assert not {'AnyRef', 'CiRuntime', 'Linux', 'Pointer'} & set(labels), labels
+        system_item, = (i for i in names if i['label'] == 'System')
+        assert system_item.get('kind') == MODULE and 'detail' not in system_item, system_item
+        calls = members(c, portable, portable_text2, 'System.puts', 7)
+        assert {'puts', 'ticksUs', 'fileLoad'} <= set(calls), calls
+        field_text = native_text + """
+class FieldAddressBox { var f: int; }
+def fieldAddressCalls(p: Pointer, box: FieldAddressBox) {
+    var addr = Pointer.atField(p.load<FieldAddressBox>().f);
+    var value = Pointer.load<int>(Pointer.atField(box.f /* é ) */));
+}
+class Box {
+    var Box: int;
+    var Alt: int;
+    def addr() -> Pointer { return Pointer.atField(Box); }
+    def explicitAddr() -> Pointer { return Pointer.atField(this.Box); }
+}
+"""
+        c.change(native, field_text)
+        hover = c.result('textDocument/hover', native, field_text, 'load<FieldAddressBox>')
+        assert hover is not None and hover['contents']['value'] == '```virgil\nvoid -> FieldAddressBox\n```', hover
+        assert c.published().get(native.as_uri(), []) == [], c.published()
+        for call, label in [('p.load<FieldAddressBox>(', 'void -> FieldAddressBox'),
+                            ('Pointer.load<int>(', 'Pointer -> int')]:
+            help = c.result('textDocument/signatureHelp', native, field_text, call, len(call))
+            assert help is not None and [g['label'] for g in help['signatures']] == [label], help
+        at_field = 'Pointer.atField('
+        assert c.result('textDocument/signatureHelp', native, field_text, at_field, len(at_field)) is None
+        class_start = field_text.index('class Box')
+        box_decl = location(native, field_text, 'Box', class_start)
+        assert c.result('textDocument/definition', native, field_text, 'this.Box') == box_decl
+        edit = c.result('textDocument/rename', native, field_text, 'class Box', len('class '), newName='Alt')
+        change, = edit['documentChanges']
+        assert change['textDocument']['uri'] == native.as_uri(), change
+        assert change['edits'] == [{'range': box_decl['range'], 'newText': 'Alt'}], change
+        refs = c.result('textDocument/references', native, field_text, 'class Box', len('class '),
+                        context={'includeDeclaration': True})
+        assert refs == [box_decl], refs
         s.shutdown()
     except BaseException:
         print(json.dumps(s.transcript, indent=2)[-20000:], file=sys.stderr)
@@ -264,7 +350,7 @@ def main():
         run(exe, root)
         without_root(exe, root)
     print('protocol target analysis: diagnostics, hover, definition, references, rename, shared file, '
-          'target changes, and a missing root passed')
+          'builtin names and members, target changes, and a missing root passed')
 
 
 if __name__ == '__main__':
