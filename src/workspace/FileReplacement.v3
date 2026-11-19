@@ -34,9 +34,18 @@ class FileStatus {
 }
 
 // Replaces one file for format --write (docs/decisions/0019-formatter.md,
-// decision 6). Keep both descriptors open until close() so neither inode
-// can be reused during the identity checks. A save between the final check
-// and the rename can still be lost.
+// decision 6), reporting each refusal or failure on standard error. open()
+// reads the file through a descriptor that doesn't follow a symbolic link,
+// after checking that its metadata matches the path's and that neither has an
+// ACL or another extended attribute. replace() writes the new text to a new
+// file in the same directory, created with access for its owner alone. It
+// checks that the path still names the unchanged file that was read, gives
+// the new file the original's group and permission bits, checks again, and
+// renames the new file over the path. Each check also confirms that the new
+// file's name still names it, and a failure removes the new file only after
+// the same confirmation. Both descriptors stay open until close(), so no
+// other file can take the device and inode recorded for either. Nothing is
+// locked: a save between the last check and the rename is lost.
 class FileReplacement(path: string) {
 	// The input's descriptor, and its metadata when it was opened, which
 	// every later check compares with the path's.
