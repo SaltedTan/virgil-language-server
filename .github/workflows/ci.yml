@@ -173,8 +173,8 @@ jobs:
     # when the server hangs.
     timeout-minutes: 20
     env:
-      LSPCHECK_VERSION: 0.5.0
-      LSPCHECK_SHA256: 386163ac068401d3ef82c39dfe91c844b6f3c85b08d282415adeae73c3e086e3
+      LSPCHECK_VERSION: 0.6.0
+      LSPCHECK_SHA256: 563a6392f48fff2ad5e6e6d05529fb1d25d128f872cb1a99ea9d2f7b5602a046
       # The mutation plan: the same seed and case count give the same edits.
       LSPCHECK_MUTATION_SEED: 20261115
       LSPCHECK_MUTATION_CASES: 100
