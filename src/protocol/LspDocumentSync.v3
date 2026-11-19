@@ -29,8 +29,13 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			.onNotification("textDocument/didSave", didSave)
 			.onNotification("textDocument/didClose", didClose);
 	}
-	def rejectedMessage(obj: HashMap<string, JsonValue>) {
-		if (!stringMember(obj, "method") || obj.has("id")) return;
+	// Called for a parsed message that the decoder rejected, with the ID it
+	// validated and the message's object. A didOpen or didChange marks its
+	// document unless {id} is valid: the message was then a request, which
+	// changes no document. An ID member the decoder rejects, such as null or
+	// a boolean, leaves {id} null, so the message may have been a change.
+	def rejectedMessage(id: JsonRpcId, obj: HashMap<string, JsonValue>) {
+		if (!JsonRpcId.Null.?(id) || !stringMember(obj, "method")) return;
 		if (changesText(JsonValue.String.!(obj["method"]).v)) {
 			markRejected(documentUri(objectMember(obj, "params")));
 		}

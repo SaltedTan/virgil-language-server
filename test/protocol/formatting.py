@@ -522,7 +522,8 @@ def nesting_limit(s):
 
 
 def lost_messages(exe):
-    """A skipped frame or an undecodable payload marks every open document."""
+    """A skipped frame or an undecodable payload marks every open document, and
+    a rejected didOpen or didChange without a valid ID marks its own."""
     s = FormatSession(exe)
     try:
         s.start()
@@ -561,6 +562,27 @@ def lost_messages(exe):
         assert s.reply("bad")["error"]["code"] == -32600
         for uri in (a, b):
             assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]
+        # An ID member that the decoder rejects doesn't make a change a
+        # request. The full-text change with a null ID leaves the server's
+        # "def f() {}", whose edit at column 9 would split the client's
+        # longerName, so the document is refused; b stays formattable. So for
+        # each kind of ID the decoder rejects, and for a duplicate didOpen.
+        s.close_document(a)
+        longer = "def longerName() {}\n"
+        for name, bad in (("didChange", None), ("didChange", True), ("didChange", [1]), ("didChange", {"n": 1}),
+                          ("didChange", 1.5), ("didChange", 2 ** 31), ("didOpen", None), ("didOpen", -2 ** 31 - 1)):
+            s.open(a, "def f() {}\n")
+            assert s.edits(a) == [edit(0, 9, 0, 9, " ")]
+            doc = {"uri": a, "version": 2}
+            params = {"textDocument": doc, "contentChanges": [{"text": longer}]}
+            if name == "didOpen":
+                params = {"textDocument": dict(doc, languageId="virgil", text=longer)}
+            send_payload(s, json.dumps({"jsonrpc": "2.0", "id": bad, "method": "textDocument/" + name,
+                                        "params": params}).encode())
+            assert s.null_reply()["error"]["code"] == -32600, (name, bad)
+            s.refused(a)
+            assert s.edits(b) == [edit(1, 0, 1, 4, "\t")], (name, bad)
+            s.close_document(a)
         s.ping()
         s.shutdown()
         logs = s.logs()

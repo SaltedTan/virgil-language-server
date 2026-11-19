@@ -320,9 +320,9 @@ class LspServer {
 		if (state == LspServerState.EXITED) return null;
 		var input = JsonRpcDecoder.decode(payload);
 		match (input) {
-			Rejected(_, error, obj) => {
+			Rejected(id, error, obj) => {
 				if (error.code == JsonRpcErrorCode.PARSE_ERROR) messageSkipped();
-				else documentSync.rejectedMessage(obj);
+				else documentSync.rejectedMessage(id, obj);
 			}
 			Valid(msg, unsupportedNumbers) => {
 				match (msg) {
