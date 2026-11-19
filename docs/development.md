@@ -98,7 +98,7 @@ passes them through `-rt.files`, as shown above. An unsupported or empty name
 exits with status 2, lists the supported targets on standard error, and leaves
 standard output empty.
 
-`format` formats files by the rules of [ADR-0019](decisions/0019-formatter.md), as described in [Formatting](architecture.md#formatting). With no flag it takes exactly one file and writes its formatted text, and nothing else, to standard output, with exactly one line end after the last token or comment. A whitespace-only file formats as empty, and a block comment left open at the end of the file runs to the end unchanged. `--check` takes one or more files and prints `path:line: not formatted` for each one that would change, where `line` is the first line, counted from 1 in the file as it is, that formatting changes; it prints nothing for a formatted file. `--write` takes one or more files and replaces each one that would change with its formatted text. It leaves the contents and modification time of already formatted files unchanged and keeps standard output empty. `-lang:<option>` sets a language option for every file, with the values and the rule against repeating an option that a project file's [`compilerArgs`](configuration.md) has; the command reads no project file. Options may come before or after the files.
+`format` formats files by the rules of [ADR-0019](decisions/0019-formatter.md), as described in [Formatting](architecture.md#formatting). With no flag it takes exactly one file and writes its formatted text, and nothing else, to standard output, with exactly one line end after the last token or comment. A whitespace-only file formats as empty, and a block comment left open at the end of the file runs to the end unchanged. `--check` takes one or more files and prints `path:line: not formatted` for each one that would change, where `line` is the first line, counted from 1 in the file as it is, that formatting changes; it prints nothing for a formatted file. `--write` takes one or more files and replaces each one that would change with its formatted text, printing nothing, as described below. `-lang:<option>` sets a language option for every file, with the values and the rule against repeating an option that a project file's [`compilerArgs`](configuration.md) has; the command reads no project file. Options may come before or after the files.
 
 `--check` and the standard-output mode follow symbolic links. Native builds open files without blocking and check the opened file's type before reading. They read only regular files and promptly refuse FIFOs, devices, and directories. The JVM build checks the path's type before opening it, which leaves a [race if the path changes](known-limitations.md#features-not-yet-implemented).
 
@@ -185,14 +185,14 @@ a test-only build of the real worker with `WorkerStall.enabled` enabled through
 `-redef-field`. It stalls on the source marker `workerStallsHere` after arming
 the orphan alarm; ordinary builds compile the hook out. On native targets,
 `make test` also builds `build/format-hook/virgil-lsp`, a test-only build of the
-server with `FormatHook.enabled`. The CLI suite uses its
-[hook options](../src/workspace/FormatHook.v3) to change files and control the
-metadata that `format` sees. Ordinary builds reject these options. Before
-running the native CLI suite directly, run
-`make all build/stall/virgil-lsp-worker build/format-hook/virgil-lsp`. The
-native worker protocol suite only needs `make all build/stall/virgil-lsp-worker`.
-For either suite on the JVM, use the [JVM build commands](#the-jvm-target).
-Use the corresponding paths with a custom `BUILD`.
+server with `FormatHook.enabled`, whose `--test-hook`, `--test-hold`, and
+`--test-fake` options let the CLI suite change a file at fixed points of
+`format`, as another process could (`src/workspace/FormatHook.v3`); ordinary
+builds reject those options. Before running the CLI or worker protocol suite
+directly, build both workers and the server with
+`make all build/stall/virgil-lsp-worker`, and for the native CLI suite also
+`build/format-hook/virgil-lsp` (use the corresponding paths with a custom
+`BUILD`).
 
 | Location | What | How it runs |
 | --- | --- | --- |
