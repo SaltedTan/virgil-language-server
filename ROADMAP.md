@@ -359,7 +359,7 @@ Exit criteria:
 | P2       | semantic tokens       | verified occurrence kinds              | Present, full documents only; [token table and refresh](docs/architecture.md#semantic-tokens) |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
-| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Planned; keeps line breaks, comments, and alignment |
+| P2       | `textDocument/formatting` | [ADR-0019](docs/decisions/0019-formatter.md) | Planned for editors. The [command-line formatter](docs/development.md#running) is available. |
 
 ## Editor integration plan
 

@@ -382,7 +382,6 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var keepBegin: int;
 	private var keepEnd: int;
 
-	// Sets {size} and {count}, building no replacement text.
 	def measure() -> AnalysisFormatting {
 		if (!pass()) return AnalysisFormatting.new("the parser left source text outside its tokens", null, null);
 		return AnalysisFormatting.new(null, null, this);
