@@ -607,7 +607,7 @@ def projects(exe, work):
     """The active project's language options decide what parses: a file in a
     project without fun expressions, and in two projects, the first of which
     is active, is not formatted; in single-file mode it is."""
-    root = Path(work) / "projects"
+    root = Path(work).resolve() / "projects"
     root.mkdir()
     text = "def f = fun () {};\n"
     for name, projects in (("one", [{"name": "a", "sources": ["fun.v3"], "compilerArgs": ["-lang:fun-exprs=false"]}]),
