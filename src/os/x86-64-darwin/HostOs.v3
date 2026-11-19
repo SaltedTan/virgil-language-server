@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Host system calls that Virgil's {System} component lacks: pipes, process
-// creation, readiness polling, signals, and random words. This is the x86-64
-// Darwin version, which also runs under Rosetta 2;
-// src/os/x86-64-linux/HostOs.v3 declares the same members, and the Makefile
-// compiles only the file for the target. The kernel reports a failure with
-// the carry flag and a positive errno, which this component returns negated.
-// See docs/decisions/0004-analysis-worker-process.md.
+// creation, readiness polling, signals, random words, and file metadata and
+// replacement. This is the x86-64 Darwin version, which also runs under
+// Rosetta 2; src/os/x86-64-linux/HostOs.v3 declares the same members, and the
+// Makefile compiles only the file for the target. The kernel reports a
+// failure with the carry flag and a positive errno, which this component
+// returns negated. See docs/decisions/0004-analysis-worker-process.md.
 component HostOs {
 	def EINTR = -4;
 	def ELOOP = -62;
@@ -46,14 +46,31 @@ component HostOs {
 	private def SYS_getdirentries64 = 0x2000158;
 	private def SYS_openat = 0x20001CF;
 	private def SYS_getentropy = 0x20001F4;
+	private def SYS_unlink = 0x200000A;
+	private def SYS_fchown = 0x200007B;
+	private def SYS_fchmod = 0x200007C;
+	private def SYS_rename = 0x2000080;
+	private def SYS_listxattr = 0x20000F0;
+	private def SYS_flistxattr = 0x20000F1;
+	private def SYS_lstat64 = 0x2000154;
+	private def SYS_lstat64_extended = 0x2000156;
+	private def SYS_fstat64_extended = 0x2000157;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
 	private def F_DUPFD_CLOEXEC = 67;
+	private def ENOTSUP = -45;
+	private def XATTR_NOFOLLOW = 1;
+	private def FILESEC_HEADER = 44L;
+	private def FILESEC_WORDS = 6;
+	private def O_RDWR = 0x2;
 	private def O_NONBLOCK = 0x4;
+	private def O_NOFOLLOW = 0x100;
+	private def O_CREAT = 0x200;
+	private def O_EXCL = 0x800;
+	private def O_NOCTTY = 0x20000;
 	private def O_CLOEXEC = 0x1000000;
 	private def O_DIRECTORY = 0x100000;
-	private def O_NOFOLLOW = 0x100;
 	private def X_OK = 1;
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
@@ -224,6 +241,108 @@ component HostOs {
 	def directoryNameOffset = 21;
 	def directoryTypeOffset = 20;
 	def directoryRecordOffset = 16;
+
+	// File replacement for format --write (src/workspace/FileReplacement.v3).
+	// This target provides descriptor metadata, so the command can replace
+	// files safely here; the JVM's HostOs reports false and its name.
+	def REPLACES_FILES = true;
+	def PLATFORM = "x86-64-darwin";
+	// Opens {path} for reading and writing without truncating it, blocking,
+	// following a symbolic link, or acquiring a controlling terminal.
+	def openReadWrite(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0));
+	}
+	// Creates {path} for reading and writing with access for its owner
+	// alone, failing with EEXIST if any entry, even a symbolic link, has the name.
+	def createExclusive(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180));
+	}
+	// Fills {s} from fstat64(2) of {fd}. Returns 0 or a negated errno.
+	def status(fd: int, s: FileStatus) -> int {
+		var buf = Array<long>.new(18);
+		var r = sys(SYS_fstat64, (fd, Pointer.atContents(buf)));
+		if (r >= 0) fill(buf, s);
+		return r;
+	}
+	// Fills {s} from lstat64(2) of {path}, which doesn't follow a final
+	// symbolic link. Returns 0 or a negated errno.
+	def linkStatus(path: string, s: FileStatus) -> int {
+		var buf = Array<long>.new(18), name = Arrays.concat(path, "\x00");
+		var r = sys(SYS_lstat64, (Pointer.atContents(name), Pointer.atContents(buf)));
+		if (r >= 0) fill(buf, s);
+		return r;
+	}
+	// 1 if the file open as {fd} has an ACL or another extended attribute,
+	// 0 if it has neither, or a negated errno. listxattr(2) doesn't list the
+	// ACL here, so the extended stat reports it.
+	def extendedAttributes(fd: int) -> int {
+		var r = attributes(sys(SYS_flistxattr, (fd, Pointer.NULL, 0L, 0)));
+		if (r != 0) return r;
+		var buf = Array<long>.new(18), sec = Array<long>.new(FILESEC_WORDS), size = Array<long>.new(1);
+		size[0] = FILESEC_WORDS * 8;
+		r = sys(SYS_fstat64_extended, (fd, Pointer.atContents(buf), Pointer.atContents(sec), Pointer.atContents(size)));
+		return if(r < 0, r, acl(sec, size[0]));
+	}
+	// As extendedAttributes, for {path} without following a final symbolic link.
+	def linkExtendedAttributes(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		var r = attributes(sys(SYS_listxattr, (Pointer.atContents(name), Pointer.NULL, 0L, XATTR_NOFOLLOW)));
+		if (r != 0) return r;
+		var buf = Array<long>.new(18), sec = Array<long>.new(FILESEC_WORDS), size = Array<long>.new(1);
+		size[0] = FILESEC_WORDS * 8;
+		r = sys(SYS_lstat64_extended, (Pointer.atContents(name), Pointer.atContents(buf), Pointer.atContents(sec), Pointer.atContents(size)));
+		return if(r < 0, r, acl(sec, size[0]));
+	}
+	// Sets the owning group of the file open as {fd}, keeping its owner.
+	def setGroup(fd: int, gid: int) -> int {
+		return sys(SYS_fchown, (fd, -1, gid));
+	}
+	// Sets the permission bits, including set-ID and sticky bits, of the file open as {fd}.
+	def setMode(fd: int, mode: int) -> int {
+		return sys(SYS_fchmod, (fd, mode & 0xFFF));
+	}
+	def rename(from: string, to: string) -> int {
+		var a = Arrays.concat(from, "\x00"), b = Arrays.concat(to, "\x00");
+		return sys(SYS_rename, (Pointer.atContents(a), Pointer.atContents(b)));
+	}
+	def unlink(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return sys(SYS_unlink, Pointer.atContents(name));
+	}
+	// struct stat64 in 8-byte words: st_dev, st_mode, and st_nlink share
+	// word 0, st_uid and st_gid word 2, and the times start at word 4 as
+	// seconds and nanoseconds: access, modification, change, and birth.
+	private def fill(buf: Array<long>, s: FileStatus) {
+		s.dev = buf[0] & 0xFFFFFFFFL;
+		s.ino = buf[1];
+		s.mode = int.view(buf[0] >>> 32) & 0xFFFF;
+		s.uid = int.view(buf[2]);
+		s.gid = int.view(buf[2] >>> 32);
+		s.mtimeSec = buf[6];
+		s.mtimeNsec = buf[7];
+		s.ctimeSec = buf[8];
+		s.ctimeNsec = buf[9];
+		s.size = buf[12];
+	}
+	// A listxattr(2) result: the size of the names, so 0 if there are none.
+	// A file system without extended attributes has none.
+	private def attributes(r: int) -> int {
+		if (r == ENOTSUP) return 0;
+		if (r < 0) return r;
+		return if(r > 0, 1, 0);
+	}
+	// The extended stat's security size is 0 without extended security, and
+	// otherwise the size of a kauth_filesec (bsd/sys/kauth.h) with its ACL
+	// entries: 44 bytes before them, which end with the entry count, then 24
+	// bytes each. The kernel copies one into {sec} if it fits; an entry count
+	// of KAUTH_FILESEC_NOACL (all ones) means there is no ACL.
+	private def acl(sec: Array<long>, size: long) -> int {
+		if (size == 0) return 0;
+		if (size != FILESEC_HEADER) return 1;
+		return if(int.view(sec[4] >>> 32) == -1, 0, 1);
+	}
 
 	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
 	private def moveUp(fd: int) -> int {

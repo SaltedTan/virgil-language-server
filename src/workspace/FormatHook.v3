@@ -1,0 +1,153 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Compile-time test hook for the format command's file access. Only
+// build/format-hook/virgil-lsp enables it (see the Makefile). Ordinary builds
+// remove it and its options, so format rejects those as unknown.
+// test/cli/run.sh uses it to change files at fixed points, as a concurrent
+// process could, and to hold metadata fields at their earlier values where
+// the command reads them, which the file system alone can't do: nothing sets
+// a file's status-change time. Options, which format accepts before or after
+// its files:
+//   --test-hook=<point>:<command>  runs /bin/sh -c <command> at <point>, with
+//                                  the input path as $1 and the new file's as
+//                                  $2, an empty environment, and standard
+//                                  output going to standard error. The
+//                                  command must succeed.
+//   --test-hold=<field>,...        once the first command is about to run, the
+//                                  input's metadata reports the fields dev,
+//                                  ino, size, mtime, or ctime with the values
+//                                  that the path had then.
+//   --test-fake=[<point>:]<field>=<n>
+//                                  reports the input's uid or gid, or the new
+//                                  file's owner (tempuid), as n, from <point>
+//                                  on or from the start.
+// The points: open (before the input open, in every mode), opened (after the
+// --write input open), check1 and check2 (before each check of --write), and
+// cleanup (before --write removes its new file after a failure).
+component FormatHook {
+	def enabled = false;
+
+	def OPEN = 0;
+	def OPENED = 1;
+	def CHECK1 = 2;
+	def CHECK2 = 3;
+	def CLEANUP = 4;
+
+	private def POINTS = ["open", "opened", "check1", "check2", "cleanup"];
+	private def FIELDS = ["dev", "ino", "size", "mtime", "ctime"];
+	private def BITS = [1, 2, 4, 8, 16];
+	private def FAKES = ["uid", "gid", "tempuid"];
+	private def commands = Array<string>.new(5);
+	private def reached = Array<bool>.new(5);
+	private var held = 0;
+	private var reference: FileStatus;
+	// Each fake's point, or -1 for the start, field, and value.
+	private def fakes = Vector<(int, int, int)>.new();
+
+	// Parses {arg} if it is one of the options above.
+	def option(arg: string) -> bool {
+		if (!enabled) return false;
+		if (Strings.startsWith(arg, "--test-hook=")) {
+			var spec = Arrays.range(arg, "--test-hook=".length, arg.length);
+			var colon = find(spec, ':');
+			var point = if(colon > 0, index(POINTS, Arrays.range(spec, 0, colon)), -1);
+			if (point < 0) return fail(arg);
+			commands[point] = Arrays.range(spec, colon + 1, spec.length);
+			return true;
+		}
+		if (Strings.startsWith(arg, "--test-hold=")) {
+			var list = Arrays.range(arg, "--test-hold=".length, arg.length);
+			for (name in Strings.split(list, ",", -1)) {
+				var field = index(FIELDS, name);
+				if (field < 0) return fail(arg);
+				held |= BITS[field];
+			}
+			return true;
+		}
+		if (Strings.startsWith(arg, "--test-fake=")) {
+			var spec = Arrays.range(arg, "--test-fake=".length, arg.length);
+			var colon = find(spec, ':'), point = -1;
+			if (colon >= 0) {
+				point = index(POINTS, Arrays.range(spec, 0, colon));
+				if (point < 0) return fail(arg);
+				spec = Arrays.range(spec, colon + 1, spec.length);
+			}
+			var equals = find(spec, '=');
+			var field = if(equals > 0, index(FAKES, Arrays.range(spec, 0, equals)), -1);
+			if (field < 0) return fail(arg);
+			var value = Ints.parseDecimal(spec, equals + 1);
+			if (value.0 == 0 || value.0 != spec.length - equals - 1) return fail(arg);
+			fakes.put((point, field, value.1));
+			return true;
+		}
+		return false;
+	}
+	// Runs the command for {point}, if there is one, with {path} and {temp}.
+	def at(point: int, path: string, temp: string) {
+		if (!enabled) return;
+		reached[point] = true;
+		var command = commands[point];
+		if (command == null) return;
+		if (held != 0 && reference == null) {
+			reference = FileStatus.new();
+			if (HostOs.linkStatus(path, reference) < 0) System.error("FormatHook", "cannot read the input's metadata");
+		}
+		var args = [z("/bin/sh"), z("-c"), z(command), z("sh"), z(path), z(if(temp == null, "", temp))];
+		var none = HostOs.openNull();
+		var pid = HostOs.spawn(args, [none, 2, 2]);
+		HostOs.close(none);
+		var status = Array<int>.new(1);
+		if (pid < 0 || HostOs.wait(pid, status) < 0 || status[0] != 0) {
+			System.error("FormatHook", Strings.format1("the command at %s failed", POINTS[point]));
+		}
+	}
+	// Adjusts the input's metadata {s} as the options say.
+	def input(s: FileStatus) {
+		if (!enabled) return;
+		var r = reference;
+		if (r != null) {
+			if ((held & 1) != 0) s.dev = r.dev;
+			if ((held & 2) != 0) s.ino = r.ino;
+			if ((held & 4) != 0) s.size = r.size;
+			if ((held & 8) != 0) {
+				s.mtimeSec = r.mtimeSec;
+				s.mtimeNsec = r.mtimeNsec;
+			}
+			if ((held & 16) != 0) {
+				s.ctimeSec = r.ctimeSec;
+				s.ctimeNsec = r.ctimeNsec;
+			}
+		}
+		for (i < fakes.length) {
+			var f = fakes[i];
+			if (f.0 >= 0 && !reached[f.0]) continue;
+			if (f.1 == 0) s.uid = f.2;
+			if (f.1 == 1) s.gid = f.2;
+		}
+	}
+	// Adjusts the new file's metadata {s} as the options say.
+	def temporary(s: FileStatus) {
+		if (!enabled) return;
+		for (i < fakes.length) {
+			var f = fakes[i];
+			if ((f.0 < 0 || reached[f.0]) && f.1 == 2) s.uid = f.2;
+		}
+	}
+	// Ends the process: a test passed an option it doesn't mean.
+	private def fail(arg: string) -> bool {
+		System.error("FormatHook", Strings.format1("invalid option '%s'", arg));
+		return false;
+	}
+	private def find(s: string, c: byte) -> int {
+		for (i < s.length) if (s[i] == c) return i;
+		return -1;
+	}
+	private def index(names: Array<string>, name: string) -> int {
+		for (i < names.length) if (Strings.equal(names[i], name)) return i;
+		return -1;
+	}
+	private def z(s: string) -> Array<byte> {
+		return Arrays.concat(s, "\x00");
+	}
+}

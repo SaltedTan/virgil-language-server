@@ -198,6 +198,14 @@ $(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LI
 	  -heap-size=$(WORKER_HEAP) -output=$(BUILD)/stall -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
+# The server with the format command's test hook enabled, for the native CLI
+# tests of format --write (src/workspace/FormatHook.v3). Ordinary builds
+# compile the hook and its options out.
+$(BUILD)/format-hook/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB) $(JVM_DEPS)
+	@mkdir -p $(BUILD)/format-hook
+	$(V3C) $(V3C_FLAGS) -redef-field=FormatHook.enabled=true -output=$(BUILD)/format-hook -program-name=virgil-lsp \
+	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
 project-fixtures:
 	python3 test/fixtures/projects/prepare.py $(BUILD)
 
@@ -243,7 +251,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-w
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 else
 test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe \
-  $(BUILD)/format-corpus-probe
+  $(BUILD)/format-corpus-probe $(BUILD)/format-hook/virgil-lsp
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 endif

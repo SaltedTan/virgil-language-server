@@ -12,7 +12,9 @@ FIXTURES=$ROOT/test/fixtures
 TMP=$(mktemp -d)
 # Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
 TMP=$(cd "$TMP" && pwd -P)
-trap 'rm -rf "$TMP"' EXIT
+# SECOND is a directory on another file system, if the format --write cases find one.
+SECOND=
+trap 'rm -rf "$TMP"; [ -z "$SECOND" ] || rm -rf "$SECOND"' EXIT
 
 # Match the JVM launcher's generator-owned marker, not just a shebang: a native
 # test wrapper may also be a shell script. The marker survives launcher copies.
@@ -116,9 +118,22 @@ expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
 # Standard output must equal the file byte for byte. The command must end
 # within 30 seconds, which a blocking open of a FIFO without a writer would
 # exceed, and which leaves the JVM time to start.
+# With TRACE=1 and strace available, the command runs under strace, which
+# records its opens and reads, with each descriptor's path, in $TMP/trace.
+TRACE=0
+if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 && strace -o /dev/null true > /dev/null 2>&1; then
+    CAN_TRACE=1
+else
+    CAN_TRACE=0
+fi
 expect_bytes() {
     local name=$1 code=$2 want=$3 err_pat=$4
     shift 5
+    local prefix=()
+    rm -f "$TMP/trace"
+    if [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ]; then
+        prefix=(strace -o "$TMP/trace" -y -e 'trace=open,openat,openat2,read,readv,pread64,preadv,preadv2')
+    fi
     python3 -c '
 import subprocess
 import sys
@@ -128,7 +143,7 @@ try:
 except subprocess.TimeoutExpired:
     print("the command did not finish within 30 seconds", file=sys.stderr)
     sys.exit(124)
-' "$EXE" "$@" > "$TMP/out" 2> "$TMP/err"
+' ${prefix[@]+"${prefix[@]}"} "$EXE" "$@" > "$TMP/out" 2> "$TMP/err"
     local got=$?
     local ok=1
     [ "$got" -eq "$code" ] || { ok=0; echo "  exit: expected $code, got $got"; }
@@ -136,6 +151,26 @@ except subprocess.TimeoutExpired:
     check_stream stderr "$TMP/err" "$err_pat" || ok=0
     finish "$name" $ok
 }
+# check_trace <name> <read|open> <path>: after a traced expect_bytes, fails
+# unless the command never read from a descriptor for <path>, or never opened
+# it, even without blocking. Does nothing where strace isn't available.
+check_trace() {
+    local name=$1 kind=$2 path=$3 calls
+    [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ] || return 0
+    if [ "$kind" = read ]; then calls='^(read|readv|pread64|preadv|preadv2)\('; path="<$path>"; else calls='^(open|openat|openat2)\('; fi
+    if [ ! -s "$TMP/trace" ]; then
+        echo "  trace: empty"
+        finish "$name" 0
+    elif grep -E "$calls" "$TMP/trace" | grep -Fq -- "$path"; then
+        echo "  trace: the command did $kind $path:"
+        grep -E "$calls" "$TMP/trace" | grep -F -- "$path" | sed 's/^/  trace| /'
+        finish "$name" 0
+    else
+        finish "$name" 1
+    fi
+}
+[ "$JVM" -eq 1 ] || [ "$CAN_TRACE" -eq 1 ] || \
+    echo "skip: format's system call checks: strace isn't available or can't trace here"
 F=$TMP/format
 mkdir "$F"
 : > "$F/none"
@@ -230,15 +265,21 @@ expect_bytes "format refuses a directory" 1 "$F/none" "cannot format '$F/dir\.v3
 expect_bytes "format refuses a device" 1 "$F/none" "cannot format '/dev/null': it is not a regular file" -- \
     format /dev/null
 # A FIFO with no writer, which a blocking open would wait on, is refused
-# promptly, directly and through a symbolic link, and is left as it was.
+# promptly, directly and through a symbolic link, and is left as it was. The
+# native build never reads from it. --write refuses a link before it opens
+# anything; see the --write cases below.
 mkfifo -m 600 "$F/fifo.v3"
 ln -s fifo.v3 "$F/fifo-link.v3"
-for mode in --check ""; do
+TRACE=1
+for mode in --check "" --write; do
     for p in fifo.v3 fifo-link.v3; do
+        [ "$mode" != --write ] || { [ "$p" = fifo.v3 ] && [ "$JVM" -eq 0 ]; } || continue
         expect_bytes "format ${mode:-without a flag} refuses $p promptly" 1 "$F/none" \
             "cannot format '$F/$p': it is not a regular file" -- format $mode "$F/$p"
+        check_trace "format ${mode:-without a flag} never reads $p" read "$F/fifo.v3"
     done
 done
+TRACE=0
 [ -p "$F/fifo.v3" ] && [ "$(readlink "$F/fifo-link.v3")" = fifo.v3 ] || {
     fail=$((fail + 1)); echo "FAIL: format changed the FIFO or its link"; }
 
@@ -267,6 +308,17 @@ expect "format --check refuses formatted text over the output bound" 1 "" \
 expect_bytes "format refuses formatted text over the output bound" 1 "$F/none" \
     "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
     format "$F/nested.v3"
+# --write refuses these too, leaving them unchanged (checked below with the
+# others), on native builds; the JVM build refuses --write itself.
+if [ "$JVM" -eq 0 ]; then
+    expect_bytes "format --write refuses a lone CR" 1 "$F/none" "cannot format '$F/lone-cr\.v3': .*carriage return" -- \
+        format --write "$F/lone-cr.v3"
+    expect_bytes "format --write refuses a file over the input bound" 1 "$F/none" \
+        "cannot format '$F/large\.v3': it is larger than 4194304 bytes" -- format --write "$F/large.v3"
+    expect_bytes "format --write refuses formatted text over the output bound" 1 "$F/none" \
+        "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
+        format --write "$F/nested.v3"
+fi
 
 # --check goes on after a failure and reports every file that would change,
 # in order, and only the failure goes to standard error.
@@ -334,10 +386,14 @@ expect_write_failure "format --check reports later file failures after standard 
 # Invalid arguments: status 2, nothing on standard output.
 expect "format needs a file" 2 "" "format needs a file" -- format
 expect "format --check needs a file" 2 "" "format needs a file" -- format --check -lang:descriptors
-expect "format prints only one file" 2 "" "pass --check to check several" -- \
+expect "format prints only one file" 2 "" "pass --check or --write for several" -- \
     format "$F/formatted.v3" "$F/no-eol.v3"
 expect "format rejects an unknown option" 2 "" "unknown option '--bogus'" -- format --bogus "$F/formatted.v3"
-expect "format has no --write yet" 2 "" "unknown option '--write'" -- format --write "$F/unformatted.v3"
+expect "format takes --check or --write, not both" 2 "" "format takes --check or --write, not both" -- \
+    format --write --check "$F/unformatted.v3"
+# The test hook's options exist only in the test-only build.
+expect "format rejects the test hook's options" 2 "" "unknown option '--test-hook=open:true'" -- \
+    format --write --test-hook=open:true "$F/unformatted.v3"
 expect "format rejects an unknown language option" 2 "" "unknown language option '-lang:bogus'" -- \
     format -lang:bogus "$F/formatted.v3"
 expect "format rejects an invalid language option value" 2 "" "the value of '-lang:descriptors' must be true or false" -- \
@@ -351,6 +407,448 @@ for original in "$F"/*.orig; do
         echo "FAIL: format changed ${input##*/}"
     fi
 done
+
+# format --write (ADR-0019 decision 6). Native builds replace each file that
+# changes through a new file in its directory, renamed over it, and print
+# nothing; the JVM build refuses --write before it opens anything. Each case
+# has a directory of its own, so its listing shows that no new file was left.
+W=$TMP/write
+mkdir "$W"
+# meta <path>: the path's own metadata, without following a symbolic link:
+# device, inode, type and permission bits, owner, group, size, and
+# modification and status-change times.
+meta() {
+    python3 -c 'import os, sys
+s = os.lstat(sys.argv[1])
+print(s.st_dev, s.st_ino, oct(s.st_mode), s.st_uid, s.st_gid, s.st_size, s.st_mtime_ns, s.st_ctime_ns)' "$1"
+}
+# access <path>: the path's type and permission bits, owner, and group.
+access() {
+    python3 -c 'import os, sys; s = os.lstat(sys.argv[1]); print(oct(s.st_mode), s.st_uid, s.st_gid)' "$1"
+}
+# entries <dir>: the names in <dir>, in byte order, on one line.
+entries() {
+    (cd "$1" && LC_ALL=C ls -A | tr '\n' ' ' | sed 's/ $//')
+}
+# check <name> <command...>: counts the command's success.
+check() {
+    local name=$1
+    shift
+    if "$@"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $name"; fi
+}
+# same <name> <expected> <actual>: counts an equality.
+same() {
+    if [ "$2" = "$3" ]; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        echo "FAIL: $1"
+        echo "  expected| $2"
+        echo "  actual  | $3"
+    fi
+}
+# fresh <dir>: makes <dir> with in.v3, an unformatted file with mode 644.
+fresh() {
+    rm -rf "$1"
+    mkdir "$1"
+    cp "$F/unformatted.orig" "$1/in.v3"
+    chmod 644 "$1/in.v3"
+}
+if [ "$JVM" -eq 1 ]; then
+    fresh "$W/jvm"
+    before=$(meta "$W/jvm/in.v3")
+    expect_bytes "format --write is refused on the JVM build" 1 "$F/none" \
+        "error: format --write isn't available on the JVM build" -- format --write "$W/jvm/in.v3"
+    same "format --write on the JVM build leaves the file" "$before" "$(meta "$W/jvm/in.v3")"
+    check "format --write on the JVM build leaves the file's bytes" cmp -s "$F/unformatted.orig" "$W/jvm/in.v3"
+    same "format --write on the JVM build creates no file" in.v3 "$(entries "$W/jvm")"
+else
+    PRIVILEGED=0
+    [ "$(id -u)" -ne 0 ] || PRIVILEGED=1
+    # A group of the caller's other than its primary one, and one it isn't in.
+    SUPP=
+    for g in $(id -G); do
+        if [ "$g" != "$(id -g)" ]; then SUPP=$g; break; fi
+    done
+    NONMEMBER=
+    for g in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        case " $(id -G) " in *" $g "*) ;; *) NONMEMBER=$g; break ;; esac
+    done
+    # Commands that give a file an access ACL or an extended attribute, and
+    # a directory an ACL that its new files inherit, with the path as $1.
+    PY=$(command -v python3)
+    if [ "$(uname -s)" = Darwin ]; then
+        ACL_CMD='chmod +a "everyone allow readattr" "$1"'
+        DEFAULT_ACL_CMD='chmod +a "everyone allow readattr,file_inherit" "$1"'
+        XATTR_CMD='xattr -w user.virgil-lsp-test 1 "$1"'
+    else
+        ACL_CMD='setfacl -m u:nobody:r "$1"'
+        DEFAULT_ACL_CMD='setfacl -d -m u:nobody:r "$1"'
+        XATTR_CMD="'$PY' -c 'import os, sys; os.setxattr(sys.argv[1], \"user.virgil-lsp-test\", b\"1\")' \"\$1\""
+    fi
+    : > "$W/probe"
+    mkdir "$W/probe-dir"
+    CAN_ACL=0 CAN_DEFAULT_ACL=0 CAN_XATTR=0
+    ! sh -c "$ACL_CMD" sh "$W/probe" > /dev/null 2>&1 || CAN_ACL=1
+    ! sh -c "$DEFAULT_ACL_CMD" sh "$W/probe-dir" > /dev/null 2>&1 || CAN_DEFAULT_ACL=1
+    ! sh -c "$XATTR_CMD" sh "$W/probe" > /dev/null 2>&1 || CAN_XATTR=1
+    rm -rf "$W/probe" "$W/probe-dir"
+    # The test hook runs its commands with an empty environment.
+    HOOKENV="PATH=$(printf %q "$PATH");"
+    HOOK_EXE=$(dirname "$EXE")/format-hook/virgil-lsp
+    # hooked <expect_bytes arguments...>: runs a case with the test-only build.
+    hooked() {
+        local saved=$EXE
+        EXE=$HOOK_EXE
+        "$@"
+        EXE=$saved
+    }
+
+    # Only the file that changes is written; a formatted file keeps its
+    # bytes, inode, and times. The ends of files follow the command's rule.
+    d=$W/basic
+    mkdir "$d"
+    cp "$F/unformatted.orig" "$d/a.v3"
+    cp "$F/formatted.orig" "$d/b.v3"
+    cp "$F/no-eol.orig" "$d/c.v3"
+    cp "$F/blank.orig" "$d/d.v3"
+    cp "$F/open-comment.orig" "$d/e.v3"
+    formatted=$(meta "$d/b.v3")
+    comment=$(meta "$d/e.v3")
+    expect_bytes "format --write replaces the files that change" 0 "$F/none" "" -- \
+        format --write "$d/a.v3" "$d/b.v3" "$d/c.v3" "$d/d.v3" "$d/e.v3"
+    check "format --write writes the formatted text" cmp -s "$F/unformatted.want" "$d/a.v3"
+    check "format --write keeps a formatted file's bytes" cmp -s "$F/formatted.orig" "$d/b.v3"
+    same "format --write keeps a formatted file's inode, times, and access" "$formatted" "$(meta "$d/b.v3")"
+    check "format --write adds the final line end" cmp -s "$F/no-eol.want" "$d/c.v3"
+    check "format --write empties a whitespace-only file" cmp -s "$F/none" "$d/d.v3"
+    check "format --write keeps an open block comment" cmp -s "$F/open-comment.orig" "$d/e.v3"
+    same "format --write keeps an open block comment's inode and times" "$comment" "$(meta "$d/e.v3")"
+    same "format --write leaves no other file" "a.v3 b.v3 c.v3 d.v3 e.v3" "$(entries "$d")"
+
+    # A file with a syntax error is reported as under --check and left alone.
+    fresh "$W/syntax"
+    cp "$F/syntax.orig" "$W/syntax/in.v3"
+    before=$(meta "$W/syntax/in.v3")
+    expect_bytes "format --write reports a syntax error" 1 "$F/none" "error: $W/syntax/in\.v3:2:9: ParseError" -- \
+        format --write "$W/syntax/in.v3"
+    same "format --write leaves a file with a syntax error" "$before" "$(meta "$W/syntax/in.v3")"
+
+    # The replacement keeps the original's permission bits and group, here
+    # one other than the caller's primary group, which a new file in a
+    # directory without the set-group-ID bit doesn't get.
+    fresh "$W/keep"
+    chmod g-s "$W/keep"
+    chmod 640 "$W/keep/in.v3"
+    if [ -n "$SUPP" ]; then
+        chgrp "$SUPP" "$W/keep/in.v3"
+    else
+        echo "skip: format --write keeps a group other than the primary group: the caller has no other group"
+    fi
+    before=$(access "$W/keep/in.v3")
+    expect_bytes "format --write replaces a file with mode 640" 0 "$F/none" "" -- format --write "$W/keep/in.v3"
+    check "format --write formats the file with mode 640" cmp -s "$F/unformatted.want" "$W/keep/in.v3"
+    same "format --write keeps the permission bits, owner, and group" "$before" "$(access "$W/keep/in.v3")"
+    same "format --write leaves no new file beside a file with mode 640" in.v3 "$(entries "$W/keep")"
+
+    if [ "$PRIVILEGED" -eq 1 ]; then
+        echo "skip: format --write in a read-only directory and on a read-only file: permissions don't stop a privileged user"
+    else
+        # A directory that can't take a new file.
+        fresh "$W/read-only-dir"
+        chmod 555 "$W/read-only-dir"
+        expect_bytes "format --write reports a read-only directory" 1 "$F/none" \
+            "cannot write '$W/read-only-dir/in\.v3': a new file can't be created in its directory" -- \
+            format --write "$W/read-only-dir/in.v3"
+        chmod 755 "$W/read-only-dir"
+        check "format --write leaves the file in a read-only directory" cmp -s "$F/unformatted.orig" "$W/read-only-dir/in.v3"
+        same "format --write leaves no new file in a read-only directory" in.v3 "$(entries "$W/read-only-dir")"
+
+        # A caller-owned file with mode 0444, in a writable directory, which
+        # an in-place write would fail on; --check and the standard output
+        # mode still format it.
+        fresh "$W/read-only-file"
+        chmod 444 "$W/read-only-file/in.v3"
+        before=$(meta "$W/read-only-file/in.v3")
+        check "the command's credentials can't open a file with mode 0444 for writing" python3 -c '
+import os, sys
+try:
+    os.close(os.open(sys.argv[1], os.O_RDWR))
+except PermissionError:
+    sys.exit(0)
+sys.exit(1)' "$W/read-only-file/in.v3"
+        expect_bytes "format --write refuses a file with mode 0444" 1 "$F/none" \
+            "cannot write '$W/read-only-file/in\.v3': it can't be opened for writing" -- \
+            format --write "$W/read-only-file/in.v3"
+        same "format --write leaves a file with mode 0444" "$before" "$(meta "$W/read-only-file/in.v3")"
+        check "format --write leaves the bytes of a file with mode 0444" cmp -s "$F/unformatted.orig" "$W/read-only-file/in.v3"
+        same "format --write leaves no new file beside a file with mode 0444" in.v3 "$(entries "$W/read-only-file")"
+        want "$W/read-only-file.check" "$W/read-only-file/in.v3:2: not formatted"
+        expect_bytes "format --check reports a file with mode 0444" 1 "$W/read-only-file.check" "" -- \
+            format --check "$W/read-only-file/in.v3"
+        expect_bytes "format prints a file with mode 0444" 0 "$F/unformatted.want" "" -- \
+            format "$W/read-only-file/in.v3"
+    fi
+
+    # A symbolic link is refused before its target is opened, whether the
+    # target is unreadable, readable, or a FIFO, which a blocking open would
+    # wait on. The link and its target are left alone.
+    d=$W/link
+    mkdir "$d"
+    cp "$F/unformatted.orig" "$d/target.v3"
+    ln -s target.v3 "$d/link.v3"
+    mkfifo -m 600 "$d/fifo"
+    ln -s fifo "$d/fifo-link.v3"
+    TRACE=1
+    for target in unreadable readable; do
+        if [ "$target" = unreadable ]; then
+            chmod 000 "$d/target.v3"
+            if [ -r "$d/target.v3" ]; then
+                echo "skip: format --write on a link to an unreadable file: permissions don't stop a privileged user"
+                continue
+            fi
+            check "a direct read of the link's mode-000 target is denied" eval '! cat "$d/target.v3" > /dev/null 2>&1'
+        else
+            chmod 644 "$d/target.v3"
+        fi
+        before=$(meta "$d/target.v3")
+        expect_bytes "format --write refuses a symbolic link whose target is $target" 1 "$F/none" \
+            "cannot write '$d/link\.v3': it is a symbolic link" -- format --write "$d/link.v3"
+        check_trace "format --write never opens a link's $target target" open "$d/target.v3"
+        same "format --write leaves a link's $target target" "$before" "$(meta "$d/target.v3")"
+        same "format --write leaves a link to a $target file" target.v3 "$(readlink "$d/link.v3")"
+    done
+    expect_bytes "format --write refuses a symbolic link to a FIFO promptly" 1 "$F/none" \
+        "cannot write '$d/fifo-link\.v3': it is a symbolic link" -- format --write "$d/fifo-link.v3"
+    check_trace "format --write never opens a link's FIFO" open "$d/fifo"
+    TRACE=0
+    check "format --write leaves the FIFO" test -p "$d/fifo"
+    same "format --write leaves a link to a FIFO" fifo "$(readlink "$d/fifo-link.v3")"
+    check "format --write leaves the link's target" cmp -s "$F/unformatted.orig" "$d/target.v3"
+    same "format --write leaves no new file beside links" "fifo fifo-link.v3 link.v3 target.v3" \
+        "$(entries "$d")"
+
+    # A file with an ACL or another extended attribute, which a new file
+    # wouldn't have, and a directory whose ACL a new file would inherit.
+    for kind in acl xattr default-acl; do
+        case $kind in
+            acl) can=$CAN_ACL what="an access ACL" ;;
+            xattr) can=$CAN_XATTR what="an extended attribute" ;;
+            default-acl) can=$CAN_DEFAULT_ACL what="an inherited ACL" ;;
+        esac
+        if [ "$can" -eq 0 ]; then
+            echo "skip: format --write refuses $what: the test can't set one on this host and file system"
+            continue
+        fi
+        fresh "$W/$kind"
+        case $kind in
+            acl) sh -c "$ACL_CMD" sh "$W/$kind/in.v3"; reason="it has an ACL or another extended attribute" ;;
+            xattr) sh -c "$XATTR_CMD" sh "$W/$kind/in.v3"; reason="it has an ACL or another extended attribute" ;;
+            default-acl) sh -c "$DEFAULT_ACL_CMD" sh "$W/$kind"; reason="its new file would have an ACL or another extended attribute" ;;
+        esac
+        before=$(meta "$W/$kind/in.v3")
+        expect_bytes "format --write refuses $what" 1 "$F/none" "cannot write '$W/$kind/in\.v3': $reason" -- \
+            format --write "$W/$kind/in.v3"
+        same "format --write leaves a file refused for $what" "$before" "$(meta "$W/$kind/in.v3")"
+        check "format --write leaves the bytes of a file refused for $what" cmp -s "$F/unformatted.orig" "$W/$kind/in.v3"
+        same "format --write leaves no new file after refusing $what" in.v3 "$(entries "$W/$kind")"
+    done
+
+    if [ ! -x "$HOOK_EXE" ]; then
+        fail=$((fail + 1))
+        echo "FAIL: the format --write cases need $HOOK_EXE: build it with make"
+    else
+        # A regular input replaced by a FIFO with no writer just before the
+        # open, after the path's type is checked, directly in every mode and
+        # through a link's target in the modes that follow links: refused
+        # promptly, never read, and the FIFO and link left as they are.
+        TRACE=1
+        for mode in --check "" --write; do
+            for p in in.v3 link.v3; do
+                [ "$mode" != --write ] || [ "$p" = in.v3 ] || continue
+                d=$W/fifo-swap
+                fresh "$d"
+                mkfifo -m 600 "$d/fifo"
+                ln -s in.v3 "$d/link.v3"
+                hooked expect_bytes "format ${mode:-without a flag} refuses $p once a FIFO replaces it before the open" 1 "$F/none" \
+                    "cannot format '$d/$p': it is not a regular file" -- \
+                    format $mode --test-hook="open:$HOOKENV mv '$d/fifo' '$d/in.v3'" "$d/$p"
+                check_trace "format ${mode:-without a flag} never reads the FIFO that replaced $p" read "$d/in.v3"
+                check "format ${mode:-without a flag} leaves the FIFO that replaced $p" test -p "$d/in.v3"
+                same "format ${mode:-without a flag} leaves the link beside the FIFO that replaced $p" in.v3 "$(readlink "$d/link.v3")"
+                same "format ${mode:-without a flag} leaves no new file beside the FIFO that replaced $p" "in.v3 link.v3" \
+                    "$(entries "$d")"
+            done
+        done
+
+        # A file swapped for another only while it is opened: the hook points
+        # the directory link at a substitute with the same size, mode, owner,
+        # group, and times, and back. The original's metadata never changes,
+        # and only the identity differs, the inode or, on a second file
+        # system, the device alone.
+        for c in /dev/shm "$(dirname "$EXE")" "$HOME"; do
+            [ -d "$c" ] && [ -w "$c" ] || continue
+            if [ "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_dev)' "$c")" != \
+                "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_dev)' "$W")" ]; then
+                SECOND=$(mktemp -d "$c/virgil-lsp-cli.XXXXXX") && SECOND=$(cd "$SECOND" && pwd -P) && break
+            fi
+        done
+        [ -n "$SECOND" ] || echo "skip: format --write refuses a substitute on another device: no second file system"
+        for identity in inode device; do
+            d=$W/open-swap-$identity
+            mkdir -p "$d/original"
+            # The fields held besides size and times: the inode, to vary the device alone.
+            if [ "$identity" = device ]; then
+                [ -n "$SECOND" ] || continue
+                sub=$SECOND/substitute
+                hold=ino,
+            else
+                sub=$d/substitute
+                hold=
+            fi
+            mkdir -p "$sub"
+            cp "$F/unformatted.orig" "$d/original/in.v3"
+            printf 'def g() {\n  var y=2;\n}\n' > "$sub/in.v3"
+            chmod 644 "$d/original/in.v3" "$sub/in.v3"
+            touch -r "$d/original/in.v3" "$sub/in.v3"
+            ln -s original "$d/dir"
+            original=$(meta "$d/original/in.v3")
+            substitute=$(meta "$sub/in.v3")
+            hooked expect_bytes "format --write refuses a file swapped while it is opened ($identity)" 1 "$F/none" \
+                "cannot write '$d/dir/in\.v3': it changed while it was being opened" -- \
+                format --write --test-hold=${hold}size,mtime,ctime \
+                --test-hook="open:$HOOKENV ln -sfn '$sub' '$d/dir'" \
+                --test-hook="opened:$HOOKENV ln -sfn original '$d/dir'" "$d/dir/in.v3"
+            check_trace "format --write never reads the substitute opened in its place ($identity)" read "$sub/in.v3"
+            same "format --write leaves the original that was swapped ($identity)" "$original" "$(meta "$d/original/in.v3")"
+            same "format --write leaves the substitute ($identity)" "$substitute" "$(meta "$sub/in.v3")"
+            check "format --write leaves the original's bytes ($identity)" cmp -s "$F/unformatted.orig" "$d/original/in.v3"
+            same "format --write creates no file beside the original ($identity)" in.v3 "$(entries "$d/original")"
+            same "format --write creates no file beside the substitute ($identity)" in.v3 "$(entries "$sub")"
+        done
+        TRACE=0
+        [ -z "$SECOND" ] || { rm -rf "$SECOND"; SECOND=; }
+
+        # change <point> <hold> <command> [option]: runs --write on a fresh
+        # $W/change/in.v3, mode 644, with <command> at the hook <point> and the
+        # fields <hold> held, and expects the change to be reported, the
+        # newer file kept, and the new file removed.
+        change() {
+            local point=$1 hold=$2 command=$3 option=${4:-}
+            fresh "$W/change"
+            hooked expect_bytes "format --write refuses $label at $point" 1 "$F/none" \
+                "cannot write '$W/change/in\.v3': it changed after it was read" -- \
+                format --write ${hold:+--test-hold=$hold} --test-hook="$point:$HOOKENV $command" \
+                ${option:+"$option"} "$W/change/in.v3"
+            same "format --write leaves no new file after $label at $point" in.v3 "$(entries "$W/change")"
+        }
+        for point in check1 check2; do
+            # A replacement with the same size and times but another inode.
+            printf 'def f() {\n  var x=2;\n}\n' > "$W/replacement"
+            chmod 644 "$W/replacement"
+            label="a replacement with the same size and times"
+            inode=$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/replacement")
+            change $point size,mtime,ctime "mv '$W/replacement' \"\$1\""
+            same "format --write keeps the replacement at $point" "$inode" \
+                "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/change/in.v3")"
+            check "format --write keeps the replacement's bytes at $point" \
+                test "$(cat "$W/change/in.v3")" = "$(printf 'def f() {\n  var x=2;\n}')"
+            # New bytes, varying the size alone, the modification time alone,
+            # or the status-change time alone.
+            label="a change of size alone"
+            change $point mtime,ctime "printf '// newer\\n' >> \"\$1\""
+            check "format --write keeps the newer bytes at $point" \
+                test "$(tail -n 1 "$W/change/in.v3")" = "// newer"
+            label="a change of modification time alone"
+            change $point ctime "touch -m -t 200101010000 \"\$1\""
+            same "format --write keeps the newer modification time at $point" 2001 \
+                "$(python3 -c 'import sys, os, time; print(time.localtime(os.stat(sys.argv[1]).st_mtime).tm_year)' "$W/change/in.v3")"
+            label="a change of status-change time alone"
+            change $point "" "sleep 0.1; chmod 644 \"\$1\""
+            check "format --write keeps the file's bytes after a status change at $point" cmp -s "$F/unformatted.orig" "$W/change/in.v3"
+            # Access tightened or widened with the times held: mode, owner,
+            # group, ACL, extended attribute. At the first check, the new file
+            # still has access for its owner alone when it is removed.
+            label="a change of mode"
+            : > "$W/temp-mode"
+            change $point ctime "chmod 600 \"\$1\"" \
+                "--test-hook=cleanup:$HOOKENV '$PY' -c 'import os, sys; print(oct(os.lstat(sys.argv[1]).st_mode & 0o7777))' \"\$2\" > '$W/temp-mode'"
+            same "format --write keeps the newer mode at $point" 0o100600 "$(access "$W/change/in.v3" | cut -d' ' -f1)"
+            [ "$point" != check1 ] || same "format --write's new file has access for its owner alone until it is removed" 0o600 "$(cat "$W/temp-mode")"
+            label="a change of owner"
+            change $point "" true "--test-fake=$point:uid=$(($(id -u) + 1))"
+            if [ -n "$SUPP" ]; then
+                label="a change of group"
+                change $point ctime "chgrp $SUPP \"\$1\""
+                same "format --write keeps the newer group at $point" "$SUPP" "$(access "$W/change/in.v3" | cut -d' ' -f3)"
+            fi
+            if [ "$CAN_ACL" -eq 1 ]; then
+                label="an added ACL"
+                change $point ctime "$ACL_CMD"
+            fi
+            if [ "$CAN_XATTR" -eq 1 ]; then
+                label="an added extended attribute"
+                change $point ctime "$XATTR_CMD"
+            fi
+        done
+        [ -n "$SUPP" ] || echo "skip: format --write refuses a change of group: the caller has no other group"
+
+        # The new file's name replaced by another file: before the final
+        # check, and before the removal after a separate failure. Neither
+        # name is changed.
+        for point in check2 cleanup; do
+            d=$W/temp-swap-$point
+            fresh "$d"
+            printf 'substitute\n' > "$W/substitute"
+            inode=$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/substitute")
+            if [ "$point" = check2 ]; then
+                before=$(meta "$d/in.v3")
+                hooked expect_bytes "format --write refuses its new file replaced under its name" 1 "$F/none" \
+                    "cannot write '$d/in\.v3': its new file's name, '$d/\.virgil-lsp-[0-9A-F]+\.tmp', names another file now, so neither name was changed" -- \
+                    format --write --test-hook="check2:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
+                same "format --write leaves the input when its new file is replaced" "$before" "$(meta "$d/in.v3")"
+            else
+                hooked expect_bytes "format --write leaves its new file's name when it names another file at cleanup" 1 "$F/none" \
+                    "cannot write '$d/in\.v3': it changed after it was read" -- \
+                    format --write --test-hold=ctime --test-hook="check1:$HOOKENV chmod 600 \"\$1\"" \
+                    --test-hook="cleanup:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
+                check_stream stderr "$TMP/err" "left '$d/\.virgil-lsp-[0-9A-F]+\.tmp' in place: it names another file now"
+                finish "format --write reports the new file's name it left at cleanup" $(( $? == 0 ))
+                same "format --write keeps the newer mode when its new file is replaced" 0o100600 "$(access "$d/in.v3" | cut -d' ' -f1)"
+            fi
+            check "format --write leaves the input's bytes when its new file is replaced at $point" cmp -s "$F/unformatted.orig" "$d/in.v3"
+            # The one other entry is the substitute, under the new file's name.
+            left=$(find "$d" -mindepth 1 -maxdepth 1 ! -name in.v3)
+            same "format --write leaves one other name at $point" 1 "$(printf '%s\n' "$left" | grep -c .)"
+            same "format --write leaves the substitute's bytes at $point" substitute "$(cat "$left" 2>/dev/null)"
+            same "format --write leaves the substitute's inode at $point" "$inode" \
+                "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$left" 2>/dev/null)"
+        done
+
+        # A group the new file can't be given, and a new file with another
+        # owner. The test hook reports these at the boundary, since a caller
+        # can't create them: the original's group as one the caller isn't in,
+        # whose setting really fails, and the new file's owner as another.
+        if [ "$PRIVILEGED" -eq 1 ] || [ -z "$NONMEMBER" ]; then
+            echo "skip: format --write reports a group it can't set: a privileged user can set any group"
+        else
+            fresh "$W/group"
+            before=$(meta "$W/group/in.v3")
+            hooked expect_bytes "format --write reports a group it can't set" 1 "$F/none" \
+                "cannot write '$W/group/in\.v3': its new file can't be given its group" -- \
+                format --write --test-fake=gid=$NONMEMBER "$W/group/in.v3"
+            same "format --write leaves the file whose group it can't set" "$before" "$(meta "$W/group/in.v3")"
+            same "format --write leaves no new file when it can't set the group" in.v3 "$(entries "$W/group")"
+        fi
+        fresh "$W/owner"
+        before=$(meta "$W/owner/in.v3")
+        hooked expect_bytes "format --write refuses a new file with another owner" 1 "$F/none" \
+            "cannot write '$W/owner/in\.v3': its new file would have another owner" -- \
+            format --write --test-fake=tempuid=$(($(id -u) + 1)) "$W/owner/in.v3"
+        same "format --write leaves the file when its new file has another owner" "$before" "$(meta "$W/owner/in.v3")"
+        same "format --write removes its new file with another owner" in.v3 "$(entries "$W/owner")"
+    fi
+fi
 
 A=$FIXTURES/analysis
 expect "analyze clean two-file program" 0 '^ok: 2 files parsed and verified$' "" -- \

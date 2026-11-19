@@ -33,6 +33,10 @@ component VirgilLsp {
 		buf.puts("                     Print one file's formatted text to standard output.\n");
 		buf.puts("    --check          Instead, print 'path:line: not formatted' for each file that\n");
 		buf.puts("                     would change, with its first changed line; exit with 1 if any would.\n");
+		buf.puts("    --write          Instead, replace each file that would change: write a new file\n");
+		buf.puts("                     beside it and rename it over the file. A symbolic link, or a file\n");
+		buf.puts("                     with an ACL or another extended attribute, is refused. There is no\n");
+		buf.puts("                     lock: a save between the last check and the rename can be lost.\n");
 		buf.puts("    -lang:<option>   A language option, as in a project file's compilerArgs.\n");
 		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
 		buf.puts("  --help             Print this summary.\n\n");
@@ -156,14 +160,18 @@ component VirgilLsp {
 	// one file can fill, so formatted text fits wherever its source did.
 	def FORMAT_MAX_BYTES = LspAnalysisCapture.MAX_SOURCE_BYTES;
 	// Formats files by ADR-0019, as the server would. Exits with 0 on success,
-	// 1 if a file would change under --check or can't be formatted, and 2 for
-	// invalid arguments.
+	// 1 if a file would change under --check, can't be formatted, or can't be
+	// replaced under --write, and 2 for invalid arguments.
 	def format(args: Array<string>) -> int {
-		var check = false, seen = Strings.newMap<bool>();
+		var check = false, write = false, seen = Strings.newMap<bool>();
 		var options = Vector<string>.new(), paths = Vector<string>.new();
 		for (arg in args) {
 			if (Strings.equal(arg, "--check")) {
 				check = true;
+			} else if (Strings.equal(arg, "--write")) {
+				write = true;
+			} else if (FormatHook.enabled && FormatHook.option(arg)) {
+				// A test option of the test-only build.
 			} else if (Strings.startsWith(arg, ProjectCompilerFlags.PREFIX)) {
 				var problem = ProjectCompilerFlags.check(arg, seen);
 				if (problem != null) {
@@ -178,27 +186,39 @@ component VirgilLsp {
 				paths.put(arg);
 			}
 		}
+		if (check && write) {
+			Log.error1("format takes --check or --write, not both; run '%s --help'", BuildInfo.NAME);
+			return 2;
+		}
 		if (paths.length == 0) {
 			Log.error1("format needs a file; run '%s --help'", BuildInfo.NAME);
 			return 2;
 		}
-		if (!check && paths.length > 1) {
-			Log.error1("format prints one file; pass --check to check several; run '%s --help'", BuildInfo.NAME);
+		if (!check && !write && paths.length > 1) {
+			Log.error1("format prints one file; pass --check or --write for several; run '%s --help'", BuildInfo.NAME);
 			return 2;
+		}
+		// Before any file is opened (docs/decisions/0019-formatter.md, decision 6).
+		if (write && !HostOs.REPLACES_FILES) {
+			Log.error1("format --write isn't available on the %s build, whose platform layer has no file metadata from a descriptor", HostOs.PLATFORM);
+			return 1;
 		}
 		// A closed pipe must fail a write, reported, rather than end this process.
 		HostOs.ignoreSigpipe();
 		var lang = options.extract(), status = 0;
 		for (i < paths.length) {
-			if (!formatFile(paths[i], lang, check)) status = 1;
+			var file = if(write, FileReplacement.new(paths[i]));
+			if (!formatFile(paths[i], lang, check, file)) status = 1;
+			if (file != null) file.close();
 		}
 		return status;
 	}
-	// Formats {path}: reports it if {check} and it would change, or else
-	// writes its formatted text. Returns false if it would change or can't be
-	// formatted, which is reported on standard error.
-	private def formatFile(path: string, options: Array<string>, check: bool) -> bool {
-		var input = readSource(path);
+	// Formats {path}: reports it if {check} and it would change, replaces it
+	// through {file} if there is one and it would change, or else writes its
+	// formatted text. Returns false if it would change under {check}, or
+	// can't be formatted or replaced, which is reported on standard error.
+	private def formatFile(path: string, options: Array<string>, check: bool, file: FileReplacement) -> bool {
+		var input = if(file != null, file.open(FORMAT_MAX_BYTES), readSource(path));
 		if (input == null) return false;
 		var r = AeneasAdapter.formatting(path, input, options, AnalysisFormatEnd.ONE);
 		if (r.diagnostic != null) {
@@ -222,6 +242,8 @@ component VirgilLsp {
 			writeAll(Strings.format2("%s:%d: not formatted\n", path, line));
 			return false;
 		}
+		// A formatted file isn't written.
+		if (file != null && r.firstChange() < 0) return true;
 		var edits = r.edits();
 		if (edits == null) {
 			Log.error1("cannot format '%s'", path);
@@ -234,11 +256,13 @@ component VirgilLsp {
 			pos = e.end;
 		}
 		for (i = pos; i < input.length; i++) out[at++] = input[i];
+		if (file != null) return file.replace(out);
 		return writeAll(out);
 	}
 	// The text of {path}, read as a project source is, or null after
 	// reporting why it can't be. Reads are bounded by FORMAT_MAX_BYTES.
 	private def readSource(path: string) -> Array<byte> {
+		if (FormatHook.enabled) FormatHook.at(FormatHook.OPEN, path, null);
 		var fd = HostOs.openRead(path);
 		// The JVM bridge checks the type before opening: EISDIR or EINVAL.
 		if (fd == -21 || fd == -22) {

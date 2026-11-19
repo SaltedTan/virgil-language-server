@@ -13,7 +13,7 @@ The Virgil Language Server provides an LSP server for the Virgil programming lan
 | `src/protocol/` | Byte framing, JSON-RPC messages, lifecycle, document synchronization, feature handlers, diagnostics, and analysis scheduling. |
 | `src/worker/` | The analysis worker's entry point and supervisor, its framing, and the message codec. |
 | `src/documents/` | URI normalization, versioned overlays, and position mapping. |
-| `src/workspace/` | Project files, bounded glob expansion, workspace discovery, diagnostic ownership, and configuration revisions. |
+| `src/workspace/` | Project files, bounded glob expansion, workspace discovery, diagnostic ownership, configuration revisions, and the file replacement of `format --write`. |
 | `src/os/<target>/` | System calls that the Virgil `System` component lacks, one directory per target. |
 | `src/Log.v3` | Logging to standard error. |
 | `test/` | Virgil unit tests, protocol and CLI transcripts, diagnostics, release checks, editor tests under `test/e2e/`, and fixtures. |
