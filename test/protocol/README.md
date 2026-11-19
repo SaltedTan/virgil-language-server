@@ -10,8 +10,19 @@ and the server's stderr on failure.
   sessions that a byte comparison cannot express, such as replies while the
   analysis worker is busy or paused.
 - `client_initialization.py` replays the initialization exchange that real
-  editors captured, from `clients/<name>/messages.json`, then opens a file,
-  requests its document symbols, and shuts down.
+  editors captured, from `clients/<name>/messages.json`, answers the
+  formatting registration that each capture's client gets for declaring
+  dynamic registration, then opens a file, requests its document symbols, and
+  shuts down.
+- `formatting.py` applies `textDocument/formatting` edits and checks the exact
+  text: UTF-16 positions, CR LF, the mirrored end, a comment between two
+  edits, the merged edit above 10,000, and the same text as `virgil-lsp format`
+  for the pinned `lib/util` files. It also checks the refusals, the parse
+  budget, the growth and reply bounds, the out-of-sync marks after rejected
+  changes, skipped frames, and undecodable payloads, a document in two
+  projects, and a failed registration. The `formatting-registration-dynamic`
+  and `formatting-registration-static` transcripts check both registration
+  paths byte for byte.
 - `lspcheck.toml` is the [lspcheck](https://github.com/SaltedTan/lspcheck)
   profile that CI's `lspcheck-linux` job uses: a one-file Virgil project and
   the seeded source mutation lspcheck runs on it. See
@@ -188,10 +199,13 @@ out-of-range numbers, and invalid lifecycle ordering also have fixed oracles.
 
 `reply_shapes.py` checks successful replies against the same pinned model.
 Every session checks each successful `initialize`, `textDocument/hover`,
-`textDocument/completion`, `textDocument/documentSymbol`, and `workspace/symbol`
-result as it arrives, and the params of each `textDocument/publishDiagnostics`
-notification. Each type comes from the method's request or notification entry
-in the model, not from a copy in the tests. Error replies keep their envelope
+`textDocument/completion`, `textDocument/documentSymbol`, `workspace/symbol`,
+and `textDocument/formatting` result as it arrives, and the params of each
+`textDocument/publishDiagnostics` notification. It checks the params of each
+`client/registerCapability` request the server sends, and each registration's
+`registerOptions` against its method's registration options in the model, such
+as `DocumentFormattingRegistrationOptions`. Each type comes from the method's
+request or notification entry in the model, not from a copy in the tests. Error replies keep their envelope
 and error-code checks and are never checked as results.
 
 The validator resolves references to structures, enumerations, and type
@@ -233,9 +247,13 @@ so their hovers are null and their workspace symbols empty. The
 a completion under negotiated `insertReplaceSupport` (whose items must use
 `InsertReplaceEdit`), and workspace symbols, each with a null or empty
 alternative, and opens a document with a syntax error for populated
-diagnostics. A whole run fails unless every method had a populated reply and a
-null or empty one (the model gives `initialize` neither); the runner prints the
-count of each kind.
+diagnostics. The `formatting-static` and `formatting-dynamic` cases check
+`documentFormattingProvider` without dynamic registration, and with it, the
+watched-files and formatting registrations and the formatting selector; both
+format an unformatted document for a populated reply. A whole run fails unless
+every method had a populated reply and a null or empty one (the model gives
+`initialize` neither), and the formatting and watched-files registrations were
+checked; the runner prints the count of each kind.
 
 The model checks structure only. It cannot prove that a range's start precedes
 its end, that a reply is current for the document version, that a result uses
@@ -319,7 +337,7 @@ any case, is a bounded stress edit instead: deep nesting, thousands of
 declarations, or a long member or operator chain.
 
 After each step, the case sends its requests at once and waits for every
-reply. They go round robin through the 19 request methods of the coverage
+reply. They go round robin through the 20 request methods of the coverage
 manifest (`MAIN_METHODS`), with UTF-16 positions in the current text, mostly
 at names, sometimes at the end or inside a surrogate pair, and params for each
 method. Rename edits are never applied. A prepare request that returns items
@@ -363,11 +381,11 @@ A case fails if:
   capability here asks for;
 - an error is not a JSON-RPC error object (an integer `code`, a string
   `message`, and optional `data` of any type, and nothing else), or not one
-  that its method documents: `RequestFailed` for bounded replies and rename
-  refusals, and `ContentModified` for semantic tokens. Valid params never get
-  `InvalidParams`;
-- a successful `initialize`, hover, completion, document-symbol, or
-  workspace-symbol result, or diagnostics params, fail the
+  that its method documents: `RequestFailed` for bounded replies, rename
+  refusals, and formatting refusals, and `ContentModified` for semantic
+  tokens. Valid params never get `InvalidParams`;
+- a successful `initialize`, hover, completion, document-symbol,
+  workspace-symbol, or formatting result, or diagnostics params, fail the
   [reply-shape validator](#successful-reply-shapes); a value past the
   validator's bounds is recorded as unchecked rather than failed;
 - a `window/showMessage` is not the documented warning that an automatic

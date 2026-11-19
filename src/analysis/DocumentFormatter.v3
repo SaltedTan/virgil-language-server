@@ -18,19 +18,33 @@ enum AnalysisFormatEnd {
 	ONE
 }
 
+// Why AeneasAdapter.formatting refused a document, so that a caller can treat
+// the kinds differently without reading the message: textDocument/formatting
+// answers a lone CR or a syntax error with no edits, and the others with an
+// error.
+enum AnalysisFormatRefusal {
+	NONE,		// formatted
+	LONE_CR,	// a carriage return that no line feed follows
+	SYNTAX,		// the text doesn't parse with the project's language options
+	PARSE_BUDGET,	// more tokens than the parse budget (AnalysisParseBudget)
+	UNTOKENIZED	// the parser left text outside its tokens and comments
+}
+
 // A document formatted (AeneasAdapter.formatting), or a refusal that says why:
 // a carriage return without a line feed, the parse's first diagnostic, or the
 // parse budget. {size} and {firstChange} are known before any replacement
 // text is built, so a caller can refuse a result that would not fit, or
 // report where a text changes, without calling {edits}.
 class AnalysisFormatting {
+	// The kind of refusal, or NONE.
+	def kind: AnalysisFormatRefusal;
 	// Why the document was not formatted, or null.
 	def refusal: string;
 	// The parse's first diagnostic, for a refusal of text that doesn't parse.
 	def diagnostic: AnalysisDiagnostic;
 	private def formatter: DocumentFormatter;
 
-	new(refusal, diagnostic, formatter) { }
+	new(kind, refusal, diagnostic, formatter) { }
 
 	// The formatted text's length in bytes, or -1 for a refusal.
 	def size() -> long {
@@ -384,8 +398,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 
 	// Sets {size} and {count}, building no replacement text.
 	def measure() -> AnalysisFormatting {
-		if (!pass()) return AnalysisFormatting.new("the parser left source text outside its tokens", null, null);
-		return AnalysisFormatting.new(null, null, this);
+		if (!pass()) return AnalysisFormatting.new(AnalysisFormatRefusal.UNTOKENIZED, "the parser left source text outside its tokens", null, null);
+		return AnalysisFormatting.new(AnalysisFormatRefusal.NONE, null, null, this);
 	}
 	// The edits, in byte order.
 	def edits() -> Array<AnalysisTextEdit> {

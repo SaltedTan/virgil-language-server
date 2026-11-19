@@ -109,7 +109,7 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(callHierarchyProvider=True, completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentHighlightProvider=True, documentSymbolProvider=True, foldingRangeProvider=True, selectionRangeProvider=True,
+    reply(1, dict(capabilities=dict(callHierarchyProvider=True, completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentFormattingProvider=True, documentHighlightProvider=True, documentSymbolProvider=True, foldingRangeProvider=True, selectionRangeProvider=True,
                                    semanticTokensProvider=dict(full=True, legend=dict(tokenModifiers=["declaration", "readonly", "defaultLibrary"], tokenTypes=[
                                        "namespace", "class", "enum", "enumMember", "struct", "type", "typeParameter",
                                        "parameter", "variable", "property", "function", "method"])),

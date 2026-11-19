@@ -41,8 +41,12 @@ REPLY_COVERAGE = {
     "textDocument/completion": ("populated", "empty"),
     "textDocument/documentSymbol": ("populated", "empty"),
     "workspace/symbol": ("populated", "empty"),
+    "textDocument/formatting": ("populated", "empty"),
     "textDocument/publishDiagnostics": ("populated", "empty"),
 }
+# The server's client/registerCapability registrations that a whole run must
+# check against the model's registration options.
+REGISTRATION_COVERAGE = ("textDocument/formatting", "workspace/didChangeWatchedFiles")
 
 
 def reply_kind(value):
@@ -77,9 +81,16 @@ class Replies:
         self.validator.params(method, value)
         self.seen[method, reply_kind(value)] += 1
 
+    def registration(self, params):
+        self.validator.registration(params)
+        for registration in params["registrations"]:
+            self.seen["client/registerCapability", registration["method"]] += 1
+
     def missing(self):
         return ["%s %s" % (method, kind) for method, kinds in REPLY_COVERAGE.items()
-                for kind in kinds if not self.seen[method, kind]]
+                for kind in kinds if not self.seen[method, kind]] + [
+            "client/registerCapability " + method for method in REGISTRATION_COVERAGE
+            if not self.seen["client/registerCapability", method]]
 
 
 def frame(message):
@@ -105,6 +116,8 @@ class ShapeSession(Session):
         self.case = None
         self.checkpoints = []
         self.outlines = {}
+        # The params of each client/registerCapability request, in order.
+        self.registrations = []
 
     def raw(self, data):
         self.frames.append(data)
@@ -123,6 +136,8 @@ class ShapeSession(Session):
             msg = super().receive(deadline)
             if "method" in msg and "id" in msg:
                 assert msg["method"] == "client/registerCapability", msg
+                self.replies.registration(msg["params"])
+                self.registrations.append(msg["params"])
                 # Watcher-capability variants really negotiate registration.
                 response = {"jsonrpc": "2.0", "id": msg["id"], "result": None}
                 self.transcript.append(("send", response))
@@ -203,6 +218,7 @@ SPECIALS = [
     special("decimal-options-rejected", negotiated=False, reason="documented JsonValue number limitation"),
     special("oversized-integer-options-rejected", negotiated=False, reason="documented JsonValue number limitation"),
     special("typed-request-ids"), special("request-method-coverage"),
+    special("formatting-static"), special("formatting-dynamic"),
     special("before-initialize", lifecycle=False, reason="requests before initialize get ServerNotInitialized"),
     special("duplicate-initialize", lifecycle=False, reason="second initialize gets InvalidRequest"),
     special("after-shutdown", lifecycle=False, reason="requests after shutdown get InvalidRequest"),
@@ -480,10 +496,53 @@ def source_backed_replies(s, uri, text):
     s.barrier()
 
 
+FORMATTING_URI = "untitled:shape-formatting"
+UNFORMATTED = "component F {\n  def f() {}\n}\n"
+# The edits that format UNFORMATTED: a tab for the two spaces, and a space
+# between the empty body's braces.
+FORMATTING_EDITS = [
+    {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 2}}, "newText": "\t"},
+    {"range": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 11}}, "newText": " "},
+]
+
+
+def formatting(s, dynamic):
+    """The formatting capability or registration, and a populated reply.
+
+    A client that registers formatting dynamically, beside watched files, gets
+    no documentFormattingProvider and one registration for Virgil documents
+    after initialized; any other client gets the static capability and no
+    registration. Both get the same edits."""
+    caps = {"textDocument": {"formatting": {"dynamicRegistration": True}},
+            "workspace": {"didChangeWatchedFiles": {"dynamicRegistration": True}}} if dynamic else {}
+    result = s.start({"processId": None, "rootUri": None, "capabilities": caps})
+    provider = result["capabilities"].get("documentFormattingProvider")
+    # The registrations are sent before the barrier's reply.
+    s.barrier()
+    if dynamic:
+        assert provider is None, ("dynamic registration: expected no static capability", result)
+        methods = [r["method"] for params in s.registrations for r in params["registrations"]]
+        assert methods == ["workspace/didChangeWatchedFiles", "textDocument/formatting"], s.registrations
+        assert s.registrations[1]["registrations"] == [{
+            "id": "virgil-lsp/formatting", "method": "textDocument/formatting",
+            "registerOptions": {"documentSelector": [{"language": "virgil"}]}}], s.registrations
+    else:
+        assert provider is True, ("no dynamic registration: expected documentFormattingProvider", result)
+        assert not s.registrations, s.registrations
+    open_document(s, FORMATTING_URI, UNFORMATTED)
+    edits = s.success("textDocument/formatting", {"textDocument": {"uri": FORMATTING_URI},
+                                                  "options": {"tabSize": 4, "insertSpaces": True}})
+    assert edits == FORMATTING_EDITS, edits
+    s.send("textDocument/didClose", {"textDocument": {"uri": FORMATTING_URI}}, request=False)
+    s.barrier()
+
+
 def oracle(s, case, work):
     ident = case["id"]
     if ident.startswith("symbols-"):
         symbols(s, ident.removeprefix("symbols-"))
+    elif ident.startswith("formatting-"):
+        formatting(s, ident == "formatting-dynamic")
     elif ident in ("empty-change-version", "full-change-version-control", "ranged-change-rejected"):
         version(s, ident, work)
     elif ident in ("decimal-options-rejected", "oversized-integer-options-rejected"):

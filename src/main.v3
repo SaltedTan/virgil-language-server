@@ -110,6 +110,7 @@ component VirgilLsp {
 		server.infoAnalysis = Log.info;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
+		transport.skipped = server.messageSkipped;
 		server.sendNotification = transport.send;
 		var buf = Array<byte>.new(64 * 1024);
 		var fds = Array<int>.new(6);

@@ -19,7 +19,7 @@ from shape_model import Model
 
 # The bounded set that shapes.py checks on every successful reply.
 RESULTS = ("initialize", "textDocument/hover", "textDocument/completion",
-           "textDocument/documentSymbol", "workspace/symbol")
+           "textDocument/documentSymbol", "workspace/symbol", "textDocument/formatting")
 NOTIFICATIONS = ("textDocument/publishDiagnostics",)
 OPEN = {"LSPAny": None, "LSPObject": dict, "LSPArray": list}
 LITERALS = ("stringLiteral", "integerLiteral", "booleanLiteral")
@@ -121,6 +121,20 @@ class ReplyValidator:
             raise UnsupportedModelPath(method + " params", (), method,
                                        "not a model notification with a single params type")
         self.check(entry["params"], value, method + " params")
+
+    def registration(self, params):
+        """Check client/registerCapability params, typed by the model's request
+        entry, and each registration's registerOptions by its method's
+        registrationOptions."""
+        self.check(self.model.entries["client/registerCapability"]["params"], params,
+                   "client/registerCapability params")
+        for i, registration in enumerate(params["registrations"]):
+            entry = self.model.entries.get(registration["method"])
+            if entry is None or "registrationOptions" not in entry:
+                raise UnsupportedModelPath("client/registerCapability params", (), registration["method"],
+                                           "the model has no registration options for this method")
+            self.check(entry["registrationOptions"], registration.get("registerOptions"),
+                       "client/registerCapability registrations[%d].registerOptions" % i)
 
     def check(self, t, value, where="value"):
         """Raise ShapeError unless value has model type t, a type node or a type name."""

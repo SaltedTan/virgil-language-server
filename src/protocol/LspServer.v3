@@ -75,6 +75,8 @@ class LspServer {
 	private def typeHierarchy = LspTypeHierarchy.new();
 	private def selectionRanges = LspSelectionRanges.new(documents, projects);
 	private def foldingRanges = LspFoldingRanges.new(documents, projects);
+	// textDocument/formatting, and its registration for Virgil documents.
+	private def formatting = LspFormatting.new(documents, projects);
 	private def callHierarchy = LspCallHierarchy.new();
 	// Keywords from the open document's text, and declarations in scope from
 	// a completion analysis; tests read its count of analyses.
@@ -101,6 +103,8 @@ class LspServer {
 		documentSymbols.register(dispatcher);
 		workspaceSymbols.register(dispatcher);
 		foldingRanges.register(dispatcher);
+		formatting.register(dispatcher);
+		formatting.warn = projectWarning;
 		selectionRanges.register(dispatcher);
 		completion = LspCompletion.new(documents, projects, publishNotification);
 		completion.register(dispatcher);
@@ -305,12 +309,22 @@ class LspServer {
 		params["message"] = JsonValue.String(message);
 		documentWarning = JsonRpcMessage.Notification("window/showMessage", JsonRpcParams.ByName(params)).encode();
 	}
+	// Called for a message that the transport skipped, before the next one is
+	// handled. It may have changed any open document, so all are out of sync.
+	def messageSkipped() {
+		documents.markAllOutOfSync();
+	}
 	// Decodes and handles one payload. Returns a reply or server-notification
 	// payload, or null if there is nothing to send.
 	def handle(payload: Array<byte>) -> Array<byte> {
 		if (state == LspServerState.EXITED) return null;
 		var input = JsonRpcDecoder.decode(payload);
 		match (input) {
+			// A payload that isn't a valid request or notification, and has
+			// no valid request ID, may have been a change to any open
+			// document, so all are out of sync. One with an ID was a request,
+			// which changes no document.
+			Rejected(id, _) => if (JsonRpcId.Null.?(id)) documents.markAllOutOfSync();
 			Valid(msg, unsupportedNumbers) => {
 				match (msg) {
 					x: JsonRpcMessage.Request => {
@@ -399,6 +413,9 @@ class LspServer {
 		// Type and call hierarchy items take their kinds as document symbols do.
 		typeHierarchy.clientKinds = documentSymbols.clientKinds;
 		foldingRanges.configure(member(textDocument, "foldingRange"));
+		var formattingCapability = member(textDocument, "formatting");
+		formatting.dynamic = formattingCapability != null
+			&& formattingCapability["dynamicRegistration"] == JsonValue.Bool(true);
 		callHierarchy.clientKinds = documentSymbols.clientKinds;
 		var workspaceSymbol = member(member(member(params, "capabilities"), "workspace"), "symbol");
 		workspaceSymbols.clientKinds = LspSymbolKind.symbols(member(workspaceSymbol, "symbolKind"));
@@ -437,6 +454,10 @@ class LspServer {
 		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["foldingRangeProvider"] = JsonValue.Bool(true);
+		// A client that registers formatting dynamically gets it for Virgil
+		// documents only, after initialized (LspFormatting.initialized), so
+		// that it isn't offered for project files.
+		if (!formatting.dynamic) capabilities["documentFormattingProvider"] = JsonValue.Bool(true);
 		capabilities["selectionRangeProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["typeDefinitionProvider"] = JsonValue.Bool(true);
@@ -505,6 +526,8 @@ class LspServer {
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {
 		var request = workspaceEvents.initialized(dispatcher.pending);
+		if (request != null) publishNotification(request);
+		request = formatting.initialized(dispatcher.pending);
 		if (request != null) publishNotification(request);
 	}
 	private def shutdown(request: JsonRpcMessage.Request) -> JsonRpcReply {
