@@ -131,7 +131,7 @@ def published(messages: Array<HashMap<string, JsonValue>>, uri: string) -> Array
 }
 def count(messages: Array<HashMap<string, JsonValue>>, name: string) -> int {
 	var n = 0;
-	for (m in messages) { if(Strings.equal(name, method(m))) n++; }
+	for (m in messages) { if (Strings.equal(name, method(m))) n++; }
 	return n;
 }
 def field(d: JsonValue, key: string) -> JsonValue {

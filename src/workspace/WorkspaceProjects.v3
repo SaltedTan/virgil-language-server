@@ -18,7 +18,7 @@ class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var evicted: bool;
 	var lastUsed: long;
 	def contains(path: string, memberOnly: bool) -> bool {
-		for (s in sources) { if(Strings.equal(path, s.path) && (!memberOnly || s.member)) return true; }
+		for (s in sources) { if (Strings.equal(path, s.path) && (!memberOnly || s.member)) return true; }
 		return false;
 	}
 }
@@ -136,7 +136,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		if (!JsonValue.String.?(v)) return;
 		var path = DocumentUri.filePath(JsonValue.String.!(v).v);
 		if (path == null) return;
-		for (i < roots.length) { if(Strings.equal(roots[i], path)) return; }
+		for (i < roots.length) { if (Strings.equal(roots[i], path)) return; }
 		roots.put(path);
 	}
 	private def discoveryLimit() {
@@ -321,7 +321,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	// if it isn't loaded and discovery would find it: inside a workspace folder,
 	// within the depth bound, and in no hidden directory.
 	def watched(path: string) {
-		for (i < configs.length) { if(Strings.equal(configs[i].path, path)) return; }
+		for (i < configs.length) { if (Strings.equal(configs[i].path, path)) return; }
 		var root = folderOf(path);
 		if (root == null) return;
 		var depth = 0;
@@ -387,7 +387,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		return result;
 	}
 	private def within(roots: Array<string>, path: string) -> bool {
-		for (root in roots) { if(Strings.startsWith(path, ProjectFiles.join(root, ""))) return true; }
+		for (root in roots) { if (Strings.startsWith(path, ProjectFiles.join(root, ""))) return true; }
 		return false;
 	}
 	// Retires {c}'s projects and clears its published diagnostics.
@@ -402,14 +402,14 @@ class WorkspaceProjects(store: DocumentStore) {
 	private def refreshConfigs(preflight: bool) {
 		pruneDeleted();
 		if (preflight) {
-			for (i < configs.length) { for(ctx in configs[i].contexts) ctx.sources = []; }
+			for (i < configs.length) { for (ctx in configs[i].contexts) ctx.sources = []; }
 		}
 		if (!discovered) {
 			discovered = true;
 			for (root in folders) discover(root, 0);
 		}
 		for (i < configs.length) update(configs[i], preflight);
-		for (i < configs.length) { if(configs[i].capacityRejected) update(configs[i], false); }
+		for (i < configs.length) { if (configs[i].capacityRejected) update(configs[i], false); }
 	}
 	def load(path: string) -> WorkspaceConfig {
 		pruneDeleted();
@@ -589,11 +589,11 @@ class WorkspaceProjects(store: DocumentStore) {
 				diagnostics.put(ProjectConfigDiagnostic.new(ProjectConfigCode.EXPANSION_LIMIT, ctx.definition.begin, ctx.definition.end, "workspace source-list capacity exceeded"));
 				break;
 			}
-			for (d in expanded.diagnostics) { if(diagnostics.length < ProjectConfigParser.MAX_DIAGNOSTICS) diagnostics.put(d); }
+			for (d in expanded.diagnostics) { if (diagnostics.length < ProjectConfigParser.MAX_DIAGNOSTICS) diagnostics.put(d); }
 		}
 		c.diagnostics = diagnostics.extract();
 		// One invalid project invalidates the whole file, not just that program.
-		if (c.diagnostics.length > 0) { for(ctx in c.contexts) ctx.sources = []; }
+		if (c.diagnostics.length > 0) { for (ctx in c.contexts) ctx.sources = []; }
 		for (ctx in c.contexts) parseableText.retainSources(ctx);
 		publish(c);
 	}
@@ -614,7 +614,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	def loadedContexts() -> Array<ProjectContext> {
 		var result = Vector<ProjectContext>.new();
 		for (i < configs.length) {
-			for (ctx in configs[i].contexts) { if(ctx.config.current) result.put(ctx); }
+			for (ctx in configs[i].contexts) { if (ctx.config.current) result.put(ctx); }
 		}
 		return AnalysisTables.sort(result.extract(), contextBefore);
 	}
@@ -658,7 +658,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		if (path != null && !disabled) {
 			for (i < configs.length) {
 				var c = configs[i];
-				for (ctx in c.contexts) { if(ctx.contains(path, false)) contexts.put(ctx); }
+				for (ctx in c.contexts) { if (ctx.contains(path, false)) contexts.put(ctx); }
 			}
 		}
 		var result = contexts.extract();

@@ -526,7 +526,7 @@ def trim(text: string) -> string {
 // Whether {cell}, trimmed, is part of a table's alignment row, such as ":---".
 def alignment(cell: string) -> bool {
 	if (cell.length == 0) return false;
-	for (c in cell) { if(c != '-' && c != ':') return false; }
+	for (c in cell) { if (c != '-' && c != ':') return false; }
 	return true;
 }
 // The text of {cell}, a trimmed table cell holding one code span, or null.

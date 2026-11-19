@@ -21,6 +21,17 @@ PROTOCOL_SHAPES_CASES ?= 2000
 PROTOCOL_SHAPES = python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(PROTOCOL_SHAPES_SEED) \
 	--cases $(PROTOCOL_SHAPES_CASES) --artifacts $(BUILD)/protocol-shapes
 
+# `make check-format` checks the tracked Virgil sources with `virgil-lsp format
+# --check`, except under these directories, whose bytes and positions tests
+# depend on (docs/decisions/0019-formatter.md, decision 6).
+FORMAT_EXCLUDE = \
+	vendor/ \
+	test/fixtures/ \
+	test/e2e/nvim/fixture/ \
+	test/e2e/lazyvim/fixture/ \
+	docs/examples/
+CHECK_FORMAT = scripts/check-format.sh "$(BUILD)" $(foreach d,$(FORMAT_EXCLUDE),":(exclude)$(d)")
+
 # Opt-in seeded source mutations, outside `make test`; see test/protocol/README.md.
 SOURCE_MUTATIONS_SEED  ?= 20261028
 SOURCE_MUTATIONS_CASES ?= 100
@@ -139,9 +150,10 @@ SUITES = \
 	'python3 test/protocol/target_analysis.py $(BUILD)/virgil-lsp' \
 	$(call native_only,'python3 test/format/corpus.py $(BUILD)/virgil-lsp') \
 	$(call native_only,'$(BUILD)/retain-probe') \
-	'python3 test/e2e/clean-install/test_readme.py'
+	'python3 test/e2e/clean-install/test_readme.py' \
+	'$(CHECK_FORMAT)'
 
-.PHONY: all test test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -238,6 +250,10 @@ endif
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	$(PROTOCOL_SHAPES)
+
+# Also a suite of `make test`.
+check-format: $(BUILD)/virgil-lsp
+	$(CHECK_FORMAT)
 
 # Not part of `make test` or CI. Pass SOURCE_MUTATIONS_ARGS for other bounds,
 # --stress, or --replay CASE.json.

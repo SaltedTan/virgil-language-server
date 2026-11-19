@@ -50,7 +50,7 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 	// a file event. The request's own file was checked already.
 	def target(path: string) -> (int, Array<byte>) {
 		var j = -1;
-		for (k < snapshot.paths.length) { if(j < 0 && Strings.equal(snapshot.paths[k], path)) j = k; }
+		for (k < snapshot.paths.length) { if (j < 0 && Strings.equal(snapshot.paths[k], path)) j = k; }
 		if (j < 0) return (-1, null);
 		var t = analyzedText(j);
 		return (if(t != null, j, -1), t);
@@ -353,7 +353,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// again.
 	def answer(waiters: LspSnapshotWaiters) {
 		var rest = Vector<LspSnapshotWaiters>.new();
-		for (i < batches.length) { if(batches[i] != waiters) rest.put(batches[i]); }
+		for (i < batches.length) { if (batches[i] != waiters) rest.put(batches[i]); }
 		batches = rest;
 		var active = Strings.newMap<ProjectContext>(), requests = waiters.requests;
 		for (i < requests.length) {
@@ -394,12 +394,12 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// Drops every answered request's record.
 	private def purge() {
 		var rest = Vector<LspSnapshotRequest>.new();
-		for (i = oldest; i < arrivals.length; i++) { if(!arrivals[i].answered) rest.put(arrivals[i]); }
+		for (i = oldest; i < arrivals.length; i++) { if (!arrivals[i].answered) rest.put(arrivals[i]); }
 		arrivals = rest;
 		oldest = 0;
 		for (i < batches.length) {
 			var requests = batches[i].requests, kept = Vector<LspSnapshotRequest>.new();
-			for (j < requests.length) { if(!requests[j].answered) kept.put(requests[j]); }
+			for (j < requests.length) { if (!requests[j].answered) kept.put(requests[j]); }
 			requests.clear();
 			requests.puta(kept.extract());
 		}

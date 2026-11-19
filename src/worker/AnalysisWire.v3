@@ -325,7 +325,7 @@ component AnalysisWire {
 			}
 		};
 		if (files != null) return encodeOccurrences(prefix, analysis, files, calls, uses, scope, members, call);
-		return encodeSized(prefix, fun (w: DataWriter) {});
+		return encodeSized(prefix, fun (w: DataWriter) { });
 	}
 	// Count the same writes with the already prepared tables, then allocate
 	// the frame capacity, rounded up to the runtime's eight-byte allocation
