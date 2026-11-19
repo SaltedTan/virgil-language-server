@@ -1,0 +1,225 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A file's metadata, as fstat(2) or lstat(2) reports it, in the same units on
+// every native host. HostOs fills it.
+class FileStatus {
+	var dev: long;
+	var ino: long;
+	// The file type and permission bits of st_mode.
+	var mode: int;
+	var uid: int;
+	var gid: int;
+	var size: long;
+	var mtimeSec: long;
+	var mtimeNsec: long;
+	var ctimeSec: long;
+	var ctimeNsec: long;
+	var compressed: bool;
+
+	def kind() -> int {
+		return mode & 0xF000;
+	}
+	// True if {that} is the same file: the same device and inode.
+	def sameFile(that: FileStatus) -> bool {
+		return dev == that.dev && ino == that.ino;
+	}
+	// True if {that} is the same file with the same size, modification and
+	// status-change times, owner, group, type, and permission bits.
+	def unchanged(that: FileStatus) -> bool {
+		return sameFile(that) && size == that.size &&
+			mtimeSec == that.mtimeSec && mtimeNsec == that.mtimeNsec &&
+			ctimeSec == that.ctimeSec && ctimeNsec == that.ctimeNsec &&
+			uid == that.uid && gid == that.gid && mode == that.mode && compressed == that.compressed;
+	}
+}
+
+// Replaces one file for format --write (docs/decisions/0019-formatter.md,
+// decision 6), reporting each refusal or failure on standard error. open()
+// reads the file through a descriptor that doesn't follow a symbolic link,
+// after checking that its metadata matches the path's and that neither has an
+// ACL or another extended attribute. replace() writes the new text to a new
+// file in the same directory, created with access for its owner alone. It
+// checks that the path still names the unchanged file that was read, gives
+// the new file the original's group and permission bits, checks again, and
+// renames the new file over the path. Each check also confirms that the new
+// file's name still names it, and a failure removes the new file only after
+// the same confirmation. Both descriptors stay open until close(), so no
+// other file can take the device and inode recorded for either. Nothing is
+// locked: a save between the last check and the rename is lost.
+class FileReplacement(path: string) {
+	// The input's descriptor, and its metadata when it was opened, which
+	// every later check compares with the path's.
+	private var fd = -1;
+	private def input = FileStatus.new();
+	// The new file's name while it remains to be renamed or removed, its
+	// descriptor, and its metadata when it was created.
+	private var tempPath: string;
+	private var tempFd = -1;
+	private var temp: FileStatus;
+
+	// The text of the file, or null after reporting why it can't be
+	// replaced or read. Reads are bounded by {limit}.
+	def open(limit: int) -> Array<byte> {
+		var s = FileStatus.new();
+		if (pathStatus(s) < 0) return unreadable();
+		if (s.kind() == SYMLINK) return refused("it is a symbolic link");
+		if (s.kind() != ProjectFiles.REGULAR) return notRegular();
+		if (s.compressed) return refused("it uses macOS file compression");
+		if (FormatHook.enabled) FormatHook.at(FormatHook.OPEN, path, null);
+		var r = HostOs.openReadWrite(path);
+		if (r < 0) {
+			if (r == HostOs.ELOOP) return refused("it is a symbolic link");
+			if (r == EACCES || r == EPERM || r == EROFS || r == ETXTBSY) return refused("it can't be opened for writing");
+			if (r == EISDIR) return notRegular();
+			return unreadable();
+		}
+		fd = r;
+		if (FormatHook.enabled) FormatHook.at(FormatHook.OPENED, path, null);
+		if (HostOs.status(fd, input) < 0) return unreadable();
+		if (FormatHook.enabled) FormatHook.input(input);
+		// A FIFO or device that replaced the file after the check above.
+		if (input.kind() != ProjectFiles.REGULAR) return notRegular();
+		if (input.compressed) return refused("it uses macOS file compression");
+		if (pathStatus(s) < 0 || !s.unchanged(input)) return refused("it changed while it was being opened");
+		var a = HostOs.extendedAttributes(fd);
+		if (a == 0) a = HostOs.linkExtendedAttributes(path);
+		if (a > 0) return refused("it has an ACL or another extended attribute");
+		if (a < 0) return refused("its extended attributes can't be read");
+		if (input.size > limit) {
+			Log.error2("cannot format '%s': it is larger than %d bytes", path, limit);
+			return null;
+		}
+		var text = ProjectFiles.readExpected(fd, int.view(input.size), limit);
+		// A read error, or growth past the bound since fstat.
+		if (text == null) return unreadable();
+		return text;
+	}
+	// Replaces the file that open() read with {text}. Returns false after
+	// reporting why it couldn't, leaving the file as it is.
+	def replace(text: Array<byte>) -> bool {
+		if (!create()) return refuse("a new file can't be created in its directory");
+		var created = FileStatus.new();
+		if (HostOs.status(tempFd, created) < 0) return discard("its new file's metadata can't be read");
+		temp = created;
+		if (FormatHook.enabled) FormatHook.temporary(temp);
+		if (temp.uid != input.uid) return discard("its new file would have another owner");
+		var a = HostOs.extendedAttributes(tempFd);
+		if (a > 0) return discard("its new file would have an ACL or another extended attribute");
+		if (a < 0) return discard("its new file's extended attributes can't be read");
+		if (!writeAll(text)) return discard("its new file can't be written");
+		if (!check(FormatHook.CHECK1)) return false;
+		// The group first: changing it can clear a set-ID bit.
+		if (temp.gid != input.gid && HostOs.setGroup(tempFd, input.gid) < 0) {
+			return discard("its new file can't be given its group");
+		}
+		var s = FileStatus.new();
+		if (HostOs.setMode(tempFd, input.mode) < 0 || HostOs.status(tempFd, s) < 0 ||
+			s.gid != input.gid || (s.mode & 0xFFF) != (input.mode & 0xFFF)) {
+			return discard("its new file can't be given its group and permission bits");
+		}
+		if (HostOs.syncFile(tempFd) < 0) return discard("its new file can't be flushed");
+		if (!check(FormatHook.CHECK2)) return false;
+		if (HostOs.rename(tempPath, path) < 0) return discard("its new file can't be renamed over it");
+		tempPath = null;
+		return true;
+	}
+	// Closes both descriptors.
+	def close() {
+		if (tempFd >= 0) HostOs.close(tempFd);
+		if (fd >= 0) HostOs.close(fd);
+		tempFd = fd = -1;
+	}
+
+	// The same on Linux and Darwin.
+	private def EPERM = -1;
+	private def EACCES = -13;
+	private def EEXIST = -17;
+	private def EISDIR = -21;
+	private def ETXTBSY = -26;
+	private def EROFS = -30;
+	private def SYMLINK = 0xA000;
+
+	// Fills {s} with the path's metadata, as the test hook may adjust it.
+	private def pathStatus(s: FileStatus) -> int {
+		var r = HostOs.linkStatus(path, s);
+		if (FormatHook.enabled && r >= 0) FormatHook.input(s);
+		return r;
+	}
+	// Creates the new file with a random name in the path's directory.
+	private def create() -> bool {
+		var slash = path.length - 1;
+		while (slash >= 0 && path[slash] != '/') slash--;
+		for (attempt < 16) {
+			var w = HostOs.randomWords();
+			var name = StringBuilder.new().putk(path, 0, slash + 1).puts(".virgil-lsp-").putx_64(w.0 ^ w.1).puts(".tmp").extract();
+			var r = HostOs.createExclusive(name);
+			if (r >= 0) {
+				tempPath = name;
+				tempFd = r;
+				return true;
+			}
+			if (r != EEXIST) return false;
+		}
+		return false;
+	}
+	private def writeAll(text: Array<byte>) -> bool {
+		var at = 0;
+		while (at < text.length) {
+			var n = HostOs.write(tempFd, text[at ..+ (text.length - at)]);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) return false;
+			at += n;
+		}
+		return true;
+	}
+	// Runs the test hook at {point}, then checks that the path still names the
+	// unchanged file that was read, with no extended attribute, and that the
+	// new file's name still names it. Returns false after reporting a failure.
+	private def check(point: int) -> bool {
+		if (FormatHook.enabled) FormatHook.at(point, path, tempPath);
+		var s = FileStatus.new();
+		if (pathStatus(s) < 0 || !s.unchanged(input) || HostOs.linkExtendedAttributes(path) != 0) {
+			return discard("it changed after it was read");
+		}
+		if (!verifyTempName()) {
+			tempPath = null;
+			return false;
+		}
+		return true;
+	}
+	// True if the new file's name still names the file open as tempFd.
+	private def verifyTempName() -> bool {
+		var s = FileStatus.new();
+		if (temp != null && HostOs.linkStatus(tempPath, s) >= 0 && s.sameFile(temp)) return true;
+		Log.error2("cannot write '%s': cannot verify its new file's name '%s'", path, tempPath);
+		return false;
+	}
+	// Reports {reason}, removes the new file if its name still names it, and
+	// returns false.
+	private def discard(reason: string) -> bool {
+		refuse(reason);
+		if (FormatHook.enabled) FormatHook.at(FormatHook.CLEANUP, path, tempPath);
+		if (verifyTempName() && HostOs.unlink(tempPath) < 0) {
+			Log.error1("cannot remove '%s'", tempPath);
+		}
+		tempPath = null;
+		return false;
+	}
+	private def refuse(reason: string) -> bool {
+		Log.error2("cannot write '%s': %s", path, reason);
+		return false;
+	}
+	private def refused(reason: string) -> Array<byte> {
+		refuse(reason);
+		return null;
+	}
+	private def unreadable() -> Array<byte> {
+		Log.error1("cannot read file '%s'", path);
+		return null;
+	}
+	private def notRegular() -> Array<byte> {
+		Log.error1("cannot format '%s': it is not a regular file", path);
+		return null;
+	}
+}

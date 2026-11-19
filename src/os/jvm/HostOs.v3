@@ -24,6 +24,7 @@ component HostOs {
 	// The runtime numbers the descriptors it creates from here, as natively.
 	def MIN_FD = 10;
 	private def EIO = -5;
+	private def ENOSYS = -38;
 
 	// Returns a pipe's read and write descriptors, or a negated errno as the
 	// first value. The runtime makes the write end the read end plus one.
@@ -151,6 +152,24 @@ component HostOs {
 	def directoryNameOffset = 19;
 	def directoryTypeOffset = 18;
 	def directoryRecordOffset = 16;
+
+	// The bridge has no descriptor metadata, rename, or extended attributes,
+	// so format --write refuses here before opening any file
+	// (docs/decisions/0019-formatter.md, decision 6). These members match the
+	// native ones only so that the shared sources compile; each fails with ENOSYS.
+	def REPLACES_FILES = false;
+	def PLATFORM = "JVM";
+	def openReadWrite(path: string) -> int { return ENOSYS; }
+	def createExclusive(path: string) -> int { return ENOSYS; }
+	def syncFile(fd: int) -> int { return ENOSYS; }
+	def status(fd: int, s: FileStatus) -> int { return ENOSYS; }
+	def linkStatus(path: string, s: FileStatus) -> int { return ENOSYS; }
+	def extendedAttributes(fd: int) -> int { return ENOSYS; }
+	def linkExtendedAttributes(path: string) -> int { return ENOSYS; }
+	def setGroup(fd: int, gid: int) -> int { return ENOSYS; }
+	def setMode(fd: int, mode: int) -> int { return ENOSYS; }
+	def rename(from: string, to: string) -> int { return ENOSYS; }
+	def unlink(path: string) -> int { return ENOSYS; }
 
 	// A metadata reply: the file type bits of st_mode and the size, or a
 	// negated errno and -1.

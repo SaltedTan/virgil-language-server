@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Host system calls that Virgil's {System} component lacks: pipes, process
-// creation, readiness polling, signals, and random words. This is the x86-64
-// Linux version; src/os/x86-64-darwin/HostOs.v3 declares the same members,
-// and the Makefile compiles only the file for the target. Failures return a
-// negated errno. See docs/decisions/0004-analysis-worker-process.md.
+// creation, readiness polling, signals, random words, and file metadata and
+// replacement. This is the x86-64 Linux version;
+// src/os/x86-64-darwin/HostOs.v3 declares the same members, and the Makefile
+// compiles only the file for the target. Failures return a negated errno.
+// See docs/decisions/0004-analysis-worker-process.md.
 component HostOs {
 	def EINTR = -4;
 	def ELOOP = -40;
@@ -26,6 +27,14 @@ component HostOs {
 	private def SYS_open = 2;
 	private def SYS_close = 3;
 	private def SYS_fstat = 5;
+	private def SYS_lstat = 6;
+	private def SYS_fsync = 74;
+	private def SYS_rename = 82;
+	private def SYS_unlink = 87;
+	private def SYS_fchmod = 91;
+	private def SYS_fchown = 93;
+	private def SYS_llistxattr = 195;
+	private def SYS_flistxattr = 196;
 	private def SYS_getdents64 = 217;
 	private def SYS_fstatat = 262;
 	private def SYS_openat = 257;
@@ -48,10 +57,17 @@ component HostOs {
 	private def SYS_clock_gettime = 228;
 	private def CLOCK_THREAD_CPUTIME_ID = 3;
 	private def RUSAGE_THREAD = 1;
+	private def F_GETFD = 1;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
 	private def F_DUPFD_CLOEXEC = 1030;
+	private def EBADF = -9;
+	private def EOPNOTSUPP = -95;
+	private def O_RDWR = 0x2;
+	private def O_CREAT = 0x40;
+	private def O_EXCL = 0x80;
+	private def O_NOCTTY = 0x100;
 	private def O_NONBLOCK = 0x800;
 	private def O_CLOEXEC = 0x80000;
 	private def O_DIRECTORY = 0x10000;
@@ -217,6 +233,102 @@ component HostOs {
 	def directoryNameOffset = 19;
 	def directoryTypeOffset = 18;
 	def directoryRecordOffset = 16;
+
+	// File replacement for format --write (src/workspace/FileReplacement.v3).
+	// This target provides descriptor metadata, so the command can replace
+	// files safely here; the JVM's HostOs reports false and its name.
+	def REPLACES_FILES = true;
+	def PLATFORM = "x86-64-linux";
+	// Opens {path} for reading and writing without truncating it, blocking,
+	// following a symbolic link, or acquiring a controlling terminal.
+	def openReadWrite(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return openForReplacement(name, O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0, 0);
+	}
+	// Creates {path} for reading and writing with access for its owner
+	// alone, failing with EEXIST if any entry, even a symbolic link, has the name.
+	def createExclusive(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return openForReplacement(name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180, 0);
+	}
+	private def openForReplacement(name: Array<byte>, flags: int, mode: int, first: int) -> int {
+		for (fd = first; fd < 3; fd++) {
+			var r = sys(SYS_fcntl, (fd, F_GETFD, 0));
+			if (r >= 0) continue;
+			if (r != EBADF) return r;
+			var guard = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
+			if (guard < 0) return guard;
+			var opened = openForReplacement(name, flags, mode, fd + 1);
+			close(guard);
+			return opened;
+		}
+		return sys(SYS_open, (Pointer.atContents(name), flags, mode));
+	}
+	def syncFile(fd: int) -> int {
+		return sys(SYS_fsync, fd);
+	}
+	// Fills {s} from fstat(2) of {fd}. Returns 0 or a negated errno.
+	def status(fd: int, s: FileStatus) -> int {
+		var buf = Array<long>.new(18);
+		var r = sys(SYS_fstat, (fd, Pointer.atContents(buf)));
+		if (r >= 0) fill(buf, s);
+		return r;
+	}
+	// Fills {s} from lstat(2) of {path}, which doesn't follow a final
+	// symbolic link. Returns 0 or a negated errno.
+	def linkStatus(path: string, s: FileStatus) -> int {
+		var buf = Array<long>.new(18), name = Arrays.concat(path, "\x00");
+		var r = sys(SYS_lstat, (Pointer.atContents(name), Pointer.atContents(buf)));
+		if (r >= 0) fill(buf, s);
+		return r;
+	}
+	// 1 if the file open as {fd} has an extended attribute, which includes
+	// a POSIX ACL here, 0 if it has none, or a negated errno.
+	def extendedAttributes(fd: int) -> int {
+		return attributes(sys(SYS_flistxattr, (fd, Pointer.NULL, 0)));
+	}
+	// As extendedAttributes, for {path} without following a final symbolic link.
+	def linkExtendedAttributes(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return attributes(sys(SYS_llistxattr, (Pointer.atContents(name), Pointer.NULL, 0)));
+	}
+	// Sets the owning group of the file open as {fd}, keeping its owner.
+	def setGroup(fd: int, gid: int) -> int {
+		return sys(SYS_fchown, (fd, -1, gid));
+	}
+	// Sets the permission bits, including set-ID and sticky bits, of the file open as {fd}.
+	def setMode(fd: int, mode: int) -> int {
+		return sys(SYS_fchmod, (fd, mode & 0xFFF));
+	}
+	def rename(from: string, to: string) -> int {
+		var a = Arrays.concat(from, "\x00"), b = Arrays.concat(to, "\x00");
+		return sys(SYS_rename, (Pointer.atContents(a), Pointer.atContents(b)));
+	}
+	def unlink(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return sys(SYS_unlink, Pointer.atContents(name));
+	}
+	// struct stat on x86-64, in 8-byte words: st_mode and st_uid share word
+	// 3, and st_gid is the low half of word 4.
+	private def fill(buf: Array<long>, s: FileStatus) {
+		s.dev = buf[0];
+		s.ino = buf[1];
+		s.mode = int.view(buf[3]) & 0xFFFF;
+		s.uid = int.view(buf[3] >>> 32);
+		s.gid = int.view(buf[4]);
+		s.size = buf[6];
+		s.mtimeSec = buf[11];
+		s.mtimeNsec = buf[12];
+		s.ctimeSec = buf[13];
+		s.ctimeNsec = buf[14];
+	}
+	// A listxattr(2) result: the size of the names, so 0 if there are none.
+	// A file system without extended attributes has none.
+	private def attributes(r: int) -> int {
+		if (r == EOPNOTSUPP) return 0;
+		if (r < 0) return r;
+		return if(r > 0, 1, 0);
+	}
 
 	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
 	private def moveUp(fd: int) -> int {

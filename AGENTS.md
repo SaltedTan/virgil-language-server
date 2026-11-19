@@ -13,7 +13,7 @@ The Virgil Language Server provides an LSP server for the Virgil programming lan
 | `src/protocol/` | Byte framing, JSON-RPC messages, lifecycle, document synchronization, feature handlers, diagnostics, and analysis scheduling. |
 | `src/worker/` | The analysis worker's entry point and supervisor, its framing, and the message codec. |
 | `src/documents/` | URI normalization, versioned overlays, and position mapping. |
-| `src/workspace/` | Project files, bounded glob expansion, workspace discovery, diagnostic ownership, and configuration revisions. |
+| `src/workspace/` | Project files, bounded glob expansion, workspace discovery, diagnostic ownership, configuration revisions, and the file replacement of `format --write`. |
 | `src/os/<target>/` | System calls that the Virgil `System` component lacks, one directory per target. |
 | `src/Log.v3` | Logging to standard error. |
 | `test/` | Virgil unit tests, protocol and CLI transcripts, diagnostics, release checks, editor tests under `test/e2e/`, and fixtures. |
@@ -42,7 +42,7 @@ Development hosts are Linux x86-64, or an Apple Silicon Mac with Rosetta 2; WSL 
 - `make test-unit` runs only the unit tests. `make test-unit ARGS='ProjectExpansion:*'` runs one focused group in a single process; multiple space-separated patterns are allowed.
 - `make test-nvim` runs the headless Neovim smoke test and is also part of `make test`. Locally it skips with a message if Neovim is missing or older than 0.11; `REQUIRE_NVIM=1` makes that a failure, as CI does.
 - `make test-protocol-shapes` runs the bounded offline LSP shape checks on their own; the same checks also run in `make test`.
-- `make check-format` checks that the tracked Virgil sources are formatted, except the directories in the Makefile's `FORMAT_EXCLUDE`, and is also part of `make test`. It prints `path:line: not formatted` for each file that would change. Fix a file with `build/virgil-lsp format <file> > tmp && mv tmp <file>`.
+- `make check-format` checks that the tracked Virgil sources are formatted, except the directories in the Makefile's `FORMAT_EXCLUDE`, and is also part of `make test`. It prints `path:line: not formatted` for each file that would change. Fix a file with `build/virgil-lsp format --write <file>` on a native build.
 
 In `clients/vscode`, install from the lockfile and run the client checks:
 
