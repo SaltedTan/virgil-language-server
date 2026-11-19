@@ -7,18 +7,19 @@
 // output keeps the input's parser tokens and its comments. Prints one line
 // for each file, tab-separated, in argument order:
 //
-//	<path> syntax <message>        (the file doesn't parse)
-//	<path> cr <message>            (a CR without an LF, which isn't formatted)
-//	<path> refused <message>       (a file that parses but isn't formatted)
+//	<path> syntax <form> <message>  (the file doesn't parse)
+//	<path> cr <form> <message>      (a CR without an LF, which isn't formatted)
+//	<path> refused <form> <message> (a file that parses but isn't formatted)
 //	<path> formatted <size> <changed input lines, comma-separated, or ->
 //
-// The message of a refusal is the format command's: "<line>:<column>: " and
-// the first diagnostic, or the refusal. The probe's own parse, not the
+// The form is "diagnostic" for "<line>:<column>: " and the first diagnostic,
+// or "refusal" for a plain refusal message. The probe's own parse, not the
 // refusal, decides whether a file parses. With --emit, each formatted line
-// is followed by exactly <size> bytes of the formatted text. After a file's
-// line, a "<path> fail <message>" line reports each broken invariant. A
+// is followed by exactly <size> bytes of the formatted text. A
+// "<path> fail <message>" line can replace a result or follow a formatted
+// result to report each broken invariant. A
 // message escapes a backslash, tab, CR, and LF as \\, \t, \r, and \n. Exits
-// with 1 if any file failed or was refused, or couldn't be read.
+// with 1 for a fail or refused report.
 component FormatCorpusProbe {
 	def STDOUT = 1;
 	var emit = false;
@@ -41,10 +42,9 @@ component FormatCorpusProbe {
 				message = Strings.format3("%d:%d: %s", d.beginLine, d.beginColumn,
 					if(d.kind == null, d.message, Strings.format2("%s: %s", d.kind, Strings.nonnull(d.message))));
 			}
-			if (loneCr(input)) return put(path, "cr", message);
-			if (pieces(input) == null) return put(path, "syntax", message);
-			failed = true;
-			return put(path, "refused", message);
+			var kind = if(loneCr(input), "cr", if(pieces(input) == null, "syntax", "refused"));
+			if (Strings.equal(kind, "refused")) failed = true;
+			return put(path, kind, if(d == null, "refusal", "diagnostic"), message);
 		}
 		var edits = r.edits();
 		if (edits == null) return fail(path, "the formatter built no edits");
@@ -166,11 +166,12 @@ component FormatCorpusProbe {
 	}
 	def fail(path: string, message: string) {
 		failed = true;
-		put(path, "fail", message);
+		put(path, "fail", null, message);
 	}
-	def put(path: string, kind: string, rest: string) {
+	def put(path: string, kind: string, form: string, message: string) {
 		var buf = StringBuilder.new().puts(path).putc('\t').puts(kind);
-		buf.putc('\t').puts(escape(rest));
+		if (form != null) buf.putc('\t').puts(form);
+		buf.putc('\t').puts(escape(message));
 		write(buf.ln().extract());
 	}
 	// {message} with each backslash, tab, CR, and LF escaped, so that it

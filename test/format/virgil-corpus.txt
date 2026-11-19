@@ -6,8 +6,9 @@
 # `make test` checks. Review its diff after a formatter change or a pin update.
 #
 # A total line gives a directory's files, those that format, those that
-# formatting changes, and their changed lines. Each file of aeneas/src, lib,
-# and apps then has a line of three fields separated by tabs: its path in
+# formatting changes, and their changed lines. The file rows are grouped by
+# directory (aeneas/src, lib, apps) and sorted by path within each group.
+# Each file has a line of three fields separated by tabs: its path in
 # vendor/virgil, then either "refused" and its first diagnostic, or the first
 # 16 hex digits of the SHA-256 of its formatted text, with each CR LF taken as
 # LF so that the checkout's line ends don't matter, and "unchanged" or the
