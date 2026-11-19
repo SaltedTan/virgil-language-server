@@ -330,6 +330,17 @@ def bounds(exe, work):
         s.change(uri, text)
         assert apply(text, s.edits(uri)) == "def f() {\n\t// \ud800 note\n\t;\n}\n"
         s.close_document(uri)
+        uri = "untitled:large-merge.v3"
+        statements = 200000
+        text = lines(statements, "")
+        s.open(uri, text)
+        edits = s.edits(uri)
+        assert len(edits) == 1, len(edits)
+        assert edits[0]["range"] == {"start": {"line": 1, "character": 0},
+                                     "end": {"line": statements, "character": 0}}, edits[0]["range"]
+        assert apply(text, edits) == lines(statements, "\t")
+        s.ping()
+        s.close_document(uri)
         # A document of about 100 KB whose indentation would grow past the
         # document store's 1 MiB: 50,000 empty statements 21 blocks deep gain
         # 21 tabs each. It is refused before any edit is built. The blocks

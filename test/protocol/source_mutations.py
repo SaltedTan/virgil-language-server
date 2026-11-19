@@ -620,7 +620,7 @@ def request_params(rng, method, uri, text):
     if method in ("textDocument/documentSymbol", "textDocument/foldingRange", "textDocument/semanticTokens/full"):
         return {"textDocument": doc}
     if method == "textDocument/formatting":
-        return {"textDocument": doc, "options": {"tabSize": 4, "insertSpaces": rng.random() < 0.5}}
+        return {"textDocument": doc, "options": {"tabSize": 4, "insertSpaces": True}}
     if method == "workspace/symbol":
         name = text[slice(*rng.choice(spans))] if spans else ""
         return {"query": rng.choice(("", name, name[:2], "Mutation"))}

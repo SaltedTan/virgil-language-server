@@ -125,9 +125,8 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 			size.bytes += count - 1;
 		}
 		if (size.bytes > resultLimit) return replyTooLarge();
-		var edits = r.edits();
+		var edits = if(merge, mergedEdits(text, r, first, size.end), r.edits());
 		if (edits == null) return failed("the formatter could not build its edits");
-		if (merge) edits = [merged(text, edits)];
 		return JsonRpcReply.ResultJson(render(edits, map, size.bytes));
 	}
 	private def editBytes(map: PositionMap, begin: int, end: int) -> int {
@@ -136,19 +135,17 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 			+ JsonRpcJson.integerBytes(start.line) + JsonRpcJson.integerBytes(start.character)
 			+ JsonRpcJson.integerBytes(finish.line) + JsonRpcJson.integerBytes(finish.character);
 	}
-	// One edit in place of {edits}, which are sorted and don't overlap: from
-	// the first one's start to the last one's end of {text}, whose text is
-	// that span with every edit applied.
-	private def merged(text: Array<byte>, edits: Array<AnalysisTextEdit>) -> AnalysisTextEdit {
-		var begin = edits[0].begin, end = edits[edits.length - 1].end, size = end - begin;
-		for (e in edits) size += e.text.length - (e.end - e.begin);
-		var out = Array<byte>.new(size), at = 0, pos = begin;
-		for (e in edits) {
-			for (i = pos; i < e.begin; i++) out[at++] = text[i];
-			for (b in e.text) out[at++] = b;
-			pos = e.end;
-		}
-		return AnalysisTextEdit.new(begin, end, out);
+	private def mergedEdits(text: Array<byte>, formatting: AnalysisFormatting, begin: int, end: int) -> Array<AnalysisTextEdit> {
+		var size = formatting.size() - begin - (text.length - end);
+		var out = Array<byte>.new(int.view(size)), cursor = FormattingMergeCursor.new(begin);
+		var ok = formatting.visitChanges(fun (start: int, finish: int, leading: Range<byte>, tabs: int, trailing: Range<byte>) {
+			for (i = cursor.source; i < start; i++) out[cursor.target++] = text[i];
+			for (b in leading) out[cursor.target++] = b;
+			for (i < tabs) out[cursor.target++] = '\t';
+			for (b in trailing) out[cursor.target++] = b;
+			cursor.source = finish;
+		});
+		return if(ok, [AnalysisTextEdit.new(begin, end, out)]);
 	}
 	// Whether {text[begin ... end]} contains U+FFFD, whose UTF-8 is EF BF BD.
 	// JsonRpcJson decodes an unpaired surrogate escape as that character, so
@@ -195,4 +192,9 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 class FormattingReplySize(first: int) {
 	var bytes = 2L;
 	var end = first;
+}
+
+class FormattingMergeCursor(begin: int) {
+	var source = begin;
+	var target: int;
 }
