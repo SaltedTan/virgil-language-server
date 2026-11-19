@@ -407,9 +407,10 @@ expect "format prints only one file" 2 "" "pass --check or --write for several" 
 expect "format rejects an unknown option" 2 "" "unknown option '--bogus'" -- format --bogus "$F/formatted.v3"
 expect "format takes --check or --write, not both" 2 "" "format takes --check or --write, not both" -- \
     format --write --check "$F/unformatted.v3"
-# The test hook's options exist only in the test-only build.
-expect "format rejects the test hook's options" 2 "" "unknown option '--test-hook=open:true'" -- \
-    format --write --test-hook=open:true "$F/unformatted.v3"
+for option in --test-hook=open:true --test-hold=ino --test-fake=uid=1; do
+    expect "shipped format rejects $option" 2 "" "unknown option '$option'" -- \
+        format --write "$option" "$F/unformatted.v3"
+done
 expect "format rejects an unknown language option" 2 "" "unknown language option '-lang:bogus'" -- \
     format -lang:bogus "$F/formatted.v3"
 expect "format rejects an invalid language option value" 2 "" "the value of '-lang:descriptors' must be true or false" -- \
@@ -470,6 +471,27 @@ fresh() {
     cp "$F/unformatted.orig" "$1/in.v3"
     chmod 644 "$1/in.v3"
 }
+check "the shipped server payload contains no format hook strings" python3 - "$EXE" "$JVM" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+exe = Path(sys.argv[1])
+markers = (b"--test-hook", b"--test-hold", b"--test-fake", b"FormatHook", b"tempuid",
+           b"cannot read the input's metadata", b"the command at %s failed")
+
+def has_hook(name, data):
+    present = [marker.decode() for marker in markers if marker in data]
+    if present:
+        print(f"{name} contains format hook strings: {', '.join(present)}")
+    return bool(present)
+
+found = has_hook(exe, exe.read_bytes())
+if sys.argv[2] == "1":
+    with zipfile.ZipFile(exe.with_name(exe.name + ".jar")) as jar:
+        found = any([has_hook(entry.filename, jar.read(entry)) for entry in jar.infolist()]) or found
+sys.exit(found)
+PY
 if [ "$JVM" -eq 1 ]; then
     fresh "$W/jvm"
     before=$(meta "$W/jvm/in.v3")
@@ -481,15 +503,16 @@ if [ "$JVM" -eq 1 ]; then
 else
     PRIVILEGED=0
     [ "$(id -u)" -ne 0 ] || PRIVILEGED=1
-    # A group of the caller's other than its primary one, and one it isn't in.
-    SUPP=
-    for g in $(id -G); do
-        if [ "$g" != "$(id -g)" ]; then SUPP=$g; break; fi
-    done
-    NONMEMBER=
-    for g in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        case " $(id -G) " in *" $g "*) ;; *) NONMEMBER=$g; break ;; esac
-    done
+    supplementary_group_except() {
+        local group primary
+        primary=$(id -g)
+        for group in $(id -G); do
+            if [ "$group" != "$primary" ] && [ "$group" != "$1" ]; then
+                printf '%s\n' "$group"
+                return
+            fi
+        done
+    }
     # Commands that give a file an access ACL or an extended attribute, and
     # a directory an ACL that its new files inherit, with the path as $1.
     PY=$(command -v python3)
@@ -518,6 +541,43 @@ else
         EXE=$HOOK_EXE
         "$@"
         EXE=$saved
+    }
+    identity_fixture() {
+        python3 - "$@" <<'PY'
+import errno
+import os
+import subprocess
+import sys
+
+axis, original, substitute = sys.argv[1:]
+try:
+    source, newer = os.lstat(original), os.lstat(substitute)
+    if source.st_gid != newer.st_gid:
+        os.chown(substitute, -1, source.st_gid)
+        newer = os.lstat(substitute)
+    same_access = (source.st_mode, source.st_uid, source.st_gid) == (
+        newer.st_mode, newer.st_uid, newer.st_gid)
+    compressed = any(getattr(s, "st_flags", 0) & 0x20 for s in (source, newer))
+    different_device = source.st_dev != newer.st_dev
+    if not same_access or compressed or different_device != (axis == "device"):
+        sys.exit("swap fixture doesn't isolate the requested identity field")
+    if axis == "inode" and source.st_ino == newer.st_ino:
+        sys.exit("swap fixture has the same inode")
+    if hasattr(os, "listxattr"):
+        try:
+            attributes = os.listxattr(substitute, follow_symlinks=False)
+        except OSError as e:
+            if e.errno != errno.ENOTSUP:
+                raise
+            attributes = []
+    else:
+        attributes = subprocess.check_output(["xattr", substitute]).splitlines()
+        attributes += subprocess.check_output(["ls", "-led", substitute]).splitlines()[1:]
+    if attributes:
+        sys.exit("substitute has an ACL or another extended attribute")
+except (OSError, subprocess.CalledProcessError) as e:
+    sys.exit(f"cannot prepare swap fixture: {e}")
+PY
     }
 
     # Only the file that changes is written; a formatted file keeps its
@@ -568,18 +628,48 @@ else
         same "format --write preserves input metadata after a flush failure" "$before" "$(meta "$W/flush/in.v3")"
         check "format --write preserves input bytes after a flush failure" cmp -s "$F/unformatted.orig" "$W/flush/in.v3"
         same "format --write removes the new file after a flush failure" in.v3 "$(entries "$W/flush")"
+
+        for fault in error=EPERM retval=0; do
+            d=$W/mode-${fault%%=*}
+            fresh "$d"
+            if [ "$fault" = error=EPERM ]; then
+                chmod 600 "$d/in.v3"
+                result='-1 EPERM'
+            else
+                result=0
+            fi
+            before=$(meta "$d/in.v3")
+            (umask 077
+                strace -o "$TMP/trace" -e trace=fchmod -e "inject=fchmod:$fault" \
+                    "$EXE" format --write "$d/in.v3"
+            ) > "$TMP/out" 2> "$TMP/err"
+            got=$?
+            check_stream stderr "$TMP/err" "cannot write '$d/in\.v3': its new file can't be given its group and permission bits" && \
+                [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ] && \
+                grep -Eq "^fchmod\(.*\) += $result .*\(INJECTED\)" "$TMP/trace"
+            finish "format --write refuses permission fault $fault" $(( $? == 0 ))
+            same "format --write preserves input metadata after $fault" "$before" "$(meta "$d/in.v3")"
+            check "format --write preserves input bytes after $fault" cmp -s "$F/unformatted.orig" "$d/in.v3"
+            same "format --write removes the new file after $fault" in.v3 "$(entries "$d")"
+        done
+    else
+        echo "skip: format --write permission fault injection needs strace"
     fi
 
-    # The replacement keeps the original's permission bits and group, here
-    # one other than the caller's primary group, which a new file in a
-    # directory without the set-group-ID bit doesn't get.
+    # The replacement keeps the original's permission bits and group.
     fresh "$W/keep"
     chmod g-s "$W/keep"
     chmod 640 "$W/keep/in.v3"
-    if [ -n "$SUPP" ]; then
-        chgrp "$SUPP" "$W/keep/in.v3"
+    : > "$W/keep/probe"
+    inherited=$(access "$W/keep/probe" | cut -d' ' -f3)
+    rm "$W/keep/probe"
+    group=$(supplementary_group_except "$inherited")
+    if [ -n "$group" ]; then
+        check "format --write's input can be assigned a supplementary group" chgrp "$group" "$W/keep/in.v3"
+        same "format --write's input has a different group from a new file" "$group" \
+            "$(access "$W/keep/in.v3" | cut -d' ' -f3)"
     else
-        echo "skip: format --write keeps a group other than the primary group: the caller has no other group"
+        echo "skip: format --write group reassignment: no supplementary group differs from a new file's group"
     fi
     before=$(access "$W/keep/in.v3")
     expect_bytes "format --write replaces a file with mode 640" 0 "$F/none" "" -- format --write "$W/keep/in.v3"
@@ -774,6 +864,14 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             printf 'def g() {\n  var y=2;\n}\n' > "$sub/in.v3"
             chmod 644 "$d/original/in.v3" "$sub/in.v3"
             touch -r "$d/original/in.v3" "$sub/in.v3"
+            if ! identity_fixture "$identity" "$d/original/in.v3" "$sub/in.v3"; then
+                if [ "$identity" = device ]; then
+                    echo "skip: format --write device-only swap during open: no matching fixture on the second file system"
+                else
+                    finish "format --write inode-only swap fixture during open" 0
+                fi
+                continue
+            fi
             ln -s original "$d/dir"
             original=$(meta "$d/original/in.v3")
             substitute=$(meta "$sub/in.v3")
@@ -800,6 +898,10 @@ sys.exit(1)' "$W/read-only-file/in.v3"
                 printf 'def f() {\n  var x=2;\n}\n' > "$d/newer.v3"
                 cp "$d/newer.v3" "$sub/in.v3"
                 chmod 644 "$sub/in.v3"
+                if ! identity_fixture device "$d/original/in.v3" "$sub/in.v3"; then
+                    echo "skip: format --write device-only swap at $point: no matching fixture on the second file system"
+                    continue
+                fi
                 ln -s original "$d/dir"
                 before=$(meta "$d/original/in.v3")
                 newer=$(meta "$sub/in.v3")
@@ -833,15 +935,23 @@ sys.exit(1)' "$W/read-only-file/in.v3"
         }
         for point in check1 check2; do
             # A replacement with the same size and times but another inode.
+            d=$W/inode-$point
+            fresh "$d"
             printf 'def f() {\n  var x=2;\n}\n' > "$W/replacement"
             chmod 644 "$W/replacement"
-            label="a replacement with the same size and times"
-            inode=$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/replacement")
-            change $point size,mtime,ctime "mv '$W/replacement' \"\$1\""
-            same "format --write keeps the replacement at $point" "$inode" \
-                "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/change/in.v3")"
-            check "format --write keeps the replacement's bytes at $point" \
-                test "$(cat "$W/change/in.v3")" = "$(printf 'def f() {\n  var x=2;\n}')"
+            if identity_fixture inode "$d/in.v3" "$W/replacement"; then
+                inode=$(meta "$W/replacement" | cut -d' ' -f2)
+                hooked expect_bytes "format --write refuses an inode-only replacement at $point" 1 "$F/none" \
+                    "cannot write '$d/in\.v3': it changed after it was read" -- \
+                    format --write --test-hold=size,mtime,ctime \
+                    --test-hook="$point:$HOOKENV mv '$W/replacement' \"\$1\"" "$d/in.v3"
+                same "format --write keeps the replacement at $point" "$inode" "$(meta "$d/in.v3" | cut -d' ' -f2)"
+                check "format --write keeps the replacement's bytes at $point" \
+                    test "$(cat "$d/in.v3")" = "$(printf 'def f() {\n  var x=2;\n}')"
+                same "format --write leaves no new file after the inode swap at $point" in.v3 "$(entries "$d")"
+            else
+                finish "format --write inode-only swap fixture at $point" 0
+            fi
             # New bytes, varying the size alone, the modification time alone,
             # or the status-change time alone.
             label="a change of size alone"
@@ -866,12 +976,16 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             [ "$point" != check1 ] || same "format --write's new file has access for its owner alone until it is removed" 0o600 "$(cat "$W/temp-mode")"
             label="a change of owner"
             change $point "" true "--test-fake=$point:uid=$(($(id -u) + 1))"
+            starting_group=$(access "$W/change/in.v3" | cut -d' ' -f3)
             label="a reported change of group"
-            change $point "" true "--test-fake=$point:gid=$(($(id -g) + 1))"
-            if [ -n "$SUPP" ]; then
+            change $point "" true "--test-fake=$point:gid=$((starting_group + 1))"
+            group=$(supplementary_group_except "$starting_group")
+            if [ -n "$group" ]; then
                 label="a change of group"
-                change $point ctime "chgrp $SUPP \"\$1\""
-                same "format --write keeps the newer group at $point" "$SUPP" "$(access "$W/change/in.v3" | cut -d' ' -f3)"
+                change $point ctime "chgrp $group \"\$1\""
+                same "format --write keeps the newer group at $point" "$group" "$(access "$W/change/in.v3" | cut -d' ' -f3)"
+            else
+                echo "skip: format --write refuses a change of group at $point: no supplementary group differs from the input's group"
             fi
             if [ "$CAN_ACL" -eq 1 ]; then
                 label="an added ACL"
@@ -882,7 +996,6 @@ sys.exit(1)' "$W/read-only-file/in.v3"
                 change $point ctime "$XATTR_CMD"
             fi
         done
-        [ -n "$SUPP" ] || echo "skip: format --write refuses a change of group: the caller has no other group"
 
         d=$W/fake-batch
         fresh "$d"
@@ -893,26 +1006,25 @@ sys.exit(1)' "$W/read-only-file/in.v3"
         check_stream stderr "$TMP/err" "cannot write '$d/next\.v3': it changed after it was read"
         finish "format --write rejects a late fake owner at the same check on the next input" $(( $? == 0 ))
 
-        # The new file's name replaced by another file: before the final
-        # check, and before the removal after a separate failure. Neither
-        # name is changed.
-        for point in check2 cleanup; do
+        # A substitute under the new file's name survives both replacement
+        # checks and the cleanup of a separate failure.
+        for point in check1 check2 cleanup; do
             d=$W/temp-swap-$point
             fresh "$d"
             printf 'substitute\n' > "$W/substitute"
             inode=$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/substitute")
-            if [ "$point" = check2 ]; then
+            if [ "$point" != cleanup ]; then
                 before=$(meta "$d/in.v3")
                 hooked expect_bytes "format --write refuses its new file replaced under its name" 1 "$F/none" \
-                    "cannot write '$d/in\.v3': its new file's name, '$d/\.virgil-lsp-[0-9A-F]+\.tmp', names another file now, so neither name was changed" -- \
-                    format --write --test-hook="check2:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
+                    "cannot write '$d/in\.v3': cannot verify its new file's name '$d/\.virgil-lsp-[0-9A-F]+\.tmp'" -- \
+                    format --write --test-hook="$point:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
                 same "format --write leaves the input when its new file is replaced" "$before" "$(meta "$d/in.v3")"
             else
                 hooked expect_bytes "format --write leaves its new file's name when it names another file at cleanup" 1 "$F/none" \
                     "cannot write '$d/in\.v3': it changed after it was read" -- \
                     format --write --test-hold=ctime --test-hook="check1:$HOOKENV chmod 600 \"\$1\"" \
                     --test-hook="cleanup:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
-                check_stream stderr "$TMP/err" "left '$d/\.virgil-lsp-[0-9A-F]+\.tmp' in place: it names another file now"
+                check_stream stderr "$TMP/err" "cannot write '$d/in\.v3': cannot verify its new file's name '$d/\.virgil-lsp-[0-9A-F]+\.tmp'"
                 finish "format --write reports the new file's name it left at cleanup" $(( $? == 0 ))
                 same "format --write keeps the newer mode when its new file is replaced" 0o100600 "$(access "$d/in.v3" | cut -d' ' -f1)"
             fi
@@ -925,14 +1037,41 @@ sys.exit(1)' "$W/read-only-file/in.v3"
                 "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$left" 2>/dev/null)"
         done
 
+        for point in check1 check2 cleanup; do
+            d=$W/temp-missing-$point
+            fresh "$d"
+            before=$(meta "$d/in.v3")
+            trigger=()
+            if [ "$point" = cleanup ]; then
+                trigger=("--test-fake=check1:uid=$(($(id -u) + 1))")
+            fi
+            hooked expect_bytes "format --write reports an absent temporary name at $point" 1 "$F/none" \
+                "cannot write '$d/in\.v3': cannot verify its new file's name '$d/\.virgil-lsp-[0-9A-F]+\.tmp'" -- \
+                format --write ${trigger[@]+"${trigger[@]}"} \
+                --test-hook="$point:$HOOKENV rm \"\$2\"" "$d/in.v3"
+            same "format --write preserves input metadata after the temporary name disappears at $point" "$before" "$(meta "$d/in.v3")"
+            check "format --write preserves input bytes after the temporary name disappears at $point" cmp -s "$F/unformatted.orig" "$d/in.v3"
+            same "format --write leaves no new file after the temporary name disappears at $point" in.v3 "$(entries "$d")"
+        done
+
         # A group the new file can't be given, and a new file with another
         # owner. The test hook reports these at the boundary, since a caller
         # can't create them: the original's group as one the caller isn't in,
         # whose setting really fails, and the new file's owner as another.
-        if [ "$PRIVILEGED" -eq 1 ] || [ -z "$NONMEMBER" ]; then
+        fresh "$W/group"
+        NONMEMBER=
+        occupied=" $(id -G) $(access "$W/group/in.v3" | cut -d' ' -f3) "
+        for g in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            case "$occupied" in
+                *" $g "*) ;;
+                *) NONMEMBER=$g; break ;;
+            esac
+        done
+        if [ "$PRIVILEGED" -eq 1 ]; then
             echo "skip: format --write reports a group it can't set: a privileged user can set any group"
+        elif [ -z "$NONMEMBER" ]; then
+            echo "skip: format --write reports a group it can't set: no candidate group outside the caller's groups and the directory default"
         else
-            fresh "$W/group"
             before=$(meta "$W/group/in.v3")
             hooked expect_bytes "format --write reports a group it can't set" 1 "$F/none" \
                 "cannot write '$W/group/in\.v3': its new file can't be given its group" -- \

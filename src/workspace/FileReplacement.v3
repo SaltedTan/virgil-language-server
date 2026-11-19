@@ -56,7 +56,7 @@ class FileReplacement(path: string) {
 	// descriptor, and its metadata when it was created.
 	private var tempPath: string;
 	private var tempFd = -1;
-	private def temp = FileStatus.new();
+	private var temp: FileStatus;
 
 	// The text of the file, or null after reporting why it can't be
 	// replaced or read. Reads are bounded by {limit}.
@@ -99,7 +99,9 @@ class FileReplacement(path: string) {
 	// reporting why it couldn't, leaving the file as it is.
 	def replace(text: Array<byte>) -> bool {
 		if (!create()) return refuse("a new file can't be created in its directory");
-		if (HostOs.status(tempFd, temp) < 0) return discard("its new file's metadata can't be read");
+		var created = FileStatus.new();
+		if (HostOs.status(tempFd, created) < 0) return discard("its new file's metadata can't be read");
+		temp = created;
 		if (FormatHook.enabled) FormatHook.temporary(temp);
 		if (temp.uid != input.uid) return discard("its new file would have another owner");
 		var a = HostOs.extendedAttributes(tempFd);
@@ -180,26 +182,25 @@ class FileReplacement(path: string) {
 		if (pathStatus(s) < 0 || !s.unchanged(input) || HostOs.linkExtendedAttributes(path) != 0) {
 			return discard("it changed after it was read");
 		}
-		if (!tempNamed()) {
-			Log.error2("cannot write '%s': its new file's name, '%s', names another file now, so neither name was changed", path, tempPath);
+		if (!verifyTempName()) {
 			tempPath = null;
 			return false;
 		}
 		return true;
 	}
 	// True if the new file's name still names the file open as tempFd.
-	private def tempNamed() -> bool {
+	private def verifyTempName() -> bool {
 		var s = FileStatus.new();
-		return HostOs.linkStatus(tempPath, s) >= 0 && s.sameFile(temp);
+		if (temp != null && HostOs.linkStatus(tempPath, s) >= 0 && s.sameFile(temp)) return true;
+		Log.error2("cannot write '%s': cannot verify its new file's name '%s'", path, tempPath);
+		return false;
 	}
 	// Reports {reason}, removes the new file if its name still names it, and
 	// returns false.
 	private def discard(reason: string) -> bool {
 		refuse(reason);
 		if (FormatHook.enabled) FormatHook.at(FormatHook.CLEANUP, path, tempPath);
-		if (!tempNamed()) {
-			Log.error1("left '%s' in place: it names another file now", tempPath);
-		} else if (HostOs.unlink(tempPath) < 0) {
+		if (verifyTempName() && HostOs.unlink(tempPath) < 0) {
 			Log.error1("cannot remove '%s'", tempPath);
 		}
 		tempPath = null;
