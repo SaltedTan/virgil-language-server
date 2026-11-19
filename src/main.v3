@@ -296,8 +296,8 @@ component VirgilLsp {
 	}
 	private var outputFailed: bool;
 	// Writes {data} to standard output unbuffered, retrying an interrupted or
-	// partial write, or reports why it couldn't. Every write of format goes
-	// through here, since System.puts buffers and drops a failed write.
+	// partial write, or reports why it couldn't. The format command uses this
+	// for stdout because System.puts buffers and drops a failed write.
 	private def writeAll(data: Array<byte>) -> bool {
 		if (outputFailed) return false;
 		var at = 0;

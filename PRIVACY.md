@@ -14,7 +14,7 @@ The editors, and other extensions and plugins, are separate software with their 
 
 ## What the server reads
 
-The server opens files only to read them:
+In an editor session, the server opens files only to read them:
 
 - **Open documents.** The editor sends the text of open documents to which it attaches the server, including unsaved changes. The server keeps that text in memory only. See each integration's setup guide for its buffer selection.
 - **Project files.** To find each document's project, it reads the nearest `.virgil-lsp.json` in the document's directory or above it. On first use, it searches the editor's workspace folders for project files, listing their directories, except hidden directories ([Workspace folders and active projects](docs/configuration.md#workspace-folders-and-active-projects)).
@@ -24,15 +24,17 @@ The server opens files only to read them:
 
 It never follows symbolic links when it looks for project files or reads sources ([Symbolic links](docs/configuration.md#symbolic-links)). It reads no environment variables, including `VIRGIL_LOC`.
 
-The server only parses and type-checks your code. It never compiles or runs it, and nothing in a project file can make it run a program ([Security](docs/configuration.md#security)). Its [development commands](docs/development.md), such as `virgil-lsp parse`, read the files that you name on the command line, and an unadvertised development request can name files to analyze; editors don't send it.
+During analysis, the server parses and type-checks your code. It never compiles or runs it, and nothing in a project file can make it run a program ([Security](docs/configuration.md#security)). Its [development commands](docs/development.md), such as `virgil-lsp parse`, read the files that you name on the command line, and an unadvertised development request can name files to analyze; editors don't send it.
 
 ## What the server writes
 
-The server writes no files, and it keeps no cache on disk: everything it learns is held in memory and gone when it exits. It writes only to:
+In an editor session, the server keeps its state in memory and writes only to:
 
 - its standard output, which carries its messages to the editor;
 - its standard error, its log, which the editor collects (see [Logs](#logs));
 - the pipes to its worker.
+
+On native builds, `virgil-lsp format --write` uses temporary files beside the named inputs to replace files whose formatting changes. See the [command reference](docs/development.md#running) for replacement and cleanup behavior.
 
 ## Which processes start
 

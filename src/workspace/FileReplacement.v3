@@ -24,8 +24,7 @@ class FileStatus {
 	def sameFile(that: FileStatus) -> bool {
 		return dev == that.dev && ino == that.ino;
 	}
-	// True if {that} is the same file with the same size, modification and
-	// status-change times, owner, group, type, and permission bits.
+	// Compares the snapshot fields used to detect changes to the input.
 	def unchanged(that: FileStatus) -> bool {
 		return sameFile(that) && size == that.size &&
 			mtimeSec == that.mtimeSec && mtimeNsec == that.mtimeNsec &&
