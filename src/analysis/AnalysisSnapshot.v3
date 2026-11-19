@@ -355,8 +355,7 @@ class AnalysisSnapshot {
 			if (use >= 0) {
 				begin = file.occurrenceBegin(use);
 				declaration = file.target(use);
-			}
-			else {
+			} else {
 				var builtin = file.findBuiltin(offset);
 				if (builtin >= 0) begin = file.builtins[5 * builtin + 2];
 			}

@@ -115,7 +115,7 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 			items.put(d.value);
 			seen[d.key] = true;
 		}
-		for (d in list.semantic) { if(!seen.has(d.key)) items.put(d.value); }
+		for (d in list.semantic) { if (!seen.has(d.key)) items.put(d.value); }
 		var params = Strings.newMap<JsonValue>();
 		params["uri"] = JsonValue.String(list.uri);
 		if (doc != null) params["version"] = JsonValue.Int(doc.version);

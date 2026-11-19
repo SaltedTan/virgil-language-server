@@ -156,7 +156,7 @@ component LspRenameEligibility {
 		// The member paths are indexed once: checking each file by scanning
 		// the sources would cost the files times the sources.
 		var members = OrderedStringSet.new();
-		for (source in ctx.sources) { if(source.member) members.add(source.path); }
+		for (source in ctx.sources) { if (source.member) members.add(source.path); }
 		if (!members.has(r.path)) {
 			return Strings.format1("cannot rename '%s': it is declared in a dependency, not in the project's own sources", name);
 		}
@@ -181,8 +181,8 @@ component LspRenameEligibility {
 		// compare lexically, so a program that reaches a file under another
 		// spelling, such as a hard link, is not matched.
 		var paths = Vector<string>.new().put(r.path);
-		for (m in family) { if(!Strings.equal(m.range.path, paths[paths.length - 1])) paths.put(m.range.path); }
-		for (u in uses) { if(!Strings.equal(u.0, paths[paths.length - 1])) paths.put(u.0); }
+		for (m in family) { if (!Strings.equal(m.range.path, paths[paths.length - 1])) paths.put(m.range.path); }
+		for (u in uses) { if (!Strings.equal(u.0, paths[paths.length - 1])) paths.put(u.0); }
 		// Matching is bounded: the files and the other programs' patterns can
 		// each number in the thousands.
 		var matcher = ProjectGlobMatcher.new(projects.ownershipSteps);
