@@ -793,7 +793,108 @@ async function workspace(extension) {
   await lostFraming(failures, bad, words, true);
   await crashLimit(failures, bad, words);
   await pendingEditRestart(failures, bad, words);
+  await formatting(bad);
   assert.deepEqual(failures, [], 'scenarios failed');
+}
+
+// Formatting, on demand and on explicit saves, through the defaults that the
+// extension contributes for Virgil documents. The suite creates its own files
+// in the copied project, so the shared fixture's bytes stay as they are.
+async function formatting(bad) {
+  const misindented = 'component Formatting {\n  def f() {\n      return;\n  }\n}\n';
+  const formatted = 'component Formatting {\n\tdef f() {\n\t\treturn;\n\t}\n}\n';
+  fs.writeFileSync(path.join(project, 'formatting.v3'), misindented);
+  const editor = await open('formatting.v3');
+  // VS Code applies a language-specific default only when the scope names the
+  // language; a URI alone does not.
+  const scope = { uri: editor.document.uri, languageId: editor.document.languageId };
+  const languageDefault = (section, key) =>
+    vscode.workspace.getConfiguration(section, scope).inspect(key)?.defaultLanguageValue;
+  assert.equal(languageDefault('editor', 'formatOnSave'), true,
+    'editor.formatOnSave is not on for Virgil by default');
+  assert.equal(languageDefault('editor', 'insertSpaces'), false,
+    'editor.insertSpaces is not off for Virgil by default');
+  assert.equal(languageDefault('files', 'insertFinalNewline'), true,
+    'files.insertFinalNewline is not on for Virgil by default');
+
+  // Format Document formats the misindented text, as the command does.
+  await vscode.commands.executeCommand('editor.action.formatDocument');
+  await waitFor('Format Document to format formatting.v3', () => editor.document.getText() === formatted);
+  console.log('PASS: vscode.formatting.document');
+
+  // An explicit save formats the file, and the formatted bytes reach the disk.
+  await undo(editor, misindented);
+  await edit(editor, (builder) => builder.insert(new vscode.Position(1, 0), ' '));
+  await vscode.commands.executeCommand('workbench.action.files.save');
+  await waitFor('the formatted save of formatting.v3', () => !editor.document.isDirty
+    && editor.document.getText() === formatted
+    && fs.readFileSync(path.join(project, 'formatting.v3'), 'utf8') === formatted);
+  console.log('PASS: vscode.formatting.save');
+
+  // A save adds the final line end that the formatting request leaves out. The
+  // buffer is dirty, so the file is written: the empty body gains its space,
+  // then one LF is added.
+  const lastLine = 'def f() {}';
+  fs.writeFileSync(path.join(project, 'no-final-newline.v3'), lastLine);
+  const noFinal = await open('no-final-newline.v3');
+  await edit(noFinal, (builder) => builder.insert(new vscode.Position(0, 9), ' '));
+  await vscode.commands.executeCommand('workbench.action.files.save');
+  const withNewline = 'def f() { }\n';
+  await waitFor('the final line end of no-final-newline.v3', () => !noFinal.document.isDirty
+    && noFinal.document.getText() === withNewline
+    && fs.readFileSync(path.join(project, 'no-final-newline.v3'), 'utf8') === withNewline);
+  assert.equal(noFinal.document.getText(), withNewline);
+  console.log('PASS: vscode.formatting.final-newline');
+
+  // A syntax error gets no formatting edits, and an explicit save writes the
+  // buffer unchanged and shows no formatting error. bad.v3 ends with a line
+  // end, so files.insertFinalNewline changes nothing. The edit keeps the
+  // syntax error, and the scenario's end restores the fixture's text.
+  const saved = bad.document.getText();
+  const errors = logFromHere();
+  const badEditor = await vscode.window.showTextDocument(bad.document);
+  await edit(badEditor, (builder) => builder.replace(
+    new vscode.Range(2, 18, 2, 23), 'val'));
+  const edited = bad.document.getText();
+  assert.notEqual(edited, saved);
+  assert.ok(edited.endsWith('\n'), 'bad.v3 lost its final line end before the save');
+  await vscode.commands.executeCommand('workbench.action.files.save');
+  await waitFor('the save of bad.v3', () => !bad.document.isDirty);
+  assert.equal(bad.document.getText(), edited, 'saving bad.v3 changed its text');
+  assert.equal(fs.readFileSync(bad.document.uri.fsPath, 'utf8'), edited, 'saving bad.v3 changed its bytes');
+  await waitFor('the parser diagnostic after saving bad.v3', () => diagnostics(bad).length === 1
+    && code(diagnostics(bad)[0]) === 'ParseError');
+  assert.ok(!/\[error\]|RequestFailed/.test(errors()), 'saving bad.v3 reported a formatting error');
+  console.log('PASS: vscode.formatting.syntax-error');
+  fs.writeFileSync(bad.document.uri.fsPath, saved);
+  await vscode.window.showTextDocument(bad.document);
+  await vscode.commands.executeCommand('workbench.action.files.revert');
+  await waitFor('bad.v3 as saved again', () => bad.document.getText() === saved && !bad.document.isDirty);
+
+  // Format Document on the project file reaches no formatter from the server,
+  // while the same command on a misindented .v3 file sends one formatting
+  // request and applies its edits. The trace shows the requests the client
+  // sends; each check below is recorded as its own result event.
+  const log = logFromHere();
+  await level(vscode.LogLevel.Trace);
+  try {
+    await waitFor('the trace to start', () => log().includes("Sending notification '$/setTrace'"));
+    const config = await open('.virgil-lsp.json');
+    const configText = config.document.getText();
+    await vscode.commands.executeCommand('editor.action.formatDocument');
+    if (config.document.getText() !== configText) await undo(config, configText);
+    const formatEditor = await vscode.window.showTextDocument(editor.document);
+    await edit(formatEditor, (builder) => builder.insert(new vscode.Position(1, 0), ' '));
+    await vscode.commands.executeCommand('editor.action.formatDocument');
+    await waitFor('textDocument/formatting in the trace',
+      () => log().includes("Sending request 'textDocument/formatting"));
+    assert.equal(formatEditor.document.getText(), formatted, 'Format Document did not apply the formatting edits');
+    assert.equal(count(log(), "Sending request 'textDocument/formatting"), 1,
+      'Format Document on .virgil-lsp.json sent a textDocument/formatting request');
+    console.log('PASS: vscode.formatting.project-file');
+  } finally {
+    await level(vscode.LogLevel.Info);
+  }
 }
 
 // With the project file closed and no document edited, a change on disk
