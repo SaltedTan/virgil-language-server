@@ -445,7 +445,9 @@ access() {
 }
 # entries <dir>: the names in <dir>, in byte order, on one line.
 entries() {
-    (cd "$1" && LC_ALL=C ls -A | tr '\n' ' ' | sed 's/ $//')
+    python3 -c 'import os, sys
+names = sorted(os.listdir(os.fsencode(sys.argv[1])))
+sys.stdout.buffer.write(b" ".join(names) + b"\n")' "$1"
 }
 # check <name> <command...>: counts the command's success.
 check() {
@@ -514,8 +516,10 @@ else
         done
     }
     # Commands that give a file an access ACL or an extended attribute, and
-    # a directory an ACL that its new files inherit, with the path as $1.
+    # a directory an ACL that its new files inherit. The shell running each
+    # command expands $1 to the path.
     PY=$(command -v python3)
+    # shellcheck disable=SC2016
     if [ "$(uname -s)" = Darwin ]; then
         ACL_CMD='chmod +a "everyone allow readattr" "$1"'
         DEFAULT_ACL_CMD='chmod +a "everyone allow readattr,file_inherit" "$1"'
@@ -611,8 +615,9 @@ PY
     same "format --write leaves a file with a syntax error" "$before" "$(meta "$W/syntax/in.v3")"
     "$EXE" format --write "$W/syntax/in.v3" > "$TMP/out" 2>&-
     got=$?
-    [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ]
-    finish "format --write fails silently with stderr closed" $(( $? == 0 ))
+    ok=0
+    [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ] && ok=1
+    finish "format --write fails silently with stderr closed" "$ok"
     check "format --write preserves the invalid input with stderr closed" cmp -s "$F/syntax.orig" "$W/syntax/in.v3"
     same "format --write creates no file for invalid input with stderr closed" in.v3 "$(entries "$W/syntax")"
 
@@ -733,7 +738,8 @@ sys.exit(1)' "$W/read-only-file/in.v3"
                 echo "skip: format --write on a link to an unreadable file: permissions don't stop a privileged user"
                 continue
             fi
-            check "a direct read of the link's mode-000 target is denied" eval '! cat "$d/target.v3" > /dev/null 2>&1'
+            check "a direct read of the link's mode-000 target is denied" \
+                sh -c "! cat \"\$1\" > /dev/null 2>&1" sh "$d/target.v3"
         else
             chmod 644 "$d/target.v3"
         fi
