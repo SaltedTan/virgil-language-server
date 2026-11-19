@@ -359,7 +359,7 @@ Exit criteria:
 | P2       | semantic tokens       | verified occurrence kinds              | Present, full documents only; [token table and refresh](docs/architecture.md#semantic-tokens) |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
-| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Whole-document formatting first ships in `0.1.0-alpha.8` ([formatter rules](docs/architecture.md#formatting), [editor compatibility](docs/compatibility.md#editors)). Range and on-type formatting remain out of scope. |
+| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Whole-document formatting first ships in `0.1.0-alpha.8` and is also available in development builds from `main` ([request](docs/architecture.md#the-formatting-request)). Keeps comments and alignment. Preserves line breaks except when it joins an opening body brace to its header, joins `}` and `else`, or normalizes the end of the file. No range or on-type formatting. With a server that supports formatting, LazyVim formats on save by default, as does VS Code extension `0.1.7` on explicit saves |
 
 ## Editor integration plan
 
