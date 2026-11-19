@@ -4,7 +4,7 @@
 
 ## Running it
 
-It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. nvim-treesitter also needs curl, tar, and a C compiler to install its parsers. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. The server must support `textDocument/formatting`. Use a local build from this checkout, or set `archive` to an archive built from a revision with formatting, such as a build from `main` or a `0.1.0-alpha.8` or later release archive when available. From the repository root:
+It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. nvim-treesitter also needs curl, tar, and a C compiler to install its parsers. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. Use a local build from this checkout, or set `archive` to a server archive that supports `textDocument/formatting`. From the repository root:
 
 ```sh
 test/e2e/lazyvim/run.sh --archive "$archive"
