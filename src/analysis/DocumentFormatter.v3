@@ -18,19 +18,33 @@ enum AnalysisFormatEnd {
 	ONE
 }
 
+// Why AeneasAdapter.formatting refused a document, so that a caller can treat
+// the kinds differently without reading the message: textDocument/formatting
+// answers a lone CR or a syntax error with no edits, and the others with an
+// error.
+enum AnalysisFormatRefusal {
+	NONE,		// formatted
+	LONE_CR,	// a carriage return that no line feed follows
+	SYNTAX,		// the text doesn't parse with the project's language options
+	PARSE_BUDGET,	// more tokens than the parse budget (AnalysisParseBudget)
+	UNTOKENIZED	// the parser left text outside its tokens and comments
+}
+
 // A document formatted (AeneasAdapter.formatting), or a refusal that says why:
 // a carriage return without a line feed, the parse's first diagnostic, or the
 // parse budget. {size} and {firstChange} are known before any replacement
 // text is built, so a caller can refuse a result that would not fit, or
 // report where a text changes, without calling {edits}.
 class AnalysisFormatting {
+	// The kind of refusal, or NONE.
+	def kind: AnalysisFormatRefusal;
 	// Why the document was not formatted, or null.
 	def refusal: string;
 	// The parse's first diagnostic, for a refusal of text that doesn't parse.
 	def diagnostic: AnalysisDiagnostic;
 	private def formatter: DocumentFormatter;
 
-	new(refusal, diagnostic, formatter) { }
+	new(kind, refusal, diagnostic, formatter) { }
 
 	// The formatted text's length in bytes, or -1 for a refusal.
 	def size() -> long {
@@ -48,6 +62,9 @@ class AnalysisFormatting {
 	// The edits in byte order, which never overlap, or null for a refusal.
 	def edits() -> Array<AnalysisTextEdit> {
 		return if(formatter == null, null, formatter.edits());
+	}
+	def visitChanges(visit: (int, int, Range<byte>, int, Range<byte>) -> void) -> bool {
+		return formatter != null && formatter.visitChanges(visit);
 	}
 }
 
@@ -344,8 +361,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	var size: long;
 	var count: int;
 	var first: int;
-	// The edits, while {edits} runs.
-	private var out: Vector<AnalysisTextEdit>;
+	private var visit: (int, int, Range<byte>, int, Range<byte>) -> void;
 	// A run's new line ends, or the single space of a join, before its indentation.
 	private def ends = Vector<byte>.new();
 	private def stack = Vector<FormatterBracket>.new();
@@ -384,17 +400,29 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 
 	// Sets {size} and {count}, building no replacement text.
 	def measure() -> AnalysisFormatting {
-		if (!pass()) return AnalysisFormatting.new("the parser left source text outside its tokens", null, null);
-		return AnalysisFormatting.new(null, null, this);
+		if (!pass()) return AnalysisFormatting.new(AnalysisFormatRefusal.UNTOKENIZED, "the parser left source text outside its tokens", null, null);
+		return AnalysisFormatting.new(AnalysisFormatRefusal.NONE, null, null, this);
 	}
 	// The edits, in byte order.
 	def edits() -> Array<AnalysisTextEdit> {
-		out = Vector<AnalysisTextEdit>.new();
-		var result = if(pass(), out.extract());
-		out = null;
-		return result;
+		var out = Vector<AnalysisTextEdit>.new();
+		var ok = visitChanges(fun (begin: int, end: int, leading: Range<byte>, tabs: int, trailing: Range<byte>) {
+			var text = Array<byte>.new(leading.length + tabs + trailing.length);
+			var pos = 0;
+			for (b in leading) text[pos++] = b;
+			for (i < tabs) text[pos++] = '\t';
+			for (b in trailing) text[pos++] = b;
+			out.put(AnalysisTextEdit.new(begin, end, text));
+		});
+		return if(ok, out.extract());
 	}
 
+	def visitChanges(callback: (int, int, Range<byte>, int, Range<byte>) -> void) -> bool {
+		visit = callback;
+		var ok = pass();
+		visit = null;
+		return ok;
+	}
 	private def pass() -> bool {
 		size = input.length;
 		count = 0;
@@ -820,10 +848,13 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		size += newLength - oldLength;
 		if (count++ == 0) first = s;
-		if (out == null) return;
-		var text = Array<byte>.new(newLength - suf - pre);
-		for (i < text.length) text[i] = at(pre + i, tabs, kb);
-		out.put(AnalysisTextEdit.new(s, e, text));
+		if (visit == null) return;
+		var limit = newLength - suf, tabsEnd = ends.length + tabs;
+		var leadStart = Ints.min(pre, ends.length), leadEnd = Ints.min(limit, ends.length);
+		var leading = if(leadStart == leadEnd, input[0 ... 0], ends.array[leadStart ... leadEnd]);
+		var keptTabs = Ints.min(limit, tabsEnd) - Ints.max(pre, ends.length);
+		var tailStart = kb + Ints.max(0, pre - tabsEnd), tailEnd = kb + Ints.max(0, limit - tabsEnd);
+		visit(s, e, leading, Ints.max(0, keptTabs), input[tailStart ... tailEnd]);
 	}
 	// The byte at {i} of a run's new text.
 	private def at(i: int, tabs: int, kb: int) -> byte {

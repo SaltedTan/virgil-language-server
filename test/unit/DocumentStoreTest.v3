@@ -14,6 +14,8 @@ def X = [
 	T("DocumentStore:metadata_capacity", test_store_metadata_capacity),
 	T("DocumentStore:resize_capacity", test_store_resize_capacity),
 	T("DocumentStore:disk_stamps", test_store_disk_stamps),
+	T("DocumentStore:fits", test_store_fits),
+	T("DocumentStore:out_of_sync", test_store_out_of_sync),
 	()
 ];
 
@@ -229,6 +231,51 @@ def test_store_resize_capacity(t: Tester) {
 		t.assert_string(otherText, store.read(uris[6]));
 		t.asserti(1, store.overlay(uris[6]).version);
 	}
+}
+
+// fits() charges a replacement as change() does: exactly the capacity fits.
+def test_store_fits(t: Tester) {
+	var a = "file:///a", b = "untitled:b";
+	var capacity = 2 * DocumentLimits.RECORD_BYTES + a.length + b.length + 2 + 8;
+	var store = DocumentStore.new(null, capacity);
+	t.assert(store.open(a, "v", 1, "12345") == null, "first open failed");
+	t.assert(store.open(b, "v", 1, "123") == null, "second open failed");
+	var doc = store.overlay(a);
+	t.assert(store.fits(doc, 0), "shrinking fits");
+	t.assert(store.fits(doc, 5), "the same size fits");
+	t.assert(!store.fits(doc, 6), "one byte more doesn't fit");
+	t.assert(!store.fits(doc, 1L << 40), "a size beyond an int doesn't fit");
+	t.assert(store.change(b, 2, "1") == null, "shrinking the other document failed");
+	t.assert(store.fits(doc, 7), "released capacity is available");
+	t.assert(!store.fits(doc, 8), "one byte past it isn't");
+	t.assert(store.change(a, 2, "1234567") == null, "change() agrees with fits()");
+}
+
+// A mark is set only on an open document, survives a version-only change,
+// and clears with an accepted full-text change or a close.
+def test_store_out_of_sync(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), a = "file:///a%20b.v3", alias = "file:/a b.v3", b = "untitled:b";
+	store.markOutOfSync(a);
+	t.assert(store.open(a, "virgil", 1, "x") == null, "open failed");
+	t.assert(!store.outOfSync(store.overlay(a)), "a document opened after a mark of its URI isn't marked");
+	t.assert(store.open(b, "virgil", 1, "y") == null, "open failed");
+	store.markOutOfSync(alias);
+	t.assert(store.outOfSync(store.overlay(a)), "marked by an alias");
+	t.assert(!store.outOfSync(store.overlay(b)), "the other document isn't marked");
+	t.assert(store.changeVersion(a, 2) == null, "version-only change failed");
+	t.assert(store.outOfSync(store.overlay(a)), "a version-only change keeps the mark");
+	t.assert_string(DocumentLimits.EXCEEDED, store.change(a, 3, Array<byte>.new(DocumentLimits.MAX_BYTES)));
+	t.assert(store.outOfSync(store.overlay(a)), "a rejected change keeps the mark");
+	t.assert(store.change(alias, 3, "z") == null, "change failed");
+	t.assert(!store.outOfSync(store.overlay(a)), "an accepted full-text change clears the mark");
+	t.assert_string("z", store.read(a));
+	store.markAllOutOfSync();
+	t.assert(store.outOfSync(store.overlay(a)) && store.outOfSync(store.overlay(b)), "every open document is marked");
+	t.assert(store.close(b) == null, "close failed");
+	t.assert(store.open(b, "virgil", 1, "new") == null, "reopen failed");
+	t.assert(!store.outOfSync(store.overlay(b)), "a close and reopen clears the mark");
+	t.assert_string("new", store.read(b));
+	t.assert(store.outOfSync(store.overlay(a)), "the other document keeps its mark");
 }
 
 def test_store_disk_stamps(t: Tester) {

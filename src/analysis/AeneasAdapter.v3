@@ -621,10 +621,13 @@ component AeneasAdapter {
 	def formatting(path: string, input: Array<byte>, options: Array<string>, eof: AnalysisFormatEnd) -> AnalysisFormatting {
 		for (i < input.length) {
 			if (input[i] == '\r' && (i + 1 == input.length || input[i + 1] != '\n')) {
-				return AnalysisFormatting.new("the document has a carriage return that a line feed doesn't follow", null, null);
+				return AnalysisFormatting.new(AnalysisFormatRefusal.LONE_CR,
+					"the document has a carriage return that a line feed doesn't follow", null, null);
 			}
 		}
-		if (!AnalysisParseBudget.admits(input)) return AnalysisFormatting.new(AnalysisParseBudget.refusal(), null, null);
+		if (!AnalysisParseBudget.admits(input)) {
+			return AnalysisFormatting.new(AnalysisFormatRefusal.PARSE_BUDGET, AnalysisParseBudget.refusal(), null, null);
+		}
 		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
@@ -632,13 +635,13 @@ component AeneasAdapter {
 		resetLanguageOptions();
 		if (errors.numErrors > 0) {
 			var diagnostics = convertErrors(path, errors);
-			if (diagnostics.length == 0) return AnalysisFormatting.new("the document doesn't parse", null, null);
+			if (diagnostics.length == 0) return AnalysisFormatting.new(AnalysisFormatRefusal.SYNTAX, "the document doesn't parse", null, null);
 			var first = diagnostics[0];
 			if (errors.offsets.length > 0) {
 				first.beginOffset = errors.offsets[0].0;
 				first.endOffset = errors.offsets[0].1;
 			}
-			return AnalysisFormatting.new(Strings.nonnull(first.message), first, null);
+			return AnalysisFormatting.new(AnalysisFormatRefusal.SYNTAX, Strings.nonnull(first.message), first, null);
 		}
 		var marks = AnalysisFormatMarks.new(file, syntax).collect();
 		return DocumentFormatter.new(input, syntax, marks.bits, marks.funHeaders, eof).measure();

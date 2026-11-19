@@ -46,6 +46,7 @@ class Session:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, **popen,
         )
         self.buffer = b""
+        self.last_content_length = None
         self.transcript = []
         self.answered = set()
         self.waiting = {}
@@ -86,6 +87,7 @@ class Session:
                         self.answered.add(key)
                     elif "id" not in msg:
                         assert msg["method"] in self.NOTIFICATIONS, msg
+                    self.last_content_length = size
                     return msg
             remaining = deadline - time.monotonic()
             assert remaining > 0, "timed out waiting for a protocol reply"
@@ -110,7 +112,7 @@ class Session:
 
     def initialize(self):
         result = self.result(self.send("initialize", {}))
-        assert set(result["capabilities"]) == {"callHierarchyProvider", "textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "inlayHintProvider", "documentHighlightProvider", "documentSymbolProvider", "foldingRangeProvider", "selectionRangeProvider", "semanticTokensProvider", "hoverProvider", "implementationProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "typeHierarchyProvider", "workspace", "workspaceSymbolProvider"}
+        assert set(result["capabilities"]) == {"callHierarchyProvider", "textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "inlayHintProvider", "documentFormattingProvider", "documentHighlightProvider", "documentSymbolProvider", "foldingRangeProvider", "selectionRangeProvider", "semanticTokensProvider", "hoverProvider", "implementationProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "typeHierarchyProvider", "workspace", "workspaceSymbolProvider"}
 
     def snapshot(self, expected, timeout=3):
         assert self.result(self.send("virgil-lsp/snapshot"), timeout) == expected

@@ -58,6 +58,12 @@ class DocumentStore {
 	// reported share {diskEpoch}, which every stamp loses when the map is full.
 	private var diskStamps = OrderedStringMap<DocumentVersionIdentity>.new();
 	private var diskEpoch = DocumentVersionIdentity.new();
+	// The open documents marked out of sync, by canonical URI: the server
+	// rejected a change to the document, or skipped a message whose document
+	// it can't tell, so the client's text may differ from the overlay. An
+	// accepted full-text change, or a close, clears a mark; a version-only
+	// change keeps it. See docs/architecture.md#document-store.
+	private def unsynced = OrderedStringMap<bool>.new();
 
 	// Visit only documents the client has open, without copying their text.
 	def eachOpen(visit: (string, DocumentOverlay) -> void) { overlays.apply(visit); }
@@ -90,7 +96,7 @@ class DocumentStore {
 		// Duplicate opens are ignored, even with a newer version. A client must
 		// close first to begin a new version sequence.
 		if (overlays[key] != null) return "document is already open";
-		var charge = cost(key, languageId, text);
+		var charge = cost(key, languageId, text.length);
 		if (charge > long.view(capacity) - used) return DocumentLimits.EXCEEDED;
 		overlays[key] = DocumentOverlay.new(key, languageId, version, text, null);
 		used += charge;
@@ -101,12 +107,36 @@ class DocumentStore {
 		if (doc == null) return "document is not open";
 		if (version <= doc.version) return "document version is not newer";
 		if (text == null) return "missing document text";
-		var remaining = used - cost(doc.uri, doc.languageId, doc.text);
-		var charge = cost(doc.uri, doc.languageId, text);
+		var remaining = used - cost(doc.uri, doc.languageId, doc.text.length);
+		var charge = cost(doc.uri, doc.languageId, text.length);
 		if (charge > long.view(capacity) - remaining) return DocumentLimits.EXCEEDED;
 		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text, null);
 		used = remaining + charge;
+		if (unsynced.length > 0) unsynced.remove(doc.uri);
 		return null;
+	}
+	// Whether {doc}, an open document's current record, could have its text
+	// replaced with {length} bytes within the aggregate capacity, as change()
+	// would charge them.
+	def fits(doc: DocumentOverlay, length: long) -> bool {
+		var remaining = used - cost(doc.uri, doc.languageId, doc.text.length);
+		return cost(doc.uri, doc.languageId, length) <= long.view(capacity) - remaining;
+	}
+	// Marks the document {uri} out of sync, if it is open.
+	def markOutOfSync(uri: string) {
+		var doc = overlay(uri);
+		if (doc != null) unsynced[doc.uri] = true;
+	}
+	// Marks every open document out of sync.
+	def markAllOutOfSync() {
+		overlays.apply(markOpen);
+	}
+	private def markOpen(key: string, doc: DocumentOverlay) {
+		unsynced[key] = true;
+	}
+	// Whether the open document {doc} is marked out of sync.
+	def outOfSync(doc: DocumentOverlay) -> bool {
+		return unsynced.length > 0 && unsynced[doc.uri];
 	}
 	// A didChange with no content changes: the text stays byte-for-byte the
 	// same, and only the version moves. The new record keeps the old identity,
@@ -120,9 +150,9 @@ class DocumentStore {
 		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, doc.text, doc.identity);
 		return null;
 	}
-	private def cost(uri: string, languageId: string, text: Array<byte>) -> long {
+	private def cost(uri: string, languageId: string, textLength: long) -> long {
 		return long.view(DocumentLimits.RECORD_BYTES) + long.view(uri.length) +
-			long.view(languageId.length) + long.view(text.length);
+			long.view(languageId.length) + textLength;
 	}
 	// The current stamp of {uri}'s file on disk. Analyses record it for disk
 	// inputs; a later {diskChanged} for the file replaces it.
@@ -155,7 +185,8 @@ class DocumentStore {
 		var doc = overlay(uri);
 		if (doc == null) return "document is not open";
 		overlays.remove(doc.uri);
-		used -= cost(doc.uri, doc.languageId, doc.text);
+		used -= cost(doc.uri, doc.languageId, doc.text.length);
+		if (unsynced.length > 0) unsynced.remove(doc.uri);
 		return null;
 	}
 }

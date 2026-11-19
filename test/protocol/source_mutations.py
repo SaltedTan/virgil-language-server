@@ -118,7 +118,7 @@ MAIN_METHODS = (
     "textDocument/rename", "textDocument/documentSymbol", "textDocument/foldingRange",
     "textDocument/selectionRange", "textDocument/semanticTokens/full", "textDocument/inlayHint",
     "textDocument/codeAction", "textDocument/prepareTypeHierarchy",
-    "textDocument/prepareCallHierarchy", "workspace/symbol",
+    "textDocument/prepareCallHierarchy", "workspace/symbol", "textDocument/formatting",
 )
 FOLLOW_UPS = {
     "textDocument/prepareTypeHierarchy": ("typeHierarchy/supertypes", "typeHierarchy/subtypes"),
@@ -160,6 +160,7 @@ CAPABILITIES = {
     "codeActionProvider": lambda v: ("textDocument/codeAction",) + _resolve(v, "codeAction/resolve"),
     "completionProvider": lambda v: ("textDocument/completion",) + _resolve(v, "completionItem/resolve"),
     "definitionProvider": lambda v: ("textDocument/definition",),
+    "documentFormattingProvider": lambda v: ("textDocument/formatting",),
     "documentHighlightProvider": lambda v: ("textDocument/documentHighlight",),
     "documentSymbolProvider": lambda v: ("textDocument/documentSymbol",),
     "foldingRangeProvider": lambda v: ("textDocument/foldingRange",),
@@ -197,13 +198,15 @@ def coverage_drift(capabilities):
 
 
 # The error codes each method documents (docs/architecture.md): RequestFailed
-# for bounded replies and rename refusals, ContentModified for semantic tokens.
+# for bounded replies and rename and formatting refusals, ContentModified for
+# semantic tokens.
 # Valid params never get InvalidParams, and no request is cancelled.
 REQUEST_FAILED, CONTENT_MODIFIED = -32803, -32801
 DOCUMENTED_ERRORS = {
     "textDocument/rename": {REQUEST_FAILED},
     "textDocument/prepareRename": {REQUEST_FAILED},
     "textDocument/documentSymbol": {REQUEST_FAILED},
+    "textDocument/formatting": {REQUEST_FAILED},
     "textDocument/references": {REQUEST_FAILED},
     "textDocument/documentHighlight": {REQUEST_FAILED},
     "textDocument/implementation": {REQUEST_FAILED},
@@ -616,6 +619,8 @@ def request_params(rng, method, uri, text):
     doc = {"uri": uri}
     if method in ("textDocument/documentSymbol", "textDocument/foldingRange", "textDocument/semanticTokens/full"):
         return {"textDocument": doc}
+    if method == "textDocument/formatting":
+        return {"textDocument": doc, "options": {"tabSize": 4, "insertSpaces": True}}
     if method == "workspace/symbol":
         name = text[slice(*rng.choice(spans))] if spans else ""
         return {"query": rng.choice(("", name, name[:2], "Mutation"))}

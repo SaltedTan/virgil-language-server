@@ -83,6 +83,7 @@ def formatWithOptions(t: Tester, eof: AnalysisFormatEnd, input: string, expected
 		t.fail1("refused: %s", r.refusal);
 		return null;
 	}
+	t.assert(r.kind == AnalysisFormatRefusal.NONE, "a formatted result's kind is NONE");
 	t.assertl(expected.length, r.size());
 	var first = 0;
 	while (first < input.length && first < expected.length && input[first] == expected[first]) first++;
@@ -336,7 +337,7 @@ def lone_cr(t: Tester) {
 		for (eof in [ONE, MIRROR]) {
 			var r = AeneasAdapter.formatting(PATH, input, OPTIONS, eof);
 			t.assert(r.refusal != null, "a lone CR is refused");
-			refused(t, r);
+			refused(t, r, AnalysisFormatRefusal.LONE_CR);
 		}
 	}
 }
@@ -367,6 +368,7 @@ def syntax_error(t: Tester) {
 	for (eof in [ONE, MIRROR]) {
 		var r = AeneasAdapter.formatting(PATH, input, OPTIONS, eof);
 		t.assert_string(expected.message, r.refusal);
+		t.assert(r.kind == AnalysisFormatRefusal.SYNTAX, "a syntax error's kind");
 		t.assert(r.diagnostic != null, "the first diagnostic");
 		if (r.diagnostic != null) {
 			t.asserti(expected.beginLine, r.diagnostic.beginLine);
@@ -386,10 +388,11 @@ def parse_budget(t: Tester) {
 	AnalysisParseBudget.maxTokens = 9;
 	var r = AeneasAdapter.formatting(PATH, input, OPTIONS, ONE);
 	t.assert_string(AnalysisParseBudget.refusal(), r.refusal);
-	refused(t, r);
+	refused(t, r, AnalysisFormatRefusal.PARSE_BUDGET);
 	AnalysisParseBudget.maxTokens = AnalysisParseBudget.MAX_TOKENS;
 }
-def refused(t: Tester, r: AnalysisFormatting) {
+def refused(t: Tester, r: AnalysisFormatting, kind: AnalysisFormatRefusal) {
+	t.assert(r.kind == kind, "the refusal's kind");
 	t.assert(r.diagnostic == null, "no diagnostic");
 	t.assertl(-1, r.size());
 	t.asserti(0, r.editCount());
@@ -407,7 +410,7 @@ def unindexed_source(t: Tester) {
 		for (eof in [ONE, MIRROR]) {
 			var r = DocumentFormatter.new(inconsistent, syntax, marks.bits, marks.funHeaders, eof).measure();
 			t.assert_string("the parser left source text outside its tokens", r.refusal);
-			refused(t, r);
+			refused(t, r, AnalysisFormatRefusal.UNTOKENIZED);
 		}
 	}
 }

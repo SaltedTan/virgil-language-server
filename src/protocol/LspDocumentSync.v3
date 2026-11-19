@@ -4,6 +4,9 @@
 // Full-text synchronization notifications. Validation is atomic: no member of
 // a didChange batch is applied unless every member is a full-text change.
 // Rejections are reported through an injected warning sink, never as replies.
+// A rejected didOpen or didChange whose textDocument.uri is a string marks
+// that document out of sync if it is open, since the client's text may now
+// differ from the server's (DocumentStore.markOutOfSync).
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
 	// One bounded latch for the current pressure episode: only its first
@@ -26,67 +29,86 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			.onNotification("textDocument/didSave", didSave)
 			.onNotification("textDocument/didClose", didClose);
 	}
-	// The decoder replaced unsupported numbers with null. Do not read params.
+	// Called for a parsed message that the decoder rejected, with the ID it
+	// validated and the message's object. A didOpen or didChange marks its
+	// document unless {id} is valid: the message was then a request, which
+	// changes no document. An ID member the decoder rejects, such as null or
+	// a boolean, leaves {id} null, so the message may have been a change.
+	def rejectedMessage(id: JsonRpcId, obj: HashMap<string, JsonValue>) {
+		if (!JsonRpcId.Null.?(id) || !stringMember(obj, "method")) return;
+		if (changesText(JsonValue.String.!(obj["method"]).v)) {
+			markRejected(documentUri(objectMember(obj, "params")));
+		}
+	}
+	// The decoder replaced unsupported numbers with null. Do not read params,
+	// except a didOpen's or didChange's URI, which is a string, to mark it.
 	def unsupportedNumbers(n: JsonRpcMessage.Notification) {
-		if (Strings.equal(n.method, "textDocument/didOpen") || Strings.equal(n.method, "textDocument/didChange") ||
-			Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
+		var changes = changesText(n.method);
+		if (changes || Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
 			ignored(n, "params contain a number that is not a 32-bit integer");
 		}
+		if (changes) markRejected(documentUri(members(n)));
+	}
+	private def changesText(method: string) -> bool {
+		return Strings.equal(method, "textDocument/didOpen") || Strings.equal(method, "textDocument/didChange");
 	}
 	private def didOpen(n: JsonRpcMessage.Notification) {
 		var params = members(n), doc = objectMember(params, "textDocument");
 		if (!stringMember(doc, "uri") || !stringMember(doc, "languageId") ||
 			!intMember(doc, "version") || !stringMember(doc, "text")) {
-			ignored(n, "invalid textDocument (expected uri, languageId, version, text)");
+			rejected(n, doc, "invalid textDocument (expected uri, languageId, version, text)");
 			return;
 		}
 		var uri = JsonValue.String.!(doc["uri"]).v;
 		var reason = store.open(uri, JsonValue.String.!(doc["languageId"]).v,
 			JsonValue.Int.!(doc["version"]).v, JsonValue.String.!(doc["text"]).v);
-		ignored(n, reason);
+		// A duplicate open of an open document leaves the server's text.
+		rejected(n, doc, reason);
 		if (reason == null && onOpen != null) onOpen(store.overlay(uri));
 	}
 	private def didChange(n: JsonRpcMessage.Notification) {
 		var params = members(n), doc = objectMember(params, "textDocument");
 		if (!stringMember(doc, "uri") || !intMember(doc, "version") || params == null ||
 			!params.has("contentChanges") || !JsonValue.JArray.?(params["contentChanges"])) {
-			ignored(n, "invalid didChange params");
+			rejected(n, doc, "invalid didChange params");
 			return;
 		}
 		var changes = JsonValue.JArray.!(params["contentChanges"]).v;
 		if (changes == null) {
-			ignored(n, "invalid didChange params");
+			rejected(n, doc, "invalid didChange params");
 			return;
 		}
 		var uri = JsonValue.String.!(doc["uri"]).v, version = JsonValue.Int.!(doc["version"]).v;
 		if (changes.length == 0) {
 			// LSP 3.17 allows an empty array: all the changes are applied, so
 			// the text is unchanged and the version is the notification's.
+			// An out-of-sync mark stays, since the text is still the old one.
 			var reason = store.changeVersion(uri, version);
-			ignored(n, reason);
+			rejected(n, doc, reason);
 			if (reason == null && onVersionChange != null) onVersionChange(store.overlay(uri));
 			return;
 		}
 		var text: string;
 		for (change in changes) {
 			if (!JsonValue.JObject.?(change)) {
-				ignored(n, "invalid content change");
+				rejected(n, doc, "invalid content change");
 				return;
 			}
 			var obj = JsonValue.JObject.!(change).v;
 			if (obj == null || obj.has("range") || obj.has("rangeLength")) {
-				ignored(n, "incremental changes are not supported");
+				rejected(n, doc, "incremental changes are not supported");
 				return;
 			}
 			if (!stringMember(obj, "text")) {
-				ignored(n, "content change text must be a string");
+				rejected(n, doc, "content change text must be a string");
 				return;
 			}
 			text = JsonValue.String.!(obj["text"]).v;
 		}
 		// Each event replaces the whole text; only the last one survives.
+		// An accepted change clears an out-of-sync mark (DocumentStore.change).
 		var before = store.usedBytes(), reason = store.change(uri, version, text);
-		ignored(n, reason);
+		rejected(n, doc, reason);
 		if (reason == null) {
 			rearmIfReleased(before);
 			if (onChange != null) onChange(store.overlay(uri));
@@ -120,6 +142,16 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	// bytes, so the next capacity rejection may warn again.
 	private def rearmIfReleased(before: long) {
 		if (store.usedBytes() < before) capacityWarned = false;
+	}
+	// Reports a rejected didOpen or didChange, if {reason} isn't null, and
+	// marks its document out of sync if {doc} has a string URI.
+	private def rejected(n: JsonRpcMessage.Notification, doc: HashMap<string, JsonValue>, reason: string) {
+		if (reason == null) return;
+		ignored(n, reason);
+		if (stringMember(doc, "uri")) markRejected(JsonValue.String.!(doc["uri"]).v);
+	}
+	private def markRejected(uri: string) {
+		if (uri != null) store.markOutOfSync(uri);
 	}
 	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
 		if (reason == null) return;

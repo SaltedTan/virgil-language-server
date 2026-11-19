@@ -35,6 +35,15 @@ type JsonRpcId {
 		}
 		return buf;
 	}
+	def resultEnvelopeBytes() -> int {
+		var idBytes = 4;
+		match (this) {
+			Int(v) => idBytes = JsonRpcJson.integerBytes(v);
+			String(v) => idBytes = JsonRpcJson.stringBytes(v);
+			Null => ;
+		}
+		return MESSAGE_START.length + ID_MEMBER.length + idBytes + RESULT_MEMBER.length + 1;
+	}
 }
 
 // The params of a request or notification: absent, null, an object (by name),
@@ -73,6 +82,10 @@ class JsonRpcError(code: int, message: string) {
 	}
 }
 
+def MESSAGE_START = "{\"jsonrpc\":\"2.0\"";
+def ID_MEMBER = ",\"id\":";
+def RESULT_MEMBER = ",\"result\":";
+
 // One JSON-RPC message. The five shapes are distinct: a request has an ID and a
 // method; a notification has a method and no ID, and is never answered; a
 // response has an ID and a result; a raw response has an ID and a result
@@ -87,10 +100,10 @@ type JsonRpcMessage {
 
 	// Renders this message as compact JSON with members in a fixed order.
 	def render(buf: StringBuilder) -> StringBuilder {
-		buf.puts("{\"jsonrpc\":\"2.0\"");
+		buf.puts(MESSAGE_START);
 		match (this) {
 			Request(id, method, params) => {
-				id.render(buf.puts(",\"id\":"));
+				id.render(buf.puts(ID_MEMBER));
 				JsonRpcJson.renderString(buf.puts(",\"method\":"), method);
 				params.renderMember(buf);
 			}
@@ -99,17 +112,17 @@ type JsonRpcMessage {
 				params.renderMember(buf);
 			}
 			Response(id, result) => {
-				id.render(buf.puts(",\"id\":"));
-				JsonRpcJson.render(buf.puts(",\"result\":"), result);
+				id.render(buf.puts(ID_MEMBER));
+				JsonRpcJson.render(buf.puts(RESULT_MEMBER), result);
 			}
 			RawResponse(id, result) => {
-				id.render(buf.puts(",\"id\":")).puts(",\"result\":");
+				id.render(buf.puts(ID_MEMBER)).puts(RESULT_MEMBER);
 				// Room for the result and the closing brace at once, so that a
 				// large result is copied once, and encode's buffer is exactly full.
 				buf.grow(buf.length + result.length + 1).putr(result);
 			}
 			ErrorResponse(id, error) => {
-				id.render(buf.puts(",\"id\":"));
+				id.render(buf.puts(ID_MEMBER));
 				var e = error;
 				if (e == null) e = JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "missing error");
 				e.render(buf.puts(",\"error\":"));

@@ -43,7 +43,8 @@ VALIDATOR = ReplyValidator()
 CAPABILITIES = {
     "callHierarchyProvider": True, "codeActionProvider": {"codeActionKinds": ["quickfix"]},
     "completionProvider": {"resolveProvider": True, "triggerCharacters": ["."]}, "definitionProvider": True,
-    "documentHighlightProvider": True, "documentSymbolProvider": True, "foldingRangeProvider": True,
+    "documentFormattingProvider": True, "documentHighlightProvider": True, "documentSymbolProvider": True,
+    "foldingRangeProvider": True,
     "hoverProvider": True, "implementationProvider": True, "inlayHintProvider": True,
     "referencesProvider": True, "renameProvider": {"prepareProvider": True}, "selectionRangeProvider": True,
     "semanticTokensProvider": {"full": True, "legend": {"tokenModifiers": [], "tokenTypes": []}},

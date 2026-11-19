@@ -6,9 +6,16 @@
 Each directory under clients/ holds a capture's normalized client messages
 (messages.json) and its provenance (fixture.json). This test sends those
 messages, in order and with correct framing, to the stdio server; answers the
-server's client/registerCapability request as the capture did; then opens a
-small file at the capture's project root, requests its symbols, and shuts down.
-It compares JSON values, not bytes, and every receive has a deadline.
+server's client/registerCapability request for watched files as the capture
+did; then opens a small file at the capture's project root, requests its
+symbols, and shuts down. It compares JSON values, not bytes, and every receive
+has a deadline.
+
+The captures predate formatting. Each declares
+textDocument.formatting.dynamicRegistration, so the server registers
+formatting for Virgil documents after the captured exchange, which this test
+checks and answers with a null result, as those editors do, and the initialize
+reply has no documentFormattingProvider.
 
 The six captures are VS Code 1.142.0 (single file and workspace folder) and
 Neovim 0.11.6 and 0.12.4 (with a Virgil root and with empty options). They
@@ -108,6 +115,12 @@ MISSING_ROOT_WARNING = (
 )
 # A capture that replies to client/registerCapability gets this confirmation.
 REGISTERED_INFO = "virgil-lsp: the client watches project files and sources"
+# The registration that a client declaring dynamic registration for
+# formatting gets after initialized, after any watched-files registration.
+FORMATTING_REGISTRATION = {"registrations": [{
+    "id": "virgil-lsp/formatting", "method": "textDocument/formatting",
+    "registerOptions": {"documentSelector": [{"language": "virgil"}]},
+}]}
 
 
 def expected_log(messages):
@@ -186,7 +199,15 @@ def replay(exe, directory):
                 assert method is None and "id" in message, message
                 request = s.take_request(time.monotonic() + TIMEOUT)
                 assert request["method"] == "client/registerCapability", request
+                assert [r["method"] for r in request["params"]["registrations"]] == [
+                    "workspace/didChangeWatchedFiles"], request
                 s.answer(request, message)
+        capabilities = messages[0]["params"]["capabilities"]
+        if capabilities.get("textDocument", {}).get("formatting", {}).get("dynamicRegistration") is True:
+            request = s.take_request(time.monotonic() + TIMEOUT)
+            assert request["method"] == "client/registerCapability", request
+            assert request["params"] == FORMATTING_REGISTRATION, request
+            s.answer(request, {"result": None})
 
         s.send("textDocument/didOpen", {"textDocument": {
             "uri": URI, "languageId": "virgil", "version": 1, "text": SOURCE,
