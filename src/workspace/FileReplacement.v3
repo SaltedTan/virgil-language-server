@@ -15,6 +15,7 @@ class FileStatus {
 	var mtimeNsec: long;
 	var ctimeSec: long;
 	var ctimeNsec: long;
+	var compressed: bool;
 
 	def kind() -> int {
 		return mode & 0xF000;
@@ -29,7 +30,7 @@ class FileStatus {
 		return sameFile(that) && size == that.size &&
 			mtimeSec == that.mtimeSec && mtimeNsec == that.mtimeNsec &&
 			ctimeSec == that.ctimeSec && ctimeNsec == that.ctimeNsec &&
-			uid == that.uid && gid == that.gid && mode == that.mode;
+			uid == that.uid && gid == that.gid && mode == that.mode && compressed == that.compressed;
 	}
 }
 
@@ -64,6 +65,7 @@ class FileReplacement(path: string) {
 		if (pathStatus(s) < 0) return unreadable();
 		if (s.kind() == SYMLINK) return refused("it is a symbolic link");
 		if (s.kind() != ProjectFiles.REGULAR) return notRegular();
+		if (s.compressed) return refused("it uses macOS file compression");
 		if (FormatHook.enabled) FormatHook.at(FormatHook.OPEN, path, null);
 		var r = HostOs.openReadWrite(path);
 		if (r < 0) {
@@ -78,6 +80,7 @@ class FileReplacement(path: string) {
 		if (FormatHook.enabled) FormatHook.input(input);
 		// A FIFO or device that replaced the file after the check above.
 		if (input.kind() != ProjectFiles.REGULAR) return notRegular();
+		if (input.compressed) return refused("it uses macOS file compression");
 		if (pathStatus(s) < 0 || !s.unchanged(input)) return refused("it changed while it was being opened");
 		var a = HostOs.extendedAttributes(fd);
 		if (a == 0) a = HostOs.linkExtendedAttributes(path);
@@ -113,6 +116,7 @@ class FileReplacement(path: string) {
 			s.gid != input.gid || (s.mode & 0xFFF) != (input.mode & 0xFFF)) {
 			return discard("its new file can't be given its group and permission bits");
 		}
+		if (HostOs.syncFile(tempFd) < 0) return discard("its new file can't be flushed");
 		if (!check(FormatHook.CHECK2)) return false;
 		if (HostOs.rename(tempPath, path) < 0) return discard("its new file can't be renamed over it");
 		tempPath = null;

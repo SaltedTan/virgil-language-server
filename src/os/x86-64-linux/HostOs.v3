@@ -28,6 +28,7 @@ component HostOs {
 	private def SYS_close = 3;
 	private def SYS_fstat = 5;
 	private def SYS_lstat = 6;
+	private def SYS_fsync = 74;
 	private def SYS_rename = 82;
 	private def SYS_unlink = 87;
 	private def SYS_fchmod = 91;
@@ -56,10 +57,12 @@ component HostOs {
 	private def SYS_clock_gettime = 228;
 	private def CLOCK_THREAD_CPUTIME_ID = 3;
 	private def RUSAGE_THREAD = 1;
+	private def F_GETFD = 1;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
 	private def F_DUPFD_CLOEXEC = 1030;
+	private def EBADF = -9;
 	private def EOPNOTSUPP = -95;
 	private def O_RDWR = 0x2;
 	private def O_CREAT = 0x40;
@@ -240,13 +243,29 @@ component HostOs {
 	// following a symbolic link, or acquiring a controlling terminal.
 	def openReadWrite(path: string) -> int {
 		var name = Arrays.concat(path, "\x00");
-		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0));
+		return openForReplacement(name, O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0, 0);
 	}
 	// Creates {path} for reading and writing with access for its owner
 	// alone, failing with EEXIST if any entry, even a symbolic link, has the name.
 	def createExclusive(path: string) -> int {
 		var name = Arrays.concat(path, "\x00");
-		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180));
+		return openForReplacement(name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180, 0);
+	}
+	private def openForReplacement(name: Array<byte>, flags: int, mode: int, first: int) -> int {
+		for (fd = first; fd < 3; fd++) {
+			var r = sys(SYS_fcntl, (fd, F_GETFD, 0));
+			if (r >= 0) continue;
+			if (r != EBADF) return r;
+			var guard = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
+			if (guard < 0) return guard;
+			var opened = openForReplacement(name, flags, mode, fd + 1);
+			close(guard);
+			return opened;
+		}
+		return sys(SYS_open, (Pointer.atContents(name), flags, mode));
+	}
+	def syncFile(fd: int) -> int {
+		return sys(SYS_fsync, fd);
 	}
 	// Fills {s} from fstat(2) of {fd}. Returns 0 or a negated errno.
 	def status(fd: int, s: FileStatus) -> int {

@@ -161,6 +161,7 @@ component HostOs {
 	def PLATFORM = "JVM";
 	def openReadWrite(path: string) -> int { return ENOSYS; }
 	def createExclusive(path: string) -> int { return ENOSYS; }
+	def syncFile(fd: int) -> int { return ENOSYS; }
 	def status(fd: int, s: FileStatus) -> int { return ENOSYS; }
 	def linkStatus(path: string, s: FileStatus) -> int { return ENOSYS; }
 	def extendedAttributes(fd: int) -> int { return ENOSYS; }

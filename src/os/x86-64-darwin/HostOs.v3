@@ -39,6 +39,7 @@ component HostOs {
 	private def SYS_setitimer = 0x2000053;
 	private def SYS_dup2 = 0x200005A;
 	private def SYS_fcntl = 0x200005C;
+	private def SYS_fsync = 0x200005F;
 	private def SYS_poll = 0x20000E6;
 	private def SYS_proc_info = 0x2000150;
 	private def SYS_fstat64 = 0x2000153;
@@ -55,12 +56,16 @@ component HostOs {
 	private def SYS_lstat64 = 0x2000154;
 	private def SYS_lstat64_extended = 0x2000156;
 	private def SYS_fstat64_extended = 0x2000157;
+	private def F_GETFD = 1;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
 	private def F_DUPFD_CLOEXEC = 67;
+	private def EBADF = -9;
 	private def ENOTSUP = -45;
 	private def XATTR_NOFOLLOW = 1;
+	private def XATTR_SHOWCOMPRESSION = 0x20;
+	private def UF_COMPRESSED = 0x20;
 	private def FILESEC_HEADER = 44L;
 	private def FILESEC_WORDS = 6;
 	private def O_RDWR = 0x2;
@@ -251,13 +256,29 @@ component HostOs {
 	// following a symbolic link, or acquiring a controlling terminal.
 	def openReadWrite(path: string) -> int {
 		var name = Arrays.concat(path, "\x00");
-		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0));
+		return openForReplacement(name, O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY | O_CLOEXEC, 0, 0);
 	}
 	// Creates {path} for reading and writing with access for its owner
 	// alone, failing with EEXIST if any entry, even a symbolic link, has the name.
 	def createExclusive(path: string) -> int {
 		var name = Arrays.concat(path, "\x00");
-		return sys(SYS_open, (Pointer.atContents(name), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180));
+		return openForReplacement(name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x180, 0);
+	}
+	private def openForReplacement(name: Array<byte>, flags: int, mode: int, first: int) -> int {
+		for (fd = first; fd < 3; fd++) {
+			var r = sys(SYS_fcntl, (fd, F_GETFD, 0));
+			if (r >= 0) continue;
+			if (r != EBADF) return r;
+			var guard = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
+			if (guard < 0) return guard;
+			var opened = openForReplacement(name, flags, mode, fd + 1);
+			close(guard);
+			return opened;
+		}
+		return sys(SYS_open, (Pointer.atContents(name), flags, mode));
+	}
+	def syncFile(fd: int) -> int {
+		return sys(SYS_fsync, fd);
 	}
 	// Fills {s} from fstat64(2) of {fd}. Returns 0 or a negated errno.
 	def status(fd: int, s: FileStatus) -> int {
@@ -278,7 +299,7 @@ component HostOs {
 	// 0 if it has neither, or a negated errno. listxattr(2) doesn't list the
 	// ACL here, so the extended stat reports it.
 	def extendedAttributes(fd: int) -> int {
-		var r = attributes(sys(SYS_flistxattr, (fd, Pointer.NULL, 0L, 0)));
+		var r = attributes(sys(SYS_flistxattr, (fd, Pointer.NULL, 0L, XATTR_SHOWCOMPRESSION)));
 		if (r != 0) return r;
 		var buf = Array<long>.new(18), sec = Array<long>.new(FILESEC_WORDS), size = Array<long>.new(1);
 		size[0] = FILESEC_WORDS * 8;
@@ -288,7 +309,7 @@ component HostOs {
 	// As extendedAttributes, for {path} without following a final symbolic link.
 	def linkExtendedAttributes(path: string) -> int {
 		var name = Arrays.concat(path, "\x00");
-		var r = attributes(sys(SYS_listxattr, (Pointer.atContents(name), Pointer.NULL, 0L, XATTR_NOFOLLOW)));
+		var r = attributes(sys(SYS_listxattr, (Pointer.atContents(name), Pointer.NULL, 0L, XATTR_NOFOLLOW | XATTR_SHOWCOMPRESSION)));
 		if (r != 0) return r;
 		var buf = Array<long>.new(18), sec = Array<long>.new(FILESEC_WORDS), size = Array<long>.new(1);
 		size[0] = FILESEC_WORDS * 8;
@@ -325,6 +346,7 @@ component HostOs {
 		s.ctimeSec = buf[8];
 		s.ctimeNsec = buf[9];
 		s.size = buf[12];
+		s.compressed = (int.view(buf[14] >>> 32) & UF_COMPRESSED) != 0;
 	}
 	// A listxattr(2) result: the size of the names, so 0 if there are none.
 	// A file system without extended attributes has none.

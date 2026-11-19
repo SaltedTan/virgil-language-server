@@ -151,19 +151,35 @@ except subprocess.TimeoutExpired:
     check_stream stderr "$TMP/err" "$err_pat" || ok=0
     finish "$name" $ok
 }
-# check_trace <name> <read|open> <path>: after a traced expect_bytes, fails
-# unless the command never read from a descriptor for <path>, or never opened
-# it, even without blocking. Does nothing where strace isn't available.
+# check_trace <name> <read|open> <path> [link]: after a traced expect_bytes,
+# fails if the command read or opened <path>, or tried to open <link> following
+# it. Does nothing where strace isn't available.
 check_trace() {
-    local name=$1 kind=$2 path=$3 calls
+    local name=$1 kind=$2 path=$3 link=${4:-} matches
     [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ] || return 0
-    if [ "$kind" = read ]; then calls='^(read|readv|pread64|preadv|preadv2)\('; path="<$path>"; else calls='^(open|openat|openat2)\('; fi
     if [ ! -s "$TMP/trace" ]; then
         echo "  trace: empty"
         finish "$name" 0
-    elif grep -E "$calls" "$TMP/trace" | grep -Fq -- "$path"; then
+        return
+    fi
+    if [ "$kind" = read ]; then
+        matches=$(grep -E '^(read|readv|pread64|preadv|preadv2)\(' "$TMP/trace" | grep -F -- "<$path>")
+    else
+        matches=$(awk -v target="$path" -v link="$link" '
+            /^(open|openat|openat2)\(/ {
+                if (index($0, "\"" target "\"") || index($0, "<" target ">")) {
+                    print
+                    next
+                }
+                arg = "\"" link "\""
+                at = index($0, arg)
+                if (at && substr($0, at + length(arg)) !~ /(^|[^[:alnum:]_])O_NOFOLLOW([^[:alnum:]_]|$)/) print
+            }
+        ' "$TMP/trace")
+    fi
+    if [ -n "$matches" ]; then
         echo "  trace: the command did $kind $path:"
-        grep -E "$calls" "$TMP/trace" | grep -F -- "$path" | sed 's/^/  trace| /'
+        printf '%s\n' "$matches" | sed 's/^/  trace| /'
         finish "$name" 0
     else
         finish "$name" 1
@@ -533,6 +549,26 @@ else
     expect_bytes "format --write reports a syntax error" 1 "$F/none" "error: $W/syntax/in\.v3:2:9: ParseError" -- \
         format --write "$W/syntax/in.v3"
     same "format --write leaves a file with a syntax error" "$before" "$(meta "$W/syntax/in.v3")"
+    "$EXE" format --write "$W/syntax/in.v3" > "$TMP/out" 2>&-
+    got=$?
+    [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ]
+    finish "format --write fails silently with stderr closed" $(( $? == 0 ))
+    check "format --write preserves the invalid input with stderr closed" cmp -s "$F/syntax.orig" "$W/syntax/in.v3"
+    same "format --write creates no file for invalid input with stderr closed" in.v3 "$(entries "$W/syntax")"
+
+    if [ "$CAN_TRACE" -eq 1 ]; then
+        fresh "$W/flush"
+        before=$(meta "$W/flush/in.v3")
+        strace -o "$TMP/trace" -e trace=fsync -e inject=fsync:error=EIO \
+            "$EXE" format --write "$W/flush/in.v3" > "$TMP/out" 2> "$TMP/err"
+        got=$?
+        check_stream stderr "$TMP/err" "cannot write '$W/flush/in\.v3': its new file can't be flushed" && \
+            [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ]
+        finish "format --write reports a deferred write error" $(( $? == 0 ))
+        same "format --write preserves input metadata after a flush failure" "$before" "$(meta "$W/flush/in.v3")"
+        check "format --write preserves input bytes after a flush failure" cmp -s "$F/unformatted.orig" "$W/flush/in.v3"
+        same "format --write removes the new file after a flush failure" in.v3 "$(entries "$W/flush")"
+    fi
 
     # The replacement keeps the original's permission bits and group, here
     # one other than the caller's primary group, which a new file in a
@@ -614,13 +650,13 @@ sys.exit(1)' "$W/read-only-file/in.v3"
         before=$(meta "$d/target.v3")
         expect_bytes "format --write refuses a symbolic link whose target is $target" 1 "$F/none" \
             "cannot write '$d/link\.v3': it is a symbolic link" -- format --write "$d/link.v3"
-        check_trace "format --write never opens a link's $target target" open "$d/target.v3"
+        check_trace "format --write never opens a link's $target target" open "$d/target.v3" "$d/link.v3"
         same "format --write leaves a link's $target target" "$before" "$(meta "$d/target.v3")"
         same "format --write leaves a link to a $target file" target.v3 "$(readlink "$d/link.v3")"
     done
     expect_bytes "format --write refuses a symbolic link to a FIFO promptly" 1 "$F/none" \
         "cannot write '$d/fifo-link\.v3': it is a symbolic link" -- format --write "$d/fifo-link.v3"
-    check_trace "format --write never opens a link's FIFO" open "$d/fifo"
+    check_trace "format --write never opens a link's FIFO" open "$d/fifo" "$d/fifo-link.v3"
     TRACE=0
     check "format --write leaves the FIFO" test -p "$d/fifo"
     same "format --write leaves a link to a FIFO" fifo "$(readlink "$d/fifo-link.v3")"
@@ -654,10 +690,37 @@ sys.exit(1)' "$W/read-only-file/in.v3"
         same "format --write leaves no new file after refusing $what" in.v3 "$(entries "$W/$kind")"
     done
 
+    if [ "$(uname -s)" = Darwin ]; then
+        d=$W/compressed
+        mkdir "$d"
+        python3 -c 'import sys; sys.stdout.buffer.write(b"/*\n" + b"abc\n" * 32768 + b"*/\ndef f() { }\n")' > "$W/compressible.v3"
+        if ditto --hfsCompression --norsrc "$W/compressible.v3" "$d/in.v3" > /dev/null 2>&1 && \
+            python3 -c 'import os, sys; sys.exit(not (os.lstat(sys.argv[1]).st_flags & 0x20))' "$d/in.v3"; then
+            before=$(meta "$d/in.v3")
+            flags=$(stat -f %f "$d/in.v3")
+            expect_bytes "format --write refuses a compressed file" 1 "$F/none" "it uses macOS file compression" -- \
+                format --write "$d/in.v3"
+            same "format --write preserves a compressed file's flags" "$flags" "$(stat -f %f "$d/in.v3")"
+            same "format --write preserves a compressed file's metadata" "$before" "$(meta "$d/in.v3")"
+            check "format --write preserves a compressed file's bytes" cmp -s "$W/compressible.v3" "$d/in.v3"
+            same "format --write creates no file beside a compressed file" in.v3 "$(entries "$d")"
+        else
+            echo "skip: format --write refuses macOS file compression: ditto couldn't create a compressed file here"
+        fi
+    fi
+
     if [ ! -x "$HOOK_EXE" ]; then
         fail=$((fail + 1))
         echo "FAIL: the format --write cases need $HOOK_EXE: build it with make"
     else
+        for spec in open:uid opened:gid cleanup:uid check1:tempuid check2:tempuid; do
+            hooked expect_bytes "format test hooks reject --test-fake=$spec" 2 "$F/none" "unknown option" -- \
+                format --write "--test-fake=$spec=1" "$F/formatted.v3"
+        done
+        hooked expect_bytes "format test fakes require --write" 2 "$F/none" "--test-fake requires --write" -- \
+            format --test-fake=uid=1 "$F/formatted.v3"
+        hooked expect_bytes "format --check test fakes require --write" 2 "$F/none" "--test-fake requires --write" -- \
+            format --check --test-fake=uid=1 "$F/formatted.v3"
         # A regular input replaced by a FIFO with no writer just before the
         # open, after the path's type is checked, directly in every mode and
         # through a link's target in the modes that follow links: refused
@@ -727,7 +790,33 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             same "format --write creates no file beside the substitute ($identity)" in.v3 "$(entries "$sub")"
         done
         TRACE=0
-        [ -z "$SECOND" ] || { rm -rf "$SECOND"; SECOND=; }
+
+        if [ -n "$SECOND" ]; then
+            for point in check1 check2; do
+                d=$W/device-$point
+                sub=$SECOND/$point
+                mkdir -p "$d" "$sub"
+                fresh "$d/original"
+                printf 'def f() {\n  var x=2;\n}\n' > "$d/newer.v3"
+                cp "$d/newer.v3" "$sub/in.v3"
+                chmod 644 "$sub/in.v3"
+                ln -s original "$d/dir"
+                before=$(meta "$d/original/in.v3")
+                newer=$(meta "$sub/in.v3")
+                hooked expect_bytes "format --write refuses a device-only replacement at $point" 1 "$F/none" \
+                    "cannot write '$d/dir/in\.v3': it changed after it was read" -- \
+                    format --write --test-hold=ino,size,mtime,ctime \
+                    --test-hook="$point:$HOOKENV ln -sfn '$sub' '$d/dir'" \
+                    --test-hook="cleanup:$HOOKENV ln -sfn original '$d/dir'" "$d/dir/in.v3"
+                same "format --write keeps the newer entry on another device at $point" "$newer" "$(meta "$sub/in.v3")"
+                check "format --write keeps the newer bytes on another device at $point" cmp -s "$d/newer.v3" "$sub/in.v3"
+                same "format --write keeps the original before the device swap at $point" "$before" "$(meta "$d/original/in.v3")"
+                same "format --write leaves no new file after the device swap at $point" in.v3 "$(entries "$d/original")"
+                same "format --write creates no file beside the device replacement at $point" in.v3 "$(entries "$sub")"
+            done
+            rm -rf "$SECOND"
+            SECOND=
+        fi
 
         # change <point> <hold> <command> [option]: runs --write on a fresh
         # $W/change/in.v3, mode 644, with <command> at the hook <point> and the
@@ -777,6 +866,8 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             [ "$point" != check1 ] || same "format --write's new file has access for its owner alone until it is removed" 0o600 "$(cat "$W/temp-mode")"
             label="a change of owner"
             change $point "" true "--test-fake=$point:uid=$(($(id -u) + 1))"
+            label="a reported change of group"
+            change $point "" true "--test-fake=$point:gid=$(($(id -g) + 1))"
             if [ -n "$SUPP" ]; then
                 label="a change of group"
                 change $point ctime "chgrp $SUPP \"\$1\""
@@ -792,6 +883,15 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             fi
         done
         [ -n "$SUPP" ] || echo "skip: format --write refuses a change of group: the caller has no other group"
+
+        d=$W/fake-batch
+        fresh "$d"
+        cp "$d/in.v3" "$d/next.v3"
+        hooked expect_bytes "format --write rejects a late fake owner on the first input" 1 "$F/none" \
+            "cannot write '$d/in\.v3': it changed after it was read" -- \
+            format --write "--test-fake=check2:uid=$(($(id -u) + 1))" "$d/in.v3" "$d/next.v3"
+        check_stream stderr "$TMP/err" "cannot write '$d/next\.v3': it changed after it was read"
+        finish "format --write rejects a late fake owner at the same check on the next input" $(( $? == 0 ))
 
         # The new file's name replaced by another file: before the final
         # check, and before the removal after a separate failure. Neither
