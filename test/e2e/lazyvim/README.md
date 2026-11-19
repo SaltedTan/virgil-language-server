@@ -4,10 +4,10 @@
 
 ## Running it
 
-It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. nvim-treesitter also needs curl, tar, and a C compiler to install its parsers. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. From the repository root:
+It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. nvim-treesitter also needs curl, tar, and a C compiler to install its parsers. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. The server must support `textDocument/formatting`. Use a local build from this checkout, or set `archive` to an archive built from a revision with formatting, such as a build from `main` or a `0.1.0-alpha.8` or later release archive when available. From the repository root:
 
 ```sh
-test/e2e/lazyvim/run.sh --archive virgil-lsp-0.1.0-alpha.7-x86-64-linux.tar.gz
+test/e2e/lazyvim/run.sh --archive "$archive"
 test/e2e/lazyvim/run.sh build/virgil-lsp
 make test-lazyvim
 ```
@@ -59,6 +59,7 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
   - completion in blink.cmp's menu as you type: the keyword `while`, the local `line` first, and the member `length` after `a.`, each accepted with Enter and undone; and nothing from the server in a comment;
   - inferred type and parameter-name hints through `vim.lsp.inlay_hint`, enabled by LazyVim, at exact UTF-16 positions after non-ASCII text;
   - semantic tokens through `vim.lsp.semantic_tokens.get_at_pos()`, which LazyVim leaves on: exactly the types and modifiers of the tokens in `words/Inlay.v3`, at exact UTF-16 positions after non-ASCII text;
+  - formatting through LazyVim's defaults, on files outside the project that the driver writes. `<leader>cf` gives the exact formatted text, and `u` undoes it. With `vim.b.autoformat = false`, `<C-s>` saves a misindented buffer with a pending edit byte for byte and sends no formatting request. With autoformat enabled, it saves the formatted text. It saves a file without a final line end, and one ending in a line of spaces without one, with exactly one. It saves a buffer with a pending edit that introduces a syntax error byte for byte after the server replies with an empty edit array (`[]`) and no RPC error. Noice shows no error or warning, and `v:errmsg` stays empty.
   - a project-file edit on disk, then an unsaved one ([Changes on disk](#changes-on-disk));
   - a restart with the bare command, then with the named one ([Neovim 0.11 and 0.12](#neovim-011-and-012)), and a clean server exit.
 - **`noroot`** uses deliberately bundle-less copies of the server and worker and opens `.virgil-lsp.json` with `VIRGIL_LOC` unset, and checks startup, the client's attachment, the `MissingVirgilRoot` diagnostic, the warning "Invalid project file …", and a clean server exit.

@@ -222,7 +222,7 @@ local function noice_messages()
   if not ok then return {} end
   local result = {}
   for _, m in ipairs(manager.get({}, { history = true, sort = true })) do
-    result[#result + 1] = { event = m.event, kind = m.kind, level = m.level, text = m:content() }
+    result[#result + 1] = { id = m.id, event = m.event, kind = m.kind, level = m.level, text = m:content() }
   end
   return result
 end
@@ -781,12 +781,174 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
+  -- Formatting through LazyVim's own keys and defaults: <leader>cf formats
+  -- the buffer, and LazyVim formats on save, which <C-s> does, through a
+  -- server that supports textDocument/formatting for the buffer. The files
+  -- are outside the project; the test writes them.
+  local leader = vim.g.mapleader or "\\"
+  local misindented = table.concat({
+    "component Format {",
+    "  def run(a: int) -> int {",
+    "      if (a > 0) {",
+    "    return a;",
+    "      }",
+    "  var b=a;",
+    "  return b;",
+    "  }",
+    "}",
+  }, "\n") .. "\n"
+  local formatted = table.concat({
+    "component Format {",
+    "\tdef run(a: int) -> int {",
+    "\t\tif (a > 0) {",
+    "\t\t\treturn a;",
+    "\t\t}",
+    "\t\tvar b = a;",
+    "\t\treturn b;",
+    "\t}",
+    "}",
+  }, "\n") .. "\n"
+  local function write_bytes(name, text)
+    local path = vim.fs.joinpath(root, name)
+    local f = assert(io.open(path, "wb"))
+    f:write(text)
+    f:close()
+    return path
+  end
+  local function read_bytes(path)
+    local f = assert(io.open(path, "rb"))
+    local text = f:read("*a")
+    f:close()
+    return text
+  end
+  local function buffer_text(buf)
+    return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, true), "\n") .. (vim.bo[buf].eol and "\n" or "")
+  end
+  local function open_for_formatting(name, text)
+    vim.cmd.edit(vim.fn.fnameescape(write_bytes(name, text)))
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for(name .. " attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    wait_for("the formatting registration for " .. name, function()
+      return client:supports_method("textDocument/formatting", buf)
+    end)
+    return buf
+  end
+  -- Presses <C-s> in Normal mode, as a user does, and waits for the write.
+  -- Returns the bytes on disk and the formatting requests sent meanwhile.
+  local function save_with_ctrl_s(buf)
+    wait_for("LazyVim's Normal <C-s> mapping", function()
+      return vim.fn.maparg("<C-s>", "n", false, true).desc == "Save File"
+    end)
+    wait_for("Normal mode", function() return vim.api.nvim_get_mode().mode == "n" end)
+    local written = false
+    vim.api.nvim_create_autocmd("BufWritePost", { buffer = buf, once = true, callback = function() written = true end })
+    local mark = #O.formattings
+    vim.api.nvim_input("<C-s>")
+    wait_for("the write after <C-s>", function() return written end)
+    wait_for("Normal mode after the save", function() return vim.api.nvim_get_mode().mode == "n" end)
+    return read_bytes(vim.api.nvim_buf_get_name(buf)), vim.list_slice(O.formattings, mark + 1)
+  end
+  -- One formatting request, answered without an error.
+  local function one_reply(requests)
+    assert(#requests == 1 and requests[1].answered and not requests[1].err,
+      "expected one answered formatting request: " .. vim.inspect(requests))
+    return requests[1].result
+  end
+
+  local format_buf
+  step("formatting: <leader>cf formats the buffer (LazyVim)", function()
+    format_buf = open_for_formatting("format.v3", misindented)
+    wait_for("LazyVim's <leader>cf mapping", function()
+      return vim.fn.maparg(leader .. "cf", "n", false, true).desc == "Format"
+    end)
+    local mark = #O.formattings
+    type_keys({ leader, "c", "f" })
+    wait_for("the formatted buffer", function() return buffer_text(format_buf) == formatted end)
+    local edits = one_reply(vim.list_slice(O.formattings, mark + 1))
+    vim.api.nvim_input("u")
+    wait_for("undo to restore the misindented text", function()
+      return buffer_text(format_buf) == misindented and not vim.bo[format_buf].modified
+    end)
+    return string.format("%d edits gave the formatted text; u restored it, unmodified", #edits)
+  end)
+
+  step("formatting: <C-s> with vim.b.autoformat = false saves the buffer as it is", function()
+    assert(format_buf, "format.v3 is not open")
+    vim.api.nvim_buf_set_text(format_buf, 5, 0, 5, 0, { " " })
+    local expected = buffer_text(format_buf)
+    assert(expected ~= read_bytes(vim.api.nvim_buf_get_name(format_buf)), "expected an unsaved edit before <C-s>")
+    vim.b[format_buf].autoformat = false
+    local ok, saved, requests = pcall(save_with_ctrl_s, format_buf)
+    vim.b[format_buf].autoformat = nil
+    assert(ok, saved)
+    assert(saved == expected, "the file does not match the buffer before the save: " .. vim.inspect(saved))
+    assert(#requests == 0, "a formatting request was sent: " .. vim.inspect(requests))
+    return "saved the pending edit byte for byte, with no formatting request"
+  end)
+
+  step("formatting: <C-s> formats on save (LazyVim autoformat)", function()
+    assert(format_buf, "format.v3 is not open")
+    local saved, requests = save_with_ctrl_s(format_buf)
+    one_reply(requests)
+    assert(saved == formatted, "the saved file is not the formatted text: " .. vim.inspect(saved))
+    assert(buffer_text(format_buf) == formatted and not vim.bo[format_buf].modified,
+      "the buffer is not the saved, formatted text: " .. vim.inspect(buffer_text(format_buf)))
+    return "saved the formatted text"
+  end)
+
+  -- The request mirrors the end of the text: a buffer read without a final
+  -- line end gets none from the server, which removes whitespace after the
+  -- last token, and Neovim's fixendofline adds one as it writes.
+  step("formatting: <C-s> ends a file without a final line end with exactly one", function()
+    local cases = {
+      { "eol.v3", "component Eol {\n}", "component Eol {\n}\n" },
+      { "spaces.v3", "component Spaces {\n}\n   ", "component Spaces {\n}\n" },
+    }
+    for _, case in ipairs(cases) do
+      local buf = open_for_formatting(case[1], case[2])
+      assert(not vim.bo[buf].eol, case[1] .. " was read with a final line end")
+      local saved, requests = save_with_ctrl_s(buf)
+      one_reply(requests)
+      assert(saved == case[3], case[1] .. " was saved as " .. vim.inspect(saved))
+    end
+    return "eol.v3 and spaces.v3, which ends in a line of spaces, each saved with one final line end"
+  end)
+
+  -- The server answers [] for a syntax error, with no error, so the save
+  -- goes on and nothing reports a problem; diagnostics show the error.
+  step("formatting: <C-s> saves a file with a syntax error unchanged, with no error message", function()
+    local buf = open_for_formatting("broken.v3", "component Broken {\n  def run() {\n      var x = 1;\n  }\n}\n")
+    vim.api.nvim_buf_set_lines(buf, 2, 3, true, { "      var x = ;" })
+    local expected = buffer_text(buf)
+    assert(expected ~= read_bytes(vim.api.nvim_buf_get_name(buf)), "expected an unsaved edit before <C-s>")
+    local before = {}
+    for _, m in ipairs(noice_messages()) do before[m.id] = true end
+    vim.v.errmsg = ""
+    local saved, requests = save_with_ctrl_s(buf)
+    local edits = one_reply(requests)
+    assert(vim.islist(edits) and #edits == 0, "expected an empty edit list: " .. vim.inspect(edits))
+    assert(saved == expected and buffer_text(buf) == expected,
+      "the file or buffer does not match the buffer before the save: " .. vim.inspect(saved))
+    sleep(500)
+    local shown = {}
+    for _, m in ipairs(noice_messages()) do
+      if not before[m.id] then
+        shown[#shown + 1] = string.format("%s/%s [%s]: %s", tostring(m.event), tostring(m.kind), tostring(m.level), m.text)
+        assert(m.level ~= "error" and m.level ~= "warn",
+          "a message after the save: " .. shown[#shown])
+      end
+    end
+    assert(vim.v.errmsg == "", "v:errmsg after the save: " .. vim.v.errmsg)
+    return "saved the pending edit byte for byte after an empty reply; messages: "
+      .. (#shown > 0 and table.concat(shown, "; ") or "none")
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,
   -- which noice keeps. The procedure's unsaved fix then lets it rename the
   -- local line through the prompt, and undo restores both edits in turn.
-  local leader = vim.g.mapleader or "\\"
   local name_column = line_text:find("line", 1, true) - 1
   step("rename refused while the project has a type error (LazyVim <leader>cr)", function()
     local map = wait_for("LazyVim's <leader>cr mapping", function()

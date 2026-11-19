@@ -78,8 +78,10 @@ ORDER = [
     "nvim.completion.keyword",
     "nvim.completion.local",
     "nvim.completion.member",
+    "nvim.formatting.buffer",
     "nvim.configuration.json-routing",
     "nvim.configuration.unsaved",
+    "nvim.formatting.selector",
     "nvim.shutdown.clean",
 ]
 
@@ -491,7 +493,7 @@ class StreamTest(Case):
         result = self.run_sh()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Neovim smoke test: NVIM v0.11.6", result.stdout)
-        self.assertIn("run passed (35 of 35 observations)", result.stdout)
+        self.assertIn("run passed (37 of 37 observations)", result.stdout)
         run = self.validate()
         self.assertTrue(run.passed)
         self.assertEqual(run.end["cleanup"], "verified")
@@ -584,7 +586,7 @@ class StreamTest(Case):
         completed = checks["nvim.infrastructure.completed"]
         self.assertEqual((completed["status"], completed["failureCode"]), ("fail", "exit-status"))
         self.assertTrue(run.end["complete"])
-        self.assertEqual(run.end["counts"], {"pass": 4, "fail": 2, "xfail": 0, "xpass": 0, "skip": 29})
+        self.assertEqual(run.end["counts"], {"pass": 4, "fail": 2, "xfail": 0, "xpass": 0, "skip": 31})
         self.assertEqual(run.end["cleanup"], "verified")
         self.assertNoWork()
         self.assertNotIn(str(self.dir), self.stream.read_text())
@@ -595,7 +597,7 @@ class StreamTest(Case):
         self.scenario(lines=[passing(check_id) for check_id in ORDER[:-2]])
         run = self.assertFailed(self.run_sh())
         self.assertFalse(run.end["complete"])
-        self.assertEqual(run.end["checkCount"], 33)
+        self.assertEqual(run.end["checkCount"], 35)
         self.assertEqual(run.end["counts"]["skip"], 0)
         self.assertTrue(any(ORDER[-2] in issue for issue in run.end["issues"]), run.end["issues"])
         self.assertEqual(self.checks()["nvim.infrastructure.completed"]["status"], "pass")
@@ -896,15 +898,15 @@ os.execv({shutil.which("dirname")!r}, ["dirname", *sys.argv[1:]])
 
         self.validate()
         # A failed check that the run-end still counts as a pass.
-        self.assertInvalid(edited(5, status="fail", reason="failed", failureCode="error"), "counts.pass is 35")
+        self.assertInvalid(edited(5, status="fail", reason="failed", failureCode="error"), "counts.pass is 37")
         # A pass without the check's evidence level.
         self.assertInvalid(edited(5, level="ui-state"), "level is ui-state")
         # A complete run that lost a check.
         dropped = [json.loads(line) for line in lines[:5] + lines[6:]]
         for seq, event in enumerate(dropped):
             event["seq"] = seq
-        dropped[-1]["checkCount"] = 34
-        dropped[-1]["counts"]["pass"] = 34
+        dropped[-1]["checkCount"] = 36
+        dropped[-1]["counts"]["pass"] = 36
         self.assertInvalid(b"".join(json.dumps(event).encode() + b"\n" for event in dropped),
                            "complete is true, but")
         # A pass whose launcher exited with a failure.
