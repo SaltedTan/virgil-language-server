@@ -30,11 +30,10 @@ enum AnalysisFormatRefusal {
 	UNTOKENIZED	// the parser left text outside its tokens and comments
 }
 
-// A document formatted (AeneasAdapter.formatting), or a refusal that says why:
-// a carriage return without a line feed, the parse's first diagnostic, or the
-// parse budget. {size} and {firstChange} are known before any replacement
-// text is built, so a caller can refuse a result that would not fit, or
-// report where a text changes, without calling {edits}.
+// The result of AeneasAdapter.formatting, with a typed refusal on failure.
+// {size} and {firstChange} are known before any replacement text is built,
+// so a caller can refuse a result that would not fit or report where a text
+// changes without calling {edits}.
 class AnalysisFormatting {
 	// The kind of refusal, or NONE.
 	def kind: AnalysisFormatRefusal;
@@ -63,6 +62,8 @@ class AnalysisFormatting {
 	def edits() -> Array<AnalysisTextEdit> {
 		return if(formatter == null, null, formatter.edits());
 	}
+	// Visits each changed range with its replacement split into leading bytes,
+	// tabs, and trailing bytes. The byte slices are borrowed for the callback.
 	def visitChanges(visit: (int, int, Range<byte>, int, Range<byte>) -> void) -> bool {
 		return formatter != null && formatter.visitChanges(visit);
 	}
