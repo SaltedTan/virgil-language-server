@@ -37,6 +37,7 @@ requires it to report exactly the files and lines that the probe does.
 import hashlib
 import importlib.util
 import itertools
+import os
 import re
 import subprocess
 import sys
@@ -405,6 +406,10 @@ def main(argv):
     exe = Path(args[0]).resolve()
     probe_exe = exe.parent / 'format-corpus-probe'
     start = time.monotonic()
+    toplevel = git('rev-parse', '--show-toplevel')
+    if toplevel.returncode != 0 or toplevel.stdout != os.fsencode((ROOT / VIRGIL).resolve()) + b'\n':
+        fail(f'{VIRGIL} is not initialized; run git submodule update --init {VIRGIL}')
+        return 1
     revision = git('rev-parse', 'HEAD')
     if revision.returncode != 0:
         fail(f'cannot read the revision of {VIRGIL}: {revision.stderr.decode(errors="replace").strip()}')
