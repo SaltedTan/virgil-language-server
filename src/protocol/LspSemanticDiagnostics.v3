@@ -205,7 +205,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		for (ctx in contexts) {
 			if (!ctx.config.current) continue;
 			var wait: LspSemanticWait;
-			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
+			for (i < waiting.length) { if (waiting[i].context == ctx) wait = waiting[i]; }
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
 			wait.due = if(wait.urgent, now, due);
 		}
@@ -239,7 +239,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			if (next == null) return;
 			jobLast = false;
 			var rest = Vector<LspSemanticWait>.new();
-			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
+			for (i < waiting.length) { if (waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
 			// This analysis recovers from any eviction, or fails to.
 			next.context.evicted = false;

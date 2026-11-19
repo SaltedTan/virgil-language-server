@@ -109,7 +109,7 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		}
 	}
 	private def excluded(relative: string) -> bool {
-		for (e in exclusions) { if(ProjectGlob.matches(e.text, relative)) return true; }
+		for (e in exclusions) { if (ProjectGlob.matches(e.text, relative)) return true; }
 		return false;
 	}
 	private def walk(base: string, relative: string, parts: Array<string>, at: int, depth: int) {

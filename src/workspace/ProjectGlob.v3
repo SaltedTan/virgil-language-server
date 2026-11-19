@@ -53,7 +53,7 @@ class ProjectGlobMatcher(budget: int) {
 	def split(text: string) -> Array<string> {
 		if (!charge(text.length + 1)) return null;
 		var count = 1;
-		for (c in text) { if(c == '/') count++; }
+		for (c in text) { if (c == '/') count++; }
 		var result = Array<string>.new(count), start = 0, k = 0;
 		for (i < text.length) {
 			if (text[i] == '/') {
@@ -108,7 +108,7 @@ class ProjectGlobMatcher(budget: int) {
 		if (!selected) return false;
 		for (e in exclude) {
 			if (!fill(e, path)) return false;
-			for (k = 1; k <= path.length; k++) { if(row[k]) return false; }
+			for (k = 1; k <= path.length; k++) { if (row[k]) return false; }
 		}
 		return true;
 	}

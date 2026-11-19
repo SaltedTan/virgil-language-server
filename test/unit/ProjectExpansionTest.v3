@@ -376,7 +376,7 @@ def recursivePattern(count: int) -> string {
 def test_path_budget(t: Tester) {
 	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/path-budget");
 	base = ProjectFiles.join(base, Array<byte>.new(200));
-	for (i < base.length) { if(base[i] == 0) base[i] = 'd'; }
+	for (i < base.length) { if (base[i] == 0) base[i] = 'd'; }
 	t.asserti(4 * 1024 * 1024, ProjectLimits.MAX_PATH_BYTES);
 	var listing = ProjectFiles.list(base, 1000);
 	if (listing.names == null) return t.fail1("cannot list %s", base);
@@ -596,14 +596,14 @@ def test_aggregate_preflight_transfer(t: Tester) {
 		t.asserti(0, first.diagnostics.length);
 		t.asserti(0, second.diagnostics.length);
 		var from: string;
-		for (s in second.contexts[0].sources) { if(Strings.endsWith(s.path, "/Move.v3")) from = s.path; }
+		for (s in second.contexts[0].sources) { if (Strings.endsWith(s.path, "/Move.v3")) from = s.path; }
 		t.assert(from != null, "transfer file selected");
 		if (from == null || first.contexts[0].sources.length == 0) return;
 		var to = ProjectFiles.join(ProjectFiles.parent(first.contexts[0].sources[0].path), "Move.v3");
 		var uri = ProjectFiles.uri(first.contexts[0].sources[0].path), revision = first.revision;
 		if (!moveFixture(t, from, to)) return;
 		w.forDocument(uri);
-		for (c in [first, second]) { for(ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
+		for (c in [first, second]) { for (ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
 		t.assert(w.forAnalysis(uri).active != null, "same preflight admits released capacity");
 		t.asserti(0, first.diagnostics.length);
 		t.asserti(0, second.diagnostics.length);
@@ -624,7 +624,7 @@ def test_aggregate_preflight_transfer(t: Tester) {
 		}
 		moveFixture(t, to, from);
 		w.forAnalysis(uri);
-		for (c in [first, second]) { for(ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
+		for (c in [first, second]) { for (ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
 	}
 }
 def test_active_precedence(t: Tester) {
@@ -1106,7 +1106,7 @@ def test_snapshot_budget(t: Tester) {
 		t.assert(latest.retainedBytes >= 162929L * 20, "decoded occurrence arrays charged");
 		contexts[i].snapshot = latest;
 		var retained = 0L;
-		for (ctx in contexts) { if(ctx.snapshot != null) retained += ctx.snapshot.retainedBytes; }
+		for (ctx in contexts) { if (ctx.snapshot != null) retained += ctx.snapshot.retainedBytes; }
 		t.assert(retained <= w.MAX_SNAPSHOT_BYTES, "aggregate snapshots remain bounded");
 	}
 	t.assert(contexts[0].snapshot == null, "old context eventually evicted");

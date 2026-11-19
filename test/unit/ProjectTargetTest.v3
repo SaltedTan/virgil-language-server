@@ -93,7 +93,7 @@ def test_target_runtime_selected_once(t: Tester) {
 	var r = expandTarget(BASE, ROOT, p);
 	t.asserti(0, r.diagnostics.length);
 	var expected = Vector<string>.new().put(ProjectFiles.join(BASE, "native/Native.v3")).put(riRuntime);
-	for (path in runtime) { if(!Strings.equal(path, riRuntime)) expected.put(path); }
+	for (path in runtime) { if (!Strings.equal(path, riRuntime)) expected.put(path); }
 	checkPaths(t, expected.extract(), 1, r.sources);
 	// A project whose own sources are runtime files keeps them as members.
 	// Its runtime pattern still selects them, so there is no diagnostic.
@@ -101,10 +101,10 @@ def test_target_runtime_selected_once(t: Tester) {
 	r = expandTarget(ROOT, ROOT, p);
 	t.asserti(0, r.diagnostics.length);
 	expected = Vector<string>.new();
-	for (path in runtime) { if(Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
+	for (path in runtime) { if (Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
 	var members = expected.length;
 	t.asserti(3, members);
-	for (path in runtime) { if(!Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
+	for (path in runtime) { if (!Strings.startsWith(path, ProjectFiles.join(ROOT, "rt/gc/"))) expected.put(path); }
 	checkPaths(t, expected.extract(), members, r.sources);
 }
 def test_target_runtime_diagnostics(t: Tester) {
