@@ -7,8 +7,8 @@ Usage: test/format/corpus.py [--write] build/virgil-lsp
 
 ADR-0019 decision 8. `test/format/virgil-corpus.txt` records the Virgil pin
 and, for every `.v3` file of `aeneas/src`, `lib`, and `apps` in the pinned
-`vendor/virgil`, whether it formatted or its first diagnostic, a hash of
-its formatted text, and the lines of the input that formatting changes.
+`vendor/virgil` in path order, whether it formatted or its first diagnostic,
+a hash of its formatted text, and the lines of the input that formatting changes.
 This suite formats those files again and fails, naming
 the file and lines, when anything differs from the record or when the
 record's pin isn't the submodule's checkout. With `--write`, it regenerates
@@ -65,8 +65,7 @@ HEADER = """\
 # `make test` checks. Review its diff after a formatter change or a pin update.
 #
 # A total line gives a directory's files, those that format, those that
-# formatting changes, and their changed lines. The file rows are grouped by
-# directory (aeneas/src, lib, apps) and sorted by path within each group.
+# formatting changes, and their changed lines. The file rows are sorted by path.
 # Each file has a line of three fields separated by tabs: its path in
 # vendor/virgil, then either "refused" and its first diagnostic, or the first
 # 16 hex digits of the SHA-256 of its formatted text, with each CR LF taken as
@@ -286,7 +285,7 @@ def record_text(pin, paths, results):
 def read_record(text):
     """The record's pin, its total lines, and a dict of path to its other two fields."""
     pin, totals, entries = None, [], {}
-    previous = (-1, '')
+    previous = ''
     for line in text.split('\n'):
         if not line or line.startswith('#'):
             continue
@@ -301,13 +300,11 @@ def read_record(text):
             path, status, detail = fields
             if path in entries:
                 raise ValueError(f'{path}: duplicate path in the record')
-            group = next((i for i, d in enumerate(RECORDED) if path.startswith(d + '/')), None)
-            if group is None:
+            if not any(path.startswith(d + '/') for d in RECORDED):
                 raise ValueError(f'{path}: path outside the recorded directories')
-            order = (group, path)
-            if order <= previous:
-                raise ValueError(f'{path}: out of order in the record after {previous[1]}')
-            previous = order
+            if path <= previous:
+                raise ValueError(f'{path}: out of order in the record after {previous}')
+            previous = path
             entries[path] = (status, detail)
     return pin, totals, entries
 
@@ -413,7 +410,7 @@ def main(argv):
     link = gitlink()
 
     files = inventory()
-    recorded = [p for d in RECORDED for p in files[d]]
+    recorded = sorted(p for d in RECORDED for p in files[d])
     try:
         results = probe(probe_exe, recorded, True)
         recorded_time = time.monotonic() - start
