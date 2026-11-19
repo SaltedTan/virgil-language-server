@@ -51,7 +51,7 @@ make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs
 
 Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables. New release archives also include `virgil/` with the pinned library and the `x86-64-linux` runtime sources: keep it beside the executables to analyze `virgilDependencies` under `lib/` and `x86-64-linux` target projects without a separate checkout. An optional client root overrides the bundle; other sources outside `lib/` still need a checkout ([root selection](docs/configuration.md#the-virgil-root)). [Releases](docs/releasing.md) describes the release archives, how to verify them, and how to install them.
 
-Try these commands after building.
+Try the current development command:
 
 ```sh
 build/virgil-lsp --version

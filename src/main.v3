@@ -193,7 +193,9 @@ component VirgilLsp {
 		}
 		return status;
 	}
-	// Returns false if formatting fails or {check} finds a change.
+	// Formats {path}: reports it if {check} and it would change, or else
+	// writes its formatted text. Returns false if it would change or can't be
+	// formatted, which is reported on standard error.
 	private def formatFile(path: string, options: Array<string>, check: bool) -> bool {
 		var input = readSource(path);
 		if (input == null) return false;
@@ -233,8 +235,8 @@ component VirgilLsp {
 		for (i = pos; i < input.length; i++) out[at++] = input[i];
 		return writeAll(out);
 	}
-	// Reuses the bounded project source reader. The CLI opens {path}
-	// separately because it follows symbolic links.
+	// The text of {path}, read as a project source is, or null after
+	// reporting why it can't be. Reads are bounded by FORMAT_MAX_BYTES.
 	private def readSource(path: string) -> Array<byte> {
 		var fd = HostOs.openRead(path);
 		// The JVM bridge checks the type before opening: EISDIR or EINVAL.
@@ -261,8 +263,6 @@ component VirgilLsp {
 		HostOs.close(fd);
 		return text;
 	}
-	// A failed write disables further reports on standard output. The batch
-	// still checks subsequent files and reports their failures on standard error.
 	private var outputFailed: bool;
 	// Writes {data} to standard output unbuffered, retrying an interrupted or
 	// partial write, or reports why it couldn't. Every write of format goes

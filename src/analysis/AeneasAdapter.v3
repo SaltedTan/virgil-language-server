@@ -614,8 +614,9 @@ component AeneasAdapter {
 	// return that no line feed follows, which the compiler's lexer and the
 	// folding parse disagree about, is refused before the text is normalized
 	// or parsed; then a text with too many tokens to parse
-	// (AnalysisParseBudget), and one that doesn't parse with the supplied
-	// language options, with its first diagnostic.
+	// (AnalysisParseBudget), and one that doesn't parse with the project's
+	// language options {options}, with its first diagnostic. The result knows
+	// the formatted size before it builds any edit.
 	// See docs/architecture.md#formatting.
 	def formatting(path: string, input: Array<byte>, options: Array<string>, eof: AnalysisFormatEnd) -> AnalysisFormatting {
 		for (i < input.length) {
