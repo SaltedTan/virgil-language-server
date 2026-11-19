@@ -125,7 +125,7 @@ The extension contributes these defaults for Virgil documents. Override any of t
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `editor.formatOnSave` | `true` | Format on an explicit save. VS Code's delayed auto save doesn't format. |
-| `editor.insertSpaces` | `false` | Indent with tabs, as the server does. |
+| `editor.insertSpaces` | `false` | Use tabs for editor indentation unless VS Code detects space indentation in the file. The server formatter uses tabs. |
 | `files.insertFinalNewline` | `true` | Add the final line end that the formatting request leaves to the editor. |
 
 **Format Document** normalizes indentation and spacing while keeping the author's line breaks ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). To keep formatting on demand but turn off format on save, set `"[virgil]": { "editor.formatOnSave": false }` in user or workspace settings. The server registers formatting only for documents with the `virgil` language ID, so VS Code offers no Virgil formatter for the project file `.virgil-lsp.json`.

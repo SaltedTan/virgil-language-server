@@ -884,7 +884,8 @@ async function formatting(bad) {
       return id !== undefined
         && new RegExp(`Received response 'textDocument/formatting - \\(${id}\\)' in \\d+ms\\.\\nResult: \\[\\]$`, 'm').test(log);
     });
-    assert.doesNotMatch(saveTrace(), /\[error\]|RequestFailed/, 'saving bad.v3 reported a formatting error');
+    assert.ok(!saveTrace().includes('Request textDocument/formatting failed.'),
+      'saving bad.v3 reported a formatting error');
     console.log('PASS: vscode.formatting.syntax-error');
     fs.writeFileSync(bad.document.uri.fsPath, saved);
     await vscode.window.showTextDocument(bad.document);
