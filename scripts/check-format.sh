@@ -11,6 +11,9 @@ file_list=$(mktemp "$build/check-format-files.XXXXXX")
 trap 'rm -f -- "$file_list"' EXIT
 
 git ls-files -z -- "*.v3" "$@" | while IFS= read -r -d '' path; do
-    printf './%s\0' "$path"
+    case "$path" in
+        -*) path="./$path" ;;
+    esac
+    printf '%s\0' "$path"
 done > "$file_list"
 xargs -0 "$build/virgil-lsp" format --check < "$file_list"
