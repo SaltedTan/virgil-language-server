@@ -295,9 +295,10 @@ component HostOs {
 		if (r >= 0) fill(buf, s);
 		return r;
 	}
-	// 1 if the file open as {fd} has an ACL or another extended attribute,
-	// 0 if it has neither, or a negated errno. listxattr(2) doesn't list the
-	// ACL here, so the extended stat reports it.
+	// 1 if the file open as {fd} has an ACL, an owner or group UUID, or
+	// another extended attribute, 0 if it has none of them, or a negated
+	// errno. listxattr(2) doesn't list the ACL or the UUIDs here, so the
+	// extended stat reports them.
 	def extendedAttributes(fd: int) -> int {
 		var r = attributes(sys(SYS_flistxattr, (fd, Pointer.NULL, 0L, XATTR_SHOWCOMPRESSION)));
 		if (r != 0) return r;
@@ -357,12 +358,18 @@ component HostOs {
 	}
 	// The extended stat's security size is 0 without extended security, and
 	// otherwise the size of a kauth_filesec (bsd/sys/kauth.h) with its ACL
-	// entries: 44 bytes before them, which end with the entry count, then 24
-	// bytes each. The kernel copies one into {sec} if it fits; an entry count
-	// of KAUTH_FILESEC_NOACL (all ones) means there is no ACL.
+	// entries: 44 bytes before them, then 24 bytes each. The kernel copies one
+	// into {sec} if it fits. Its header is a 4-byte magic number, the owner's
+	// and the group's 16-byte UUIDs (bytes 4 to 35), the 4-byte entry count,
+	// and 4 bytes of flags. An entry count of KAUTH_FILESEC_NOACL (all ones)
+	// means there is no ACL. A replacement wouldn't carry an owner or group
+	// UUID either, so a header with either UUID set counts as extended
+	// security too.
 	private def acl(sec: Array<long>, size: long) -> int {
 		if (size == 0) return 0;
 		if (size != FILESEC_HEADER) return 1;
+		var uuids = (sec[0] >>> 32) | sec[1] | sec[2] | sec[3] | (sec[4] & 0xFFFFFFFFL);
+		if (uuids != 0) return 1;
 		return if(int.view(sec[4] >>> 32) == -1, 0, 1);
 	}
 
