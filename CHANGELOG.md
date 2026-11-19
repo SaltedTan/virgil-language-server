@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] - 2026-11-20
+
 ### Added
 
 - With a server that supports formatting, the VS Code extension now formats Virgil files on explicit saves by default and on demand with **Format Document**. The defaults are `editor.formatOnSave: true`, `editor.insertSpaces: false`, and `files.insertFinalNewline: true`. Override any of them under `[virgil]` in user or workspace settings. The editor adds a missing final line end on save. The server registers formatting only for documents with the `virgil` language ID, so `.virgil-lsp.json` gets no Virgil formatter ([Formatting](clients/vscode/README.md#formatting), [#513](https://github.com/SaltedTan/virgil-language-server/issues/513)).
@@ -17,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The VS Code extension's version is now 0.1.7. Its platform VSIX files bundle the `0.1.0-alpha.8` server, and it adds three `[virgil]` defaults for explicit-save formatting, tab indentation, and final line ends (`editor.formatOnSave`, `editor.insertSpaces`, and `files.insertFinalNewline`). Override any of them under `[virgil]` in user or workspace settings ([Formatting](clients/vscode/README.md#formatting), [#544](https://github.com/SaltedTan/virgil-language-server/pull/544)). **Format Document** and server formatting on explicit saves work with any server that advertises `textDocument/formatting`, including development builds from `main`. Server release `0.1.0-alpha.8` is the first to provide formatting. Published releases through `0.1.0-alpha.7` lack it. With the `0.1.7` defaults, VS Code adds a missing final line end on save independently of the server. With extension `0.1.6` and an external server that supports formatting, **Format Document** works and format on save requires enabling it in settings ([compatibility](docs/compatibility.md#editors)).
 - CI's protocol conformance job uses [lspcheck](https://github.com/SaltedTan/lspcheck) 0.6.0, which no longer blames the server for a frame lspcheck's own cleanup cuts short and no longer passes K1 on output it couldn't read. Both of the job's steps give the same verdicts as with 0.5.0.
 
 ## [0.1.0-alpha.7] - 2026-11-19

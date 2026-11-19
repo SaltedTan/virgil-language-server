@@ -14,7 +14,7 @@ Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim ins
 
 <!-- clean-install: lazyvim -->
 ```sh
-config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.7/editors/nvim
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.8/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/lua/plugins"
 curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua.part" &&
@@ -39,7 +39,7 @@ Download [`virgil_lsp.lua`](virgil_lsp.lua) into your configuration's `plugin/` 
 
 <!-- clean-install: plain-nvim -->
 ```sh
-config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.7/editors/nvim
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.8/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/plugin"
 curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/plugin/virgil_lsp.lua.part" &&
@@ -66,7 +66,7 @@ For a release install, you can select its bundled library explicitly instead (re
 
 <!-- clean-install: nvim-root -->
 ```sh
-export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.7-x86-64-linux/virgil"
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.8-x86-64-linux/virgil"
 ```
 
 Or replace `vim.env.VIRGIL_LOC` with the path. See [The Virgil root](../../docs/configuration.md#the-virgil-root) for bundle placement, root errors, and projects needing a checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
@@ -115,9 +115,9 @@ LazyVim needs no setup, and shows the items as you type. Its default completion 
 
 ## Formatting
 
-Use a server build with `textDocument/formatting`, such as a local build from `main` or `0.1.0-alpha.8` or later when available.
+Use a server build with `textDocument/formatting`, such as `0.1.0-alpha.8` or later, or a local build from `main`.
 
-The server formats open Virgil buffers by [ADR-0019](../../docs/decisions/0019-formatter.md)'s rules, with tabs and with the author's line breaks kept, and has no settings ([the formatting request](../../docs/architecture.md#the-formatting-request)). Neovim registers formatting dynamically, so the server offers it for `virgil` buffers only, not for `.virgil-lsp.json`; `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1]:supports_method("textDocument/formatting", 0)` shows whether the current buffer has it. A buffer with a syntax error isn't formatted, and no error is shown; its diagnostics show the error.
+The server formats open Virgil buffers with tabs and has no formatting settings. It keeps the author's line breaks apart from joining a body's opening brace to its header or an `else` to its preceding `}` where allowed, and normalizing the end of the buffer ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). Neovim registers formatting dynamically, so the server offers it for `virgil` buffers only, not for `.virgil-lsp.json`; `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1]:supports_method("textDocument/formatting", 0)` shows whether the current buffer has it. A buffer with a syntax error isn't formatted, and no error is shown; its diagnostics show the error.
 
 In plain Neovim, `:lua vim.lsp.buf.format()` formats the current buffer. The server doesn't offer range formatting, so Neovim leaves `formatexpr` unset and `gq` keeps its built-in behavior. Plain Neovim doesn't format on save, and the plain configuration adds no autocommand for it.
 
