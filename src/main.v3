@@ -14,6 +14,7 @@ component VirgilLsp {
 		if (Strings.equal(cmd, "--version")) return version();
 		if (Strings.equal(cmd, "--help") || Strings.equal(cmd, "-h")) return usage(0);
 		if (Strings.equal(cmd, "--stdio")) return stdio(Arrays.range(args, 1, args.length));
+		if (Strings.equal(cmd, "format")) return format(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "parse")) return parse(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "analyze")) return analyze(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "repair")) return repair(Arrays.range(args, 1, args.length));
@@ -28,6 +29,11 @@ component VirgilLsp {
 		buf.puts("    --max-message-bytes=<n>\n");
 		buf.put1("                     Skip incoming messages larger than n bytes (default %d).\n", LspFraming.DEFAULT_MAX_PAYLOAD);
 		buf.put1("                     n can be at most %d.\n", LspFraming.MAX_SUPPORTED_PAYLOAD);
+		buf.puts("  format [options] <file.v3>...\n");
+		buf.puts("                     Print one file's formatted text to standard output.\n");
+		buf.puts("    --check          Instead, print 'path:line: not formatted' for each file that\n");
+		buf.puts("                     would change, with its first changed line; exit with 1 if any would.\n");
+		buf.puts("    -lang:<option>   A language option, as in a project file's compilerArgs.\n");
 		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
 		buf.puts("  --help             Print this summary.\n\n");
 		buf.puts("Development commands (unstable):\n");
@@ -143,6 +149,138 @@ component VirgilLsp {
 	}
 	def warnIgnoredResponse(reason: string) {
 		Log.warn(Strings.format1("ignored a response: %s", reason));
+	}
+	// The largest file that format reads, and the largest formatted text it
+	// builds: the source budget of a project analysis, which a project of
+	// one file can fill, so formatted text fits wherever its source did.
+	def FORMAT_MAX_BYTES = LspAnalysisCapture.MAX_SOURCE_BYTES;
+	// Formats files by ADR-0019, as the server would. Exits with 0 on success,
+	// 1 if a file would change under --check or can't be formatted, and 2 for
+	// invalid arguments.
+	def format(args: Array<string>) -> int {
+		var check = false, seen = Strings.newMap<bool>();
+		var options = Vector<string>.new(), paths = Vector<string>.new();
+		for (arg in args) {
+			if (Strings.equal(arg, "--check")) {
+				check = true;
+			} else if (Strings.startsWith(arg, ProjectCompilerFlags.PREFIX)) {
+				var problem = ProjectCompilerFlags.check(arg, seen);
+				if (problem != null) {
+					Log.error1("invalid option: %s", problem);
+					return 2;
+				}
+				options.put(arg);
+			} else if (arg.length > 0 && arg[0] == '-') {
+				Log.error2("unknown option '%s'; run '%s --help'", arg, BuildInfo.NAME);
+				return 2;
+			} else {
+				paths.put(arg);
+			}
+		}
+		if (paths.length == 0) {
+			Log.error1("format needs a file; run '%s --help'", BuildInfo.NAME);
+			return 2;
+		}
+		if (!check && paths.length > 1) {
+			Log.error1("format prints one file; pass --check to check several; run '%s --help'", BuildInfo.NAME);
+			return 2;
+		}
+		// A closed pipe must fail a write, reported, rather than end this process.
+		HostOs.ignoreSigpipe();
+		var lang = options.extract(), status = 0;
+		for (i < paths.length) {
+			if (!formatFile(paths[i], lang, check)) status = 1;
+		}
+		return status;
+	}
+	// Formats {path}: reports it if {check} and it would change, or else
+	// writes its formatted text. Returns false if it would change or can't be
+	// formatted, which is reported on standard error.
+	private def formatFile(path: string, options: Array<string>, check: bool) -> bool {
+		var input = readSource(path);
+		if (input == null) return false;
+		var r = AeneasAdapter.formatting(path, input, options, AnalysisFormatEnd.ONE);
+		if (r.diagnostic != null) {
+			Log.error(r.diagnostic.toString());
+			return false;
+		}
+		if (r.refusal != null) {
+			Log.error2("cannot format '%s': %s", path, r.refusal);
+			return false;
+		}
+		// Checked before any text is built, in every mode.
+		if (r.size() > FORMAT_MAX_BYTES) {
+			Log.error2("cannot format '%s': its formatted text would be larger than %d bytes", path, FORMAT_MAX_BYTES);
+			return false;
+		}
+		if (check) {
+			var first = r.firstChange();
+			if (first < 0) return true;
+			var line = 1;
+			for (i < first) if (input[i] == '\n') line++;
+			writeAll(Strings.format2("%s:%d: not formatted\n", path, line));
+			return false;
+		}
+		var edits = r.edits();
+		if (edits == null) {
+			Log.error1("cannot format '%s'", path);
+			return false;
+		}
+		var out = Array<byte>.new(int.view(r.size())), at = 0, pos = 0;
+		for (e in edits) {
+			for (i = pos; i < e.begin; i++) out[at++] = input[i];
+			for (b in e.text) out[at++] = b;
+			pos = e.end;
+		}
+		for (i = pos; i < input.length; i++) out[at++] = input[i];
+		return writeAll(out);
+	}
+	// The text of {path}, read as a project source is, or null after
+	// reporting why it can't be. Reads are bounded by FORMAT_MAX_BYTES.
+	private def readSource(path: string) -> Array<byte> {
+		var fd = HostOs.openRead(path);
+		// The JVM bridge checks the type before opening: EISDIR or EINVAL.
+		if (fd == -21 || fd == -22) {
+			Log.error1("cannot format '%s': it is not a regular file", path);
+			return null;
+		}
+		if (fd < 0) {
+			Log.error1("cannot read file '%s'", path);
+			return null;
+		}
+		var info = HostOs.fileMetadata(fd), text: Array<byte>;
+		if (info.0 < 0 || info.1 < 0) {
+			Log.error1("cannot read file '%s'", path);
+		} else if (info.0 != ProjectFiles.REGULAR) {
+			Log.error1("cannot format '%s': it is not a regular file", path);
+		} else if (info.1 > FORMAT_MAX_BYTES) {
+			Log.error2("cannot format '%s': it is larger than %d bytes", path, FORMAT_MAX_BYTES);
+		} else {
+			text = ProjectFiles.readExpected(fd, int.view(info.1), FORMAT_MAX_BYTES);
+			// A read error, or growth past the bound since fstat.
+			if (text == null) Log.error1("cannot read file '%s'", path);
+		}
+		HostOs.close(fd);
+		return text;
+	}
+	private var outputFailed: bool;
+	// Writes {data} to standard output unbuffered, retrying an interrupted or
+	// partial write, or reports why it couldn't. Every write of format goes
+	// through here, since System.puts buffers and drops a failed write.
+	private def writeAll(data: Array<byte>) -> bool {
+		if (outputFailed) return false;
+		var at = 0;
+		while (at < data.length) {
+			var n = HostOs.write(STDOUT, data[at ..+ (data.length - at)]);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) {
+				Log.error("cannot write to standard output");
+				outputFailed = true;
+				return false;
+			}
+			at += n;
+		}
+		return true;
 	}
 	def parse(paths: Array<string>) -> int {
 		if (paths.length == 0) return usage(2);

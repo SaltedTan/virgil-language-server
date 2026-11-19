@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `virgil-lsp format <file.v3>` prints a file's formatted text, by the rules of [ADR-0019](docs/decisions/0019-formatter.md), which keep the author's line breaks. The command ends the text with exactly one line end after the last token or comment. Whitespace-only files format as empty, and a block comment left open at the end of the file runs to the end unchanged. `virgil-lsp format --check <file.v3>...` prints `path:line: not formatted` for each file that would change, with its first changed line, and exits with 1, for use in CI. `-lang:` options set language options as a project file's `compilerArgs` does. Native builds refuse nonregular files after opening them. The JVM build checks the path's type before opening it, so a regular file replaced by a FIFO or device between those steps can make the command wait for a writer or read from the device. The command also refuses files it can't read, files with a lone carriage return or syntax error, files over the parse budget, and files over 4 MiB before or after formatting. Refusals are reported on standard error with exit status 1. Invalid arguments exit with 2. The command doesn't write files ([Running](docs/development.md#running), [#507](https://github.com/SaltedTan/virgil-language-server/issues/507)).
+
 ## [0.1.0-alpha.7] - 2026-11-19
 
 ### Added

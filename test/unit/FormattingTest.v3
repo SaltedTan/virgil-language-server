@@ -54,6 +54,7 @@ def X = [
 	T("Formatting:spacing_crlf", spacing_crlf),
 	T("Formatting:spacing_in_one_run", spacing_in_one_run),
 	T("Formatting:corpus_if_kinds", corpus_if_kinds),
+	T("Formatting:first_change", first_change),
 	()
 ];
 def PATH = "format.v3";
@@ -74,8 +75,8 @@ def format(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string) -
 // formatting that again gives no edits; the tokens and comments, less the
 // trailing whitespace after a line comment, are unchanged; the edits are
 // sorted, don't overlap, replace only whitespace with whitespace, and never
-// start or end between a CR and its LF; and the reported size and count
-// match the output.
+// start or end between a CR and its LF; and the reported size, count, and
+// first change match the output.
 def formatWithOptions(t: Tester, eof: AnalysisFormatEnd, input: string, expected: string, options: Array<string>) -> Array<AnalysisTextEdit> {
 	var r = AeneasAdapter.formatting(PATH, input, options, eof);
 	if (r.refusal != null) {
@@ -83,18 +84,25 @@ def formatWithOptions(t: Tester, eof: AnalysisFormatEnd, input: string, expected
 		return null;
 	}
 	t.assertl(expected.length, r.size());
+	var first = 0;
+	while (first < input.length && first < expected.length && input[first] == expected[first]) first++;
+	if (first == input.length && first == expected.length) first = -1;
+	else if (splits(input, first)) first--;
+	t.asserti(first, r.firstChange());
 	var count = r.editCount(), edits = r.edits();
 	if (edits == null) {
 		t.fail("formatting produced no edit array");
 		return null;
 	}
 	t.asserti(count, edits.length);
+	t.asserti(first, if(edits.length == 0, -1, edits[0].begin));
 	var output = apply(t, input, edits);
 	if (output == null) return edits;
 	t.assert_string(expected, output);
 	var again = AeneasAdapter.formatting(PATH, output, options, eof);
 	t.assert(again.refusal == null, "the output parses");
 	t.asserti(0, again.editCount());
+	t.asserti(-1, again.firstChange());
 	t.assertl(output.length, again.size());
 	var repeated = again.edits();
 	t.assert(repeated != null && repeated.length == 0, "the second pass produces an empty edit array");
@@ -385,6 +393,7 @@ def refused(t: Tester, r: AnalysisFormatting) {
 	t.assert(r.diagnostic == null, "no diagnostic");
 	t.assertl(-1, r.size());
 	t.asserti(0, r.editCount());
+	t.asserti(-1, r.firstChange());
 	t.assert(r.edits() == null, "no edits");
 }
 def unindexed_source(t: Tester) {
@@ -775,6 +784,28 @@ def corpus_if_kinds(t: Tester) {
 	t.assert(parsed >= 290, Strings.format1("only %d files parse", parsed));
 	t.assert(statements > 9000 && expressions > 1000, Strings.format2("%d statements and %d expressions", statements, expressions));
 }
+// The first change is measured without building edits, for the command's
+// --check, and is where the first edit begins.
+def first_change(t: Tester) {
+	for (eof in [ONE, MIRROR]) {
+		t.asserti(-1, AeneasAdapter.formatting(PATH, "def f() { }\n", OPTIONS, eof).firstChange());
+		t.asserti(-1, AeneasAdapter.formatting(PATH, "def f( {\n", OPTIONS, eof).firstChange());
+		t.asserti(-1, AeneasAdapter.formatting(PATH, "def f() // note\r -> int\n{\n}\n", OPTIONS, eof).firstChange());
+		t.asserti(20, AeneasAdapter.formatting(PATH, "def f() { }\n\ndef g(){ }\n", OPTIONS, eof).firstChange());
+		t.asserti(0, AeneasAdapter.formatting(PATH, "\n\n", OPTIONS, eof).firstChange());
+		t.asserti(-1, AeneasAdapter.formatting(PATH, "/* note\n\n", OPTIONS, eof).firstChange());
+	}
+	// A final line end is inserted at the end, only for the command.
+	t.asserti(11, AeneasAdapter.formatting(PATH, "def f() { }", OPTIONS, ONE).firstChange());
+	t.asserti(-1, AeneasAdapter.formatting(PATH, "def f() { }", OPTIONS, MIRROR).firstChange());
+	// Measuring again after building the edits gives the same offset.
+	var r = AeneasAdapter.formatting(PATH, "def f() {\n  var x=1;\n}\n", OPTIONS, ONE);
+	t.asserti(10, r.firstChange());
+	var edits = r.edits();
+	t.asserti(10, r.firstChange());
+	if (edits != null && edits.length > 0) t.asserti(10, edits[0].begin);
+}
+
 def IF_NONE: byte = 0;
 def IF_STATEMENT: byte = 1;
 def IF_EXPRESSION: byte = 2;
