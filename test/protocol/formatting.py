@@ -205,10 +205,11 @@ def positions(exe):
         s.close()
 
 
-def refusals(exe):
+def refusals(exe, work):
+    root = Path(work).resolve()
     s = FormatSession(exe)
     try:
-        s.start()
+        s.start(rootUri=root.as_uri())
         uri = "untitled:refusals.v3"
         # Not open.
         assert s.edits(uri) == []
@@ -241,7 +242,7 @@ def refusals(exe):
             s.close_document(uri)
         # A project file, and a document whose language isn't Virgil.
         for name, language in ((".virgil-lsp.json", "json"), ("a.v3", "plaintext")):
-            other = "file:///tmp/virgil-format-" + name
+            other = (root / name).as_uri()
             s.open(other, "def f() {\n    return;\n}\n", language)
             assert s.edits(other) == [], (name, language)
             s.close_document(other)
@@ -635,7 +636,11 @@ def projects(exe, work):
 def registration(exe):
     """A client that registers formatting dynamically gets its registration
     after initialized; a failure to register is logged."""
-    for answer in ({"result": None}, {"error": {"code": -32601, "message": "unsupported"}}):
+    for answer, failure in (
+        ({"result": None}, None),
+        ({"error": {"code": -32601, "message": "unsupported"}}, "-32601 unsupported"),
+        (None, "-32800 the server is shutting down"),
+    ):
         s = FormatSession(exe)
         try:
             reply = s.result(s.send("initialize", {"capabilities": {
@@ -649,12 +654,17 @@ def registration(exe):
             assert request["params"] == {"registrations": [{
                 "id": "virgil-lsp/formatting", "method": "textDocument/formatting",
                 "registerOptions": {"documentSelector": [{"language": "virgil"}]}}]}, request
-            s.respond(request, **answer)
-            s.open("untitled:r.v3", "def f() {}\n")
-            assert s.edits("untitled:r.v3") == [edit(0, 9, 0, 9, " ")]
+            if answer is not None:
+                s.respond(request, **answer)
+                s.open("untitled:r.v3", "def f() {}\n")
+                assert s.edits("untitled:r.v3") == [edit(0, 9, 0, 9, " ")]
             s.shutdown()
-            failure = "virgil-lsp: warning: client/registerCapability for formatting failed: -32601 unsupported"
-            assert (failure in s.logs()) == ("error" in answer), s.logs()
+            logs = s.logs()
+            warning = "virgil-lsp: warning: client/registerCapability for formatting failed:"
+            if failure is None:
+                assert warning not in logs, logs
+            else:
+                assert f"{warning} {failure}" in logs, logs
         finally:
             s.close()
 
@@ -663,7 +673,7 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-formatting-") as work:
         positions(exe)
-        refusals(exe)
+        refusals(exe, work)
         parse_budget(exe)
         bounds(exe, work)
         compared = same_as_command(exe, work)
