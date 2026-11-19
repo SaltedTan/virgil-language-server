@@ -73,6 +73,14 @@ Kind D by rule:
 
 In this repository, 32 of the 35 changed lines are an `if(` or `for(` statement inside a one-line block, such as `for (c in name) { if(j < n && lower(c) == lowered[j]) j++; }`, which gets `if (`; the others are one `}` and `else` join, which counts as two lines, and one `{}`.
 
+### Counts in the corpus record
+
+The implementation's [corpus record](../../test/format/virgil-corpus.txt), made at the same pin by `test/format/corpus.py`, changes the same 88, 26, and 38 files, with the same counts of edits of kinds A, B, and C, and the same counts of lines for each rule of kind D, except one. It counts each line of the input that an edit touches, which gives 458 changed lines in `aeneas/src`, 259 in `lib`, and 93 in `apps`, against 448, 258, and 83 above:
+
+- `aeneas/src` and `apps` each have 10 files with no line end after their last line, and the only change to that line is the line end that formatting adds. The record counts those 20 lines; kind A above counts their edits too, but the totals above leave them out. `lib` has 4 such files, and both count them.
+- In `lib`, `util/Sexpr.v3` is indented with spaces, and a line diff of it matches one reindented line with an identical line next to it, so it counts one line fewer than the record's 81.
+- The rule that puts a space each side of `=` changes 4 lines of `aeneas/src`, not 3. One of them, `types/Type.v3:263`, `new() { if(typeEnv == null) var x=1/0; }`, also gets `if (`, and the table above has it under that rule only. The totals count it once either way.
+
 ### Classification of the changes to Titzer's code
 
 Every change in kinds A, B, and D makes a line follow the majority form measured below; none is a rule bug. Kind C, checked line by line:
