@@ -120,17 +120,17 @@ Command: **Virgil: Restart Language Server**.
 
 ## Formatting
 
-**Format Document** and formatting on explicit saves require a server with formatting support, such as `0.1.0-alpha.8` or later. Servers through `0.1.0-alpha.7` lack formatting support.
+**Format Document** and server formatting on explicit saves require server `0.1.0-alpha.8` or later. With a supported server, extension `0.1.6` offers **Format Document** and leaves format on save off by default. Extension `0.1.7` enables format on save for Virgil files by default. Servers through `0.1.0-alpha.7` supply no formatting edits, but VS Code still adds a missing final line end on save with the `0.1.7` defaults.
 
-The extension contributes these defaults for Virgil documents. Override any of them under `[virgil]` in user or workspace settings.
+Extension `0.1.7` contributes these defaults for Virgil documents. Override any of them under `[virgil]` in user or workspace settings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `editor.formatOnSave` | `true` | Format on an explicit save. VS Code's delayed auto save doesn't format. |
 | `editor.insertSpaces` | `false` | Use tabs for editor indentation unless VS Code detects space indentation in the file. The server formatter uses tabs. |
-| `files.insertFinalNewline` | `true` | Add the final line end that the formatting request leaves to the editor. |
+| `files.insertFinalNewline` | `true` | Add a missing final line end on save, independently of the server. |
 
-**Format Document** normalizes indentation and spacing while keeping the author's line breaks ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). To keep formatting on demand but turn off format on save, set `"[virgil]": { "editor.formatOnSave": false }` in user or workspace settings. The server registers formatting only for documents with the `virgil` language ID, so VS Code offers no Virgil formatter for the project file `.virgil-lsp.json`.
+**Format Document** normalizes indentation and spacing. It keeps the existing line breaks except where it moves a body's opening brace up to its header, joins `}` and `else`, or normalizes the document's ending ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). To keep formatting on demand but turn off format on save, set `"[virgil]": { "editor.formatOnSave": false }` in user or workspace settings. The server registers formatting only for documents with the `virgil` language ID, so VS Code offers no Virgil formatter for the project file `.virgil-lsp.json`.
 
 ## Startup checks
 
