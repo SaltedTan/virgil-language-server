@@ -97,7 +97,7 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		var r = AeneasAdapter.formatting(overlay.uri, overlay.text, owner.compilerArgs(), AnalysisFormatEnd.MIRROR);
 		match (r.kind) {
 			NONE => ;
-			// Its diagnostics show the syntax error; format on save goes on.
+			// Diagnostics show syntax errors. A lone CR inside a comment may pass parsing.
 			LONE_CR, SYNTAX => return noEdits();
 			PARSE_BUDGET, UNTOKENIZED => return failed(r.refusal);
 		}

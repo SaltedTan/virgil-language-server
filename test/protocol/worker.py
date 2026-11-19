@@ -46,6 +46,7 @@ class Session:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, **popen,
         )
         self.buffer = b""
+        self.last_content_length = None
         self.transcript = []
         self.answered = set()
         self.waiting = {}
@@ -86,6 +87,7 @@ class Session:
                         self.answered.add(key)
                     elif "id" not in msg:
                         assert msg["method"] in self.NOTIFICATIONS, msg
+                    self.last_content_length = size
                     return msg
             remaining = deadline - time.monotonic()
             assert remaining > 0, "timed out waiting for a protocol reply"

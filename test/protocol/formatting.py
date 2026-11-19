@@ -303,6 +303,7 @@ def bounds(exe, work):
         base_size = len(json.dumps(base_reply, separators=(",", ":")).encode())
         boundary_id = base_reply["id"] + "x" * (MAX_PAYLOAD - base_size)
         assert s.format(uri, id=boundary_id).get("result") == edits
+        assert s.last_content_length == MAX_PAYLOAD, s.last_content_length
         over = s.format(uri, id=boundary_id + "x").get("error", {})
         assert over.get("code") == REQUEST_FAILED and "4194304 bytes" in over["message"], over
         text = lines(5000) + "  // é note  \n" + lines(5000)[len("def f() {\n"):]
