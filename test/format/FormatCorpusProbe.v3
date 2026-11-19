@@ -1,0 +1,203 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Formats many files in one process for test/format/corpus.py, as the format
+// command does with the default language options, and checks ADR-0019's
+// corpus invariants: formatting the output again changes nothing, and the
+// output keeps the input's parser tokens and its comments. Prints one line
+// for each file, tab-separated, in argument order:
+//
+//	<path> syntax <form> <message>  (the file doesn't parse)
+//	<path> cr <form> <message>      (a CR without an LF, which isn't formatted)
+//	<path> refused <form> <message> (a file that parses but isn't formatted)
+//	<path> formatted <size> <changed input lines, comma-separated, or ->
+//
+// The form is "diagnostic" for "<line>:<column>: " and the first diagnostic,
+// or "refusal" for a plain refusal message. The probe's own parse, not the
+// refusal, decides whether a file parses. With --emit, each formatted line
+// is followed by exactly <size> bytes of the formatted text. A
+// "<path> fail <message>" line can replace a result or follow a formatted
+// result to report each broken invariant. A
+// message escapes a backslash, tab, CR, and LF as \\, \t, \r, and \n. Exits
+// with 1 for a fail or refused report.
+component FormatCorpusProbe {
+	def STDOUT = 1;
+	var emit = false;
+	var failed = false;
+
+	def main(args: Array<string>) -> int {
+		for (arg in args) {
+			if (Strings.equal(arg, "--emit")) emit = true;
+			else check(arg);
+		}
+		return if(failed, 1, 0);
+	}
+	def check(path: string) {
+		var input = System.fileLoad(path);
+		if (input == null) return fail(path, "cannot read the file");
+		var r = AeneasAdapter.formatting(path, input, [], AnalysisFormatEnd.ONE);
+		if (r.refusal != null) {
+			var d = r.diagnostic, message = r.refusal;
+			if (d != null) {
+				message = Strings.format3("%d:%d: %s", d.beginLine, d.beginColumn,
+					if(d.kind == null, d.message, Strings.format2("%s: %s", d.kind, Strings.nonnull(d.message))));
+			}
+			var kind = if(loneCr(input), "cr", if(pieces(input) == null, "syntax", "refused"));
+			if (Strings.equal(kind, "refused")) failed = true;
+			return put(path, kind, if(d == null, "refusal", "diagnostic"), message);
+		}
+		var edits = r.edits();
+		if (edits == null) return fail(path, "the formatter built no edits");
+		var output = Array<byte>.new(int.view(r.size())), at = 0, pos = 0;
+		var lines = StringBuilder.new(), line = 1, scanned = 0, last = 0;
+		for (e in edits) {
+			if (e.begin < pos || e.end < e.begin || e.end > input.length
+					|| at + (e.begin - pos) + e.text.length > output.length) {
+				return fail(path, Strings.format1("the edit at offset %d is out of order or too large", e.begin));
+			}
+			// The input lines that the edit touches: those of its first and
+			// last replaced bytes, or of its position for an insertion.
+			while (scanned < e.begin) if (input[scanned++] == '\n') line++;
+			var first = line, final = line;
+			for (i = e.begin; i < e.end - 1; i++) if (input[i] == '\n') final++;
+			for (n = first; n <= final; n++) {
+				if (n <= last) continue;
+				if (last > 0) lines.putc(',');
+				lines.putd(n);
+				last = n;
+			}
+			for (i = pos; i < e.begin; i++) output[at++] = input[i];
+			for (b in e.text) output[at++] = b;
+			pos = e.end;
+		}
+		if (at + (input.length - pos) != output.length) return fail(path, "the edits don't give the formatted size");
+		for (i = pos; i < input.length; i++) output[at++] = input[i];
+		write(StringBuilder.new().puts(path).put2("\tformatted\t%d\t%s\n", output.length, if(last == 0, "-", lines.toString())).extract());
+		if (emit) write(output);
+		var again = AeneasAdapter.formatting(path, output, [], AnalysisFormatEnd.ONE);
+		if (again.refusal != null) {
+			fail(path, Strings.format1("the formatted text isn't formatted again: %s", again.refusal));
+		} else if (again.editCount() != 0) {
+			fail(path, Strings.format1("formatting the output again changes its line %d", lineOf(output, again.firstChange())));
+		}
+		var a = pieces(input), b = pieces(output);
+		if (a == null || b == null) return fail(path, "the input or the output doesn't parse again");
+		var n = if(a.length < b.length, a.length, b.length);
+		for (i < n) {
+			if (!same(input, a[i], output, b[i])) {
+				var buf = StringBuilder.new().put2("input line %d, output line %d: ", lineOf(input, a[i].0), lineOf(output, b[i].0));
+				return fail(path, buf.put2("\"%s\" became \"%s\"", excerpt(input, a[i]), excerpt(output, b[i])).toString());
+			}
+		}
+		if (a.length != b.length) {
+			// The first piece that only one side has, and where the other
+			// side's pieces end.
+			var at = if(n < a.length, a[n].0, input.length), bt = if(n < b.length, b[n].0, output.length);
+			var extra = if(n < a.length, excerpt(input, a[n]), excerpt(output, b[n]));
+			var buf = StringBuilder.new().put2("input line %d, output line %d: ", lineOf(input, at), lineOf(output, bt));
+			buf.put2("the input has %d tokens and comments, the output %d", a.length, b.length);
+			fail(path, buf.put1("; the first unmatched is \"%s\"", extra).toString());
+		}
+	}
+	// At most 40 bytes of the span {s} of {text}.
+	def excerpt(text: Array<byte>, s: (int, int)) -> string {
+		var end = if(s.1 - s.0 > 40, s.0 + 40, s.1);
+		var piece = Arrays.range(text, s.0, end);
+		return if(end < s.1, Strings.format1("%s...", piece), piece);
+	}
+	// The spans of the parser's tokens and of the comments between them,
+	// each line comment without its trailing whitespace, or null if {text}
+	// doesn't parse. After a parse without errors, the gaps between tokens
+	// hold only whitespace and comments.
+	def pieces(text: Array<byte>) -> Array<(int, int)> {
+		var input = AeneasAdapter.normalizedRange(text, 0, text.length);
+		var syntax = SymbolSyntaxIndex.new(), errors = AnalysisParseErrors.new(1);
+		AnalysisSingleFileParser.parse("probe.v3", input, errors, syntax, TypeCache.new(), null);
+		if (errors.numErrors > 0) return null;
+		var result = Vector<(int, int)>.new(), i = 0, k = 0, max = text.length;
+		while (i < max) {
+			if (k < syntax.count && syntax.begin(k) == i) {
+				result.put(i, syntax.end(k));
+				i = syntax.end(k);
+				k++;
+			} else if (text[i] == '/' && i + 1 < max && text[i + 1] == '/') {
+				var e = i;
+				while (e < max && text[e] != '\n') e++;
+				var s = e;
+				while (s > i && whitespace(text[s - 1])) s--;
+				result.put(i, s);
+				i = e;
+			} else if (text[i] == '/' && i + 1 < max && text[i + 1] == '*') {
+				var e = i + 2;
+				while (e < max && !(text[e] == '*' && e + 1 < max && text[e + 1] == '/')) e++;
+				e = if(e < max, e + 2, max);
+				result.put(i, e);
+				i = e;
+			} else if (whitespace(text[i])) {
+				i++;
+			} else {
+				// A byte outside a token or comment, which a clean parse leaves
+				// nowhere; kept so that the comparison reports it.
+				result.put(i, i + 1);
+				i++;
+			}
+		}
+		if (k != syntax.count) result.put(max, max);
+		return result.extract();
+	}
+	def same(x: Array<byte>, s: (int, int), y: Array<byte>, t: (int, int)) -> bool {
+		if (s.1 - s.0 != t.1 - t.0) return false;
+		for (i < s.1 - s.0) if (x[s.0 + i] != y[t.0 + i]) return false;
+		return true;
+	}
+	def whitespace(c: byte) -> bool {
+		return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+	}
+	def loneCr(input: Array<byte>) -> bool {
+		for (i < input.length) {
+			if (input[i] == '\r' && (i + 1 == input.length || input[i + 1] != '\n')) return true;
+		}
+		return false;
+	}
+	def lineOf(text: Array<byte>, offset: int) -> int {
+		var line = 1;
+		for (i < offset) if (text[i] == '\n') line++;
+		return line;
+	}
+	def fail(path: string, message: string) {
+		failed = true;
+		put(path, "fail", null, message);
+	}
+	def put(path: string, kind: string, form: string, message: string) {
+		var buf = StringBuilder.new().puts(path).putc('\t').puts(kind);
+		if (form != null) buf.putc('\t').puts(form);
+		buf.putc('\t').puts(escape(message));
+		write(buf.ln().extract());
+	}
+	// {message} with each backslash, tab, CR, and LF escaped, so that it
+	// stays one field of one line.
+	def escape(message: string) -> string {
+		var buf = StringBuilder.new();
+		for (c in message) {
+			match (c) {
+				'\\' => buf.puts("\\\\");
+				'\t' => buf.puts("\\t");
+				'\r' => buf.puts("\\r");
+				'\n' => buf.puts("\\n");
+				_ => buf.putc(c);
+			}
+		}
+		return buf.toString();
+	}
+	// Writes {data} whole, retrying an interrupted or partial write; the
+	// test reads every byte, so a failed write ends the probe.
+	def write(data: Array<byte>) {
+		var at = 0;
+		while (at < data.length) {
+			var n = HostOs.write(STDOUT, data[at ..+ (data.length - at)]);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) System.error("FormatCorpusProbe", "cannot write to standard output");
+			at += n;
+		}
+	}
+}
