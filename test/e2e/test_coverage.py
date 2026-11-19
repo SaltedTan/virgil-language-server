@@ -20,10 +20,10 @@ CHECK_ID = re.compile(rf"({NAME.pattern})\.({NAME.pattern})\.({NAME.pattern})")
 GAP_ID = re.compile(rf"({NAME.pattern})\.{NAME.pattern}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 ISSUE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/[0-9]+")
-# Steps 1 to 17 of the VS Code manual checklist (clients/vscode/README.md#manual-checklist),
+# Steps 1 to 18 of the VS Code manual checklist (clients/vscode/README.md#manual-checklist),
 # described in docs/manual-testing.md#vs-code. Declared here, apart from the manifest's steps,
 # so that deleting a step fails the test; change it together with the checklist.
-CHECKLIST_STEPS = range(1, 18)
+CHECKLIST_STEPS = range(1, 19)
 
 
 def load(name):
@@ -275,7 +275,7 @@ class CoverageTest(unittest.TestCase):
         checklist = self.manifest["checklist"]
         steps = [step["step"] for step in checklist["steps"]]
         self.assertEqual(list(CHECKLIST_STEPS), steps,
-                         "the checklist must have every step from 1 to 17, in order")
+                         "the checklist must have every step from 1 to 18, in order")
         problems = []
         for suite in checklist["suites"]:
             if suite not in self.suites:
