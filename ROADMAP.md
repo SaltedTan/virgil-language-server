@@ -359,7 +359,7 @@ Exit criteria:
 | P2       | semantic tokens       | verified occurrence kinds              | Present, full documents only; [token table and refresh](docs/architecture.md#semantic-tokens) |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
-| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Whole documents present on `main` ([request](docs/architecture.md#the-formatting-request)); keeps line breaks, comments, and alignment. No range or on-type formatting; LazyVim formats on save, and VS Code's format-on-save defaults remain later work |
+| P2       | formatting            | the parser's tokens, in the author's style ([ADR-0019](docs/decisions/0019-formatter.md)) | Whole documents present on `main` ([request](docs/architecture.md#the-formatting-request)); keeps line breaks, comments, and alignment. No range or on-type formatting; LazyVim and VS Code format on save by default |
 
 ## Editor integration plan
 
