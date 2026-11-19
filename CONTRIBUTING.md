@@ -115,7 +115,11 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 4. Regenerate the formatter's corpus record with `make all build/format-corpus-probe`
    and `python3 test/format/corpus.py --write build/virgil-lsp`, and review the
    diff of `test/format/virgil-corpus.txt`: each new or removed file, each file
-   that no longer formats, and each line that formatting now changes.
+   that no longer formats, and each line that formatting now changes. The corpus
+   suite compares the record only when the submodule is checked out at the
+   gitlink, which it reads from the index as `test/release/check_pin.py` does,
+   so stage the new gitlink with the record. While they differ, as in the advisory Virgil master
+   workflow, it says so and runs its other checks.
 5. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade. If `AnalysisTargets:wrapper_runtime_files`
@@ -138,10 +142,10 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    - `build/virgil-lsp --version`, whose `virgil revision` comes from the checkout;
    - the staged gitlink, `git rev-parse :vendor/virgil`, and the pin tables in `THIRD_PARTY_NOTICES.md` and in the `main` row of the [Virgil revision table](docs/compatibility.md#virgil-revision);
    - the `virgil_source_revision` of the regenerated, reviewed corpus in `test/benchmarks/corpus.json`;
-   - the `pin` of the regenerated, reviewed formatter record in `test/format/virgil-corpus.txt`, which `test/format/corpus.py` checks against the checkout;
+   - the `pin` of the regenerated, reviewed formatter record in `test/format/virgil-corpus.txt`;
    - after committing, the packaged bundle and manifest: `scripts/package-release.sh build/release` refuses a Virgil checkout other than the gitlink, `scripts/check-release.sh --archive <archive>` checks the archive's `virgil/REVISION` and its manifest's `virgilRevision` and `library.revision` against the gitlink, and `scripts/smoke-test-release.sh <archive>` checks `--version` against the manifest.
 
-   `make test` checks the gitlink against the pin tables and corpus above through [`test/release/check_pin.py`](test/release/check_pin.py). Confirm `build/virgil-lsp --version` by hand.
+   `make test` checks the gitlink against the pin tables and the benchmark corpus above through [`test/release/check_pin.py`](test/release/check_pin.py), and the formatter record's pin against the submodule's checkout through [`test/format/corpus.py`](test/format/corpus.py) when that checkout is at the gitlink. Confirm `build/virgil-lsp --version` by hand.
 8. In `CHANGELOG.md` under `## [Unreleased]`, name the old and new revisions and each language option that changed.
 
 The pin update is a dependency change, so it needs the maintainer's own merge, as do workflow changes and suite-wide test settings ([pull requests](#pull-requests)).

@@ -7,15 +7,18 @@
 // output keeps the input's parser tokens and its comments. Prints one line
 // for each file, tab-separated, in argument order:
 //
-//	<path> syntax <line>:<column>: <first diagnostic>
-//	<path> cr                      (a CR without an LF, which isn't formatted)
+//	<path> syntax <message>        (the file doesn't parse)
+//	<path> cr <message>            (a CR without an LF, which isn't formatted)
 //	<path> refused <message>       (a file that parses but isn't formatted)
 //	<path> formatted <size> <changed input lines, comma-separated, or ->
 //
-// With --emit, each formatted line is followed by exactly <size> bytes of
-// the formatted text. After a file's line, a "<path> fail <message>" line
-// reports each broken invariant. Exits with 1 if any file failed or was
-// refused, or couldn't be read.
+// The message of a refusal is the format command's: "<line>:<column>: " and
+// the first diagnostic, or the refusal. The probe's own parse, not the
+// refusal, decides whether a file parses. With --emit, each formatted line
+// is followed by exactly <size> bytes of the formatted text. After a file's
+// line, a "<path> fail <message>" line reports each broken invariant. A
+// message escapes a backslash, tab, CR, and LF as \\, \t, \r, and \n. Exits
+// with 1 if any file failed or was refused, or couldn't be read.
 component FormatCorpusProbe {
 	def STDOUT = 1;
 	var emit = false;
@@ -33,15 +36,15 @@ component FormatCorpusProbe {
 		if (input == null) return fail(path, "cannot read the file");
 		var r = AeneasAdapter.formatting(path, input, [], AnalysisFormatEnd.ONE);
 		if (r.refusal != null) {
-			if (loneCr(input)) return put(path, "cr", null);
-			var d = r.diagnostic;
+			var d = r.diagnostic, message = r.refusal;
 			if (d != null) {
-				return put(path, "syntax", Strings.format3("%d:%d: %s", d.beginLine, d.beginColumn,
-					if(d.kind == null, d.message, Strings.format2("%s: %s", d.kind, Strings.nonnull(d.message)))));
+				message = Strings.format3("%d:%d: %s", d.beginLine, d.beginColumn,
+					if(d.kind == null, d.message, Strings.format2("%s: %s", d.kind, Strings.nonnull(d.message))));
 			}
-			if (pieces(input) == null) return put(path, "syntax", r.refusal);
+			if (loneCr(input)) return put(path, "cr", message);
+			if (pieces(input) == null) return put(path, "syntax", message);
 			failed = true;
-			return put(path, "refused", r.refusal);
+			return put(path, "refused", message);
 		}
 		var edits = r.edits();
 		if (edits == null) return fail(path, "the formatter built no edits");
@@ -69,7 +72,7 @@ component FormatCorpusProbe {
 		}
 		if (at + (input.length - pos) != output.length) return fail(path, "the edits don't give the formatted size");
 		for (i = pos; i < input.length; i++) output[at++] = input[i];
-		put(path, "formatted", Strings.format2("%d\t%s", output.length, if(last == 0, "-", lines.toString())));
+		write(StringBuilder.new().puts(path).put2("\tformatted\t%d\t%s\n", output.length, if(last == 0, "-", lines.toString())).extract());
 		if (emit) write(output);
 		var again = AeneasAdapter.formatting(path, output, [], AnalysisFormatEnd.ONE);
 		if (again.refusal != null) {
@@ -82,11 +85,25 @@ component FormatCorpusProbe {
 		var n = if(a.length < b.length, a.length, b.length);
 		for (i < n) {
 			if (!same(input, a[i], output, b[i])) {
-				return fail(path, Strings.format3("input line %d: \"%s\" became \"%s\"", lineOf(input, a[i].0),
-					Arrays.range(input, a[i].0, a[i].1), Arrays.range(output, b[i].0, b[i].1)));
+				var buf = StringBuilder.new().put2("input line %d, output line %d: ", lineOf(input, a[i].0), lineOf(output, b[i].0));
+				return fail(path, buf.put2("\"%s\" became \"%s\"", excerpt(input, a[i]), excerpt(output, b[i])).toString());
 			}
 		}
-		if (a.length != b.length) fail(path, Strings.format2("the input has %d tokens and comments, the output %d", a.length, b.length));
+		if (a.length != b.length) {
+			// The first piece that only one side has, and where the other
+			// side's pieces end.
+			var at = if(n < a.length, a[n].0, input.length), bt = if(n < b.length, b[n].0, output.length);
+			var extra = if(n < a.length, excerpt(input, a[n]), excerpt(output, b[n]));
+			var buf = StringBuilder.new().put2("input line %d, output line %d: ", lineOf(input, at), lineOf(output, bt));
+			buf.put2("the input has %d tokens and comments, the output %d", a.length, b.length);
+			fail(path, buf.put1("; the first unmatched is \"%s\"", extra).toString());
+		}
+	}
+	// At most 40 bytes of the span {s} of {text}.
+	def excerpt(text: Array<byte>, s: (int, int)) -> string {
+		var end = if(s.1 - s.0 > 40, s.0 + 40, s.1);
+		var piece = Arrays.range(text, s.0, end);
+		return if(end < s.1, Strings.format1("%s...", piece), piece);
 	}
 	// The spans of the parser's tokens and of the comments between them,
 	// each line comment without its trailing whitespace, or null if {text}
@@ -153,8 +170,23 @@ component FormatCorpusProbe {
 	}
 	def put(path: string, kind: string, rest: string) {
 		var buf = StringBuilder.new().puts(path).putc('\t').puts(kind);
-		if (rest != null) buf.putc('\t').puts(rest);
+		buf.putc('\t').puts(escape(rest));
 		write(buf.ln().extract());
+	}
+	// {message} with each backslash, tab, CR, and LF escaped, so that it
+	// stays one field of one line.
+	def escape(message: string) -> string {
+		var buf = StringBuilder.new();
+		for (c in message) {
+			match (c) {
+				'\\' => buf.puts("\\\\");
+				'\t' => buf.puts("\\t");
+				'\r' => buf.puts("\\r");
+				'\n' => buf.puts("\\n");
+				_ => buf.putc(c);
+			}
+		}
+		return buf.toString();
 	}
 	// Writes {data} whole, retrying an interrupted or partial write; the
 	// test reads every byte, so a failed write ends the probe.
