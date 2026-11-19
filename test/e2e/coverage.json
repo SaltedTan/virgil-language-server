@@ -3482,7 +3482,7 @@
       },
       {
         "step": 18,
-        "summary": "Format Document formats a misindented file; a save formats it and adds a missing final line end; a syntax-error file saves unchanged; formatting .virgil-lsp.json invokes no Virgil formatter.",
+        "summary": "With a formatting-capable server, Format Document and explicit save format misindented Virgil text, and saving adds exactly one missing final line end. Saving with a syntax error preserves the edited text in the buffer and on disk, keeps one ParseError, and shows no formatting error. With the JSON formatter disabled, the trace shows zero formatting requests for .virgil-lsp.json and one for a misindented .v3 file, which receives and applies the edits.",
         "checks": ["vscode.formatting.document", "vscode.formatting.save", "vscode.formatting.syntax-error", "vscode.formatting.final-newline", "vscode.formatting.project-file"],
         "notCovered": ["vscode.format-error-notification"]
       }
