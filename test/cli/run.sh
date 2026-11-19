@@ -963,7 +963,22 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             same "format --write keeps the newer modification time at $point" 2001 \
                 "$(python3 -c 'import sys, os, time; print(time.localtime(os.stat(sys.argv[1]).st_mtime).tm_year)' "$W/change/in.v3")"
             label="a change of status-change time alone"
-            change $point "" "sleep 0.1; chmod 644 \"\$1\""
+            # A same-mode chmod can leave ctime unchanged. Change the mode
+            # and restore it after allowing a full tick for whole-second ctime.
+            change "$point" "" "'$PY' -c '
+import os, sys, time
+
+path = sys.argv[1]
+before = os.lstat(path)
+time.sleep(max(0, before.st_ctime_ns // 10**9 + 2 - time.time()))
+os.chmod(path, 0o600)
+os.chmod(path, 0o644)
+after = os.lstat(path)
+if after.st_ctime_ns == before.st_ctime_ns:
+    sys.exit(\"the chmod round trip did not change ctime\")
+if (after.st_mode, after.st_mtime_ns) != (before.st_mode, before.st_mtime_ns):
+    sys.exit(\"the chmod round trip changed mode or mtime\")
+' \"\$1\""
             check "format --write keeps the file's bytes after a status change at $point" cmp -s "$F/unformatted.orig" "$W/change/in.v3"
             # Access tightened or widened with the times held: mode, owner,
             # group, ACL, extended attribute. At the first check, the new file
