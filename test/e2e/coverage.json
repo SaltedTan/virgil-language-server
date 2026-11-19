@@ -2247,6 +2247,56 @@
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
       "description": "<C-s> on the misindented broken.v3 writes the buffer byte for byte, including the pending edit that introduces a syntax error. The server answers the formatting request with an empty edit array ([]) and no RPC error. Noice shows no error or warning, and v:errmsg stays empty."
+    },
+    {
+      "id": "vscode.formatting.document",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Format Document on a misindented .v3 file applies the language server's formatting edits, and the extension's configuration defaults give Virgil documents editor.formatOnSave=true, editor.insertSpaces=false, and files.insertFinalNewline=true."
+    },
+    {
+      "id": "vscode.formatting.save",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "An explicit save of a misindented .v3 file formats it and writes the formatted bytes with the pending method rename intact."
+    },
+    {
+      "id": "vscode.formatting.syntax-error",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "An explicit save of a syntax-error fixture with a pending edit and a final line end receives an empty formatting response, writes the buffer unchanged, and shows one parser error at its shifted position."
+    },
+    {
+      "id": "vscode.formatting.final-newline",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "An explicit save of a file without a final line end keeps a pending rename from f to g, formats the empty body, and adds exactly one LF. The saved bytes are \"def g() { }\" followed by one line end."
+    },
+    {
+      "id": "vscode.formatting.project-file",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "With VS Code's JSON formatter disabled, the trace shows that Format Document sends zero textDocument/formatting requests for .virgil-lsp.json and exactly one for the misindented .v3 document, which receives and applies the edits."
     }
   ],
   "retired": [],
@@ -2404,9 +2454,9 @@
       {
         "setup": "vscode-linux",
         "feature": "formatting",
-        "level": null,
-        "checks": [],
-        "notCovered": ["vscode.formatting"]
+        "level": "api",
+        "checks": ["vscode.formatting.document", "vscode.formatting.save", "vscode.formatting.syntax-error", "vscode.formatting.final-newline", "vscode.formatting.project-file"],
+        "notCovered": ["vscode.formatter-picker", "vscode.format-error-notification"]
       },
       {
         "setup": "vscode-macos",
@@ -2559,9 +2609,9 @@
       {
         "setup": "vscode-macos",
         "feature": "formatting",
-        "level": null,
-        "checks": [],
-        "notCovered": ["vscode.formatting"]
+        "level": "api",
+        "checks": ["vscode.formatting.document", "vscode.formatting.save", "vscode.formatting.syntax-error", "vscode.formatting.final-newline", "vscode.formatting.project-file"],
+        "notCovered": ["vscode.formatter-picker", "vscode.format-error-notification"]
       },
       {
         "setup": "ssh-linux-client",
@@ -2710,9 +2760,9 @@
       {
         "setup": "ssh-linux-client",
         "feature": "formatting",
-        "level": null,
-        "checks": [],
-        "notCovered": ["vscode.formatting"]
+        "level": "api",
+        "checks": ["vscode.formatting.document", "vscode.formatting.save", "vscode.formatting.syntax-error", "vscode.formatting.final-newline", "vscode.formatting.project-file"],
+        "notCovered": ["vscode.formatter-picker", "vscode.format-error-notification"]
       },
       {
         "setup": "nvim-linux",
@@ -3429,6 +3479,12 @@
         "summary": "Forced crashes, and restart, configuration changes, and closing the window during recovery.",
         "checks": ["vscode.recovery.restart", "vscode.recovery.server-path", "vscode.recovery.write-error", "vscode.recovery.crash-limit", "vscode.recovery.window-close"],
         "notCovered": ["ssh.window-close-recovery"]
+      },
+      {
+        "step": 18,
+        "summary": "With a formatting-capable server, Format Document and explicit save format misindented Virgil text, and saving adds exactly one missing final line end. Saving with a syntax error preserves the edited text in the buffer and on disk, keeps one ParseError, and shows no formatting error. Format Document With, when offered for .virgil-lsp.json with the JSON formatter enabled, excludes Virgil. With the JSON formatter disabled, the trace shows zero formatting requests for .virgil-lsp.json and one for a misindented .v3 file, which receives and applies the edits.",
+        "checks": ["vscode.formatting.document", "vscode.formatting.save", "vscode.formatting.syntax-error", "vscode.formatting.final-newline", "vscode.formatting.project-file"],
+        "notCovered": ["vscode.formatter-picker", "vscode.format-error-notification"]
       }
     ]
   },
@@ -3512,10 +3568,16 @@
       "planned": null
     },
     {
-      "id": "vscode.formatting",
-      "kind": "behavior",
-      "what": "formatting a Virgil file in VS Code, by Format Document and on save",
-      "planned": "https://github.com/SaltedTan/virgil-language-server/issues/513"
+      "id": "vscode.formatter-picker",
+      "kind": "visual",
+      "what": "the Format Document With... choices for .virgil-lsp.json",
+      "planned": null
+    },
+    {
+      "id": "vscode.format-error-notification",
+      "kind": "visual",
+      "what": "the error notification that a formatting provider failure would show in VS Code",
+      "planned": null
     },
     {
       "id": "nvim.diagnostics-display",

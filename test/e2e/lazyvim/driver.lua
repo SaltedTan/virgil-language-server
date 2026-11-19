@@ -743,7 +743,7 @@ local function main_checks()
       return map.buffer == 1 and map.desc == "Code Action"
     end)
     vim.api.nvim_win_set_cursor(0, { diagnostic.range.start.line + 1, diagnostic.range.start.character })
-    type_keys({ leader, "c", "a" })
+    vim.api.nvim_input(leader .. "ca")
     through_picker("select", function(picker)
       local items = picker:items()
       assert(#items == 1 and items[1].item.action.title == 'Insert missing ";"'
@@ -862,7 +862,7 @@ local function main_checks()
       return vim.fn.maparg(leader .. "cf", "n", false, true).desc == "Format"
     end)
     local mark = #O.formattings
-    type_keys({ leader, "c", "f" })
+    vim.api.nvim_input(leader .. "cf")
     wait_for("the formatted buffer", function() return buffer_text(format_buf) == formatted end)
     local edits = one_reply(vim.list_slice(O.formattings, mark + 1))
     vim.api.nvim_input("u")

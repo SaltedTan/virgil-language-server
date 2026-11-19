@@ -58,6 +58,13 @@
         "category": "Virgil"
       }
     ],
+    "configurationDefaults": {
+      "[virgil]": {
+        "editor.formatOnSave": true,
+        "editor.insertSpaces": false,
+        "files.insertFinalNewline": true
+      }
+    },
     "configuration": {
       "title": "Virgil",
       "properties": {

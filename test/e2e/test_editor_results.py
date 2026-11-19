@@ -363,7 +363,7 @@ class ManualTest(ValidatorTest):
         events = manual_stream()
         events[0]["expected"][0] = {"feature": "startup"}
         self.assertInvalid(events, 1, "startup is not a matrix feature")
-        for target in ({"step": 0}, {"step": 18}, {"step": True}, {"step": 7.0},
+        for target in ({"step": 0}, {"step": 19}, {"step": True}, {"step": 7.0},
                        {"feature": "hover", "step": 7}, {"id": "vscode.hover.response"}):
             with self.subTest(target):
                 events = manual_stream()
