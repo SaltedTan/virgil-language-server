@@ -2216,7 +2216,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
-      "description": "With vim.b.autoformat = false, LazyVim's Normal <C-s> (Save File) saves the misindented format.v3 as it is, with no formatting request."
+      "description": "With vim.b.autoformat = false, LazyVim's Normal <C-s> (Save File) writes the misindented format.v3 buffer, including a pending edit, byte for byte and sends no formatting request."
     },
     {
       "id": "lazyvim.formatting.save",
@@ -2246,7 +2246,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
-      "description": "<C-s> on broken.v3, misindented with a syntax error, saves it unchanged after the server answers the formatting request with an empty edit array ([]) and no RPC error. Noice shows no error or warning, and v:errmsg stays empty."
+      "description": "<C-s> on the misindented broken.v3 writes the buffer byte for byte, including the pending edit that introduces a syntax error. The server answers the formatting request with an empty edit array ([]) and no RPC error. Noice shows no error or warning, and v:errmsg stays empty."
     }
   ],
   "retired": [],

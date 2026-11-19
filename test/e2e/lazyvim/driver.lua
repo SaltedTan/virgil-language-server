@@ -874,13 +874,16 @@ local function main_checks()
 
   step("formatting: <C-s> with vim.b.autoformat = false saves the buffer as it is", function()
     assert(format_buf, "format.v3 is not open")
+    vim.api.nvim_buf_set_text(format_buf, 5, 0, 5, 0, { " " })
+    local expected = buffer_text(format_buf)
+    assert(expected ~= read_bytes(vim.api.nvim_buf_get_name(format_buf)), "expected an unsaved edit before <C-s>")
     vim.b[format_buf].autoformat = false
     local ok, saved, requests = pcall(save_with_ctrl_s, format_buf)
     vim.b[format_buf].autoformat = nil
     assert(ok, saved)
-    assert(saved == misindented, "the file was not saved as it was: " .. vim.inspect(saved))
+    assert(saved == expected, "the file does not match the buffer before the save: " .. vim.inspect(saved))
     assert(#requests == 0, "a formatting request was sent: " .. vim.inspect(requests))
-    return "saved unchanged, with no formatting request"
+    return "saved the pending edit byte for byte, with no formatting request"
   end)
 
   step("formatting: <C-s> formats on save (LazyVim autoformat)", function()
@@ -914,15 +917,18 @@ local function main_checks()
   -- The server answers [] for a syntax error, with no error, so the save
   -- goes on and nothing reports a problem; diagnostics show the error.
   step("formatting: <C-s> saves a file with a syntax error unchanged, with no error message", function()
-    local broken = "component Broken {\n  def run() {\n      var x = ;\n  }\n}\n"
-    local buf = open_for_formatting("broken.v3", broken)
+    local buf = open_for_formatting("broken.v3", "component Broken {\n  def run() {\n      var x = 1;\n  }\n}\n")
+    vim.api.nvim_buf_set_lines(buf, 2, 3, true, { "      var x = ;" })
+    local expected = buffer_text(buf)
+    assert(expected ~= read_bytes(vim.api.nvim_buf_get_name(buf)), "expected an unsaved edit before <C-s>")
     local before = {}
     for _, m in ipairs(noice_messages()) do before[m.id] = true end
     vim.v.errmsg = ""
     local saved, requests = save_with_ctrl_s(buf)
     local edits = one_reply(requests)
     assert(vim.islist(edits) and #edits == 0, "expected an empty edit list: " .. vim.inspect(edits))
-    assert(saved == broken and buffer_text(buf) == broken, "the file changed: " .. vim.inspect(saved))
+    assert(saved == expected and buffer_text(buf) == expected,
+      "the file or buffer does not match the buffer before the save: " .. vim.inspect(saved))
     sleep(500)
     local shown = {}
     for _, m in ipairs(noice_messages()) do
@@ -933,7 +939,8 @@ local function main_checks()
       end
     end
     assert(vim.v.errmsg == "", "v:errmsg after the save: " .. vim.v.errmsg)
-    return "saved unchanged after an empty reply; messages: " .. (#shown > 0 and table.concat(shown, "; ") or "none")
+    return "saved the pending edit byte for byte after an empty reply; messages: "
+      .. (#shown > 0 and table.concat(shown, "; ") or "none")
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
