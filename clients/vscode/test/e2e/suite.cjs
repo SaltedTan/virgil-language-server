@@ -824,11 +824,12 @@ async function formatting(bad) {
 
   // An explicit save formats the file, and the formatted bytes reach the disk.
   await undo(editor, misindented);
-  await edit(editor, (builder) => builder.insert(new vscode.Position(1, 0), ' '));
+  await edit(editor, (builder) => builder.replace(new vscode.Range(1, 6, 1, 7), 'saved'));
   await vscode.commands.executeCommand('workbench.action.files.save');
+  const formattedOnSave = 'component Formatting {\n\tdef saved() {\n\t\treturn;\n\t}\n}\n';
   await waitFor('the formatted save of formatting.v3', () => !editor.document.isDirty
-    && editor.document.getText() === formatted
-    && fs.readFileSync(path.join(project, 'formatting.v3'), 'utf8') === formatted);
+    && editor.document.getText() === formattedOnSave
+    && fs.readFileSync(editor.document.uri.fsPath, 'utf8') === formattedOnSave);
   console.log('PASS: vscode.formatting.save');
 
   // A save adds the final line end that the formatting request leaves out. The
@@ -837,64 +838,88 @@ async function formatting(bad) {
   const lastLine = 'def f() {}';
   fs.writeFileSync(path.join(project, 'no-final-newline.v3'), lastLine);
   const noFinal = await open('no-final-newline.v3');
-  await edit(noFinal, (builder) => builder.insert(new vscode.Position(0, 9), ' '));
+  await edit(noFinal, (builder) => builder.replace(new vscode.Range(0, 4, 0, 5), 'g'));
   await vscode.commands.executeCommand('workbench.action.files.save');
-  const withNewline = 'def f() { }\n';
+  const withNewline = 'def g() { }\n';
   await waitFor('the final line end of no-final-newline.v3', () => !noFinal.document.isDirty
     && noFinal.document.getText() === withNewline
-    && fs.readFileSync(path.join(project, 'no-final-newline.v3'), 'utf8') === withNewline);
-  assert.equal(noFinal.document.getText(), withNewline);
+    && fs.readFileSync(noFinal.document.uri.fsPath, 'utf8') === withNewline);
   console.log('PASS: vscode.formatting.final-newline');
 
-  // A syntax error gets no formatting edits, and an explicit save writes the
-  // buffer unchanged and shows no formatting error. bad.v3 ends with a line
-  // end, so files.insertFinalNewline changes nothing. The edit keeps the
-  // syntax error, and the scenario's end restores the fixture's text.
-  const saved = bad.document.getText();
-  const errors = logFromHere();
-  const badEditor = await vscode.window.showTextDocument(bad.document);
-  await edit(badEditor, (builder) => builder.replace(
-    new vscode.Range(2, 18, 2, 23), 'val'));
-  const edited = bad.document.getText();
-  assert.notEqual(edited, saved);
-  assert.ok(edited.endsWith('\n'), 'bad.v3 lost its final line end before the save');
-  await vscode.commands.executeCommand('workbench.action.files.save');
-  await waitFor('the save of bad.v3', () => !bad.document.isDirty);
-  assert.equal(bad.document.getText(), edited, 'saving bad.v3 changed its text');
-  assert.equal(fs.readFileSync(bad.document.uri.fsPath, 'utf8'), edited, 'saving bad.v3 changed its bytes');
-  await waitFor('the parser diagnostic after saving bad.v3', () => diagnostics(bad).length === 1
-    && code(diagnostics(bad)[0]) === 'ParseError');
-  assert.ok(!/\[error\]|RequestFailed/.test(errors()), 'saving bad.v3 reported a formatting error');
-  console.log('PASS: vscode.formatting.syntax-error');
-  fs.writeFileSync(bad.document.uri.fsPath, saved);
-  await vscode.window.showTextDocument(bad.document);
-  await vscode.commands.executeCommand('workbench.action.files.revert');
-  await waitFor('bad.v3 as saved again', () => bad.document.getText() === saved && !bad.document.isDirty);
-
-  // Format Document on the project file reaches no formatter from the server,
-  // while the same command on a misindented .v3 file sends one formatting
-  // request and applies its edits. The trace shows the requests the client
-  // sends; each check below is recorded as its own result event.
-  const log = logFromHere();
-  await level(vscode.LogLevel.Trace);
+  const traceSetting = 'virgil.trace.server';
+  const jsonFormatter = 'json.format.enable';
+  const userSettings = vscode.workspace.getConfiguration();
+  const originalTrace = userSettings.inspect(traceSetting).globalValue;
+  const originalJsonFormatter = userSettings.inspect(jsonFormatter).globalValue;
   try {
-    await waitFor('the trace to start', () => log().includes("Sending notification '$/setTrace'"));
+    await setSetting(traceSetting, 'compact');
+    await setSetting(jsonFormatter, false);
+    const startTrace = logFromHere();
+    await level(vscode.LogLevel.Trace);
+    await waitFor('the trace to start', () => startTrace().includes("Sending notification '$/setTrace'.\nParams:"));
+
+    // A syntax error gets no formatting edits, and an explicit save writes the
+    // buffer unchanged and shows no formatting error. bad.v3 ends with a line
+    // end, so files.insertFinalNewline changes nothing. The edit keeps the
+    // syntax error, and the scenario's end restores the fixture's text.
+    const saved = bad.document.getText();
+    const badEditor = await vscode.window.showTextDocument(bad.document);
+    await edit(badEditor, (builder) => builder.replace(new vscode.Range(2, 18, 2, 23), 'val'));
+    const edited = bad.document.getText();
+    assert.notEqual(edited, saved);
+    assert.ok(edited.endsWith('\n'), 'bad.v3 lost its final line end before the save');
+    const saveTrace = logFromHere();
+    await vscode.commands.executeCommand('workbench.action.files.save');
+    await waitFor('the save of bad.v3', () => !bad.document.isDirty);
+    assert.equal(bad.document.getText(), edited, 'saving bad.v3 changed its text');
+    assert.equal(fs.readFileSync(bad.document.uri.fsPath, 'utf8'), edited, 'saving bad.v3 changed its bytes');
+    const shiftedError = new vscode.Range(2, 24, 2, 24);
+    await waitFor('the shifted parser diagnostic after saving bad.v3', () => {
+      const list = diagnostics(bad);
+      return list.length === 1 && code(list[0]) === 'ParseError' && list[0].range.isEqual(shiftedError);
+    });
+    await waitFor('the empty formatting response for bad.v3', () => {
+      const log = saveTrace();
+      const [id] = formattingRequestIds(log, bad.document.uri);
+      return id !== undefined
+        && new RegExp(`Received response 'textDocument/formatting - \\(${id}\\)' in \\d+ms\\.\\nResult: \\[\\]$`, 'm').test(log);
+    });
+    assert.doesNotMatch(saveTrace(), /\[error\]|RequestFailed/, 'saving bad.v3 reported a formatting error');
+    console.log('PASS: vscode.formatting.syntax-error');
+    fs.writeFileSync(bad.document.uri.fsPath, saved);
+    await vscode.window.showTextDocument(bad.document);
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+    await waitFor('bad.v3 as saved again', () => bad.document.getText() === saved && !bad.document.isDirty);
+
+    // Format Document on the project file reaches no formatter from the server,
+    // while the same command on a misindented .v3 file sends one formatting
+    // request and applies its edits.
     const config = await open('.virgil-lsp.json');
-    const configText = config.document.getText();
+    const selectorTrace = logFromHere();
     await vscode.commands.executeCommand('editor.action.formatDocument');
-    if (config.document.getText() !== configText) await undo(config, configText);
     const formatEditor = await vscode.window.showTextDocument(editor.document);
     await edit(formatEditor, (builder) => builder.insert(new vscode.Position(1, 0), ' '));
     await vscode.commands.executeCommand('editor.action.formatDocument');
-    await waitFor('textDocument/formatting in the trace',
-      () => log().includes("Sending request 'textDocument/formatting"));
-    assert.equal(formatEditor.document.getText(), formatted, 'Format Document did not apply the formatting edits');
-    assert.equal(count(log(), "Sending request 'textDocument/formatting"), 1,
+    await waitFor('the formatting request for formatting.v3',
+      () => formattingRequestIds(selectorTrace(), formatEditor.document.uri).length > 0);
+    const log = selectorTrace();
+    assert.equal(formatEditor.document.getText(), formattedOnSave, 'Format Document did not apply the formatting edits');
+    assert.equal(formattingRequestIds(log, config.document.uri).length, 0,
       'Format Document on .virgil-lsp.json sent a textDocument/formatting request');
+    assert.equal(formattingRequestIds(log, formatEditor.document.uri).length, 1,
+      'Format Document on formatting.v3 must send exactly one textDocument/formatting request');
     console.log('PASS: vscode.formatting.project-file');
   } finally {
     await level(vscode.LogLevel.Info);
+    await setSetting(jsonFormatter, originalJsonFormatter);
+    await setSetting(traceSetting, originalTrace);
   }
+}
+
+function formattingRequestIds(log, uri) {
+  const requests = log.matchAll(/Sending request 'textDocument\/formatting - \((\d+)\)'\.\nParams: ([^\n]+)\n/g);
+  return [...requests].filter(([, , params]) => JSON.parse(params).textDocument.uri === uri.toString())
+    .map(([, id]) => id);
 }
 
 // With the project file closed and no document edited, a change on disk

@@ -120,7 +120,7 @@ Command: **Virgil: Restart Language Server**.
 
 ## Formatting
 
-The extension contributes defaults for Virgil documents; user and workspace settings override them:
+The extension contributes these defaults for Virgil documents. Override any of them under `[virgil]` in user or workspace settings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -128,7 +128,7 @@ The extension contributes defaults for Virgil documents; user and workspace sett
 | `editor.insertSpaces` | `false` | Indent with tabs, as the server does. |
 | `files.insertFinalNewline` | `true` | Add the final line end that the formatting request leaves to the editor. |
 
-**Format Document** (Shift+Alt+F) formats a Virgil file in the author's line breaks, indentation, and spacing ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). To keep formatting on demand but turn off format on save, set `"[virgil]": { "editor.formatOnSave": false }` in user or workspace settings. The server registers formatting only for `.v3` documents, so VS Code offers no Virgil formatter for the project file `.virgil-lsp.json`.
+**Format Document** normalizes indentation and spacing while keeping the author's line breaks ([the formatting request](../../docs/architecture.md#the-formatting-request), [ADR-0019](../../docs/decisions/0019-formatter.md)). To keep formatting on demand but turn off format on save, set `"[virgil]": { "editor.formatOnSave": false }` in user or workspace settings. The server registers formatting only for documents with the `virgil` language ID, so VS Code offers no Virgil formatter for the project file `.virgil-lsp.json`.
 
 ## Startup checks
 
@@ -355,6 +355,6 @@ For each VS Code setup selected by that policy, check the [known limitations](..
 15. With a copy of `virgil-lsp` in a directory without `virgil-lsp-worker`, point `virgil.server.path` at the copy. The output channel reports the missing worker. Restore the setting. *(Automated.)*
 16. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit. *(Automated.)*
 17. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window. *(Automated; through Remote-SSH, except closing the window.)*
-18. In a copy of a `.v3` file with misindented lines, **Format Document** reindents them with tabs and normalizes spacing; saving without formatting first formats it too. Remove the final line end and save: the file gets exactly one. Saving `bad.v3`, which ends with a line end, leaves it unchanged and shows no error. **Format Document** on `.virgil-lsp.json` leaves it as it is, because the server registers no formatter for it. *(Automated, except the error notification that a failed formatting provider would show.)*
+18. In a copy of a `.v3` file with misindented lines, **Format Document** reindents them with tabs and normalizes spacing; saving without formatting first formats it too. Remove the final line end and save: the file gets exactly one. Saving `bad.v3`, which ends with a line end, leaves it unchanged and shows no error. **Format Document** on `.virgil-lsp.json` does not invoke the Virgil formatter. *(Automated, except the error notification that a failed formatting provider would show.)*
 
 Record the VS Code version, the platform, and the server version in the pull request, and for a release in the [manual test results](../../docs/manual-testing.md#results).

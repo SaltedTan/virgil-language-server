@@ -2266,7 +2266,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "An explicit save of a misindented .v3 file formats it, and the formatted bytes reach the disk."
+      "description": "An explicit save of a misindented .v3 file formats it and writes the formatted bytes with the pending method rename intact."
     },
     {
       "id": "vscode.formatting.syntax-error",
@@ -2276,7 +2276,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "An explicit save of the syntax-error fixture, which ends with a line end, writes the buffer unchanged, keeps its one parser error, and reports no formatting error."
+      "description": "An explicit save of a syntax-error fixture with a pending edit and a final line end receives an empty formatting response, writes the buffer unchanged, and shows one parser error at its shifted position."
     },
     {
       "id": "vscode.formatting.final-newline",
@@ -2286,7 +2286,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "An explicit save of a dirty file without a final line end formats it and adds exactly one LF, so \"def f() {}\" becomes \"def f() { }\" followed by one line end."
+      "description": "An explicit save of a file without a final line end keeps a pending rename from f to g, formats the empty body, and adds exactly one LF. The saved bytes are \"def g() { }\" followed by one line end."
     },
     {
       "id": "vscode.formatting.project-file",
@@ -2296,7 +2296,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "At the Trace log level, Format Document on .virgil-lsp.json sends no textDocument/formatting request to the server, while Format Document on a misindented .v3 file sends exactly one and applies its edits."
+      "description": "With VS Code's JSON formatter disabled, the trace shows that Format Document sends zero textDocument/formatting requests for .virgil-lsp.json and exactly one for the misindented .v3 document, which receives and applies the edits."
     }
   ],
   "retired": [],
