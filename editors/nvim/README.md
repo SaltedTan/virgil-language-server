@@ -113,6 +113,16 @@ In either case, `<C-y>` accepts the selected item. Neovim 0.11.6's `autotrigger 
 
 LazyVim needs no setup, and shows the items as you type. Its default completion plugin, blink.cmp, asks every attached server that declares `completionProvider` through its `lsp` source (`sources.default` in LazyVim 16.0.1's `coding.blink` extra), and blink.cmp 1.10.2 asks its sources whenever you type a keyword character (`completion.trigger.show_on_keyword`, on by default, which LazyVim leaves unchanged), with or without trigger characters. A scripted LazyVim session with this server, LazyVim 16.0.1, and blink.cmp 1.10.2 showed keywords and names in the menu as an identifier was typed, and the receiver's members as `.` was typed, for 0.1.0-alpha.2 ([results](../../docs/manual-testing.md#010-alpha2)). blink.cmp added words from the buffer only where the server offered nothing, such as in a comment. The server also resolves an item's [documentation](../../docs/architecture.md#item-documentation), the comment above its declaration, which blink.cmp asks for when it shows the item's details.
 
+## Formatting
+
+The server formats open Virgil buffers by [ADR-0019](../../docs/decisions/0019-formatter.md)'s rules, with tabs and with the author's line breaks kept, and has no settings ([the formatting request](../../docs/architecture.md#the-formatting-request)). Neovim registers formatting dynamically, so the server offers it for `virgil` buffers only, not for `.virgil-lsp.json`; `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1]:supports_method("textDocument/formatting", 0)` shows whether the current buffer has it. A buffer with a syntax error isn't formatted, and no error is shown; its diagnostics show the error.
+
+In plain Neovim, `:lua vim.lsp.buf.format()` formats the current buffer. The server doesn't offer range formatting, so Neovim leaves `formatexpr` unset and `gq` keeps its built-in behavior. Plain Neovim doesn't format on save, and the plain configuration adds no autocommand for it.
+
+LazyVim needs no setup. `<leader>cf` formats the buffer, and LazyVim formats each buffer as it saves it, including with `<C-s>`. To turn format on save off, set `vim.b.autoformat = false` for one buffer, or `vim.g.autoformat = false` for all of them, for example in `lua/config/options.lua`; LazyVim's `<leader>uF` and `<leader>uf` toggle the same settings. `<leader>cf` formats either way.
+
+The request keeps a final line end only if the buffer has one, and otherwise removes the whitespace after the last token or comment. Neovim's `fixendofline`, on by default, then writes exactly one line end. A buffer read from a file without a final line end whose last line you leave empty is saved with one extra blank line; formatting it again after `:edit` removes it.
+
 ## Headless smoke test
 
 From the repository root, run `make test-nvim` (also included in `make test`).
@@ -140,7 +150,10 @@ error, and its undo, keyword completion of `whi` to `while` and completion of
 `li` to the local `line` in the unsaved, unparsable buffer, each applied with
 Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
 diagnostics after an unsaved edit to the project file, that other JSON buffers
-stay detached, and a graceful server shutdown with exit status 0. The fixture
+stay detached, the exact text that `vim.lsp.buf.format()` gives a misindented
+buffer, that the client finds the server's formatting registration for that
+`.v3` buffer but not for the project file's, and a graceful server shutdown
+with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the
 directory is removed afterward. The VS Code
 [Extension Host test](../../clients/vscode/README.md#extension-host-test) and

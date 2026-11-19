@@ -836,6 +836,46 @@ local function check()
     "the buffer was not restored")
   passed("completion after a. returned only the field length, def length: int; applying it and undo restored the line")
 
+  -- Neovim declares dynamic registration of formatting, so the server
+  -- registers it for Virgil documents after initialized. vim.lsp.buf.format()
+  -- applies its edits to a misindented file, outside the project, which the
+  -- test writes and doesn't save.
+  begin("nvim.formatting.buffer")
+  local format_path = vim.fs.joinpath(root, "format.v3")
+  vim.fn.writefile({
+    "component Format {",
+    "  def run(a: int) -> int {",
+    "      if (a > 0) {",
+    "    return a;",
+    "      }",
+    "  var b=a;",
+    "  return b;",
+    "  }",
+    "}",
+  }, format_path)
+  vim.cmd.edit(vim.fn.fnameescape(format_path))
+  local format_buf = vim.api.nvim_get_current_buf()
+  wait_for("format.v3 attachment", function() return vim.lsp.buf_is_attached(format_buf, client.id) end)
+  wait_for("the formatting registration for format.v3", function()
+    return client:supports_method("textDocument/formatting", format_buf)
+  end)
+  vim.lsp.buf.format({ bufnr = format_buf, timeout_ms = 10000 })
+  local formatted = vim.api.nvim_buf_get_lines(format_buf, 0, -1, true)
+  assert(vim.deep_equal(formatted, {
+    "component Format {",
+    "\tdef run(a: int) -> int {",
+    "\t\tif (a > 0) {",
+    "\t\t\treturn a;",
+    "\t\t}",
+    "\t\tvar b = a;",
+    "\t\treturn b;",
+    "\t}",
+    "}",
+  }), "unexpected formatted text: " .. vim.inspect(formatted))
+  vim.api.nvim_set_current_buf(words_buf)
+  print("PASS: nvim.formatting.buffer")
+  passed("vim.lsp.buf.format() reindented format.v3 with tabs and spaced its =, giving the exact formatted text")
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -860,6 +900,19 @@ local function check()
   end)
   passed('an unsaved "bogus": 1 in .virgil-lsp.json gave UnknownField, which cleared when the line was removed')
 
+  -- The registration's document selector is [{ language = "virgil" }], with
+  -- no documentFormattingProvider in the initialize result, so the client
+  -- finds no formatter from the server for the project file, a json buffer.
+  begin("nvim.formatting.selector")
+  assert(client.server_capabilities.documentFormattingProvider == nil,
+    "unexpected documentFormattingProvider: " .. vim.inspect(client.server_capabilities.documentFormattingProvider))
+  assert(not client:supports_method("textDocument/formatting", config_buf),
+    "the client would format .virgil-lsp.json")
+  assert(client:supports_method("textDocument/formatting", format_buf), "the client would not format format.v3")
+  print("PASS: nvim.formatting.selector")
+  passed("no documentFormattingProvider; supports_method(textDocument/formatting) was false for .virgil-lsp.json "
+    .. "and true for format.v3")
+
   -- Graceful stop sends shutdown and exit; do not force-kill the success path.
   begin("nvim.shutdown.clean")
   client:stop()
@@ -867,7 +920,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type and call hierarchy, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type and call hierarchy, rename and undo, keyword, declaration, and member completion, formatting, workspace symbols, project file edits, and clean server exit")
   passed("the server exited with code 0 and signal 0, and the client was removed")
 end
 

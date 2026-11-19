@@ -10,6 +10,7 @@ local O = {
   published = vim.defaulttable(function() return {} end), -- by URI, in arrival order
   requests = {}, -- every textDocument/signatureHelp request, with its caller
   completions = {}, -- every textDocument/completion request, with its caller and reply
+  formattings = {}, -- every textDocument/formatting request, with its reply
   ui_enter = false, -- whether UIEnter fired, which LazyVim's VeryLazy waits for
 }
 _G.VirgilObs = O
@@ -40,6 +41,17 @@ end
 local Client = require("vim.lsp.client")
 local request = Client.request
 function Client:request(method, params, handler, bufnr)
+  if method == "textDocument/formatting" then
+    local record = { client_id = self.id, uri = vim.tbl_get(params or {}, "textDocument", "uri") }
+    table.insert(O.formattings, record)
+    local inner = handler
+    handler = function(err, result, ctx, config)
+      record.err, record.result, record.answered = err, result, true
+      if inner then return inner(err, result, ctx, config) end
+      local default = vim.lsp.handlers[method]
+      if default then return default(err, result, ctx, config) end
+    end
+  end
   if method == "textDocument/completion" then
     local caller = "?"
     for level = 2, 12 do

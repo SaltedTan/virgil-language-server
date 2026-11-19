@@ -176,6 +176,11 @@
       "matrix": true
     },
     {
+      "id": "formatting",
+      "label": "Formatting",
+      "matrix": true
+    },
+    {
       "id": "startup",
       "label": "Startup",
       "matrix": false
@@ -2172,6 +2177,76 @@
       "required": true,
       "source": "test/e2e/nvim/check.lua",
       "description": "The Neovim LSP client requests a semicolon quick fix with its published diagnostic and checks the entire action, including the current version and exact insertion; applying it clears the diagnostic."
+    },
+    {
+      "id": "nvim.formatting.buffer",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Once the client finds the server's formatting registration for a misindented format.v3, outside the project, vim.lsp.buf.format() reindents it with tabs and spaces its =, giving the exact formatted text; the buffer isn't saved."
+    },
+    {
+      "id": "nvim.formatting.selector",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The initialize result has no documentFormattingProvider, and client:supports_method(\"textDocument/formatting\", bufnr) is false for the .virgil-lsp.json buffer and true for format.v3, so the registration's selector covers Virgil documents alone."
+    },
+    {
+      "id": "lazyvim.formatting.leader-cf",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's <leader>cf (Format) on a misindented format.v3, outside the project, gives the exact formatted text through one answered formatting request; u restores the saved text, unmodified."
+    },
+    {
+      "id": "lazyvim.formatting.autoformat-off",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With vim.b.autoformat = false, LazyVim's Normal <C-s> (Save File) saves the misindented format.v3 as it is, with no formatting request."
+    },
+    {
+      "id": "lazyvim.formatting.save",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With LazyVim's default autoformat, <C-s> on the misindented format.v3 saves exactly the formatted text, through one answered formatting request, and leaves the buffer unmodified."
+    },
+    {
+      "id": "lazyvim.formatting.final-newline",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "<C-s> on eol.v3, read without a final line end, and on spaces.v3, which ends in a line of spaces without one, saves each with exactly one final line end."
+    },
+    {
+      "id": "lazyvim.formatting.syntax-error",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "<C-s> on broken.v3, misindented with a syntax error, saves it unchanged after the server answers the formatting request with no edits and no error; noice shows no error or warning, and v:errmsg stays empty."
     }
   ],
   "retired": [],
@@ -2327,6 +2402,13 @@
         "notCovered": ["vscode.suggestion-list"]
       },
       {
+        "setup": "vscode-linux",
+        "feature": "formatting",
+        "level": null,
+        "checks": [],
+        "notCovered": ["vscode.formatting"]
+      },
+      {
         "setup": "vscode-macos",
         "feature": "diagnostics",
         "level": "api",
@@ -2475,6 +2557,13 @@
         "notCovered": ["vscode.suggestion-list"]
       },
       {
+        "setup": "vscode-macos",
+        "feature": "formatting",
+        "level": null,
+        "checks": [],
+        "notCovered": ["vscode.formatting"]
+      },
+      {
         "setup": "ssh-linux-client",
         "feature": "diagnostics",
         "level": "api",
@@ -2619,6 +2708,13 @@
         "notCovered": ["vscode.suggestion-list"]
       },
       {
+        "setup": "ssh-linux-client",
+        "feature": "formatting",
+        "level": null,
+        "checks": [],
+        "notCovered": ["vscode.formatting"]
+      },
+      {
         "setup": "nvim-linux",
         "feature": "diagnostics",
         "level": "api",
@@ -2767,6 +2863,13 @@
         "notCovered": ["nvim.completion-comment", "nvim.completion-menu"]
       },
       {
+        "setup": "nvim-linux",
+        "feature": "formatting",
+        "level": "api",
+        "checks": ["nvim.formatting.buffer", "nvim.formatting.selector"],
+        "notCovered": []
+      },
+      {
         "setup": "nvim-macos",
         "feature": "diagnostics",
         "level": "api",
@@ -2915,6 +3018,13 @@
         "notCovered": ["nvim.completion-comment", "nvim.completion-menu"]
       },
       {
+        "setup": "nvim-macos",
+        "feature": "formatting",
+        "level": "api",
+        "checks": ["nvim.formatting.buffer", "nvim.formatting.selector"],
+        "notCovered": []
+      },
+      {
         "setup": "lazyvim-linux",
         "feature": "diagnostics",
         "level": "api-ui-state",
@@ -3057,6 +3167,13 @@
         "notCovered": ["lazyvim.layout"]
       },
       {
+        "setup": "lazyvim-linux",
+        "feature": "formatting",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.formatting.leader-cf", "lazyvim.formatting.autoformat-off", "lazyvim.formatting.save", "lazyvim.formatting.final-newline", "lazyvim.formatting.syntax-error"],
+        "notCovered": []
+      },
+      {
         "setup": "lazyvim-macos",
         "feature": "diagnostics",
         "level": "api-ui-state",
@@ -3197,6 +3314,13 @@
         "level": "ui-state",
         "checks": ["lazyvim.completion.keyword", "lazyvim.completion.local", "lazyvim.completion.member", "lazyvim.completion.comment"],
         "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "formatting",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.formatting.leader-cf", "lazyvim.formatting.autoformat-off", "lazyvim.formatting.save", "lazyvim.formatting.final-newline", "lazyvim.formatting.syntax-error"],
+        "notCovered": []
       }
     ]
   },
@@ -3386,6 +3510,12 @@
       "kind": "behavior",
       "what": "closing the window during a server's recovery through Remote-SSH, where VS Code sometimes quits before it tells the remote extension host to terminate",
       "planned": null
+    },
+    {
+      "id": "vscode.formatting",
+      "kind": "behavior",
+      "what": "formatting a Virgil file in VS Code, by Format Document and on save",
+      "planned": "https://github.com/SaltedTan/virgil-language-server/issues/513"
     },
     {
       "id": "nvim.diagnostics-display",
