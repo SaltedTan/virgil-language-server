@@ -19,7 +19,9 @@
 // - Otherwise one TextEdit for each changed whitespace run, in document
 //   order, so that no edit covers a comment. More than MAX_EDITS become one
 //   edit from the first change's start to the last change's end, whose text
-//   is that span formatted, comments included.
+//   is that span formatted, comments included. If that span contains U+FFFD,
+//   which may stand for an unpaired surrogate in the client's text, the
+//   request gets RequestFailed instead.
 class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 	def REGISTRATION_ID = "virgil-lsp/formatting";
 	// Production waits this long for the client to answer the registration,
@@ -104,7 +106,12 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		if (r.editCount() == 0) return noEdits();
 		var edits = r.edits();
 		if (edits == null) return failed("the formatter could not build its edits");
-		if (edits.length > MAX_EDITS) edits = [merged(overlay.text, edits)];
+		if (edits.length > MAX_EDITS) {
+			if (hasReplacement(overlay.text, edits[0].begin, edits[edits.length - 1].end)) {
+				return failed(Strings.format1("the document needs more than %d formatting changes, too many to send separately, and the single edit that would replace them includes a character the server can't reproduce exactly: U+FFFD, or an unpaired UTF-16 surrogate, which the server stores as U+FFFD", MAX_EDITS));
+			}
+			edits = [merged(overlay.text, edits)];
+		}
 		var bytes = 2L;
 		for (e in edits) bytes += EDIT_BYTES + JsonRpcJson.stringBytes(e.text);
 		if (bytes > MAX_REPLY_BYTES) {
@@ -125,6 +132,16 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 			pos = e.end;
 		}
 		return AnalysisTextEdit.new(begin, end, out);
+	}
+	// Whether {text[begin ... end]} contains U+FFFD, whose UTF-8 is EF BF BD.
+	// JsonRpcJson decodes an unpaired surrogate escape as that character, so
+	// the client's text may differ from the server's there, and a merged edit
+	// would replace the client's character with U+FFFD.
+	private def hasReplacement(text: Array<byte>, begin: int, end: int) -> bool {
+		for (i = begin; i + 2 < end; i++) {
+			if (text[i] == '\xEF' && text[i + 1] == '\xBF' && text[i + 2] == '\xBD') return true;
+		}
+		return false;
 	}
 	// The TextEdit[] of {edits}, whose JSON takes at most {bytes} bytes.
 	private def render(edits: Array<AnalysisTextEdit>, map: PositionMap, bytes: long) -> Range<byte> {

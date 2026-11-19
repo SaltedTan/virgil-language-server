@@ -10,7 +10,8 @@ edit above 10,000 edits, and the same text as `virgil-lsp format` for files
 that end with a line end. It also checks the refusals: no edits for a syntax
 error, a lone CR, a project file, or a document that isn't Virgil;
 InvalidParams for malformed options; RequestFailed for the parse budget,
-growth past the document store, a reply over 4 MiB, and a document marked out
+growth past the document store, a reply over 4 MiB, a merged edit around
+U+FFFD, which stands for an unpaired surrogate, and a document marked out
 of sync by a rejected change, a skipped frame, or an undecodable payload,
 until an accepted full-text change or a reopen. Each session shuts down and
 exits with status 0, and every receive has a deadline.
@@ -273,6 +274,13 @@ def lines(n, indent="  "):
     return "def f() {\n" + (indent + ";\n") * n + "}\n"
 
 
+def commented(note, indent="  "):
+    """A method of 10,000 statements with the comment "// {note} note" between
+    the 5,000th and the next, so that formatting changes 10,001 runs."""
+    half = (indent + ";\n") * 5000
+    return "def f() {\n" + half + indent + "// " + note + " note\n" + half + "}\n"
+
+
 def nested(depth, body):
     """{body} in {depth} blocks in a method, each on lines of its own."""
     return "def f() {\n" + "{\n" * depth + body + "}\n" * depth + "}\n"
@@ -301,6 +309,20 @@ def bounds(exe, work):
         assert "// é note\n" in edits[0]["newText"], edits[0]["newText"][:80]
         assert apply(text, edits) == expected
         command(exe, work, text, expected)
+        # The server holds an unpaired surrogate as U+FFFD, which a merged
+        # edit would write back in its place, so a merged edit whose span
+        # holds U+FFFD is refused, also for a genuine one. Without it, the
+        # same text gets one edit; and fewer edits never cover it.
+        for note in ("\ud800", "�"):
+            s.change(uri, commented(note))
+            s.refused(uri, text="includes a character the server can't reproduce exactly: U+FFFD")
+        text = commented("")
+        s.change(uri, text)
+        edits = s.edits(uri)
+        assert len(edits) == 1 and apply(text, edits) == commented("", "\t"), len(edits)
+        text = "def f() {\n  // \ud800 note\n  ;\n}\n"
+        s.change(uri, text)
+        assert apply(text, s.edits(uri)) == "def f() {\n\t// \ud800 note\n\t;\n}\n"
         s.close_document(uri)
         # A document of about 100 KB whose indentation would grow past the
         # document store's 1 MiB: 50,000 empty statements 21 blocks deep gain
