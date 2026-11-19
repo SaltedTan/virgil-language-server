@@ -148,6 +148,7 @@ SUITES = \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/first_project.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/target_analysis.py $(BUILD)/virgil-lsp' \
+	$(call native_only,'python3 test/format/corpus.py $(BUILD)/virgil-lsp') \
 	$(call native_only,'$(BUILD)/retain-probe') \
 	'python3 test/e2e/clean-install/test_readme.py' \
 	'$(CHECK_FORMAT)'
@@ -213,6 +214,11 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 	$(V3C) $(V3C_FLAGS) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
+# Formats many files in one process for test/format/corpus.py.
+$(BUILD)/format-corpus-probe: buildinfo test/format/FormatCorpusProbe.v3 $(SERVER_LIB) $(JVM_DEPS)
+	$(V3C) $(V3C_FLAGS) -output=$(BUILD) -program-name=format-corpus-probe \
+	  test/format/FormatCorpusProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
 # The unit tests need two fixture directories to be unreadable. test/unit/run.py
 # applies that for the test processes only and restores it however they end, so
 # the build directory stays removable. Without ARGS, it runs each group of tests
@@ -229,12 +235,14 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-
 # Unit and CLI tests start the worker next to their executables. The unit tests
 # run first, since they use every CPU themselves. The JVM build runs only the
 # suites: the unit tests and retain-probe measure the native collector's heap
-# and allocation, so they don't build for it (docs/development.md).
+# and allocation, so they don't build for it (docs/development.md). The
+# formatter corpus check doesn't depend on the target, so it runs natively only.
 ifeq ($(V3C_TARGET),jvm)
 test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/type-depth-probe
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 else
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe \
+  $(BUILD)/format-corpus-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 endif
