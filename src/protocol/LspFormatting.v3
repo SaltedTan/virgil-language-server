@@ -1,7 +1,27 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Whole-document formatting. See docs/architecture.md#the-formatting-request.
+// textDocument/formatting: ADR-0019's edits of the open document's current
+// text, from the same single-file parse with project options that folding
+// ranges use, without waiting for an analysis. The text's end is mirrored
+// (AnalysisFormatEnd.MIRROR). See docs/architecture.md#formatting.
+//
+// - Malformed params, or options without an unsigned integer tabSize and a
+//   boolean insertSpaces, get InvalidParams. The option values are ignored.
+// - A document that isn't open, or whose language isn't virgil, gets [].
+// - A document marked out of sync (DocumentStore.outOfSync) gets
+//   RequestFailed before it is parsed.
+// - A document with a carriage return that no line feed follows, or a syntax
+//   error, gets [], and one over the parse budget gets RequestFailed.
+// - RequestFailed, before any edit is built, if the document store couldn't
+//   hold the formatted text in place of the current one or if the reply
+//   would exceed MAX_REPLY_BYTES.
+// - Otherwise one TextEdit for each changed whitespace run, in document
+//   order, so that no edit covers a comment. More than MAX_EDITS become one
+//   edit from the first change's start to the last change's end, whose text
+//   is that span formatted, comments included. If that span contains U+FFFD,
+//   which may stand for an unpaired surrogate in the client's text, the
+//   request gets RequestFailed instead.
 class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 	def REGISTRATION_ID = "virgil-lsp/formatting";
 	// Production waits this long for the client to answer the registration,
@@ -89,8 +109,6 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		var text = overlay.text, map = PositionMap.new(text, PositionEncoding.UTF16);
 		var merge = count > MAX_EDITS, first = r.firstChange();
 		var size = FormattingReplySize.new(first);
-		// Count escaped bytes from the formatter's slices before allocating
-		// replacement text. Every indentation tab occupies two JSON bytes.
 		var measured = r.visitChanges(fun (begin: int, end: int, leading: Range<byte>, tabs: int, trailing: Range<byte>) {
 			size.bytes += JsonRpcJson.escapedBytes(leading) + 2L * tabs + JsonRpcJson.escapedBytes(trailing);
 			if (merge) size.bytes += JsonRpcJson.escapedBytes(text[size.end ... begin]);

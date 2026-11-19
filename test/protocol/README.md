@@ -15,15 +15,14 @@ and the server's stderr on failure.
   dynamic registration, then opens a file, requests its document symbols, and
   shuts down.
 - `formatting.py` applies `textDocument/formatting` edits and checks the exact
-  text, including UTF-16 positions, CR LF and mixed line ends, the mirrored
-  end, a comment between two edits, a merged edit, and agreement with
-  `virgil-lsp format` for the pinned `lib/util` files. It also checks
-  refusals, the parse budget, store and reply bounds, synchronization loss
-  and recovery, project language options, and logging when registration fails
-  or is cancelled at shutdown. The `formatting-registration-dynamic` and
-  `formatting-registration-static` transcripts check both registration paths
-  byte for byte. See [the formatting request](../../docs/architecture.md#the-formatting-request)
-  for the protocol rules.
+  text: UTF-16 positions, CR LF, the mirrored end, a comment between two
+  edits, the merged edit above 10,000, and the same text as `virgil-lsp format`
+  for the pinned `lib/util` files. It also checks the refusals, the parse
+  budget, the growth and reply bounds, the out-of-sync marks after rejected
+  changes, skipped frames, and undecodable payloads, a document in two
+  projects, and a failed registration. The `formatting-registration-dynamic`
+  and `formatting-registration-static` transcripts check both registration
+  paths byte for byte.
 - `lspcheck.toml` is the [lspcheck](https://github.com/SaltedTan/lspcheck)
   profile that CI's `lspcheck-linux` job uses: a one-file Virgil project and
   the seeded source mutation lspcheck runs on it. See
