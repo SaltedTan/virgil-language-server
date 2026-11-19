@@ -30,10 +30,7 @@ FORMAT_EXCLUDE = \
 	test/e2e/nvim/fixture/ \
 	test/e2e/lazyvim/fixture/ \
 	docs/examples/
-# The list goes to a file first so that a failing git ls-files fails the check;
-# -z and xargs -0 keep paths with spaces whole. No single quotes: SUITES quotes it.
-CHECK_FORMAT = git ls-files -z -- "*.v3" $(foreach d,$(FORMAT_EXCLUDE),":(exclude)$(d)") \
-	>$(BUILD)/check-format-files && xargs -0 $(BUILD)/virgil-lsp format --check <$(BUILD)/check-format-files
+CHECK_FORMAT = scripts/check-format.sh "$(BUILD)" $(foreach d,$(FORMAT_EXCLUDE),":(exclude)$(d)")
 
 # Opt-in seeded source mutations, outside `make test`; see test/protocol/README.md.
 SOURCE_MUTATIONS_SEED  ?= 20261028
