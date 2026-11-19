@@ -346,8 +346,10 @@ expect "format rejects a repeated language option" 2 "" "'-lang:descriptors' is 
     format --check -lang:descriptors "$F/formatted.v3" -lang:descriptors=false
 for original in "$F"/*.orig; do
     input=${original%.orig}.v3
-    [ -f "$input" ] && [ ! -L "$input" ] && cmp -s "$original" "$input" || {
-        fail=$((fail + 1)); echo "FAIL: format changed ${input##*/}"; }
+    if [ ! -f "$input" ] || [ -L "$input" ] || ! cmp -s "$original" "$input"; then
+        fail=$((fail + 1))
+        echo "FAIL: format changed ${input##*/}"
+    fi
 done
 
 A=$FIXTURES/analysis
