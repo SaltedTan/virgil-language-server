@@ -33,7 +33,7 @@ def decodeValid(t: Tester, text: string) -> JsonRpcMessage {
 			if (unsupportedNumbers) t.fail1("unexpected unsupported numbers in %s", text);
 			return msg;
 		}
-		Rejected(id, error) => t.fail2("%s was rejected: %s", text, error.message);
+		Rejected(id, error, _) => t.fail2("%s was rejected: %s", text, error.message);
 		Dropped(reason) => t.fail2("%s was dropped: %s", text, reason);
 	}
 	return NO_MESSAGE;
@@ -53,7 +53,7 @@ def decodeNotification(t: Tester, text: string) -> JsonRpcMessage.Notification {
 // Checks that {text} is rejected with {code}, and returns the encoded reply.
 def decodeRejected(t: Tester, text: string, code: int) -> string {
 	match (JsonRpcDecoder.decode(text)) {
-		Rejected(id, error) => {
+		Rejected(id, error, _) => {
 			if (error.code != code) t.fail3("%s: expected code %d, got %d", text, code, error.code);
 			return JsonRpcMessage.ErrorResponse(id, error).encode();
 		}
@@ -239,7 +239,7 @@ def test_parse_error(t: Tester) {
 		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,"), reply);
 	}
 	match (JsonRpcDecoder.decode(null)) {
-		Rejected(id, error) => t.asserti(JsonRpcErrorCode.PARSE_ERROR, error.code);
+		Rejected(id, error, _) => t.asserti(JsonRpcErrorCode.PARSE_ERROR, error.code);
 		_ => t.fail("expected a null payload to be rejected");
 	}
 }

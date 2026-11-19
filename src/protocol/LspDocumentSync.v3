@@ -29,14 +29,23 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			.onNotification("textDocument/didSave", didSave)
 			.onNotification("textDocument/didClose", didClose);
 	}
+	def rejectedMessage(obj: HashMap<string, JsonValue>) {
+		if (!stringMember(obj, "method") || obj.has("id")) return;
+		if (changesText(JsonValue.String.!(obj["method"]).v)) {
+			markRejected(documentUri(objectMember(obj, "params")));
+		}
+	}
 	// The decoder replaced unsupported numbers with null. Do not read params,
 	// except a didOpen's or didChange's URI, which is a string, to mark it.
 	def unsupportedNumbers(n: JsonRpcMessage.Notification) {
-		var opens = Strings.equal(n.method, "textDocument/didOpen"), changes = Strings.equal(n.method, "textDocument/didChange");
-		if (opens || changes || Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
+		var changes = changesText(n.method);
+		if (changes || Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
 			ignored(n, "params contain a number that is not a 32-bit integer");
 		}
-		if (opens || changes) markRejected(documentUri(members(n)));
+		if (changes) markRejected(documentUri(members(n)));
+	}
+	private def changesText(method: string) -> bool {
+		return Strings.equal(method, "textDocument/didOpen") || Strings.equal(method, "textDocument/didChange");
 	}
 	private def didOpen(n: JsonRpcMessage.Notification) {
 		var params = members(n), doc = objectMember(params, "textDocument");

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // textDocument/formatting: ADR-0019's edits of the open document's current
-// text, from the same single-file parse that folding ranges use, without
-// reading disk or waiting for an analysis. The text's end is mirrored
+// text, from the same single-file parse with project options that folding
+// ranges use, without waiting for an analysis. The text's end is mirrored
 // (AnalysisFormatEnd.MIRROR). See docs/architecture.md#formatting.
 //
 // - Malformed params, or options without an unsigned integer tabSize and a
@@ -14,8 +14,8 @@
 // - A document with a carriage return that no line feed follows, or a syntax
 //   error, gets [], and one over the parse budget gets RequestFailed.
 // - RequestFailed, before any edit is built, if the document store couldn't
-//   hold the formatted text in place of the current one; and, before any
-//   JSON is built, if the reply would exceed MAX_REPLY_BYTES.
+//   hold the formatted text in place of the current one or if the reply
+//   would exceed MAX_REPLY_BYTES.
 // - Otherwise one TextEdit for each changed whitespace run, in document
 //   order, so that no edit covers a comment. More than MAX_EDITS become one
 //   edit from the first change's start to the last change's end, whose text
@@ -31,11 +31,10 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 	def MAX_EDITS = 10000;
 	// The bound on a reply's JSON that document symbols use (LspDocumentSymbols).
 	def MAX_REPLY_BYTES = 4194304;
-	// The most bytes that an edit's JSON adds beyond its newText as
-	// JsonRpcJson.stringBytes counts it, with its quotes: the rest of its
-	// object, four numbers of at most 10 digits each, and the array's comma.
-	// It is 123.
-	def EDIT_BYTES = 128;
+	private def EDIT_START = "{\"range\":{\"start\":{\"line\":";
+	private def CHARACTER = ",\"character\":";
+	private def EDIT_END = "},\"end\":{\"line\":";
+	private def EDIT_TEXT = "}},\"newText\":";
 	// The client declared textDocument.formatting.dynamicRegistration; set by
 	// initialize.
 	var dynamic: bool;
@@ -87,6 +86,8 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 			!JsonValue.Bool.?(options["insertSpaces"])) {
 			return invalid("formatting params require options with an unsigned integer tabSize and a boolean insertSpaces");
 		}
+		var resultLimit = MAX_REPLY_BYTES - request.id.resultEnvelopeBytes();
+		if (resultLimit < 2) return replyTooLarge();
 		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
 		if (overlay == null || !Strings.equal(overlay.languageId, "virgil")) return noEdits();
 		if (store.outOfSync(overlay)) {
@@ -103,21 +104,37 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		if (!store.fits(overlay, r.size())) {
 			return failed(Strings.format1("the formatted document, %d bytes, would not fit in the open-document capacity", r.size()));
 		}
-		if (r.editCount() == 0) return noEdits();
-		var edits = r.edits();
-		if (edits == null) return failed("the formatter could not build its edits");
-		if (edits.length > MAX_EDITS) {
-			if (hasReplacement(overlay.text, edits[0].begin, edits[edits.length - 1].end)) {
+		var count = r.editCount();
+		if (count == 0) return noEdits();
+		var text = overlay.text, map = PositionMap.new(text, PositionEncoding.UTF16);
+		var merge = count > MAX_EDITS, first = r.firstChange();
+		var size = FormattingReplySize.new(first);
+		var measured = r.visitChanges(fun (begin: int, end: int, leading: Range<byte>, tabs: int, trailing: Range<byte>) {
+			size.bytes += JsonRpcJson.escapedBytes(leading) + 2L * tabs + JsonRpcJson.escapedBytes(trailing);
+			if (merge) size.bytes += JsonRpcJson.escapedBytes(text[size.end ... begin]);
+			else size.bytes += editBytes(map, begin, end);
+			size.end = end;
+		});
+		if (!measured) return failed("the formatter could not build its edits");
+		if (merge) {
+			if (hasReplacement(text, first, size.end)) {
 				return failed(Strings.format1("the document needs more than %d formatting changes, too many to send separately, and the single edit that would replace them includes a character the server can't reproduce exactly: U+FFFD, or an unpaired UTF-16 surrogate, which the server stores as U+FFFD", MAX_EDITS));
 			}
-			edits = [merged(overlay.text, edits)];
+			size.bytes += editBytes(map, first, size.end);
+		} else {
+			size.bytes += count - 1;
 		}
-		var bytes = 2L;
-		for (e in edits) bytes += EDIT_BYTES + JsonRpcJson.stringBytes(e.text);
-		if (bytes > MAX_REPLY_BYTES) {
-			return failed(Strings.format1("the formatting edits would need more than %d bytes", MAX_REPLY_BYTES));
-		}
-		return JsonRpcReply.ResultJson(render(edits, PositionMap.new(overlay.text, PositionEncoding.UTF16), bytes));
+		if (size.bytes > resultLimit) return replyTooLarge();
+		var edits = r.edits();
+		if (edits == null) return failed("the formatter could not build its edits");
+		if (merge) edits = [merged(text, edits)];
+		return JsonRpcReply.ResultJson(render(edits, map, size.bytes));
+	}
+	private def editBytes(map: PositionMap, begin: int, end: int) -> int {
+		var start = map.offsetToPosition(begin), finish = map.offsetToPosition(end);
+		return EDIT_START.length + 2 * CHARACTER.length + EDIT_END.length + EDIT_TEXT.length + 3
+			+ JsonRpcJson.integerBytes(start.line) + JsonRpcJson.integerBytes(start.character)
+			+ JsonRpcJson.integerBytes(finish.line) + JsonRpcJson.integerBytes(finish.character);
 	}
 	// One edit in place of {edits}, which are sorted and don't overlap: from
 	// the first one's start to the last one's end of {text}, whose text is
@@ -143,16 +160,15 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		}
 		return false;
 	}
-	// The TextEdit[] of {edits}, whose JSON takes at most {bytes} bytes.
+	// The TextEdit[] of {edits}, whose JSON takes {bytes} bytes.
 	private def render(edits: Array<AnalysisTextEdit>, map: PositionMap, bytes: long) -> Range<byte> {
 		var buf = StringBuilder.new().grow(int.view(bytes)).putc('[');
 		for (i < edits.length) {
 			var e = edits[i];
 			var start = map.offsetToPosition(e.begin), end = map.offsetToPosition(e.end);
 			if (i > 0) buf.putc(',');
-			buf.puts("{\"range\":{\"start\":{\"line\":").putd(start.line).puts(",\"character\":").putd(start.character)
-				.puts("},\"end\":{\"line\":").putd(end.line).puts(",\"character\":").putd(end.character)
-				.puts("}},\"newText\":");
+			buf.puts(EDIT_START).putd(start.line).puts(CHARACTER).putd(start.character)
+				.puts(EDIT_END).putd(end.line).puts(CHARACTER).putd(end.character).puts(EDIT_TEXT);
 			JsonRpcJson.renderString(buf, e.text).putc('}');
 		}
 		buf.putc(']');
@@ -160,6 +176,9 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 	}
 	private def noEdits() -> JsonRpcReply {
 		return JsonRpcReply.Result(JsonValue.JArray([]));
+	}
+	private def replyTooLarge() -> JsonRpcReply {
+		return failed(Strings.format1("the formatting edits would need more than %d bytes", MAX_REPLY_BYTES));
 	}
 	private def invalid(msg: string) -> JsonRpcReply {
 		return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, msg));
@@ -171,4 +190,9 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
 		return JsonValue.JObject.!(obj[key]).v;
 	}
+}
+
+class FormattingReplySize(first: int) {
+	var bytes = 2L;
+	var end = first;
 }

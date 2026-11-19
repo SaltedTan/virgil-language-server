@@ -63,6 +63,9 @@ class AnalysisFormatting {
 	def edits() -> Array<AnalysisTextEdit> {
 		return if(formatter == null, null, formatter.edits());
 	}
+	def visitChanges(visit: (int, int, Range<byte>, int, Range<byte>) -> void) -> bool {
+		return formatter != null && formatter.visitChanges(visit);
+	}
 }
 
 // What the parse tree says about tokens that the formatter can't tell from
@@ -358,8 +361,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	var size: long;
 	var count: int;
 	var first: int;
-	// The edits, while {edits} runs.
-	private var out: Vector<AnalysisTextEdit>;
+	private var visit: (int, int, Range<byte>, int, Range<byte>) -> void;
 	// A run's new line ends, or the single space of a join, before its indentation.
 	private def ends = Vector<byte>.new();
 	private def stack = Vector<FormatterBracket>.new();
@@ -403,12 +405,24 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	}
 	// The edits, in byte order.
 	def edits() -> Array<AnalysisTextEdit> {
-		out = Vector<AnalysisTextEdit>.new();
-		var result = if(pass(), out.extract());
-		out = null;
-		return result;
+		var out = Vector<AnalysisTextEdit>.new();
+		var ok = visitChanges(fun (begin: int, end: int, leading: Range<byte>, tabs: int, trailing: Range<byte>) {
+			var text = Array<byte>.new(leading.length + tabs + trailing.length);
+			var pos = 0;
+			for (b in leading) text[pos++] = b;
+			for (i < tabs) text[pos++] = '\t';
+			for (b in trailing) text[pos++] = b;
+			out.put(AnalysisTextEdit.new(begin, end, text));
+		});
+		return if(ok, out.extract());
 	}
 
+	def visitChanges(callback: (int, int, Range<byte>, int, Range<byte>) -> void) -> bool {
+		visit = callback;
+		var ok = pass();
+		visit = null;
+		return ok;
+	}
 	private def pass() -> bool {
 		size = input.length;
 		count = 0;
@@ -834,10 +848,13 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		size += newLength - oldLength;
 		if (count++ == 0) first = s;
-		if (out == null) return;
-		var text = Array<byte>.new(newLength - suf - pre);
-		for (i < text.length) text[i] = at(pre + i, tabs, kb);
-		out.put(AnalysisTextEdit.new(s, e, text));
+		if (visit == null) return;
+		var limit = newLength - suf, tabsEnd = ends.length + tabs;
+		var leadStart = Ints.min(pre, ends.length), leadEnd = Ints.min(limit, ends.length);
+		var leading = if(leadStart == leadEnd, input[0 ... 0], ends.array[leadStart ... leadEnd]);
+		var keptTabs = Ints.min(limit, tabsEnd) - Ints.max(pre, ends.length);
+		var tailStart = kb + Ints.max(0, pre - tabsEnd), tailEnd = kb + Ints.max(0, limit - tabsEnd);
+		visit(s, e, leading, Ints.max(0, keptTabs), input[tailStart ... tailEnd]);
 	}
 	// The byte at {i} of a run's new text.
 	private def at(i: int, tabs: int, kb: int) -> byte {

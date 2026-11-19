@@ -320,11 +320,10 @@ class LspServer {
 		if (state == LspServerState.EXITED) return null;
 		var input = JsonRpcDecoder.decode(payload);
 		match (input) {
-			// A payload that isn't a valid request or notification, and has
-			// no valid request ID, may have been a change to any open
-			// document, so all are out of sync. One with an ID was a request,
-			// which changes no document.
-			Rejected(id, _) => if (JsonRpcId.Null.?(id)) documents.markAllOutOfSync();
+			Rejected(_, error, obj) => {
+				if (error.code == JsonRpcErrorCode.PARSE_ERROR) messageSkipped();
+				else documentSync.rejectedMessage(obj);
+			}
 			Valid(msg, unsupportedNumbers) => {
 				match (msg) {
 					x: JsonRpcMessage.Request => {

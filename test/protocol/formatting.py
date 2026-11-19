@@ -66,10 +66,10 @@ class FormatSession(Session):
     def close_document(self, uri):
         self.send("textDocument/didClose", {"textDocument": {"uri": uri}}, request=False)
 
-    def format(self, uri, options=OPTIONS, timeout=60):
+    def format(self, uri, options=OPTIONS, timeout=60, *, id=None):
         """The reply to a formatting request for {uri}."""
-        return self.reply(self.send("textDocument/formatting", {"textDocument": {"uri": uri}, "options": options}),
-                          timeout)
+        return self.reply(self.send("textDocument/formatting", {"textDocument": {"uri": uri}, "options": options},
+                                    id=id), timeout)
 
     def edits(self, uri, timeout=60):
         msg = self.format(uri, timeout=timeout)
@@ -298,6 +298,12 @@ def bounds(exe, work):
         edits = s.edits(uri)
         assert len(edits) == 10000 and edits[0] == edit(1, 0, 1, 2, "\t"), edits[:2]
         assert apply(lines(10000), edits) == lines(10000, "\t")
+        base_reply = {"jsonrpc": "2.0", "id": 'budget\t"\\', "result": edits}
+        base_size = len(json.dumps(base_reply, separators=(",", ":")).encode())
+        boundary_id = base_reply["id"] + "x" * (MAX_PAYLOAD - base_size)
+        assert s.format(uri, id=boundary_id).get("result") == edits
+        over = s.format(uri, id=boundary_id + "x").get("error", {})
+        assert over.get("code") == REQUEST_FAILED and "4194304 bytes" in over["message"], over
         text = lines(5000) + "  // é note  \n" + lines(5000)[len("def f() {\n"):]
         text = text.replace("}\n  // é", "  // é", 1)
         expected = lines(5000, "\t") + "\t// é note\n" + lines(5000, "\t")[len("def f() {\n"):]
@@ -508,12 +514,19 @@ def value_limit(s):
     assert reply["error"]["code"] == -32700 and "more than 50000 values" in reply["error"]["message"], reply
 
 
+def nesting_limit(s):
+    payload = b'{"jsonrpc":"2.0","id":7,"method":"test/ping","params":' + b"[" * 257 + b"]" * 257 + b"}"
+    send_payload(s, payload)
+    reply = s.null_reply()
+    assert reply["error"]["code"] == -32700 and "nest deeper" in reply["error"]["message"], reply
+
+
 def lost_messages(exe):
     """A skipped frame or an undecodable payload marks every open document."""
     s = FormatSession(exe)
     try:
         s.start()
-        for lose in (large_frame, charset_frame, malformed_json, value_limit):
+        for lose in (large_frame, charset_frame, malformed_json, value_limit, nesting_limit):
             a, b = two_documents(s)
             lose(s)
             for uri in (a, b):
@@ -529,10 +542,22 @@ def lost_messages(exe):
             # A document opened after the loss isn't marked.
             s.close_document(a)
             s.close_document(b)
-        # A rejected payload with a valid request ID was a request, which
-        # changes no document.
         a, b = two_documents(s)
-        send_payload(s, b'{"jsonrpc":"2.0","id":"bad","method":"textDocument/didChange","params":5}')
+        for name in ("didSave", "didClose"):
+            s.send("textDocument/" + name, 5, request=False)
+            assert s.null_reply()["error"]["code"] == -32600
+            for uri in (a, b):
+                assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]
+        invalid = {"jsonrpc": "1.0", "params": {"textDocument": {"uri": a}}}
+        for name in ("didOpen", "didChange"):
+            invalid["method"] = "textDocument/" + name
+            send_payload(s, json.dumps(invalid).encode())
+            assert s.null_reply()["error"]["code"] == -32600
+            s.refused(a)
+            assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
+            s.change(a, unformatted(5))
+        invalid["id"] = "bad"
+        send_payload(s, json.dumps(invalid).encode())
         assert s.reply("bad")["error"]["code"] == -32600
         for uri in (a, b):
             assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]

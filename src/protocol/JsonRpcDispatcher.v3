@@ -68,7 +68,7 @@ class JsonRpcDispatcher {
 				}
 				return null;
 			}
-			Rejected(id, error) => return JsonRpcMessage.ErrorResponse(id, error).encode();
+			Rejected(id, error, _) => return JsonRpcMessage.ErrorResponse(id, error).encode();
 			Dropped => return null;
 		}
 	}

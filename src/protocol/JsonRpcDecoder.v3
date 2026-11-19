@@ -9,8 +9,9 @@ type JsonRpcInput {
 	// error data must not be used.
 	case Valid(msg: JsonRpcMessage, unsupportedNumbers: bool);
 	// Not a valid request or notification. It is answered with {error}. {id} is
-	// the message's ID if it had a valid one, and null otherwise.
-	case Rejected(id: JsonRpcId, error: JsonRpcError);
+	// the message's ID if it had a valid one, and null otherwise. {object}
+	// holds the parsed object when there is one.
+	case Rejected(id: JsonRpcId, error: JsonRpcError, object: HashMap<string, JsonValue>);
 	// A malformed response. Answering a response could start a loop of error
 	// replies, so it is dropped. {reason} is for logging.
 	case Dropped(reason: string);
@@ -29,12 +30,12 @@ component JsonRpcDecoder {
 		var parser = JsonRpcJsonParser.new(text);
 		var root = parser.parseDocument();
 		if (!parser.ok) {
-			return reject(JsonRpcId.Null, JsonRpcErrorCode.PARSE_ERROR,
-				Strings.format2("invalid JSON at byte %d: %s", parser.error_pos, parser.error_msg));
+			return JsonRpcInput.Rejected(JsonRpcId.Null, JsonRpcError.new(JsonRpcErrorCode.PARSE_ERROR,
+				Strings.format2("invalid JSON at byte %d: %s", parser.error_pos, parser.error_msg)), null);
 		}
 		// This also rejects JSON-RPC batches, which LSP does not use.
 		if (!JsonValue.JObject.?(root)) {
-			return reject(JsonRpcId.Null, JsonRpcErrorCode.INVALID_REQUEST, "a message must be a JSON object");
+			return invalid(JsonRpcId.Null, "a message must be a JSON object", null);
 		}
 		var obj = JsonValue.JObject.!(root).v;
 		var unsupported = parser.unsupportedNumbers > 0;
@@ -45,23 +46,23 @@ component JsonRpcDecoder {
 		var hasId = obj.has("id");
 		// The ID is read first, so that an invalid request can be answered with it.
 		var id = if(hasId, toId(obj["id"]), JsonRpcId.Null);
-		if (!hasVersion(obj)) return invalid(id, "jsonrpc must be \"2.0\"");
-		if (!obj.has("method")) return invalid(id, "a request or notification needs a method");
+		if (!hasVersion(obj)) return invalid(id, "jsonrpc must be \"2.0\"", obj);
+		if (!obj.has("method")) return invalid(id, "a request or notification needs a method", obj);
 		var method = obj["method"];
-		if (!JsonValue.String.?(method)) return invalid(id, "method must be a string");
-		if (obj.has("result") || obj.has("error")) return invalid(id, "a request cannot have a result or an error");
+		if (!JsonValue.String.?(method)) return invalid(id, "method must be a string", obj);
+		if (obj.has("result") || obj.has("error")) return invalid(id, "a request cannot have a result or an error", obj);
 		var params: JsonRpcParams = JsonRpcParams.Absent;
 		if (obj.has("params")) {
 			match (obj["params"]) {
 				Null => params = JsonRpcParams.Null;
 				JObject(v) => params = JsonRpcParams.ByName(v);
 				JArray(v) => params = JsonRpcParams.ByPosition(v);
-				_ => return invalid(id, "params must be an object or an array");
+				_ => return invalid(id, "params must be an object or an array", obj);
 			}
 		}
 		var name = JsonValue.String.!(method).v;
 		if (!hasId) return JsonRpcInput.Valid(JsonRpcMessage.Notification(name, params), unsupported);
-		if (JsonRpcId.Null.?(id)) return invalid(id, "id must be a 32-bit integer or a string");
+		if (JsonRpcId.Null.?(id)) return invalid(id, "id must be a 32-bit integer or a string", obj);
 		return JsonRpcInput.Valid(JsonRpcMessage.Request(id, name, params), unsupported);
 	}
 	private def decodeResponse(obj: HashMap<string, JsonValue>, unsupported: bool) -> JsonRpcInput {
@@ -105,10 +106,7 @@ component JsonRpcDecoder {
 		var v = obj["jsonrpc"];
 		return JsonValue.String.?(v) && Strings.equal(JsonValue.String.!(v).v, "2.0");
 	}
-	private def invalid(id: JsonRpcId, msg: string) -> JsonRpcInput {
-		return reject(id, JsonRpcErrorCode.INVALID_REQUEST, msg);
-	}
-	private def reject(id: JsonRpcId, code: int, msg: string) -> JsonRpcInput {
-		return JsonRpcInput.Rejected(id, JsonRpcError.new(code, msg));
+	private def invalid(id: JsonRpcId, msg: string, obj: HashMap<string, JsonValue>) -> JsonRpcInput {
+		return JsonRpcInput.Rejected(id, JsonRpcError.new(JsonRpcErrorCode.INVALID_REQUEST, msg), obj);
 	}
 }

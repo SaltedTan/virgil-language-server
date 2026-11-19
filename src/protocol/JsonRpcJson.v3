@@ -227,7 +227,10 @@ component JsonRpcJson {
 	// string renders as null, which has no quotes.
 	def stringBytes(s: string) -> int {
 		if (s == null) return 4;
-		var bytes = 2, i = 0;
+		return 2 + escapedBytes(s[0 ...]);
+	}
+	def escapedBytes(s: Range<byte>) -> int {
+		var bytes = 0, i = 0;
 		while (i < s.length) {
 			var ch = s[i];
 			if (ch >= 0x80) {
@@ -249,6 +252,14 @@ component JsonRpcJson {
 				bytes++;
 				i++;
 			}
+		}
+		return bytes;
+	}
+	def integerBytes(n: int) -> int {
+		var bytes = if(n < 0, 2, 1);
+		while (n <= -10 || n >= 10) {
+			n /= 10;
+			bytes++;
 		}
 		return bytes;
 	}
