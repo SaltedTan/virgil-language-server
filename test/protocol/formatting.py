@@ -427,6 +427,11 @@ def formatted(n):
     return "def f%d() {\n\treturn;\n}\n" % n
 
 
+def recovery_text(blank_lines):
+    prefix = "\n" * blank_lines
+    return prefix + unformatted(1), prefix + formatted(1)
+
+
 def two_documents(s):
     a, b = "untitled:a.v3", "untitled:b.v3"
     s.open(a, unformatted(1))
@@ -449,8 +454,9 @@ def rejected_changes(exe):
         # A version-only change keeps the mark; an accepted full change clears it.
         s.change(a)
         s.refused(a)
-        s.change(a, unformatted(3))
-        assert s.edits(a) == [edit(1, 0, 1, 4, "\t")]
+        text, expected = recovery_text(1)
+        s.change(a, text)
+        assert apply(text, s.edits(a)) == expected
         # An incremental change, invalid change params with a known URI, a
         # version that isn't newer, and a duplicate open.
         rejects = [
@@ -460,18 +466,20 @@ def rejected_changes(exe):
             {"textDocument": {"uri": a}, "contentChanges": [{"text": formatted(4)}]},
             {"textDocument": {"uri": a, "version": 1}, "contentChanges": [{"text": formatted(4)}]},
         ]
-        for params in rejects:
+        for blank_lines, params in enumerate(rejects, 2):
             s.send("textDocument/didChange", params, request=False)
             s.refused(a)
             assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
-            s.change(a, unformatted(5))
-            assert s.edits(a) == [edit(1, 0, 1, 4, "\t")]
+            text, expected = recovery_text(blank_lines)
+            s.change(a, text)
+            assert apply(text, s.edits(a)) == expected, params
         s.send("textDocument/didOpen", {"textDocument": {"uri": a, "languageId": "virgil", "version": 50,
                                                          "text": formatted(6)}}, request=False)
         s.refused(a)
         assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
-        s.change(a, unformatted(7))
-        assert s.edits(a) == [edit(1, 0, 1, 4, "\t")]
+        text, expected = recovery_text(len(rejects) + 2)
+        s.change(a, text)
+        assert apply(text, s.edits(a)) == expected
         # A version number that JsonValue can't represent: the URI is still known.
         s.send("textDocument/didChange", {"textDocument": {"uri": a, "version": 2 ** 40},
                                           "contentChanges": [{"text": formatted(7)}]}, request=False)
@@ -480,13 +488,14 @@ def rejected_changes(exe):
         # A close and reopen clears the mark too.
         s.close_document(a)
         assert s.edits(a) == []
-        s.open(a, unformatted(8))
-        assert s.edits(a) == [edit(1, 0, 1, 4, "\t")]
+        text, expected = recovery_text(len(rejects) + 3)
+        s.open(a, text)
+        assert apply(text, s.edits(a)) == expected
         # A rejected change to a document that isn't open marks nothing.
         s.send("textDocument/didChange", {"textDocument": {"uri": "untitled:closed.v3", "version": 2},
                                           "contentChanges": [{"text": "x"}]}, request=False)
-        for uri in (a, b):
-            assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]
+        assert apply(text, s.edits(a)) == expected
+        assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
         s.shutdown()
         logs = s.logs()
         for reason in ("aggregate open-document capacity exceeded", "incremental changes are not supported",
@@ -547,12 +556,13 @@ def lost_messages(exe):
                 s.refused(uri)
             s.change(a)
             s.refused(a)
-            s.change(a, unformatted(3))
-            assert s.edits(a) == [edit(1, 0, 1, 4, "\t")], lose.__name__
+            text, expected = recovery_text(1)
+            s.change(a, text)
+            assert apply(text, s.edits(a)) == expected, lose.__name__
             s.refused(b)
             s.close_document(b)
-            s.open(b, unformatted(4))
-            assert s.edits(b) == [edit(1, 0, 1, 4, "\t")], lose.__name__
+            s.open(b, text)
+            assert apply(text, s.edits(b)) == expected, lose.__name__
             # A document opened after the loss isn't marked.
             s.close_document(a)
             s.close_document(b)
@@ -563,18 +573,20 @@ def lost_messages(exe):
             for uri in (a, b):
                 assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]
         invalid = {"jsonrpc": "1.0", "params": {"textDocument": {"uri": a}}}
-        for name in ("didOpen", "didChange"):
+        for blank_lines, name in enumerate(("didOpen", "didChange"), 1):
             invalid["method"] = "textDocument/" + name
             send_payload(s, json.dumps(invalid).encode())
             assert s.null_reply()["error"]["code"] == -32600
             s.refused(a)
             assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
-            s.change(a, unformatted(5))
+            text, expected = recovery_text(blank_lines)
+            s.change(a, text)
+            assert apply(text, s.edits(a)) == expected, name
         invalid["id"] = "bad"
         send_payload(s, json.dumps(invalid).encode())
         assert s.reply("bad")["error"]["code"] == -32600
-        for uri in (a, b):
-            assert s.edits(uri) == [edit(1, 0, 1, 4, "\t")]
+        assert apply(text, s.edits(a)) == expected
+        assert s.edits(b) == [edit(1, 0, 1, 4, "\t")]
         # An ID member that the decoder rejects doesn't make a change a
         # request. The full-text change with a null ID leaves the server's
         # "def f() {}", whose edit at column 9 would split the client's
@@ -582,14 +594,18 @@ def lost_messages(exe):
         # each kind of ID the decoder rejects, and for a duplicate didOpen.
         s.close_document(a)
         longer = "def longerName() {}\n"
-        for name, bad in (("didChange", None), ("didChange", True), ("didChange", [1]), ("didChange", {"n": 1}),
-                          ("didChange", 1.5), ("didChange", 2 ** 31), ("didOpen", None), ("didOpen", -2 ** 31 - 1)):
-            s.open(a, "def f() {}\n")
-            assert s.edits(a) == [edit(0, 9, 0, 9, " ")]
+        rejected_ids = (("didChange", None), ("didChange", True), ("didChange", [1]), ("didChange", {"n": 1}),
+                        ("didChange", 1.5), ("didChange", 2 ** 31), ("didOpen", None), ("didOpen", -2 ** 31 - 1))
+        for blank_lines, (name, bad) in enumerate(rejected_ids):
+            prefix = "\n" * blank_lines
+            text = prefix + "def f() {}\n"
+            client_text = prefix + longer
+            s.open(a, text)
+            assert apply(text, s.edits(a)) == prefix + "def f() { }\n", (name, bad)
             doc = {"uri": a, "version": 2}
-            params = {"textDocument": doc, "contentChanges": [{"text": longer}]}
+            params = {"textDocument": doc, "contentChanges": [{"text": client_text}]}
             if name == "didOpen":
-                params = {"textDocument": dict(doc, languageId="virgil", text=longer)}
+                params = {"textDocument": dict(doc, languageId="virgil", text=client_text)}
             send_payload(s, json.dumps({"jsonrpc": "2.0", "id": bad, "method": "textDocument/" + name,
                                         "params": params}).encode())
             assert s.null_reply()["error"]["code"] == -32600, (name, bad)

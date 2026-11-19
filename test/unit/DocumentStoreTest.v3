@@ -268,11 +268,13 @@ def test_store_out_of_sync(t: Tester) {
 	t.assert(store.outOfSync(store.overlay(a)), "a rejected change keeps the mark");
 	t.assert(store.change(alias, 3, "z") == null, "change failed");
 	t.assert(!store.outOfSync(store.overlay(a)), "an accepted full-text change clears the mark");
+	t.assert_string("z", store.read(a));
 	store.markAllOutOfSync();
 	t.assert(store.outOfSync(store.overlay(a)) && store.outOfSync(store.overlay(b)), "every open document is marked");
 	t.assert(store.close(b) == null, "close failed");
-	t.assert(store.open(b, "virgil", 1, "y") == null, "reopen failed");
+	t.assert(store.open(b, "virgil", 1, "new") == null, "reopen failed");
 	t.assert(!store.outOfSync(store.overlay(b)), "a close and reopen clears the mark");
+	t.assert_string("new", store.read(b));
 	t.assert(store.outOfSync(store.overlay(a)), "the other document keeps its mark");
 }
 
