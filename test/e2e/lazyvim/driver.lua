@@ -921,14 +921,14 @@ local function main_checks()
     vim.v.errmsg = ""
     local saved, requests = save_with_ctrl_s(buf)
     local edits = one_reply(requests)
-    assert(vim.deep_equal(edits, {}), "unexpected edits: " .. vim.inspect(edits))
+    assert(vim.islist(edits) and #edits == 0, "expected an empty edit list: " .. vim.inspect(edits))
     assert(saved == broken and buffer_text(buf) == broken, "the file changed: " .. vim.inspect(saved))
     sleep(500)
     local shown = {}
     for _, m in ipairs(noice_messages()) do
       if not before[m.id] then
         shown[#shown + 1] = string.format("%s/%s [%s]: %s", tostring(m.event), tostring(m.kind), tostring(m.level), m.text)
-        assert(m.level ~= "error" and m.level ~= "warn" and not m.text:find("[Ee]rror") and not m.text:find("[Ff]ormat"),
+        assert(m.level ~= "error" and m.level ~= "warn",
           "a message after the save: " .. shown[#shown])
       end
     end

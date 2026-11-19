@@ -119,7 +119,7 @@ The server formats open Virgil buffers by [ADR-0019](../../docs/decisions/0019-f
 
 In plain Neovim, `:lua vim.lsp.buf.format()` formats the current buffer. The server doesn't offer range formatting, so Neovim leaves `formatexpr` unset and `gq` keeps its built-in behavior. Plain Neovim doesn't format on save, and the plain configuration adds no autocommand for it.
 
-LazyVim needs no setup. `<leader>cf` formats the buffer, and LazyVim formats each buffer as it saves it, including with `<C-s>`. To turn format on save off, set `vim.b.autoformat = false` for one buffer, or `vim.g.autoformat = false` for all of them, for example in `lua/config/options.lua`; LazyVim's `<leader>uF` and `<leader>uf` toggle the same settings. `<leader>cf` formats either way.
+LazyVim needs no setup. `<leader>cf` formats the buffer, and LazyVim formats each buffer as it saves it, including with `<C-s>`. Set `vim.b.autoformat = false` to turn off format on save for one buffer. Set `vim.g.autoformat = false` to turn it off by default for buffers without a local override, for example in `lua/config/options.lua`. LazyVim's `<leader>uF` and `<leader>uf` toggle the buffer-local and global settings, respectively. `<leader>cf` formats either way.
 
 The request keeps a final line end only if the buffer has one, and otherwise removes the whitespace after the last token or comment. Neovim's `fixendofline`, on by default, then writes exactly one line end. A buffer read from a file without a final line end whose last line you leave empty is saved with one extra blank line; formatting it again after `:edit` removes it.
 
@@ -150,8 +150,9 @@ error, and its undo, keyword completion of `whi` to `while` and completion of
 `li` to the local `line` in the unsaved, unparsable buffer, each applied with
 Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
 diagnostics after an unsaved edit to the project file, that other JSON buffers
-stay detached, the exact text that `vim.lsp.buf.format()` gives a misindented
-buffer, that the client finds the server's formatting registration for that
+stay detached, that `vim.lsp.buf.format()` makes a misindented buffer match
+the expected text and the output of `virgil-lsp format` byte for byte,
+that the client finds the server's formatting registration for that
 `.v3` buffer but not for the project file's, and a graceful server shutdown
 with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the

@@ -842,7 +842,7 @@ local function check()
   -- test writes and doesn't save.
   begin("nvim.formatting.buffer")
   local format_path = vim.fs.joinpath(root, "format.v3")
-  vim.fn.writefile({
+  assert(vim.fn.writefile({
     "component Format {",
     "  def run(a: int) -> int {",
     "      if (a > 0) {",
@@ -852,7 +852,7 @@ local function check()
     "  return b;",
     "  }",
     "}",
-  }, format_path)
+  }, format_path) == 0, "could not write " .. format_path)
   vim.cmd.edit(vim.fn.fnameescape(format_path))
   local format_buf = vim.api.nvim_get_current_buf()
   wait_for("format.v3 attachment", function() return vim.lsp.buf_is_attached(format_buf, client.id) end)
@@ -860,8 +860,9 @@ local function check()
     return client:supports_method("textDocument/formatting", format_buf)
   end)
   vim.lsp.buf.format({ bufnr = format_buf, timeout_ms = 10000 })
-  local formatted = vim.api.nvim_buf_get_lines(format_buf, 0, -1, true)
-  assert(vim.deep_equal(formatted, {
+  local formatted = table.concat(vim.api.nvim_buf_get_lines(format_buf, 0, -1, true), "\n")
+    .. (vim.bo[format_buf].eol and "\n" or "")
+  local expected = table.concat({
     "component Format {",
     "\tdef run(a: int) -> int {",
     "\t\tif (a > 0) {",
@@ -871,10 +872,14 @@ local function check()
     "\t\treturn b;",
     "\t}",
     "}",
-  }), "unexpected formatted text: " .. vim.inspect(formatted))
+  }, "\n") .. "\n"
+  assert(formatted == expected, "unexpected formatted text: " .. vim.inspect(formatted))
+  local cli = vim.system({ "virgil-lsp", "format", format_path }):wait(10000)
+  assert(cli.code == 0, "virgil-lsp format exited with code " .. cli.code .. ": " .. (cli.stderr or ""))
+  assert(formatted == cli.stdout, "buffer differs from virgil-lsp format stdout: " .. vim.inspect(cli.stdout))
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.formatting.buffer")
-  passed("vim.lsp.buf.format() reindented format.v3 with tabs and spaced its =, giving the exact formatted text")
+  passed("vim.lsp.buf.format() reindented format.v3 with tabs and spaced its =, matching the CLI byte for byte")
 
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client

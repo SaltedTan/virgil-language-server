@@ -2186,7 +2186,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/nvim/check.lua",
-      "description": "Once the client finds the server's formatting registration for a misindented format.v3, outside the project, vim.lsp.buf.format() reindents it with tabs and spaces its =, giving the exact formatted text; the buffer isn't saved."
+      "description": "Once the client finds the server's formatting registration for a misindented format.v3, outside the project, vim.lsp.buf.format() reindents it with tabs and spaces its =. The unsaved buffer, including its final line end, matches both the expected text and the stdout of virgil-lsp format on the original file."
     },
     {
       "id": "nvim.formatting.selector",
@@ -2246,7 +2246,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
-      "description": "<C-s> on broken.v3, misindented with a syntax error, saves it unchanged after the server answers the formatting request with no edits and no error; noice shows no error or warning, and v:errmsg stays empty."
+      "description": "<C-s> on broken.v3, misindented with a syntax error, saves it unchanged after the server answers the formatting request with an empty edit array ([]) and no RPC error. Noice shows no error or warning, and v:errmsg stays empty."
     }
   ],
   "retired": [],
