@@ -42,6 +42,7 @@ Development hosts are Linux x86-64, or an Apple Silicon Mac with Rosetta 2; WSL 
 - `make test-unit` runs only the unit tests. `make test-unit ARGS='ProjectExpansion:*'` runs one focused group in a single process; multiple space-separated patterns are allowed.
 - `make test-nvim` runs the headless Neovim smoke test and is also part of `make test`. Locally it skips with a message if Neovim is missing or older than 0.11; `REQUIRE_NVIM=1` makes that a failure, as CI does.
 - `make test-protocol-shapes` runs the bounded offline LSP shape checks on their own; the same checks also run in `make test`.
+- `make check-format` checks that the tracked Virgil sources are formatted, except the directories in the Makefile's `FORMAT_EXCLUDE`, and is also part of `make test`. It prints `path:line: not formatted` for each file that would change. Fix a file with `build/virgil-lsp format <file> > tmp && mv tmp <file>`.
 
 In `clients/vscode`, install from the lockfile and run the client checks:
 
