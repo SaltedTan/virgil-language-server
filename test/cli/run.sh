@@ -137,10 +137,9 @@ if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1; then
         CAN_TRACE=1
     fi
 fi
-# can_inject <fsync|fchmod> <fault>: the installed strace can inject <fault>
-# into that call. The probe makes the call on a scratch file with mode 644 and
-# checks that the fault took effect: the injected error, or for retval=0 a
-# success that left the mode alone.
+# can_inject <fsync|fchmod> <fault>: the probe checks for the requested result
+# and unchanged mode on a scratch file. The (INJECTED) trace record confirms
+# that strace caused the result even if the syscall could produce it on its own.
 can_inject() {
     [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 || return 1
     rm -f "$TMP/inject-probe"
