@@ -27,7 +27,7 @@ output keeps the input's parser tokens and comments. The files are those
 of the submodule's checked-out commit. Staged `.v3` additions and removals
 fail regardless of what is on disk. So do missing checkout files and extra
 `.v3` files, including those inside untracked or newly staged embedded
-repositories.
+repositories. An error walking an embedded repository also fails the suite.
 
 The files are formatted in batches by `format-corpus-probe`, built beside
 the server from `test/format/FormatCorpusProbe.v3`, which calls the
@@ -59,7 +59,7 @@ BATCH = 1000
 PROBE_SHAPES = {'formatted': 4, 'fail': 3, 'syntax': 4, 'cr': 4, 'refused': 4}
 PROBE_ESCAPE = re.compile(r'\\([\\trn])')
 PROBE_MESSAGE = re.compile(r'(?:[^\\\r\t]|\\[\\trn])+')
-REPORT_PATH = re.compile(rb'''(?:^|[ \t])(?=['"]?''' + re.escape(VIRGIL.encode()) + rb'/)')
+REPORT_PATH_CHAR = r'[\w/.-]'
 UNESCAPED = {'\\': '\\', 't': '\t', 'r': '\r', 'n': '\n'}
 ESCAPED = str.maketrans({c: '\\' + e for e, c in UNESCAPED.items()})
 # Paths that a failure lists before it counts the rest.
@@ -141,8 +141,12 @@ def source_paths(raw):
 def embedded_files(directory):
     """The files under `directory` of vendor/virgil, a repository of its own, as bytes."""
     base = os.fsencode(ROOT / VIRGIL) + b'/'
+
+    def onerror(error):
+        fail(f'cannot walk embedded repository {os.fsdecode(directory)!r}: {error}')
+
     found = set()
-    for top, dirs, names in os.walk(base + directory.rstrip(b'/')):
+    for top, dirs, names in os.walk(base + directory.rstrip(b'/'), onerror=onerror):
         dirs[:] = [d for d in dirs if d != b'.git']
         found.update(os.path.join(top, name)[len(base):] for name in names)
     return found
@@ -443,13 +447,10 @@ def check_command(exe, paths, results):
     for p, line in zip(refused, errors):
         message = PROBE_ESCAPE.sub(lambda m: UNESCAPED[m[1]], results[p]['message'])
         ending = (message + '\n').encode(errors='surrogateescape')
-        name = REPORT_PATH.split(line[:-len(ending)], maxsplit=1)[-1]
-        path = f'{VIRGIL}/{p}'.encode()
-        if results[p]['form'] == 'diagnostic':
-            named = name == path + b':'
-        else:
-            named = name.rstrip(b' \t') in (path + b':', b"'" + path + b"':", b'"' + path + b'":')
-        if not line.endswith(ending) or not named:
+        prefix = line[:-len(ending)].decode(errors='surrogateescape')
+        name = rf'(?<!{REPORT_PATH_CHAR}){re.escape(f"{VIRGIL}/{p}")}'
+        name += r':\Z' if results[p]['form'] == 'diagnostic' else rf'(?!{REPORT_PATH_CHAR})'
+        if not line.endswith(ending) or not re.search(name, prefix):
             fail(f'{p}: format --check reported {line!r}, which doesn\'t name the file '
                  f'and end with the probe\'s message {message!r}')
             problems += 1
