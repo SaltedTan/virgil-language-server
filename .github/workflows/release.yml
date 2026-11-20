@@ -11,7 +11,9 @@ name: Release
 # editor-test-suites.yml on those archives and VSIX files (the LazyVim test on
 # Linux and macOS, the Extension Host test on macOS, both also on the JVM
 # build, and the Remote-SSH test on
-# Linux, plus the clean README install in a Linux container), writes SHA256SUMS
+# Linux, plus the clean README install in a Linux container), rehearses the
+# upgrade from the previous published release to this run's Linux archive and
+# VSIX and the rollback, writes SHA256SUMS
 # over them and the JVM runtime's source archive,
 # and publishes them as a GitHub prerelease. Running the workflow by hand, or
 # on a pull request that changes the release files or
@@ -51,6 +53,7 @@ on:
       - test/release/**
       - test/e2e/lazyvim/**
       - test/e2e/nvim/fixture/**
+      - test/e2e/upgrade/**
   workflow_dispatch:
 
 permissions:
@@ -297,9 +300,103 @@ jobs:
     with:
       version: ${{ needs.check.outputs.version }}
 
+  upgrade-rehearsal:
+    # See docs/releasing.md#in-the-release-workflow for the baseline and evidence.
+    name: Upgrade and rollback rehearsal (Linux, archive and VSIX)
+    needs: [check, build, vsix]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # All history and tags: for an untagged build, as in a dry run, the
+          # driver names the --version revision with git describe.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install client dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Download the Extension Host test's VS Code
+        # The driver never downloads; it uses the Extension Host test's cache.
+        working-directory: clients/vscode
+        run: |
+          vscode=$(node -p "require('./test/e2e/run.cjs').VSCODE_VERSION")
+          node test/e2e/download.cjs "$vscode" .vscode-test
+      - name: Choose the previous release
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=$(gh api --paginate --slurp 'repos/{owner}/{repo}/releases?per_page=100' | jq -r '
+            [.[][] | select(.draft == false and .published_at != null and .tag_name != "v" + env.VERSION)]
+            | max_by([.published_at, .tag_name]) | .tag_name // empty')
+          if [ -z "$tag" ]; then
+            echo "::error::No published release other than v$VERSION to rehearse the upgrade from. See docs/releasing.md#upgrade-and-rollback-rehearsal."
+            exit 1
+          fi
+          echo "Rehearsing the upgrade from $tag, the most recently published release, to this run's $VERSION"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Download the previous release's Linux archive, linux-x64 VSIX, and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.previous.outputs.tag }}
+        run: |
+          gh release download "$TAG" --dir "$RUNNER_TEMP/from" --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' \
+            --pattern 'virgil-lsp-vscode-*-linux-x64.vsix' --pattern SHA256SUMS
+          ls -l "$RUNNER_TEMP/from"
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-x86-64-linux
+          path: ${{ runner.temp }}/archive
+      - uses: actions/download-artifact@v8
+        with:
+          name: checksum-x86-64-linux
+          path: ${{ runner.temp }}/checksum
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix-linux-x64
+          path: ${{ runner.temp }}/vsix
+      - name: Collect this run's archive and VSIX, checking their producer digests
+        # The driver takes a release's three files; SHA256SUMS here covers
+        # only these two, as the checksums job hasn't run yet.
+        run: |
+          archive=virgil-lsp-$VERSION-x86-64-linux.tar.gz
+          read -r digest _ < "$RUNNER_TEMP/checksum/archive.sha256"
+          echo "$digest  $RUNNER_TEMP/archive/$archive" | sha256sum --check --strict
+          (cd "$RUNNER_TEMP/vsix" && sha256sum --check --strict linux-x64.sha256)
+          mkdir "$RUNNER_TEMP/to"
+          cp "$RUNNER_TEMP/archive/$archive" "$RUNNER_TEMP"/vsix/*.vsix "$RUNNER_TEMP/to/"
+          cd "$RUNNER_TEMP/to"
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+      - name: Rehearse the upgrade and the rollback
+        run: |
+          set -o pipefail
+          mkdir "$RUNNER_TEMP/upgrade"
+          xvfb-run -a python3 test/e2e/upgrade/run.py --from-assets "$RUNNER_TEMP/from" \
+            --to-assets "$RUNNER_TEMP/to" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 | tee "$RUNNER_TEMP/upgrade/run.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upgrade-rehearsal-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/upgrade
+          if-no-files-found: warn
+          retention-days: 30
+
   checksums:
     name: Write and verify SHA256SUMS
-    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests]
+    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests, upgrade-rehearsal]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -361,7 +458,7 @@ jobs:
 
   publish:
     name: Publish prerelease
-    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests, checksums]
+    needs: [check, build, build-jvm, test-jvm, vsix, editor-tests, upgrade-rehearsal, checksums]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

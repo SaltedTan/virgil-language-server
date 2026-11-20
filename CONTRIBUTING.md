@@ -92,7 +92,7 @@ Durable technical decisions are recorded as short ADRs in [docs/decisions/](docs
 
 ## Project file compatibility review
 
-Server 1.x keeps the format and project selection of version 1 and version 2 project files under the [configuration contract](docs/configuration.md#what-server-1x-keeps). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, or to the Virgil pin with these questions:
+Server 1.x keeps the format and project selection of version 1 and version 2 project files under the [configuration contract](docs/configuration.md#what-server-1x-keeps). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, to the targets in `AnalysisTargets.all` in `src/analysis/AnalysisTargets.v3`, whose names version 2 files accept, or to the Virgil pin with these questions:
 
 - Does it change how a version 1 or version 2 file is parsed or validated, including fields, types, defaults, accepted target names, the handling of unknown or repeated fields, or version literals?
 - Does it change which files a project selects or owns: pattern syntax or matching, ordering, exclusion, symbolic links, or the Virgil root?
