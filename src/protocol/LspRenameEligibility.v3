@@ -9,8 +9,10 @@ class LspRenameSelection(decl: AnalysisDeclaration, token: string, begin: int, e
 // Whether the name at a current snapshot position can be renamed safely, and
 // why not otherwise. The rules are conservative; see docs/architecture.md
 // #prepare-rename. textDocument/prepareRename (LspPrepareRename) and
-// textDocument/rename (LspRename) both select the name with {select}, so a
-// rename refuses everything prepareRename refuses, with the same reason.
+// textDocument/rename (LspRename) share the rules in {select} once they
+// reach selection. Rename checks project-wide synchronization first, so it
+// can refuse for an out-of-date source where prepareRename would report a
+// selection refusal.
 component LspRenameEligibility {
 	def OPEN_DOCUMENT = "open the document to rename from it";
 	def documentRefusal(store: DocumentStore, key: string) -> string {

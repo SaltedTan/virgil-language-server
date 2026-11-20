@@ -140,7 +140,8 @@ class DocumentStore {
 	}
 	// Marks the document {uri} out of sync if it is open. Otherwise records
 	// that the client holds the file {uri}, with text the server may not have,
-	// until its close: the client sent a didOpen the server rejected, or a
+	// until a valid didClose of the URI, even without an overlay, or an
+	// accepted didOpen. The client sent a didOpen the server rejected, or a
 	// change or save of a document the server doesn't have open.
 	def markOutOfSync(uri: string) {
 		var key = DocumentUri.normalize(uri);
