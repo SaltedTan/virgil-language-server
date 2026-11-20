@@ -38,6 +38,7 @@ if library is None:
     sys.modules['virgil_lsp_release_library'] = library
 RUNTIME = tuple('virgil/' + path for path in RUNTIME_PATHS)
 PINNED = {n[len('virgil/'):]: hashlib.sha256(n.encode()).hexdigest() for n in RUNTIME}
+DEFAULT_LIBRARY = object()
 
 
 class PayloadTests(unittest.TestCase):
@@ -50,17 +51,17 @@ class PayloadTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def fixture(self, target='linux-x64', revision=None, revision_file=None, library_revision=None):
+    def fixture(self, target='linux-x64', revision=None, revision_file=None, *, library=DEFAULT_LIBRARY):
         revision = self.revision if revision is None else revision
         revision_file = self.revision if revision_file is None else revision_file
-        library_revision = self.revision if library_revision is None else library_revision
+        library = {'revision': self.revision} if library is DEFAULT_LIBRARY else library
         files = {n: (n.encode(), 0o644) for n in (
             'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE',
             'virgil/lib/util/StringBuilder.v3', *RUNTIME)}
         files['virgil/REVISION'] = ((revision_file + '\n').encode(), 0o644)
         files.update({n: (n.encode(), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         manifest = {'target': 'x86-64-linux' if target == 'linux-x64' else 'x86-64-darwin',
-                    'virgilRevision': revision, 'library': {'revision': library_revision},
+                    'virgilRevision': revision, 'library': library,
                     'sha256': {n: hashlib.sha256(files[n][0]).hexdigest()
                                for n in ('virgil-lsp', 'virgil-lsp-worker')}}
         files['manifest.json'] = (json.dumps(manifest).encode(), 0o644)
@@ -133,11 +134,20 @@ class PayloadTests(unittest.TestCase):
         self.check({'extension.vsixmanifest': (self.xml(None), 0o644)}, 'universal', None)
 
     def test_wrong_archive_revision_is_rejected(self):
-        for field in ('revision', 'revision_file', 'library_revision'):
+        wrong_revision = '0' * len(self.revision)
+        for field, value in (('revision', wrong_revision), ('revision_file', wrong_revision),
+                             ('library', {'revision': wrong_revision})):
             with self.subTest(field=field):
-                archive, entries = self.fixture(**{field: '0' * 40})
+                archive, entries = self.fixture(**{field: value})
                 with self.assertRaisesRegex(SystemExit, 'bundle revision does not match the pinned Virgil revision'):
                     self.check(entries, 'linux-x64', archive)
+
+    def test_malformed_manifest_is_rejected(self):
+        # The right revision, but a library field that isn't a JSON object.
+        archive, entries = self.fixture(library=None)
+        with self.assertRaisesRegex(SystemExit, 'invalid bundled payload or target metadata: '
+                                    'the manifest and its library field must be JSON objects'):
+            self.check(entries, 'linux-x64', archive)
 
     def test_mutated_payload_and_metadata_are_rejected(self):
         for mutation in ('server', 'worker', 'library', 'runtime', 'notice', 'manifest', 'mode', 'runtime-mode',
@@ -229,6 +239,27 @@ class PayloadTests(unittest.TestCase):
                 entries['extension/server/' + RUNTIME[0]] = (RUNTIME[0].encode(), 0)
                 with self.assertRaisesRegex(SystemExit, 'has mode 0, expected 644'):
                     self.check(entries, target, archive)
+
+    def test_runtime_special_bits_are_rejected(self):
+        # A setgid bit on a runtime source, in the archive or only in the
+        # VSIX, though the permissions are 0644.
+        for where in ('archive', 'vsix'):
+            with self.subTest(where=where):
+                archive, entries = self.fixture()
+                if where == 'archive':
+                    with tarfile.open(archive, 'r:gz') as t:
+                        members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
+                    with tarfile.open(archive, 'w:gz') as t:
+                        for member, data in members:
+                            if member.name == 'release/' + RUNTIME[0]:
+                                member.mode = 0o2644
+                            t.addfile(member, io.BytesIO(data))
+                    error = 'has mode 2644, expected 644'
+                else:
+                    error = 'bundled permissions differ from tested archive: ' + RUNTIME[0]
+                entries['extension/server/' + RUNTIME[0]] = (RUNTIME[0].encode(), 0o2644)
+                with self.assertRaisesRegex(SystemExit, error):
+                    self.check(entries, 'linux-x64', archive)
 
     def test_jvm_payload_and_metadata_mutations_are_rejected(self):
         java = 'extension/server/runtime/bin/java'
