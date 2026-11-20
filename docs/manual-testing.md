@@ -34,7 +34,7 @@ Plain Neovim and LazyVim also check formatting, on misindented files outside the
 
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
-The opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal) has separate [recorded runs](#upgrade-and-rollback-rehearsals).
+The [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal), which the release workflow runs, has separate [recorded runs](#upgrade-and-rollback-rehearsals).
 
 The editor tests don't cover:
 
@@ -118,7 +118,7 @@ The maintainer reported full runs from their Mac to pc-ubuntu against the publis
 
 ### Upgrade and rollback rehearsals
 
-Published assets and phase results for the opt-in [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal). These runs use the driver's own receipt format and coverage limits described there. The tables identify packages by SHA-256 and record each phase's result.
+Published assets and phase results for runs by hand of the [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal). The release workflow also runs it on every release and dry run, and keeps each run's receipt in that run's `upgrade-rehearsal` artifact ([In the release workflow](releasing.md#in-the-release-workflow)) rather than here. These runs use the driver's own receipt format and coverage limits described there. The tables identify packages by SHA-256 and record each phase's result.
 
 The published assets that these runs used, with their SHA-256s as their releases' `SHA256SUMS` list them:
 

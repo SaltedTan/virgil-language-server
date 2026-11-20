@@ -117,10 +117,14 @@ def archive_manifest(path, version):
             executables[name] = hashlib.sha256(archive.extractfile(found[0]).read()).hexdigest()
     manifest = json.loads(data)
     expected = {"manifestVersion": 1, "name": "virgil-lsp", "version": version,
-                "target": "x86-64-linux", "tag": f"v{version}", "dirty": False}
+                "target": "x86-64-linux", "dirty": False}
     for field, value in expected.items():
         if manifest.get(field) != value:
             raise Failure(f"{path.name}: manifest {field} is {manifest.get(field)!r}, not {value!r}")
+    # A release's tag, or none for an untagged build, as a dry run of the
+    # release workflow packages.
+    if manifest.get("tag", False) not in [f"v{version}", None]:
+        raise Failure(f"{path.name}: manifest tag is {manifest.get('tag', 'missing')!r}, not 'v{version}' or null")
     for field in ["sourceRevision", "virgilRevision"]:
         if not REVISION.fullmatch(str(manifest.get(field))):
             raise Failure(f"{path.name}: manifest {field} is not a full commit SHA")
@@ -191,6 +195,7 @@ def verify_assets(directory):
     extension_version = VSIX.fullmatch(package.name)[1]
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
+    version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -198,8 +203,20 @@ def verify_assets(directory):
         "sha256sums": sha256(directory / SUMS),
         "serverVersion": version, "extensionVersion": extension_version, "tag": manifest["tag"],
         "sourceRevision": manifest["sourceRevision"], "virgilRevision": manifest["virgilRevision"],
-        "top": top, "manifest": manifest,
+        "versionRevision": version_revision, "top": top, "manifest": manifest,
     }
+
+
+def described(path, revision):
+    """The source revision that an untagged build's --version prints: git
+    describe of its commit, as the build ran it, in this checkout, which must
+    have the commit and the tags that the build had."""
+    result = subprocess.run(["git", "-C", str(REPO), "describe", "--always", "--abbrev=12", revision],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise Failure(f"{path.name}: an untagged build of {revision}, which this checkout can't describe; "
+                      f"fetch that commit and its tags: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def check_pair(old, new):
@@ -212,7 +229,7 @@ def check_pair(old, new):
 
 
 def version_output(assets):
-    return (f"virgil-lsp {assets['serverVersion']}\n  source revision: {assets['tag']}\n"
+    return (f"virgil-lsp {assets['serverVersion']}\n  source revision: {assets['versionRevision']}\n"
             f"  virgil revision: {assets['virgilRevision']}\n")
 
 

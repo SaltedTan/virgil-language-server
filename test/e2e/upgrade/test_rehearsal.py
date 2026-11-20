@@ -96,7 +96,23 @@ class AssetTests(TemporaryTest):
         assets = run.verify_assets(make_assets(self.root))
         self.assertEqual((assets["serverVersion"], assets["extensionVersion"]), OLD)
         self.assertEqual(assets["tag"], "v" + OLD[0])
+        self.assertEqual(assets["versionRevision"], "v" + OLD[0])
         self.assertEqual(assets["virgilRevision"], "a" * 40)
+
+    def test_accepts_an_untagged_build(self):
+        # A release workflow dry run's package: no tag, so --version prints
+        # git describe of its commit, which needs that commit in the checkout.
+        result = subprocess.CompletedProcess([], 0, stdout=f"v{OLD[0]}-3-g{'1' * 12}\n", stderr="")
+        with mock.patch.object(run.subprocess, "run", return_value=result) as describe:
+            assets = run.verify_assets(make_assets(self.root, manifest={"tag": None}))
+        self.assertEqual(describe.call_args.args[0][-4:], ["describe", "--always", "--abbrev=12", "1" * 40])
+        self.assertIsNone(assets["tag"])
+        self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-3-g{'1' * 12}")
+        self.assertIn(f"  source revision: v{OLD[0]}-3-g{'1' * 12}\n", run.version_output(assets))
+        missing = subprocess.CompletedProcess([], 128, stdout="", stderr="fatal: Not a valid object name")
+        with mock.patch.object(run.subprocess, "run", return_value=missing):
+            with self.assertRaisesRegex(run.Failure, "can't describe; fetch that commit and its tags"):
+                run.verify_assets(make_assets(self.root, manifest={"tag": None}))
 
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
@@ -108,7 +124,7 @@ class AssetTests(TemporaryTest):
 
     def test_rejects_wrong_versions(self):
         self.rejected("manifest version is '0.1.0-alpha.5'", manifest={"version": NEW[0]})
-        self.rejected("manifest tag", manifest={"tag": None})
+        self.rejected("manifest tag is 'v0.1.0-alpha.5'", manifest={"tag": "v" + NEW[0]})
         self.rejected("manifest dirty", manifest={"dirty": True})
         self.rejected("VSIX Version is '0.1.4'", identity={"Version": NEW[1]})
         # A VSIX that bundles another release's server.
@@ -343,7 +359,7 @@ class CleanupTests(TemporaryTest):
     def vscode_phase(self):
         rehearsal = run.Rehearsal(self.root / "work", self.root / "code")
         assets = {"extensionVersion": OLD[1], "serverVersion": OLD[0], "tag": "v" + OLD[0],
-                  "virgilRevision": "a" * 40, "vsix": {"path": str(self.root / "x.vsix")}}
+                  "versionRevision": "v" + OLD[0], "virgilRevision": "a" * 40, "vsix": {"path": str(self.root / "x.vsix")}}
         logs = self.root / "phase"
         logs.mkdir(exist_ok=True)
         return rehearsal, assets, logs
