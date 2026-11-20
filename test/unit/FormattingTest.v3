@@ -34,7 +34,6 @@ def X = [
 	T("Formatting:inline_else", inline_else),
 	T("Formatting:headers_after_inline_else", headers_after_inline_else),
 	T("Formatting:fun_body_close", fun_body_close),
-	T("Formatting:unjoined_fun_brace", unjoined_fun_brace),
 	T("Formatting:case_arrow_anchor", case_arrow_anchor),
 	T("Formatting:foreach_initializer", foreach_initializer),
 	T("Formatting:representation_hints", representation_hints),
@@ -553,11 +552,15 @@ def headers_after_inline_else(t: Tester) {
 		"\tif (true)\n\t\tg(); else if (true) // keep\n",
 		"\tif (\n\t\ttrue) g(); else while (true) // keep\n",
 		"\tif (true)\n\t\tg(); else h(fun () { if (true) g(); }); while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else h(fun () { if (true) g(); else h(); }); while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else h([fun () { match (0) { _ => g(); } else h(); }]); while (true) // keep\n",
 		"\tmatch (0) {\n\t\t_ => g(); } else while (true) // keep\n"
 	]) {
 		var prefix = Strings.format1("def f() {\n%s", header);
 		both(t, Strings.format2("%s%s", prefix, brace), Strings.format2("%s%s", prefix, indented));
 	}
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else h(fun () {\n\t\t\tif (true) g(); else h();\n\t\t}); while (true) // keep\n\t{\nh();\n\t}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else h(fun () {\n\t\t\tif (true) g(); else h();\n\t\t}); while (true) // keep\n\t{\n\t\th();\n\t}\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tif (true)\n\t\t\tg(); else h(); else while (true) // keep\n\t{\n\th();\n\t}\n}\n",
 		"def f() {\n\tif (true)\n\t\tif (true)\n\t\t\tg(); else h(); else while (true) // keep\n\t\t\t{\n\t\t\t\th();\n\t\t\t}\n}\n");
 	both(t, "def f() {\n\tmatch (0) {\n\t\t_ => g(\n\t\t\t1); } else while (true)\n\t{\n\th();\n\t}\n}\n",
@@ -580,29 +583,6 @@ def fun_body_close(t: Tester) {
 		"def f() {\n\tif (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t}))\n\t\tg();\n\twhile (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t})) // keep\n\t{\n\t\tg();\n\t}\n}\n");
 	both(t, "def f() {\n    var x = g(\n      fun () {\n\t\treturn;\n      },\n        2);\n}\n",
 		"def f() {\n\tvar x = g(\n\t  fun () {\n\t\treturn;\n\t},\n\t    2);\n}\n");
-}
-// A fun expression's '{' that a comment keeps on its own line, outside
-// parentheses and brackets, keeps its indentation, and its body and '}'
-// count from the statement's line.
-def unjoined_fun_brace(t: Tester) {
-	both(t, "def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n",
-		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n");
-	both(t, "def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n return;\n  };\n}\n",
-		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n\t\treturn;\n\t};\n}\n");
-	both(t, "def f() {\n    var callback = fun () // keep\n    {\n\treturn;\n    };\n}\n",
-		"def f() {\n\tvar callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
-	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t\t{\n\t\treturn;\n\t};\n}\n",
-		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
-	both(t, "def f() {\n    g(\n\t\t1); var callback = fun () // keep\n        {\n\t\treturn;\n\t};\n}\n",
-		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n        {\n\t\t\treturn;\n\t\t};\n}\n");
-	both(t, "def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n",
-		"def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
-	both(t, "def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n\t\t\t{\n\t\treturn;\n\t};\n\t}\n}\n",
-		"def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n\t\t\t{\n\t\t\treturn;\n\t\t};\n\t}\n}\n");
-	both(t, "def f() {\n    var callback =\n    \tfun () #hint(fun () {\n\t\t\tg();\n\t\t}) // keep\n    \t\t{\n\t\t\treturn;\n\t\t};\n}\n",
-		"def f() {\n\tvar callback =\n\t\tfun () #hint(fun () {\n\t\t\tg();\n\t\t}) // keep\n\t\t\t{\n\t\treturn;\n\t};\n}\n");
-	var input = "def x = fun () // keep\n  {\n\treturn;\n};\n";
-	both(t, input, input);
 }
 def case_arrow_anchor(t: Tester) {
 	// A case's "=>" that starts a line is anchored on the line where the
