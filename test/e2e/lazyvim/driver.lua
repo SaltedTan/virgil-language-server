@@ -205,7 +205,7 @@ end
 -- lazy.nvim fires only after UIEnter, so the session must have a UI, as a
 -- user's does. The driver waits for it and never fires VeryLazy itself.
 local function startup_checks()
-  step("startup: a UI attached and LazyVim's VeryLazy fired", function()
+  step("lazyvim.startup.ui-ready", function()
     wait_for("VeryLazy and noice", function()
       return vim.g.did_very_lazy and package.loaded["noice"] ~= nil
     end, 15000)
@@ -248,7 +248,7 @@ local function main_checks()
   local publications = O.published[uri]
   local client
 
-  if not step("attach", function()
+  if not step("lazyvim.startup.attach", function()
     client = wait_for("client attachment", function()
       local c = virgil_clients({ bufnr = bufnr })[1]
       return c and c.initialized and c
@@ -274,7 +274,7 @@ local function main_checks()
   end
 
   local initial
-  step("diagnostics: parser error published", function()
+  step("lazyvim.diagnostics.parser", function()
     wait_for("published parser diagnostic", function()
       return #publications > 0 and #vim.diagnostic.get(bufnr) > 0
     end)
@@ -292,7 +292,7 @@ local function main_checks()
   end)
 
   local original_bad = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  step("diagnostics: cleared after an unsaved edit, back after undo", function()
+  step("lazyvim.diagnostics.unsaved-cycle", function()
     local before_edit = #publications
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "component C { def value = 1; }", "type V { case A(x: int); }" })
     wait_for("published empty diagnostics after the edit", function()
@@ -311,7 +311,7 @@ local function main_checks()
     vim.cmd("silent redo")
   end)
 
-  step("document symbols: bad.v3 after the edit", function()
+  step("lazyvim.symbols.hierarchy", function()
     local outline = wait_for("outline of the edited text", function()
       local o = request(client, "textDocument/documentSymbol", { textDocument = { uri = uri } }, bufnr)
       return #o == 2 and o
@@ -330,7 +330,7 @@ local function main_checks()
 
   local root = client.config.root_dir
   local config_uri = vim.uri_from_fname(vim.fs.joinpath(root, ".virgil-lsp.json"))
-  step("Virgil root: project file valid with lib/util from VIRGIL_LOC", function()
+  step("lazyvim.configuration.valid-root", function()
     wait_for("published configuration diagnostics", function() return latest(config_uri) ~= nil end)
     assert(#latest(config_uri).diagnostics == 0,
       "unexpected configuration diagnostics: " .. codes(latest(config_uri)))
@@ -349,13 +349,13 @@ local function main_checks()
         and last.diagnostics[1].message == "expected int in var initialization, got Array<byte>" and last
     end
   end
-  step("diagnostics: semantic TypeError in words/Words.v3", function()
+  step("lazyvim.diagnostics.semantic", function()
     assert(vim.lsp.buf_is_attached(words_buf, client.id), "Words.v3 not attached to the project's client")
     local last = wait_for("semantic diagnostics for words/Words.v3", type_error_published(), 40000)
     return "line " .. (last.diagnostics[1].range.start.line + 1) .. ": " .. last.diagnostics[1].message
   end)
 
-  step("document symbols: words/Words.v3", function()
+  step("lazyvim.symbols.words", function()
     local outline = request(client, "textDocument/documentSymbol", { textDocument = { uri = words_uri } }, words_buf)
     assert(#outline == 1 and outline[1].name == "Words" and outline[1].children
       and #outline[1].children == 1 and outline[1].children[1].name == "join",
@@ -373,7 +373,7 @@ local function main_checks()
     if not class_line and text:find("^class StringBuilder") then class_line = i - 1 end
   end
 
-  step("definition (request)", function()
+  step("lazyvim.definition.response", function()
     local location = request(client, "textDocument/definition", { textDocument = { uri = words_uri }, position = position }, words_buf)
     assert(location and location.uri and vim.uri_to_fname(location.uri) == library
       and location.range.start.line == class_line and location.range.start.character == 6
@@ -382,7 +382,7 @@ local function main_checks()
     return string.format("lib/util/StringBuilder.v3:%d:7", class_line + 1)
   end)
 
-  step("definition (LazyVim gd)", function()
+  step("lazyvim.definition.gd", function()
     -- LazyVim maps gd for the buffer on LspAttach; a user can't press it sooner.
     wait_for("LazyVim's gd mapping", function()
       local map = vim.fn.maparg("gd", "n", false, true)
@@ -404,7 +404,7 @@ local function main_checks()
     return string.format("jumped to %d:%d", cursor[1], cursor[2] + 1)
   end)
 
-  step("inlay hints (LazyVim API)", function()
+  step("lazyvim.inlay-hints.response", function()
     vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, "words", "Inlay.v3")))
     local buf = vim.api.nvim_get_current_buf()
     wait_for("LazyVim inlay hints", function()
@@ -426,7 +426,7 @@ local function main_checks()
     return ": int at 5:34; count: at 5:42; hints enabled by LazyVim"
   end)
 
-  step("semantic tokens (LazyVim API)", function()
+  step("lazyvim.semantic-tokens.response", function()
     vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, "words", "Inlay.v3")))
     local buf = vim.api.nvim_get_current_buf()
     -- Each token found at some byte of the buffer, in order, with its UTF-16
@@ -466,7 +466,7 @@ local function main_checks()
   end)
 
   local type_column = line_text:find(".puts(", 1, true)
-  step("type definition (request)", function()
+  step("lazyvim.type-definition.response", function()
     local location = request(client, "textDocument/typeDefinition", {
       textDocument = { uri = words_uri }, position = { line = use_line, character = type_column },
     }, words_buf)
@@ -481,7 +481,7 @@ local function main_checks()
     return string.format("puts result -> lib/util/StringBuilder.v3:%d:7; int -> null", class_line + 1)
   end)
 
-  step("type definition (LazyVim gy)", function()
+  step("lazyvim.type-definition.jump", function()
     wait_for("LazyVim's gy mapping", function()
       local map = vim.fn.maparg("gy", "n", false, true)
       return map.buffer == 1 and map.desc and map.desc:find("Definition", 1, true)
@@ -496,7 +496,7 @@ local function main_checks()
     return string.format("jumped to %d:7", class_line + 1)
   end)
 
-  step("hover (request)", function()
+  step("lazyvim.hover.response", function()
     local hover = request(client, "textDocument/hover", { textDocument = { uri = words_uri }, position = position }, words_buf)
     assert(hover and hover.contents and hover.contents.kind == "markdown"
       and vim.startswith(hover.contents.value, "```virgil\nclass StringBuilder\n```\n\nUtility for building")
@@ -505,7 +505,7 @@ local function main_checks()
       "unexpected hover: " .. vim.inspect(hover))
   end)
 
-  step("hover (LazyVim K popup)", function()
+  step("lazyvim.hover.popup", function()
     vim.api.nvim_win_set_cursor(0, { use_line + 1, start - 1 })
     vim.api.nvim_input("K")
     local text = wait_for("a hover window with class StringBuilder", function() return float_with("class StringBuilder") end)
@@ -516,7 +516,7 @@ local function main_checks()
   end)
 
   local puts = line_text:find(".puts(", 1, true)
-  step("signature help (request)", function()
+  step("lazyvim.signature.complete", function()
     local help = request(client, "textDocument/signatureHelp", {
       textDocument = { uri = words_uri }, position = { line = use_line, character = puts - 1 + #".puts(" },
     }, words_buf)
@@ -531,7 +531,7 @@ local function main_checks()
     assert(after == nil or after == vim.NIL, "expected nothing just past the ): " .. vim.inspect(after))
   end)
 
-  step("workspace symbols", function()
+  step("lazyvim.workspace-symbols.join", function()
     local symbol = (request(client, "workspace/symbol", { query = "join" }, words_buf) or {})[1]
     assert(symbol and symbol.name == "join" and symbol.kind == vim.lsp.protocol.SymbolKind.Method
       and vim.uri_to_fname(symbol.location.uri) == vim.api.nvim_buf_get_name(words_buf)
@@ -540,7 +540,7 @@ local function main_checks()
       "unexpected workspace symbol: " .. vim.inspect(symbol))
   end)
 
-  step("references", function()
+  step("lazyvim.references.library", function()
     local references = request(client, "textDocument/references", {
       textDocument = { uri = words_uri }, position = position, context = { includeDeclaration = true },
     }, words_buf) or {}
@@ -579,7 +579,7 @@ local function main_checks()
 
   -- lazyvim.document-highlight.navigation: the plugin's own extmarks and
   -- mapped keys, after natural CursorMoved handling and its debounce timer.
-  step("document highlights: next and previous use (LazyVim ]] and [[)", function()
+  step("lazyvim.document-highlight.navigation", function()
     vim.cmd.edit(vim.fs.joinpath(root, "words", "Highlights.v3"))
     local buf = vim.api.nvim_get_current_buf()
     wait_for("Highlights.v3 attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
@@ -614,7 +614,7 @@ local function main_checks()
   -- override its area, by offset; the unextended Circle has none.
   local shapes = vim.fs.joinpath(root, "words", "Shapes.v3")
   local shapes_uri = vim.uri_from_fname(shapes)
-  step("implementation (request)", function()
+  step("lazyvim.implementation.response", function()
     local function names(spots)
       local result = {}
       for _, spot in ipairs(spots) do
@@ -639,7 +639,7 @@ local function main_checks()
   end)
 
   -- Polygon's one subclass is Square, so gI jumps to it in the same file.
-  step("implementation (LazyVim gI)", function()
+  step("lazyvim.implementation.jump", function()
     vim.cmd.edit(shapes)
     local buf = vim.api.nvim_get_current_buf()
     wait_for("Shapes.v3 attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
@@ -712,21 +712,21 @@ local function main_checks()
     end)
   end
 
-  step("call hierarchy: incoming calls (LazyVim gai)", function()
+  step("lazyvim.call-hierarchy.incoming", function()
     return call_picker("gai", "lsp_incoming_calls", calls, { 6, 5 }, {
       { "sumSquares", calls, 7, 48 }, { "sumSquares", calls, 7, 60 }, { "cube", calls, 8, 34 },
     }, "cube", { 8, 34 })
   end)
   -- Snacks auto-confirms a single callee. This LazyVim-only caller has two,
   -- so gao shows a picker. Outgoing items jump to the callee's declaration.
-  step("call hierarchy: outgoing calls (LazyVim gao)", function()
+  step("lazyvim.call-hierarchy.outgoing", function()
     return call_picker("gao", "lsp_outgoing_calls", vim.fs.joinpath(root, "words", "CallPicker.v3"), { 4, 5 }, {
       { "sumSquares", calls, 7, 5 }, { "cube", calls, 8, 5 },
     }, "sumSquares", { 7, 5 })
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
-  step("diagnostics: semicolon quick fix (LazyVim <leader>ca)", function()
+  step("lazyvim.diagnostics.semicolon-fix", function()
     vim.cmd.edit(vim.fs.joinpath(root, "semicolon.v3"))
     local buf = vim.api.nvim_get_current_buf()
     local target = vim.uri_from_bufnr(buf)
@@ -767,7 +767,7 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
-  step("folding ranges (LazyVim defaults)", function()
+  step("lazyvim.folding-ranges.defaults", function()
     vim.cmd.edit(vim.fs.joinpath(root, "folding.v3"))
     local buf = vim.api.nvim_get_current_buf()
     wait_for("folding fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
@@ -856,7 +856,7 @@ local function main_checks()
   end
 
   local format_buf
-  step("formatting: <leader>cf formats the buffer (LazyVim)", function()
+  step("lazyvim.formatting.leader-cf", function()
     format_buf = open_for_formatting("format.v3", misindented)
     wait_for("LazyVim's <leader>cf mapping", function()
       return vim.fn.maparg(leader .. "cf", "n", false, true).desc == "Format"
@@ -872,7 +872,7 @@ local function main_checks()
     return string.format("%d edits gave the formatted text; u restored it, unmodified", #edits)
   end)
 
-  step("formatting: <C-s> with vim.b.autoformat = false saves the buffer as it is", function()
+  step("lazyvim.formatting.autoformat-off", function()
     assert(format_buf, "format.v3 is not open")
     vim.api.nvim_buf_set_text(format_buf, 5, 0, 5, 0, { " " })
     local expected = buffer_text(format_buf)
@@ -888,7 +888,7 @@ local function main_checks()
 
   -- The save starts from a valid unsaved edit, so the formatted bytes on
   -- disk show that format on save kept it.
-  step("formatting: <C-s> formats on save (LazyVim autoformat)", function()
+  step("lazyvim.formatting.save", function()
     assert(format_buf, "format.v3 is not open")
     local line = vim.api.nvim_buf_get_lines(format_buf, 6, 7, true)[1]
     assert(line == "  return b;", "unexpected line 7 before the edit: " .. vim.inspect(line))
@@ -917,7 +917,7 @@ local function main_checks()
   -- The request mirrors the end of the text: a buffer read without a final
   -- line end gets none from the server, which removes whitespace after the
   -- last token, and Neovim's fixendofline adds one as it writes.
-  step("formatting: <C-s> ends a file without a final line end with exactly one", function()
+  step("lazyvim.formatting.final-newline", function()
     local cases = {
       { "eol.v3", "component Eol {\n}", "component Eol {\n}\n" },
       { "spaces.v3", "component Spaces {\n}\n   ", "component Spaces {\n}\n" },
@@ -934,7 +934,7 @@ local function main_checks()
 
   -- The server answers [] for a syntax error, with no error, so the save
   -- goes on and nothing reports a problem; diagnostics show the error.
-  step("formatting: <C-s> saves a file with a syntax error unchanged, with no error message", function()
+  step("lazyvim.formatting.syntax-error", function()
     local buf = open_for_formatting("broken.v3", "component Broken {\n  def run() {\n      var x = 1;\n  }\n}\n")
     vim.api.nvim_buf_set_lines(buf, 2, 3, true, { "      var x = ;" })
     local expected = buffer_text(buf)
@@ -968,7 +968,7 @@ local function main_checks()
   -- which noice keeps. The procedure's unsaved fix then lets it rename the
   -- local line through the prompt, and undo restores both edits in turn.
   local name_column = line_text:find("line", 1, true) - 1
-  step("rename refused while the project has a type error (LazyVim <leader>cr)", function()
+  step("lazyvim.rename.refusal", function()
     local map = wait_for("LazyVim's <leader>cr mapping", function()
       local m = vim.fn.maparg(leader .. "cr", "n", false, true)
       return m.buffer == 1 and m.desc == "Rename" and m
@@ -989,7 +989,7 @@ local function main_checks()
     return string.format("noice %s/%s [%s] %q", tostring(shown.event), tostring(shown.kind), tostring(shown.level), shown.text)
   end)
 
-  step("rename through LazyVim <leader>cr after the unsaved fix, then undo", function()
+  step("lazyvim.rename.prompt-apply-undo", function()
     local fixed_use = (original_words[use_line + 1]:gsub("var line: int =", "var line ="))
     local fixed_return = (original_words[use_line + 2]:gsub("return line;", "return line.length;"))
     local before = #O.published[words_uri]
@@ -1057,7 +1057,7 @@ local function main_checks()
 
   -- Type "(" as a user does, with LazyVim's plugins loaded: mini.pairs closes
   -- it, and noice asks for signature help on the server's trigger character.
-  step("signature help after typing ( (noice auto-open)", function()
+  step("lazyvim.signature.auto-open", function()
     local triggers = (client.server_capabilities.signatureHelpProvider or {}).triggerCharacters
     info("signatureHelpProvider: %s", vim.inspect(client.server_capabilities.signatureHelpProvider))
     info("blink.cmp signature.enabled = %s; noice lsp.signature.enabled = %s",
@@ -1106,7 +1106,7 @@ local function main_checks()
 
   vim.api.nvim_input("<Esc>")
   wait_for("Normal mode", function() return vim.api.nvim_get_mode().mode == "n" end)
-  step("diagnostics: Words.v3 restored", function()
+  step("lazyvim.diagnostics.words-restored", function()
     local before = #O.published[words_uri]
     vim.api.nvim_buf_set_lines(words_buf, 0, -1, false, original_words)
     wait_for("the TypeError alone again", type_error_published(before), 20000)
@@ -1141,15 +1141,15 @@ local function main_checks()
     return string.format("mapping %q (buffer=%s); request from %s; window shows the label",
       tostring(map.desc or map.rhs or "default"), tostring(map.buffer), answered.caller)
   end
-  step("signature help with <C-k> in Insert mode (LazyVim/blink mapping)", function() return signature_key("<C-k>") end)
+  step("lazyvim.signature.insert-key", function() return signature_key("<C-k>") end)
   -- Neovim 0.11 maps <C-s> in Insert mode to signature help, but LazyVim
   -- maps it to :w (lazyvim/config/keymaps.lua), so it isn't pressed here.
-  step("<C-s> in Insert mode is LazyVim's Save File, not signature help", function()
+  step("lazyvim.keymaps.save", function()
     local map = vim.fn.maparg("<C-s>", "i", false, true)
     assert(map.desc == "Save File", "unexpected Insert <C-s> mapping: " .. vim.inspect(map))
     return "desc " .. vim.inspect(map.desc) .. ", rhs " .. vim.inspect(map.rhs)
   end)
-  step("signature help with gK in Normal mode (LazyVim mapping)", function()
+  step("lazyvim.signature.normal-key", function()
     wait_for("no signature window", function() return not float_with("def puts(") end, 5000)
     vim.api.nvim_win_set_cursor(0, { use_line + 1, puts - 1 + #".puts(" })
     local mark = #O.requests
@@ -1253,7 +1253,7 @@ local function main_checks()
     return #O.completions - mark, table.concat(texts, "; ")
   end
 
-  step("completion: a keyword as you type w, then whi (blink.cmp)", function()
+  step("lazyvim.completion.keyword", function()
     open_line()
     local mark = #O.completions
     type_keys({ "w" })
@@ -1279,7 +1279,7 @@ local function main_checks()
       item_text(items[1]), line, presses, tostring(modified))
   end)
 
-  step("completion: the local line first as you type li (blink.cmp)", function()
+  step("lazyvim.completion.local", function()
     open_line()
     local mark = #O.completions
     type_keys({ "l", "i" })
@@ -1301,7 +1301,7 @@ local function main_checks()
       item_text(first), line, presses, tostring(modified))
   end)
 
-  step("completion: members as you type a. (blink.cmp)", function()
+  step("lazyvim.completion.member", function()
     open_line()
     type_keys({ "a" })
     local mark = #O.completions
@@ -1330,7 +1330,7 @@ local function main_checks()
       items_text(from_server), #items, line, presses, tostring(modified))
   end)
 
-  step("completion: nothing from the server in a comment", function()
+  step("lazyvim.completion.comment", function()
     vim.api.nvim_input("<Esc>")
     wait_for("Normal mode", function() return vim.api.nvim_get_mode().mode == "n" end)
     vim.api.nvim_win_set_cursor(0, { 3, 0 })
@@ -1393,7 +1393,7 @@ local function main_checks()
     }, words_buf)
   end
 
-  step("signature help while typing a call with no ) (noice on , and <C-k>)", function()
+  step("lazyvim.signature.unclosed", function()
     open_line()
     type_keys(vim.split("var n = Ints.max(", ""))
     local closed = wait_for("mini.pairs's )", function()
@@ -1441,7 +1441,7 @@ local function main_checks()
       typed, signature.label, help.activeParameter, tostring(active))
   end)
 
-  step("signature help in a call that mini.pairs closed (noice on ,)", function()
+  step("lazyvim.signature.autopaired", function()
     open_line()
     type_keys(vim.split("var n = Ints.max(1", ""))
     local mark = #O.requests
@@ -1512,7 +1512,7 @@ local function main_checks()
     wait_for("the TypeError again", type_error_published(), 20000)
   end
   if watched then
-    step("project file edits (on disk, noticed through the client's file watching)", function()
+    step("lazyvim.configuration.disk-watch", function()
       edit_on_disk(function()
         wait_for("UnknownField after the on-disk edit, with no .v3 change", unknown_field, 20000)
       end)
@@ -1520,7 +1520,7 @@ local function main_checks()
         .. "UnknownField appeared and cleared with no .v3 change"
     end)
   else
-    step("project file edits (on disk, noticed on the next .v3 change)", function()
+    step("lazyvim.configuration.disk-next-edit", function()
       edit_on_disk(function(touch)
         sleep(3000)
         assert(not unknown_field(), "UnknownField appeared before a .v3 change, although the client "
@@ -1533,7 +1533,7 @@ local function main_checks()
     end)
   end
 
-  step("project file edits (unsaved)", function()
+  step("lazyvim.configuration.unsaved", function()
     vim.cmd.edit(vim.fs.joinpath(root, "package.json"))
     local other_json = vim.api.nvim_get_current_buf()
     vim.cmd.edit(vim.fs.joinpath(root, ".virgil-lsp.json"))
@@ -1633,19 +1633,19 @@ local function main_checks()
       next(others) and ("; clients of other buffers kept running (" .. table.concat(vim.tbl_keys(others), ",") .. ")") or "")
   end
   if builtin_lsp then
-    step("restart (:lsp restart, Neovim's built-in command, current buffer's clients)", function()
+    step("lazyvim.restart.builtin", function()
       return restart("lsp restart", false)
     end)
   else
-    step("restart (:LspRestart, nvim-lspconfig's command, as documented)", function()
+    step("lazyvim.restart.legacy", function()
       return restart("LspRestart", false)
     end)
   end
-  step(string.format("restart (:%s virgil_lsp, clean exit required)", restart_command), function()
+  step("lazyvim.restart.named-clean", function()
     return restart(restart_command .. " virgil_lsp", true)
   end)
 
-  step("clean server exit", function()
+  step("lazyvim.shutdown.clean", function()
     local ids = {}
     for _, c in ipairs(virgil_clients()) do
       ids[#ids + 1] = c.id
@@ -1670,7 +1670,7 @@ local function noroot_checks()
   local bufnr = vim.api.nvim_get_current_buf()
   local uri = vim.uri_from_bufnr(bufnr)
   local client
-  step("no root: attach to .virgil-lsp.json", function()
+  step("lazyvim.configuration.rootless-attach", function()
     assert(vim.env.VIRGIL_LOC == nil, "VIRGIL_LOC is set")
     client = wait_for("client attachment", function()
       local c = virgil_clients({ bufnr = bufnr })[1]
@@ -1678,7 +1678,7 @@ local function noroot_checks()
     end, 20000)
     info("init_options: %s", vim.inspect(client.config.init_options))
   end)
-  step("no root: MissingVirgilRoot diagnostic", function()
+  step("lazyvim.configuration.missing-root", function()
     local last = wait_for("MissingVirgilRoot", function()
       local l = latest(uri)
       return l and codes(l):find("MissingVirgilRoot") and l
@@ -1701,17 +1701,17 @@ local function noroot_checks()
       tostring(shown.level), shown.text)
   end
   if noice_workaround then
-    step("no root: Invalid project file warning shown", warning_shown)
+    step("lazyvim.configuration.warning", warning_shown)
   else
     -- noice sets the handler to its _on_message, which is nil, so it drops
     -- every server's window/showMessage. The noroot-noice-workaround run
     -- checks the warning with noice's LSP message handler turned off.
-    expected_failure("no root: Invalid project file warning shown",
+    expected_failure("lazyvim.configuration.warning",
       string.format("noice.nvim %s drops window/showMessage (folke/noice.nvim#1074)",
         locked_commit("noice.nvim")),
       warning_shown)
   end
-  step("no root: clean server exit", function()
+  step("lazyvim.shutdown.rootless-clean", function()
     client:stop()
     wait_for("server exit", function() return O.exits[client.id] end)
     assert(O.exits[client.id].code == 0 and O.exits[client.id].signal == 0, vim.inspect(O.exits[client.id]))
