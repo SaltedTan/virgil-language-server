@@ -780,9 +780,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
 			inner.caseTabs = lineTabs;
 		}
-		// Reset the anchor for a control header on the "else" line. Saving the
-		// pending reset across nested brackets keeps inner headers and "else"
-		// tokens from consuming or overwriting it.
+		// An "else" anchors only its own body on its if's or match's line; a
+		// control header after it on its line takes that line's tabs.
 		if (afterElseLine == lineStart && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
 			chunk = (chunk.0, chunk.1, chunk.2, lineTabs);
 			afterElseLine = -1;
