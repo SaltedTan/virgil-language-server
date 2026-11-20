@@ -216,6 +216,10 @@ def fun_in_parentheses(t: Tester) {
 	// A '{' inside parentheses indents from its own line.
 	both(t, "def f() {\n\tm(fun () {\n\t\t\tn();\n\t});\n\tm(\n\t\tfun () {\n\t\tn();\n\t});\n\tm(1, fun () {\n\t\tn(); }, 2);\n}\n",
 		"def f() {\n\tm(fun () {\n\t\tn();\n\t});\n\tm(\n\t\tfun () {\n\t\t\tn();\n\t\t});\n\tm(1, fun () {\n\t\tn(); }, 2);\n}\n");
+	for (parts in [("m(", ");"), ("var callbacks = [", "];")]) {
+		both(t, Strings.format2("def f() {\n    g(\n\t\t1); %s\n        fun () // keep\n{\nn();\n}%s\n}\n", parts.0, parts.1),
+			Strings.format2("def f() {\n\tg(\n\t\t1); %s\n\t    fun () // keep\n\t{\n\t\tn();\n\t}%s\n}\n", parts.0, parts.1));
+	}
 }
 def braceless_bodies(t: Tester) {
 	both(t, "def f(c: bool) {\n\tif (c)\n\tf(c);\n\telse\n\t\t\tf(c);\n\twhile (c)\n\t\tif (c)\n\t\tf(c);\n\tfor (i < 3)\n\tf(c);\n\tfor (x in [1])\n\tf(c);\n\tfor (i = 0; i < 3; i++)\n\tf(c);\n}\n",
@@ -548,6 +552,7 @@ def headers_after_inline_else(t: Tester) {
 		"\tif (true)\n\t\tg(); else while (true) // keep\n",
 		"\tif (true)\n\t\tg(); else if (true) // keep\n",
 		"\tif (\n\t\ttrue) g(); else while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else h(fun () { if (true) g(); }); while (true) // keep\n",
 		"\tmatch (0) {\n\t\t_ => g(); } else while (true) // keep\n"
 	]) {
 		var prefix = Strings.format1("def f() {\n%s", header);
@@ -586,10 +591,16 @@ def unjoined_fun_brace(t: Tester) {
 		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n\t\treturn;\n\t};\n}\n");
 	both(t, "def f() {\n    var callback = fun () // keep\n    {\n\treturn;\n    };\n}\n",
 		"def f() {\n\tvar callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
-	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n",
-		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t\t{\n\t\treturn;\n\t};\n}\n",
+		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n    g(\n\t\t1); var callback = fun () // keep\n        {\n\t\treturn;\n\t};\n}\n",
+		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n        {\n\t\t\treturn;\n\t\t};\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n",
 		"def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n\t\t\t{\n\t\treturn;\n\t};\n\t}\n}\n",
+		"def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n\t\t\t{\n\t\t\treturn;\n\t\t};\n\t}\n}\n");
+	both(t, "def f() {\n    var callback =\n    \tfun () #hint(fun () {\n\t\t\tg();\n\t\t}) // keep\n    \t\t{\n\t\t\treturn;\n\t\t};\n}\n",
+		"def f() {\n\tvar callback =\n\t\tfun () #hint(fun () {\n\t\t\tg();\n\t\t}) // keep\n\t\t\t{\n\t\treturn;\n\t};\n}\n");
 	var input = "def x = fun () // keep\n  {\n\treturn;\n};\n";
 	both(t, input, input);
 }
