@@ -7,8 +7,8 @@
 // A rejected didOpen or didChange whose textDocument.uri is a string marks
 // that document out of sync if it is open, since the client's text may now
 // differ from the server's (DocumentStore.markOutOfSync). If it isn't open,
-// the store records that the client holds the local file, as it does for a
-// didSave without an overlay. A close or an accepted open clears the record.
+// the store records that the client holds the file, as it does for a didSave
+// of a document that isn't open, until a didClose of the URI.
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
 	// One bounded latch for the current pressure episode: only its first
@@ -32,11 +32,10 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			.onNotification("textDocument/didClose", didClose);
 	}
 	// Called for a parsed message that the decoder rejected, with the ID it
-	// validated and the message's object. A didOpen or didChange can mark an
-	// overlay or record a held file, and didSave can record a held file.
-	// A valid {id} exempts the message because requests change no document.
-	// An invalid ID member leaves {id} null, so the message may have been a
-	// synchronization notification.
+	// validated and the message's object. A didOpen, didChange, or didSave
+	// records its document unless {id} is valid: the message was then a request,
+	// which changes no document. An ID member the decoder rejects, such as null or
+	// a boolean, leaves {id} null, so the message may have been a change.
 	def rejectedMessage(id: JsonRpcId, obj: HashMap<string, JsonValue>) {
 		if (!JsonRpcId.Null.?(id) || !stringMember(obj, "method")) return;
 		markRejected(JsonValue.String.!(obj["method"]).v, documentUri(objectMember(obj, "params")));
@@ -147,7 +146,7 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 		if (store.usedBytes() < before) capacityWarned = false;
 	}
 	// Reports a rejected didOpen or didChange, if {reason} isn't null, and
-	// updates synchronization state if {doc} identifies the document.
+	// marks its document out of sync if {doc} has a string URI.
 	private def rejected(n: JsonRpcMessage.Notification, doc: HashMap<string, JsonValue>, reason: string) {
 		if (reason == null) return;
 		ignored(n, reason);

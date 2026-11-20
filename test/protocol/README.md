@@ -192,10 +192,9 @@ Mandatory semantic cases assert that absent/false hierarchy support returns flat
 `SymbolInformation[]` and true returns `DocumentSymbol[]` (#196). A worker-backed
 project checks that an empty change at version 2 produces a rename edit at
 version 2 (#200), with a full-text control. After a rejected ranged change, the
-rename gets `RequestFailed` because the server's copy is out of date (#514).
-The runner waits for that rename reply before sending shutdown. Typed IDs,
-decimal options, out-of-range numbers, and invalid lifecycle ordering also
-have fixed oracles.
+rename gets RequestFailed, since the server's copy is out of date (#514). The
+runner waits for that rename reply before sending shutdown. Typed IDs, decimal options,
+out-of-range numbers, and invalid lifecycle ordering also have fixed oracles.
 
 ### Successful reply shapes
 
@@ -302,30 +301,7 @@ Follow the [model update procedure](schema/3.17/README.md).
 
 `code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, statements that swallowed a later line, and invalid params over stdio.
 
-## Out-of-sync edits
-
-`out_of_sync_edits.py` fills the aggregate document store and checks that
-code actions, `prepareRename`, and rename refuse after a rejected change.
-A version-only update keeps the refusal, and an accepted full-text change
-clears it. A rename from another document refuses if a project source is out
-of sync or if the server rejected its `didOpen` or received a `didChange` or
-`didSave` without an overlay. Closing a held file or accepting its open
-clears its record. A rejected open before initialization creates no record.
-
-The suite checks rename planning and preflight when a rejected change or open
-would add a reference in a source with no uses of the name in the snapshot.
-It also pauses the worker to check refusal when a target's change is rejected
-during preflight or a request document becomes out of sync while waiting for
-analysis. An accepted change followed by a rejected change still reports
-that the server's copy is out of date in both cases.
-
-After a skipped frame or an undecodable `didChange`, the suite checks that every
-open document is marked out of sync, using code actions, `prepareRename`, and
-rename. It checks recovery by full-text change and by reopening. A pending
-rename refuses while the body of an oversized frame is still arriving. For a
-marked document, a code action with empty diagnostics returns `[]` and one with
-a matching semicolon diagnostic refuses. An ignored `$/setTrace` leaves edit
-requests working.
+`out_of_sync_edits.py` checks that code actions, prepareRename, and rename refuse a document whose change the server rejected, until a full-text change, and that rename refuses to edit such a document even from another document. It also checks that a rename refuses to edit a file whose didOpen was rejected or that got a didChange or didSave while closed, until the editor closes the file or the server accepts its open. The rename tests also exercise a project source with no references to the renamed name in the snapshot. A rejected change adding a reference, or a rejected open with that reference, blocks a rename from another source both at planning and after a paused preflight. The suite also pauses the worker to check refusal when a target's change is rejected during preflight and when the request document becomes out of sync while waiting for an analysis with parse errors. An accepted change followed by a rejected change still reports that the copy is out of date, both while waiting for analysis and during preflight. The test also checks that a pending rename refuses while the body of an oversized frame is still arriving. After a skipped frame or an undecodable didChange, every open document refuses until it gets a full-text change or is reopened. A code action with empty diagnostics still returns an empty array for a marked document, while one with a matching semicolon diagnostic refuses. `$/setTrace` changes nothing.
 
 ## Seeded source mutations
 
