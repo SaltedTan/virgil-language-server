@@ -12,7 +12,9 @@
 // - A document marked out of sync (DocumentStore.outOfSync) gets
 //   RequestFailed before it is parsed.
 // - A document with a carriage return that no line feed follows, or a syntax
-//   error, gets [], and one over the parse budget gets RequestFailed.
+//   error, gets [], and one over the parse budget gets RequestFailed. The
+//   lone-CR check runs first, so a document over the budget that also has a
+//   bare CR gets [].
 // - RequestFailed, before any edit is built, if the document store couldn't
 //   hold the formatted text in place of the current one or if the reply
 //   would exceed MAX_REPLY_BYTES.
