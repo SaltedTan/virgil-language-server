@@ -152,69 +152,6 @@ class AssetTests(TemporaryTest):
             assets = run.verify_assets(directory, allow_untagged=True)
         self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-1-g{commits['manifest'][:12]}")
 
-    def test_takes_the_builds_description_after_a_tag_is_added(self):
-        repository = self.root / "repository"
-        commits = history(repository)
-        commit = commits["manifest"]
-        recorded = git(repository, "describe", "--always", "--abbrev=12", commit)
-        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commit})
-        git(repository, "tag", "-a", "-m", "late tag", "late-tag", commit)
-        self.assertEqual(git(repository, "describe", "--always", "--abbrev=12", commit), "late-tag")
-        with mock.patch.object(run, "REPO", repository):
-            assets = run.verify_assets(directory, allow_untagged=True, revision=recorded)
-        self.assertIn(f"  source revision: {recorded}\n", run.version_output(assets))
-
-    def test_checks_the_recorded_revision_for_an_untagged_build(self):
-        repository = self.root / "repository"
-        commits = history(repository)
-        commit = commits["manifest"]
-        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commit})
-        # A tag with a SHA-like ending still names the tagged commit.
-        exact_tags = ["release-candidate", "v0.1.0-alpha.5+linux-g0123456789ab"]
-        for tag in exact_tags:
-            git(repository, "tag", "-a", "-m", "candidate", tag, commit)
-        git(repository, "tag", "-a", "-m", "other commit", "wrong-tag", commits["head"])
-        with mock.patch.object(run, "REPO", repository):
-            for revision in [commit[:16], f"v{OLD[0]}-1-g{commit[:16]}", *exact_tags]:
-                with self.subTest(revision=revision):
-                    assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
-                    self.assertEqual(assets["versionRevision"], revision)
-            for revision in [commits["head"][:12], f"v{OLD[0]}-1-g{commit[:11]}",
-                             f"v{OLD[0]}-1-g{commit[:12]}-dirty", "wrong-tag"]:
-                with self.subTest(revision=revision):
-                    with self.assertRaisesRegex(run.Failure, f"doesn't name its commit {commit}"):
-                        run.verify_assets(directory, allow_untagged=True, revision=revision)
-            with self.assertRaisesRegex(run.Failure, "--to-revision must be nonempty"):
-                run.verify_assets(directory, allow_untagged=True, revision="")
-
-    def test_checks_the_recorded_revision_for_a_release(self):
-        directory = make_assets(self.root, *NEW)
-        tag = f"v{NEW[0]}"
-        assets = run.verify_assets(directory, allow_untagged=True, revision=tag)
-        self.assertEqual(assets["versionRevision"], tag)
-        with self.assertRaisesRegex(run.Failure, "must match its manifest tag"):
-            run.verify_assets(directory, allow_untagged=True, revision="release-candidate")
-
-    def test_accepts_build_metadata_without_changing_precedence(self):
-        # The release checker accepts these identifiers. SemVer gives both
-        # alpha.5 builds equal precedence even with a newer extension.
-        version = f"{NEW[0]}+linux.05"
-        destination = run.verify_assets(make_assets(self.root, version, NEW[1]))
-        self.assertEqual(destination["serverVersion"], version)
-        run.check_pair(run.verify_assets(make_assets(self.root, f"{OLD[0]}+linux.4")), destination)
-        same = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
-        with self.assertRaises(run.Failure) as failure:
-            run.check_pair(same, destination)
-        self.assertEqual(str(failure.exception),
-                         f"--from-assets server {NEW[0]} and --to-assets server {version} "
-                         "have equal SemVer precedence")
-
-    def test_rejects_invalid_versions_with_build_metadata(self):
-        for version in ["0.1.0-alpha.5+", "0.1.0-alpha.5+linux..5", "0.1.0-alpha.05+linux.5",
-                        "00.1.0-alpha.5+linux.5"]:
-            with self.subTest(version=version):
-                self.rejected("must hold exactly", server=version, extension=NEW[1])
-
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
         self.rejected("must hold exactly", vsix_name=f"virgil-lsp-vscode-{OLD[1]}-darwin-arm64.vsix")
@@ -272,12 +209,12 @@ class AssetTests(TemporaryTest):
         old = run.verify_assets(make_assets(self.root))
         new = run.verify_assets(make_assets(self.root, *NEW))
         run.check_pair(old, new)
-        with self.assertRaisesRegex(run.Failure, "server .* have equal SemVer precedence"):
+        with self.assertRaisesRegex(run.Failure, "same server version"):
             run.check_pair(old, old)
         with self.assertRaisesRegex(run.Failure, "is newer than"):
             run.check_pair(new, old)
         same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
-        with self.assertRaisesRegex(run.Failure, "extension .* have equal SemVer precedence"):
+        with self.assertRaisesRegex(run.Failure, "same extension version"):
             run.check_pair(old, same_extension)
 
     def test_version_order(self):

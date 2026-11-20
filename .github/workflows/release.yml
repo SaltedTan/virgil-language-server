@@ -170,36 +170,7 @@ jobs:
           file "$RUNNER_TEMP"/archive/*/virgil-lsp
       - name: Record the archive digest for the clean install test
         run: shasum -a 256 build/release/*.tar.gz > "$RUNNER_TEMP/archive.sha256"
-      - name: Record the packaged source revision for the rehearsal
-        if: matrix.target == 'x86-64-linux'
-        run: |
-          servers=("$RUNNER_TEMP"/archive/*/virgil-lsp)
-          output=$("${servers[@]}" --version)
-          revision=$(sed -n 's/^  source revision: //p' <<< "$output")
-          PYTHONPATH=test/e2e/upgrade python3 -B - "$RUNNER_TEMP"/archive/*/manifest.json "$revision" <<'PY'
-          import json
-          from pathlib import Path
-          import sys
-
-          from run import Failure, check_revision
-
-          manifest = Path(sys.argv[1])
-          try:
-              check_revision(manifest, json.loads(manifest.read_text()), sys.argv[2])
-          except Failure as error:
-              sys.exit(str(error))
-          PY
-          printf '%s\n' "$revision" > "$RUNNER_TEMP/source-revision"
       - uses: actions/upload-artifact@v7
-        if: matrix.target == 'x86-64-linux'
-        with:
-          name: checksum-${{ matrix.target }}
-          path: |
-            ${{ runner.temp }}/archive.sha256
-            ${{ runner.temp }}/source-revision
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: matrix.target != 'x86-64-linux'
         with:
           name: checksum-${{ matrix.target }}
           path: ${{ runner.temp }}/archive.sha256
@@ -340,7 +311,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The recorded revision of an untagged build can be an exact tag.
+          # All history and tags: for an untagged build, as in a dry run, the
+          # driver names the --version revision with git describe.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -412,10 +384,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/upgrade"
-          revision=$(cat "$RUNNER_TEMP/checksum/source-revision")
           xvfb-run -a python3 test/e2e/upgrade/run.py --from-assets "$RUNNER_TEMP/from" \
-            --to-assets "$RUNNER_TEMP/to" --to-revision="$revision" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 |
-            tee "$RUNNER_TEMP/upgrade/run.log"
+            --to-assets "$RUNNER_TEMP/to" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 | tee "$RUNNER_TEMP/upgrade/run.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

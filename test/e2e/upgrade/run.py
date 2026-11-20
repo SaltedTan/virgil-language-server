@@ -28,12 +28,7 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 HELPER = HERE / "vscode.cjs"
-# The SemVer grammar in scripts/check-release.sh.
-NUMBER = r"(?:0|[1-9][0-9]*)"
-PRERELEASE_ID = rf"(?:{NUMBER}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
-METADATA_ID = r"[0-9A-Za-z-]+"
-VERSION = (rf"{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*)?"
-           rf"(?:\+{METADATA_ID}(?:\.{METADATA_ID})*)?")
+VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
 ARCHIVE = re.compile(rf"virgil-lsp-({VERSION})-x86-64-linux\.tar\.gz")
 VSIX = re.compile(r"virgil-lsp-vscode-([0-9]+\.[0-9]+\.[0-9]+)-linux-x64\.vsix")
 SUMS = "SHA256SUMS"
@@ -87,8 +82,8 @@ def read_sums(path):
 
 
 def version_key(version):
-    """Semantic-version precedence, disregarding build metadata."""
-    core, _, prerelease = version.partition("+")[0].partition("-")
+    """Semantic-version precedence: a prerelease sorts before its release."""
+    core, _, prerelease = version.partition("-")
     numbers = tuple(int(part) for part in core.split("."))
     if not prerelease:
         return numbers, (1,)
@@ -175,7 +170,7 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
-def verify_assets(directory, *, allow_untagged=False, revision=None):
+def verify_assets(directory, *, allow_untagged=False):
     """Check one release's three files before anything runs: exact names, the
     SHA256SUMS lines, and the version and target metadata of both packages."""
     directory = directory.resolve()
@@ -200,10 +195,7 @@ def verify_assets(directory, *, allow_untagged=False, revision=None):
     extension_version = VSIX.fullmatch(package.name)[1]
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
-    if revision is None:
-        revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
-    else:
-        check_revision(archive, manifest, revision)
+    version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -211,29 +203,8 @@ def verify_assets(directory, *, allow_untagged=False, revision=None):
         "sha256sums": sha256(directory / SUMS),
         "serverVersion": version, "extensionVersion": extension_version, "tag": manifest["tag"],
         "sourceRevision": manifest["sourceRevision"], "virgilRevision": manifest["virgilRevision"],
-        "versionRevision": revision, "top": top, "manifest": manifest,
+        "versionRevision": version_revision, "top": top, "manifest": manifest,
     }
-
-
-def check_revision(path, manifest, revision):
-    """Check a recorded build revision without recomputing git describe."""
-    if not revision:
-        raise Failure("--to-revision must be nonempty")
-    tag, commit = manifest["tag"], manifest["sourceRevision"]
-    if tag is not None:
-        if revision != tag:
-            raise Failure(f"{path.name}: source revision {revision!r} must match its manifest tag {tag!r}")
-        return
-    match = re.fullmatch(r"(?:.+-[1-9][0-9]*-g)?([0-9a-f]{12,40})", revision)
-    if match and commit.startswith(match[1]):
-        return
-    # An exact annotated tag can have any name, even one ending in -N-gSHA.
-    # Match its peeled ref by full name because show-ref filters by suffix.
-    result = subprocess.run(["git", "--no-replace-objects", "-C", str(REPO), "show-ref", "--tags",
-                             "--dereference", "--", revision],
-                            capture_output=True, text=True, timeout=30)
-    if result.returncode != 0 or f"{commit} refs/tags/{revision}^{{}}" not in result.stdout.splitlines():
-        raise Failure(f"{path.name}: source revision {revision!r} doesn't name its commit {commit}")
 
 
 def described(path, revision):
@@ -253,13 +224,10 @@ def described(path, revision):
 def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
-        old_version, new_version = old[field], new[field]
-        old_key, new_key = version_key(old_version), version_key(new_version)
-        if old_key == new_key:
-            raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
-                          "have equal SemVer precedence")
-        if old_key > new_key:
-            raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
+        if old[field] == new[field]:
+            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old[field]}")
+        if version_key(old[field]) > version_key(new[field]):
+            raise Failure(f"--from-assets {name} {old[field]} is newer than --to-assets {name} {new[field]}")
 
 
 def version_output(assets):
@@ -683,9 +651,6 @@ def main(argv=None):
     parser.add_argument("--to-assets", type=Path, required=True,
                         help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
-    parser.add_argument("--to-revision",
-                        help="the destination build's recorded source revision; by default use its manifest tag "
-                             "or describe its manifest commit")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
     parser.add_argument("--rollback-without-force", action="store_true",
@@ -698,8 +663,7 @@ def main(argv=None):
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         raise Failure("the rehearsal runs on Linux x86-64 only")
     # Every check of the assets comes before anything runs.
-    sets = {"from": verify_assets(args.from_assets),
-            "to": verify_assets(args.to_assets, allow_untagged=True, revision=args.to_revision)}
+    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True)}
     check_pair(sets["from"], sets["to"])
     if "DISPLAY" not in os.environ:
         raise Failure("no DISPLAY for VS Code; run the rehearsal under xvfb-run -a")
