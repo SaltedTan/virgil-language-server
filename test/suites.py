@@ -31,25 +31,14 @@ import time
 DEFAULT_JOBS = 4
 
 
-class Process(subprocess.Popen):
-    killed = False  # whether its group has been sent SIGKILL
-
-
 def send(process, signum):
     """Signals an owned process group, returning whether it still exists."""
     try:
         os.killpg(process.pid, signum)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # We signal only groups we started. macOS can return EPERM if the
+        # group's only member is an unreaped zombie.
         return False
-    except PermissionError:
-        # macOS can report EPERM for an exited process group, and for a killed
-        # group whose leader is not reaped yet, which poll() can't see while
-        # the suite's thread waits for it.
-        if not process.killed and process.poll() is None:
-            raise
-        return False
-    if signum == signal.SIGKILL:
-        process.killed = True
     return True
 
 
@@ -99,9 +88,9 @@ class Suites:
                 self.ran.append(suite)
                 output = None if self.live else tempfile.TemporaryFile()
                 started = time.monotonic()
-                process = Process(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
-                                  stdout=output, stderr=subprocess.STDOUT if output else None,
-                                  start_new_session=True)
+                process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
+                                           stdout=output, stderr=subprocess.STDOUT if output else None,
+                                           start_new_session=True)
                 self.processes.append(process)
         except OSError as error:
             suite.status = 127

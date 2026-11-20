@@ -29,8 +29,9 @@ def meeting(name, other, directory):
             f"echo {name}1; sleep 0.2; echo {name}2 >&2; sleep 0.2; echo {name}3")
 
 
-def ignoring_suite(directory):
-    return (f"trap '' HUP; trap : TERM; echo $$ > {directory}/$$.tmp; mv {directory}/$$.tmp {directory}/ready-$$; "
+def waiting_suite(directory, term_trap=":"):
+    return (f"trap '' HUP; trap '{term_trap}' TERM; "
+            f"echo $$ > {directory}/$$.tmp; mv {directory}/$$.tmp {directory}/ready-$$; "
             'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
 
 
@@ -195,7 +196,7 @@ signal.pause()
                 runner.send_signal(signal.SIGTERM)
                 runner.wait(timeout=15)
 
-    def run_nested(self, directory, mode, *suites, error=None):
+    def run_nested(self, directory, mode, *suites):
         """Runs the runner through NESTED in {mode}, sends it SIGTERM once every
         suite has written its pid to {directory}/ready-*, and checks the exit
         status and the cleanup of the suites and the pid in {directory}/child."""
@@ -215,31 +216,32 @@ signal.pause()
                 runner.kill()
                 runner.communicate()
         self.assertIn("nested: second signal", output)
-        if error is None:
-            self.assertIn("nested: EPERM", output)
-            self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
-            self.assertNotIn("Traceback", output)
-        else:
-            self.assertEqual(1, runner.returncode, output)
-            self.assertTrue(output.rstrip().endswith(error), output)
+        self.assertIn("nested: EPERM", output)
+        self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
+        self.assertNotIn("Traceback", output)
         pids = [int(path.read_text()) for path in directory.glob("ready-*")]
         pids += [int(path.read_text()) for path in directory.glob("child")]
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and any(alive(pid) for pid in pids):
             time.sleep(0.05)
         self.assertEqual([], [pid for pid in pids if alive(pid)], "suites reaped")
+        return output
 
     def test_second_signal_during_the_first_handler(self):
         for mode in ("lock", "handler"):
             with self.subTest(mode=mode):
                 directory = self.directory / mode
                 directory.mkdir()
-                suite = ignoring_suite(directory)
+                suite = waiting_suite(directory)
                 self.run_nested(directory, mode, suite, suite)
 
-    def test_permission_error_on_first_sigkill_is_reported(self):
-        self.run_nested(self.directory, "first-kill-eperm", ignoring_suite(self.directory),
-                        error="PermissionError: [Errno 1] first SIGKILL denied")
+    def test_eperm_on_first_sigkill_to_an_exiting_suite(self):
+        suite = waiting_suite(self.directory, term_trap="exit 0")
+        output = self.run_nested(self.directory, "first-kill-eperm", suite)
+        self.assertIn(f"== {suite}: passed in ", output)
+
+    def test_second_signal_during_a_grace_period_sigkill(self):
+        self.run_nested(self.directory, "grace-kill", waiting_suite(self.directory))
 
     def test_second_signal_during_a_deadline_check(self):
         for mode in ("deadline-join", "deadline-drain"):
@@ -248,7 +250,7 @@ signal.pause()
                 directory.mkdir()
                 if mode == "deadline-join":
                     # The suite survives TERM, so its thread still waits.
-                    suite = ignoring_suite(directory)
+                    suite = waiting_suite(directory)
                 else:
                     # The suite exits on TERM and leaves a process in its group
                     # that ignores TERM and HUP, so the runner drains the group.
@@ -262,8 +264,8 @@ signal.pause()
 
 
 # Runs test/suites.py with a second signal, SIGHUP, delivered at a chosen point
-# while the runner handles the first or waits for its deadline. After SIGKILL,
-# the harness simulates macOS EPERM for a group with an unreaped leader.
+# while the runner is stopping suites. The harness simulates macOS EPERM for
+# groups with an unreaped leader.
 NESTED = '''import importlib.util
 import os
 import signal
@@ -276,10 +278,10 @@ spec = importlib.util.spec_from_file_location("suites", sys.argv[1])
 suites = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(suites)
 mode = sys.argv[2]
-killed = set()
+unreaped = set()
+escalated = set()
 nested = False
 draining = False
-denied = False
 
 
 def second_signal():
@@ -287,8 +289,9 @@ def second_signal():
     global nested
     nested = True
     print("nested: second signal", file=sys.stderr, flush=True)
+    escalated.clear()
     signal.raise_signal(signal.SIGHUP)
-    assert len(killed) == len(sys.argv) - 3, "second signal did not kill every group"
+    assert len(escalated) == len(sys.argv) - 3, "second signal missed a group"
 
 
 class InterruptingLock:
@@ -314,19 +317,23 @@ real_killpg = os.killpg
 
 
 def killpg(pgid, signum):
-    global draining, denied
-    if pgid in killed:
+    global draining
+    if pgid in unreaped:
+        if signum == signal.SIGKILL:
+            escalated.add(pgid)
         print("nested: EPERM", file=sys.stderr, flush=True)
         raise PermissionError(1, "Operation not permitted")
     if signum == 0:
         draining = True
-    if signum == signal.SIGKILL and mode == "first-kill-eperm" and not denied:
-        denied = True
-        raise PermissionError(1, "first SIGKILL denied")
     real_killpg(pgid, signum)
     if signum == signal.SIGKILL:
-        killed.add(pgid)
+        escalated.add(pgid)
+        unreaped.add(pgid)
+        if mode == "grace-kill" and not nested:
+            second_signal()
     elif signum == signal.SIGTERM and mode in ("handler", "first-kill-eperm") and not nested:
+        if mode == "first-kill-eperm":
+            unreaped.add(pgid)
         second_signal()
 
 
@@ -334,7 +341,7 @@ real_poll = subprocess.Popen.poll
 
 
 def poll(process):
-    return None if process.pid in killed else real_poll(process)
+    return None if process.pid in unreaped else real_poll(process)
 
 
 real_monotonic = time.monotonic
@@ -342,10 +349,13 @@ real_monotonic = time.monotonic
 
 def monotonic():
     caller = sys._getframe(1)
-    if mode.startswith("deadline-") and not nested and caller.f_code.co_name == "main":
+    if not nested and caller.f_code.co_name == "main":
         runner = caller.f_locals["suites"]
-        if runner.deadline is not None and draining == (mode == "deadline-drain"):
-            second_signal()
+        if runner.deadline is not None:
+            if mode == "grace-kill":
+                return runner.deadline
+            if mode.startswith("deadline-") and draining == (mode == "deadline-drain"):
+                second_signal()
     return real_monotonic()
 
 
