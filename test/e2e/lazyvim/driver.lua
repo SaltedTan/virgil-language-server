@@ -886,14 +886,32 @@ local function main_checks()
     return "saved the pending edit byte for byte, with no formatting request"
   end)
 
+  -- The save starts from a valid unsaved edit, so the formatted bytes on
+  -- disk show that format on save kept it.
   step("formatting: <C-s> formats on save (LazyVim autoformat)", function()
     assert(format_buf, "format.v3 is not open")
+    local line = vim.api.nvim_buf_get_lines(format_buf, 6, 7, true)[1]
+    assert(line == "  return b;", "unexpected line 7 before the edit: " .. vim.inspect(line))
+    vim.api.nvim_buf_set_lines(format_buf, 6, 7, true, { "  return b + 1;" })
+    assert(buffer_text(format_buf) ~= read_bytes(vim.api.nvim_buf_get_name(format_buf)),
+      "expected an unsaved edit before <C-s>")
+    local expected = table.concat({
+      "component Format {",
+      "\tdef run(a: int) -> int {",
+      "\t\tif (a > 0) {",
+      "\t\t\treturn a;",
+      "\t\t}",
+      "\t\tvar b = a;",
+      "\t\treturn b + 1;",
+      "\t}",
+      "}",
+    }, "\n") .. "\n"
     local saved, requests = save_with_ctrl_s(format_buf)
     one_reply(requests)
-    assert(saved == formatted, "the saved file is not the formatted text: " .. vim.inspect(saved))
-    assert(buffer_text(format_buf) == formatted and not vim.bo[format_buf].modified,
+    assert(saved == expected, "the saved file is not the formatted text with the edit: " .. vim.inspect(saved))
+    assert(buffer_text(format_buf) == expected and not vim.bo[format_buf].modified,
       "the buffer is not the saved, formatted text: " .. vim.inspect(buffer_text(format_buf)))
-    return "saved the formatted text"
+    return "saved the formatted text, including the pending edit"
   end)
 
   -- The request mirrors the end of the text: a buffer read without a final
