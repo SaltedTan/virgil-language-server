@@ -392,6 +392,10 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// leading tabs on the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
+	// After an "else" that moved the owner's tabs to its if's or match's
+	// line, the tabs that it replaced, which a later control header on the
+	// same line restores; -1 otherwise.
+	private var elseLine: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
 	private var wantTabs: int;
@@ -430,6 +434,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		last = lastItem = -1;
 		chunk = (0, 0, 0, 0);
 		lineTabs = closeTabs = 0;
+		elseLine = -1;
 		stack.length = 0;
 		ifs.length = 0;
 		var pos = 0;
@@ -540,8 +545,10 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		var indent = if(lastEnd >= 0, lastEnd + 1, begin);
 		if (comment) {
-			if (!leading) commentIndent(indent, end, following);
-			else if (crossing) codeIndent(next, indent, end, true);
+			// A block comment that starts its line and ends on the line of
+			// the next code is a comment line, whose code line after it is
+			// the one where the comment closes.
+			if (!leading || crossing) commentIndent(indent, end, following);
 			else codeLine(next, indent, end, true);
 		} else {
 			codeLine(next, indent, end, true);
@@ -646,6 +653,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// whose old indentation is from {begin} to {end}, and makes it the
 	// current line, and the statement's line unless it is a continuation.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
+		elseLine = -1;
 		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
 			var t = wantTabs, i = keepBegin;
 			while (i < keepEnd && input[i] == '\t') {
@@ -684,7 +692,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		keepBegin = keepEnd = 0;
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
 		var c = ch(k), m = marks[k];
+		// A fun expression's body '{' on a line of its own aligns with the
+		// line of "fun" inside parentheses or brackets, and elsewhere keeps
+		// its indentation, its body counting from the statement's line.
 		if (c == '{' && funHeaders[k] != null) {
+			if (inner == null || inner.kind == '{') return CONTINUATION;
 			wantTabs = funHeaders[k].tabs;
 			return BLOCK;
 		}
@@ -775,10 +787,18 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
 			inner.caseTabs = lineTabs;
 		}
+		// An "else" anchors only its own body on its if's or match's line; a
+		// control header after it on its line takes that line's tabs.
+		if (elseLine >= 0 && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
+			chunk = (chunk.0, chunk.1, chunk.2, elseLine);
+			elseLine = -1;
+		}
 		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
+			elseLine = chunk.3;
 			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
 		} else if (ifs.length > 0 && isElse(k)) {
+			elseLine = chunk.3;
 			chunk = (chunk.0, chunk.1, chunk.2, ifs[ifs.length - 1]);
 			ifs.length--;
 		}

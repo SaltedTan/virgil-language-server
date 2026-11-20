@@ -29,9 +29,12 @@ def X = [
 	T("Formatting:comment_lookahead_linear", comment_lookahead_linear),
 	T("Formatting:unjoined_brace", unjoined_brace),
 	T("Formatting:code_after_comment", code_after_comment),
+	T("Formatting:block_comment_opener", block_comment_opener),
 	T("Formatting:else_line", else_line),
 	T("Formatting:inline_else", inline_else),
+	T("Formatting:headers_after_inline_else", headers_after_inline_else),
 	T("Formatting:fun_body_close", fun_body_close),
+	T("Formatting:unjoined_fun_brace", unjoined_fun_brace),
 	T("Formatting:case_arrow_anchor", case_arrow_anchor),
 	T("Formatting:foreach_initializer", foreach_initializer),
 	T("Formatting:representation_hints", representation_hints),
@@ -487,7 +490,20 @@ def code_after_comment(t: Tester) {
 	both(t, "def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n   f();\n}\n",
 		"def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n\t\tf();\n}\n");
 	both(t, "def f() {\n\tvar x = 1 +\n   // before\n\t/* a\n  b */ 2;\n}\n",
-		"def f() {\n\tvar x = 1 +\n  // before\n\t/* a\n  b */ 2;\n}\n");
+		"def f() {\n\tvar x = 1 +\n  // before\n  /* a\n  b */ 2;\n}\n");
+}
+def block_comment_opener(t: Tester) {
+	// A block comment that starts its line and closes on a code line is a
+	// comment line: it takes the indentation of the line where it closes,
+	// whose bytes, inside the comment, stay.
+	both(t, "def f() {\n\tvar x = 1 +\n    /* a\n\t\tb */ 2;\n}\n", "def f() {\n\tvar x = 1 +\n\t\t/* a\n\t\tb */ 2;\n}\n");
+	// Before a statement it takes the statement's indentation; at column 0
+	// it stays.
+	both(t, "def f() {\n      /* a\n b */ f();\n}\n", "def f() {\n\t/* a\n b */ f();\n}\n");
+	var input = "def f() {\n\tvar x = 1 +\n/* a\n\t\tb */ 2;\n/* c\n */ f();\n}\n";
+	both(t, input, input);
+	// Inside parentheses it moves as a continuation does.
+	both(t, "def f() {\n    g(1,\n      /* a\n b */ 2);\n}\n", "def f() {\n\tg(1,\n\t  /* a\n b */ 2);\n}\n");
 }
 def else_line(t: Tester) {
 	// An "else" that starts its line aligns with its "if"'s line.
@@ -522,6 +538,25 @@ def inline_else(t: Tester) {
 	both(t, "def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\telse h();\n}\n",
 		"def f() {\n\twhile (true)\n\t\tif (true)\n\t\t\tg.else();\n\t\telse h();\n}\n");
 }
+// An inline "else" anchors only its own body on its if's or match's line:
+// a control header after it on that line, also the "else" body itself,
+// takes that line's indentation for an unjoined '{' or a braceless body.
+def headers_after_inline_else(t: Tester) {
+	var brace = "\t{\n\th();\n\t}\n}\n", indented = "\t\t{\n\t\t\th();\n\t\t}\n}\n";
+	for (header in [
+		"\tif (true)\n\t\tg(); else h(); while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else if (true) // keep\n",
+		"\tmatch (0) {\n\t\t_ => g(); } else while (true) // keep\n"
+	]) {
+		var prefix = Strings.format1("def f() {\n%s", header);
+		both(t, Strings.format2("%s%s", prefix, brace), Strings.format2("%s%s", prefix, indented));
+	}
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else match (0) // keep\n\t{\n\t_ => ;\n\t}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else match (0) // keep\n\t\t{\n\t\t\t_ => ;\n\t\t}\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else while (true)\n\th();\n\tmatch (0) {\n\t\t_ => g(); } else for (i < 1)\n\th();\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else while (true)\n\t\t\th();\n\tmatch (0) {\n\t\t_ => g(); } else for (i < 1)\n\t\t\th();\n}\n");
+}
 def fun_body_close(t: Tester) {
 	// The line after a fun expression's '}' continues its statement.
 	both(t, "def f() -> int {\n\treturn fun () -> int {\n\t\treturn 42;\n\t}\n          ();\n}\n",
@@ -535,6 +570,19 @@ def fun_body_close(t: Tester) {
 		"def f() {\n\tif (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t}))\n\t\tg();\n\twhile (test(\n\t\tfun () -> bool {\n\t\t\treturn true;\n\t\t})) // keep\n\t{\n\t\tg();\n\t}\n}\n");
 	both(t, "def f() {\n    var x = g(\n      fun () {\n\t\treturn;\n      },\n        2);\n}\n",
 		"def f() {\n\tvar x = g(\n\t  fun () {\n\t\treturn;\n\t},\n\t    2);\n}\n");
+}
+// A fun expression's '{' that a comment keeps on its own line, outside
+// parentheses and brackets, keeps its indentation, and its body and '}'
+// count from the statement's line.
+def unjoined_fun_brace(t: Tester) {
+	both(t, "def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n",
+		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n");
+	both(t, "def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n return;\n  };\n}\n",
+		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n\t\treturn;\n\t};\n}\n");
+	both(t, "def f() {\n    var callback = fun () // keep\n    {\n\treturn;\n    };\n}\n",
+		"def f() {\n\tvar callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
+	var input = "def x = fun () // keep\n  {\n\treturn;\n};\n";
+	both(t, input, input);
 }
 def case_arrow_anchor(t: Tester) {
 	// A case's "=>" that starts a line is anchored on the line where the
@@ -621,6 +669,9 @@ def assignments(t: Tester) {
 	// 7), and comparisons aren't assignments.
 	var input = body("\tvar a   = 1;\n\tvar bb  = 2;\n\tvar ccc =\t3;\n\tvar d = x==1 || x!=2 || 3<=x || x>=4;\n");
 	both(t, input, input);
+	// Also around a compound assignment.
+	input = body("\tx  +=\t1;\n\tx\t<<=  2;\n");
+	both(t, input, input);
 	// A type's closing '>' and an initializer's '=' are two tokens.
 	both(t, "def z: Array<int>= [1];\n", "def z: Array<int> = [1];\n");
 }
@@ -645,8 +696,11 @@ def operator_members(t: Tester) {
 def arrows(t: Tester) {
 	both(t, "def f(g: int->bool)->int=>0;\ndef h(x: int) {\n\tmatch (x) {\n\t\t1=>;\n\t\t2  =>  x++;\n\t\t_ =>\tx--;\n\t}\n\tvar k = fun(y: int)=>y, l: (int, int)->int;\n}\n",
 		"def f(g: int -> bool) -> int => 0;\ndef h(x: int) {\n\tmatch (x) {\n\t\t1 => ;\n\t\t2  =>  x++;\n\t\t_ =>\tx--;\n\t}\n\tvar k = fun(y: int) => y, l: (int, int) -> int;\n}\n");
+	// A tab or several spaces around "->" align a column.
+	var input = "def f(g: int  ->\tbool) ->  int { return 0; }\n";
+	both(t, input, input);
 	// Columns of "=>" stay aligned.
-	var input = body("\tmatch (x) {\n\t\t1     => x++;\n\t\t22    => x--;\n\t\t_\t=> ;\n\t}\n");
+	input = body("\tmatch (x) {\n\t\t1     => x++;\n\t\t22    => x--;\n\t\t_\t=> ;\n\t}\n");
 	both(t, input, input);
 }
 def commas(t: Tester) {
@@ -744,7 +798,11 @@ def spacing_in_one_run(t: Tester) {
 def corpus_if_kinds(t: Tester) {
 	var paths = Vector<string>.new();
 	for (dir in ["vendor/virgil/aeneas/src", "vendor/virgil/lib", "vendor/virgil/apps"]) sources(t, dir, paths);
-	var parsed = 0, statements = 0, expressions = 0;
+	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
+	// with 9,854 if statements and 1,139 if expressions. A file that goes
+	// missing from the walk, or stops parsing, fails here.
+	t.asserti(299, paths.length);
+	var excluded = Vector<string>.new(), statements = 0, expressions = 0;
 	var syntax = SymbolSyntaxIndex.new();
 	for (i < paths.length) {
 		var path = paths[i], text = System.fileLoad(path);
@@ -755,8 +813,10 @@ def corpus_if_kinds(t: Tester) {
 		var input = AeneasAdapter.normalizedRange(text, 0, text.length), errors = AnalysisParseErrors.new(1);
 		syntax.clear();
 		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
-		if (errors.numErrors > 0) continue;
-		parsed++;
+		if (errors.numErrors > 0) {
+			excluded.put(path);
+			continue;
+		}
 		var walk = IfKinds.new(syntax).file(file);
 		var marks = AnalysisFormatMarks.new(file, syntax).collect();
 		var f = DocumentFormatter.new(input, syntax, marks.bits, marks.funHeaders, ONE);
@@ -782,9 +842,13 @@ def corpus_if_kinds(t: Tester) {
 			else if (expected == IF_EXPRESSION) expressions++;
 		}
 	}
-	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
-	// with 9,854 if statements and 1,139 if expressions.
-	t.assert(parsed >= 290, Strings.format1("only %d files parse", parsed));
+	// The one file that doesn't parse needs a language option (the spike
+	// note's corpus section).
+	var expected = ["vendor/virgil/lib/file/class/Layouts.v3"];
+	t.asserti(expected.length, excluded.length);
+	for (i < excluded.length) {
+		if (i >= expected.length || !Strings.equal(expected[i], excluded[i])) t.fail1("%s doesn't parse", excluded[i]);
+	}
 	t.assert(statements > 9000 && expressions > 1000, Strings.format2("%d statements and %d expressions", statements, expressions));
 }
 // The first change is measured without building edits, for the command's
@@ -819,10 +883,22 @@ def sources(t: Tester, dir: string, paths: Vector<string>) {
 	if (listing.names == null) return t.fail1("%s is not listed", dir);
 	for (i < listing.names.length) {
 		var name = listing.names[i], path = ProjectFiles.join(dir, name);
-		if (listing.types[i] == DT_DIR) sources(t, path, paths);
+		var directory = listing.types[i] == DT_DIR;
+		if (listing.types[i] == DT_UNKNOWN) {
+			// A file system that doesn't report entry types, as workspace
+			// discovery handles them (WorkspaceProjects).
+			var meta = ProjectFiles.metadata(path);
+			if (meta.0 < 0) {
+				t.fail1("can't inspect %s", path);
+				continue;
+			}
+			directory = meta.0 == ProjectFiles.DIRECTORY;
+		}
+		if (directory) sources(t, path, paths);
 		else if (Strings.endsWith(name, ".v3")) paths.put(path);
 	}
 }
+def DT_UNKNOWN: byte = 0;
 def DT_DIR: byte = 4;
 // The kind of each "if" token, by a recursive walk of every declaration,
 // statement, and expression of a file.
