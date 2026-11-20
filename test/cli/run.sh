@@ -119,20 +119,36 @@ expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
 # within 30 seconds, which a blocking open of a FIFO without a writer would
 # exceed, and which leaves the JVM time to start.
 # With TRACE=1 and strace available, the command runs under strace, which
-# records its opens and reads, with each descriptor's path, in $TMP/trace.
+# records its opens and reads, with each descriptor's path, and the calls that
+# add, rename, or remove a directory entry, in $TMP/trace. CAN_TRACE says that
+# the installed strace accepts that filter, and KILL_ON_EXIT holds its option
+# to kill the command when strace is killed at the deadline, if it has one.
 TRACE=0
-if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 && strace -o /dev/null true > /dev/null 2>&1; then
-    CAN_TRACE=1
-else
-    CAN_TRACE=0
+TRACE_FILTER='trace=open,openat,openat2,read,readv,pread64,preadv,preadv2,creat,mknod,mknodat,link,linkat,symlink,symlinkat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat'
+CAN_TRACE=0
+KILL_ON_EXIT=()
+if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1; then
+    ! strace -o /dev/null -y -e "$TRACE_FILTER" true > /dev/null 2>&1 || CAN_TRACE=1
+    if [ "$CAN_TRACE" -eq 1 ]; then
+        if strace -o /dev/null --kill-on-exit true > /dev/null 2>&1; then
+            KILL_ON_EXIT=(--kill-on-exit)
+        else
+            echo "note: strace has no --kill-on-exit, so a traced format command that blocks can outlive its deadline"
+        fi
+    fi
 fi
+# can_inject <syscall> <fault>: the installed strace can inject <fault> into <syscall>.
+can_inject() {
+    [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 && \
+        strace -o /dev/null -e "trace=$1" -e "inject=$1:$2" true > /dev/null 2>&1
+}
 expect_bytes() {
     local name=$1 code=$2 want=$3 err_pat=$4
     shift 5
     local prefix=()
     rm -f "$TMP/trace"
     if [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ]; then
-        prefix=(strace -o "$TMP/trace" -y -e 'trace=open,openat,openat2,read,readv,pread64,preadv,preadv2')
+        prefix=(strace ${KILL_ON_EXIT[@]+"${KILL_ON_EXIT[@]}"} -o "$TMP/trace" -y -e "$TRACE_FILTER")
     fi
     python3 -c '
 import subprocess
@@ -153,9 +169,10 @@ except subprocess.TimeoutExpired:
 }
 # check_trace <name> <read|open> <path> [link]: after a traced expect_bytes,
 # fails if the command read or opened <path>, or tried to open <link> following
-# it. Does nothing where strace isn't available.
+# it. check_trace <name> change: fails if the command created, linked, renamed,
+# or removed any directory entry. Does nothing where strace isn't available.
 check_trace() {
-    local name=$1 kind=$2 path=$3 link=${4:-} matches
+    local name=$1 kind=$2 path=${3:-} link=${4:-} matches
     [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ] || return 0
     if [ ! -s "$TMP/trace" ]; then
         echo "  trace: empty"
@@ -164,6 +181,9 @@ check_trace() {
     fi
     if [ "$kind" = read ]; then
         matches=$(grep -E '^(read|readv|pread64|preadv|preadv2)\(' "$TMP/trace" | grep -F -- "<$path>")
+    elif [ "$kind" = change ]; then
+        matches=$(grep -E '^((creat|mknod|mknodat|link|linkat|symlink|symlinkat|rename|renameat|renameat2|unlink|unlinkat|mkdir|mkdirat)\(|(open|openat|openat2)\(.*O_CREAT)' "$TMP/trace")
+        path="a directory entry"
     else
         matches=$(awk -v target="$path" -v link="$link" '
             /^(open|openat|openat2)\(/ {
@@ -186,7 +206,7 @@ check_trace() {
     fi
 }
 [ "$JVM" -eq 1 ] || [ "$CAN_TRACE" -eq 1 ] || \
-    echo "skip: format's system call checks: strace isn't available or can't trace here"
+    echo "skip: format's system call checks: strace isn't available or doesn't accept the trace filter here"
 F=$TMP/format
 mkdir "$F"
 : > "$F/none"
@@ -288,12 +308,25 @@ expect_bytes "format refuses a trailing slash after a file name" 1 "$F/none" \
     format "$F/formatted.v3/"
 expect_bytes "format refuses a device" 1 "$F/none" "cannot format '/dev/null': it is not a regular file" -- \
     format /dev/null
+# identity <path>: the path's device, inode, and type and permission bits,
+# without following a symbolic link.
+identity() {
+    python3 -c 'import os, sys; s = os.lstat(sys.argv[1]); print(s.st_dev, s.st_ino, oct(s.st_mode))' "$1"
+}
+# entries <dir>: the names in <dir>, in byte order, on one line.
+entries() {
+    python3 -c 'import os, sys
+names = sorted(os.listdir(os.fsencode(sys.argv[1])))
+sys.stdout.buffer.write(b" ".join(names) + b"\n")' "$1"
+}
 # A FIFO with no writer, which a blocking open would wait on, is refused
 # promptly, directly and through a symbolic link, and is left as it was. The
 # native build never reads from it. --write refuses a link before it opens
 # anything; see the --write cases below.
 mkfifo -m 600 "$F/fifo.v3"
 ln -s fifo.v3 "$F/fifo-link.v3"
+fifo=$(identity "$F/fifo.v3")
+listing=$(entries "$F")
 TRACE=1
 for mode in --check "" --write; do
     for p in fifo.v3 fifo-link.v3; do
@@ -301,11 +334,16 @@ for mode in --check "" --write; do
         expect_bytes "format ${mode:-without a flag} refuses $p promptly" 1 "$F/none" \
             "cannot format '$F/$p': it is not a regular file" -- format $mode "$F/$p"
         check_trace "format ${mode:-without a flag} never reads $p" read "$F/fifo.v3"
+        check_trace "format ${mode:-without a flag} changes no directory entry for $p" change
     done
 done
 TRACE=0
 [ -p "$F/fifo.v3" ] && [ "$(readlink "$F/fifo-link.v3")" = fifo.v3 ] || {
     fail=$((fail + 1)); echo "FAIL: format changed the FIFO or its link"; }
+[ "$(identity "$F/fifo.v3")" = "$fifo" ] || {
+    fail=$((fail + 1)); echo "FAIL: format replaced the FIFO or changed its mode"; }
+[ "$(entries "$F")" = "$listing" ] || {
+    fail=$((fail + 1)); echo "FAIL: format left or removed a file beside the FIFO"; }
 
 # The input bound is the server's source budget for a project's files, 4 MiB,
 # and the output bound is the same: a file over it is refused, and so is a
@@ -468,20 +506,14 @@ mkdir "$W"
 # meta <path>: the path's own metadata, without following a symbolic link:
 # device, inode, type and permission bits, owner, group, size, and
 # modification and status-change times.
+# META_PY prints it for its first argument, for test hooks too.
+META_PY='import os, sys; s = os.lstat(sys.argv[1]); print(s.st_dev, s.st_ino, oct(s.st_mode), s.st_uid, s.st_gid, s.st_size, s.st_mtime_ns, s.st_ctime_ns)'
 meta() {
-    python3 -c 'import os, sys
-s = os.lstat(sys.argv[1])
-print(s.st_dev, s.st_ino, oct(s.st_mode), s.st_uid, s.st_gid, s.st_size, s.st_mtime_ns, s.st_ctime_ns)' "$1"
+    python3 -c "$META_PY" "$1"
 }
 # access <path>: the path's type and permission bits, owner, and group.
 access() {
     python3 -c 'import os, sys; s = os.lstat(sys.argv[1]); print(oct(s.st_mode), s.st_uid, s.st_gid)' "$1"
-}
-# entries <dir>: the names in <dir>, in byte order, on one line.
-entries() {
-    python3 -c 'import os, sys
-names = sorted(os.listdir(os.fsencode(sys.argv[1])))
-sys.stdout.buffer.write(b" ".join(names) + b"\n")' "$1"
 }
 # check <name> <command...>: counts the command's success.
 check() {
@@ -501,9 +533,13 @@ same() {
     fi
 }
 # fresh <dir>: makes <dir> with in.v3, an unformatted file with mode 644.
+# <dir> gets the caller's primary group, which a new file takes on Linux, so
+# that where new files take their directory's group instead, any supplementary
+# group still differs from a new file's.
 fresh() {
     rm -rf "$1"
     mkdir "$1"
+    chgrp "$(id -g)" "$1"
     cp "$F/unformatted.orig" "$1/in.v3"
     chmod 644 "$1/in.v3"
 }
@@ -524,7 +560,15 @@ def has_hook(name, data):
 
 found = has_hook(exe, exe.read_bytes())
 if sys.argv[2] == "1":
-    with zipfile.ZipFile(exe.with_name(exe.name + ".jar")) as jar:
+    # The jar that the launcher runs: a development launcher names it by
+    # absolute path, and a packaged one beside the launcher's resolved path.
+    import re
+    run = re.search(r"""-jar (?:'([^']*)'|"\$dir/([^"/]*)")""", exe.read_text())
+    if run is None:
+        print(f"{exe} names no jar that it runs")
+        sys.exit(1)
+    path = Path(run.group(1)) if run.group(1) is not None else exe.resolve().parent / run.group(2)
+    with zipfile.ZipFile(path) as jar:
         found = any([has_hook(entry.filename, jar.read(entry)) for entry in jar.infolist()]) or found
 sys.exit(found)
 PY
@@ -676,7 +720,9 @@ PY
     check "format --write goes on after the file-size limit" cmp -s "$F/unformatted.want" "$W/size-limit/in.v3"
     same "format --write removes the new file past the file-size limit" "big.v3 in.v3" "$(entries "$W/size-limit")"
 
-    if [ "$CAN_TRACE" -eq 1 ]; then
+    if ! can_inject fsync error=EIO; then
+        echo "skip: format --write reports a deferred write error: strace can't inject an fsync error here"
+    else
         fresh "$W/flush"
         before=$(meta "$W/flush/in.v3")
         strace -o "$TMP/trace" -e trace=fsync -e inject=fsync:error=EIO \
@@ -688,33 +734,34 @@ PY
         same "format --write preserves input metadata after a flush failure" "$before" "$(meta "$W/flush/in.v3")"
         check "format --write preserves input bytes after a flush failure" cmp -s "$F/unformatted.orig" "$W/flush/in.v3"
         same "format --write removes the new file after a flush failure" in.v3 "$(entries "$W/flush")"
-
-        for fault in error=EPERM retval=0; do
-            d=$W/mode-${fault%%=*}
-            fresh "$d"
-            if [ "$fault" = error=EPERM ]; then
-                chmod 600 "$d/in.v3"
-                result='-1 EPERM'
-            else
-                result=0
-            fi
-            before=$(meta "$d/in.v3")
-            (umask 077
-                strace -o "$TMP/trace" -e trace=fchmod -e "inject=fchmod:$fault" \
-                    "$EXE" format --write "$d/in.v3"
-            ) > "$TMP/out" 2> "$TMP/err"
-            got=$?
-            check_stream stderr "$TMP/err" "cannot write '$d/in\.v3': its new file can't be given its group and permission bits" && \
-                [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ] && \
-                grep -Eq "^fchmod\(.*\) += $result .*\(INJECTED\)" "$TMP/trace"
-            finish "format --write refuses permission fault $fault" $(( $? == 0 ))
-            same "format --write preserves input metadata after $fault" "$before" "$(meta "$d/in.v3")"
-            check "format --write preserves input bytes after $fault" cmp -s "$F/unformatted.orig" "$d/in.v3"
-            same "format --write removes the new file after $fault" in.v3 "$(entries "$d")"
-        done
-    else
-        echo "skip: format --write permission fault injection needs strace"
     fi
+    for fault in error=EPERM retval=0; do
+        if ! can_inject fchmod "$fault"; then
+            echo "skip: format --write refuses permission fault $fault: strace can't inject $fault into fchmod here"
+            continue
+        fi
+        d=$W/mode-${fault%%=*}
+        fresh "$d"
+        if [ "$fault" = error=EPERM ]; then
+            chmod 600 "$d/in.v3"
+            result='-1 EPERM'
+        else
+            result=0
+        fi
+        before=$(meta "$d/in.v3")
+        (umask 077
+            strace -o "$TMP/trace" -e trace=fchmod -e "inject=fchmod:$fault" \
+                "$EXE" format --write "$d/in.v3"
+        ) > "$TMP/out" 2> "$TMP/err"
+        got=$?
+        check_stream stderr "$TMP/err" "cannot write '$d/in\.v3': its new file can't be given its group and permission bits" && \
+            [ "$got" -eq 1 ] && [ ! -s "$TMP/out" ] && \
+            grep -Eq "^fchmod\(.*\) += $result .*\(INJECTED\)" "$TMP/trace"
+        finish "format --write refuses permission fault $fault" $(( $? == 0 ))
+        same "format --write preserves input metadata after $fault" "$before" "$(meta "$d/in.v3")"
+        check "format --write preserves input bytes after $fault" cmp -s "$F/unformatted.orig" "$d/in.v3"
+        same "format --write removes the new file after $fault" in.v3 "$(entries "$d")"
+    done
 
     # The replacement keeps the original's permission bits and group.
     fresh "$W/keep"
@@ -872,6 +919,24 @@ sys.exit(1)' "$W/read-only-file/in.v3"
             format --test-fake=uid=1 "$F/formatted.v3"
         hooked expect_bytes "format --check test fakes require --write" 2 "$F/none" "--test-fake requires --write" -- \
             format --check --test-fake=uid=1 "$F/formatted.v3"
+        # Without --write, only the open hook runs, so the other hook points
+        # and held fields are refused there too.
+        for mode in --check ""; do
+            for option in --test-hold=ino --test-hook=opened:true --test-hook=check1:true \
+                --test-hook=check2:true --test-hook=cleanup:true; do
+                case $option in
+                    --test-hold=*) name=--test-hold ;;
+                    *) name=${option%%:*} ;;
+                esac
+                hooked expect_bytes "format ${mode:-without a flag} refuses $option" 2 "$F/none" \
+                    "error: $name requires --write$" -- format $mode "$option" "$F/formatted.v3"
+            done
+        done
+        hooked expect_bytes "format test hooks refuse a repeated point" 2 "$F/none" \
+            "unknown option '--test-hook=open:true'" -- \
+            format --write --test-hook=open:true --test-hook=open:true "$F/formatted.v3"
+        hooked expect_bytes "format test hooks refuse an empty command" 2 "$F/none" \
+            "unknown option '--test-hook=check1:'" -- format --write --test-hook=check1: "$F/formatted.v3"
         # A regular input replaced by a FIFO with no writer just before the
         # open, after the path's type is checked, directly in every mode and
         # through a link's target in the modes that follow links: refused
@@ -884,11 +949,15 @@ sys.exit(1)' "$W/read-only-file/in.v3"
                 fresh "$d"
                 mkfifo -m 600 "$d/fifo"
                 ln -s in.v3 "$d/link.v3"
+                fifo=$(identity "$d/fifo")
                 hooked expect_bytes "format ${mode:-without a flag} refuses $p once a FIFO replaces it before the open" 1 "$F/none" \
                     "cannot format '$d/$p': it is not a regular file" -- \
                     format $mode --test-hook="open:$HOOKENV mv '$d/fifo' '$d/in.v3'" "$d/$p"
                 check_trace "format ${mode:-without a flag} never reads the FIFO that replaced $p" read "$d/in.v3"
+                check_trace "format ${mode:-without a flag} changes no directory entry once a FIFO replaces $p" change
                 check "format ${mode:-without a flag} leaves the FIFO that replaced $p" test -p "$d/in.v3"
+                same "format ${mode:-without a flag} keeps the identity and mode of the FIFO that replaced $p" \
+                    "$fifo" "$(identity "$d/in.v3")"
                 same "format ${mode:-without a flag} leaves the link beside the FIFO that replaced $p" in.v3 "$(readlink "$d/link.v3")"
                 same "format ${mode:-without a flag} leaves no new file beside the FIFO that replaced $p" "in.v3 link.v3" \
                     "$(entries "$d")"
@@ -1083,23 +1152,26 @@ if (after.st_mode, after.st_mtime_ns) != (before.st_mode, before.st_mtime_ns):
         finish "format --write rejects a late fake owner at the same check on the next input" $(( $? == 0 ))
 
         # A substitute under the new file's name survives both replacement
-        # checks and the cleanup of a separate failure.
+        # checks and the cleanup of a separate failure, with the metadata it
+        # had just after the hook moved it there.
         for point in check1 check2 cleanup; do
             d=$W/temp-swap-$point
             fresh "$d"
             printf 'substitute\n' > "$W/substitute"
             inode=$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$W/substitute")
+            : > "$W/substitute-meta"
+            swap="$HOOKENV mv '$W/substitute' \"\$2\" && '$PY' -c '$META_PY' \"\$2\" > '$W/substitute-meta'"
             if [ "$point" != cleanup ]; then
                 before=$(meta "$d/in.v3")
                 hooked expect_bytes "format --write refuses its new file replaced under its name" 1 "$F/none" \
                     "cannot write '$d/in\.v3': cannot verify its new file's name '$d/\.virgil-lsp-[0-9A-F]+\.tmp'" -- \
-                    format --write --test-hook="$point:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
+                    format --write --test-hook="$point:$swap" "$d/in.v3"
                 same "format --write leaves the input when its new file is replaced" "$before" "$(meta "$d/in.v3")"
             else
                 hooked expect_bytes "format --write leaves its new file's name when it names another file at cleanup" 1 "$F/none" \
                     "cannot write '$d/in\.v3': it changed after it was read" -- \
                     format --write --test-hold=ctime --test-hook="check1:$HOOKENV chmod 600 \"\$1\"" \
-                    --test-hook="cleanup:$HOOKENV mv '$W/substitute' \"\$2\"" "$d/in.v3"
+                    --test-hook="cleanup:$swap" "$d/in.v3"
                 check_stream stderr "$TMP/err" "cannot write '$d/in\.v3': cannot verify its new file's name '$d/\.virgil-lsp-[0-9A-F]+\.tmp'"
                 finish "format --write reports the new file's name it left at cleanup" $(( $? == 0 ))
                 same "format --write keeps the newer mode when its new file is replaced" 0o100600 "$(access "$d/in.v3" | cut -d' ' -f1)"
@@ -1111,6 +1183,8 @@ if (after.st_mode, after.st_mtime_ns) != (before.st_mode, before.st_mtime_ns):
             same "format --write leaves the substitute's bytes at $point" substitute "$(cat "$left" 2>/dev/null)"
             same "format --write leaves the substitute's inode at $point" "$inode" \
                 "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$left" 2>/dev/null)"
+            same "format --write leaves the substitute's metadata at $point" "$(cat "$W/substitute-meta")" \
+                "$(meta "$left" 2>/dev/null)"
         done
 
         for point in check1 check2 cleanup; do
