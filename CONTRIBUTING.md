@@ -115,12 +115,13 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 3. Update the revision in `THIRD_PARTY_NOTICES.md` and `docs/compatibility.md`.
 4. Regenerate the formatter's corpus record with `make all build/format-corpus-probe`
    and `python3 test/format/corpus.py --write build/virgil-lsp`, and review the
-   diff of `test/format/virgil-corpus.txt`: each new or removed file, each file
-   that no longer formats, and each line that formatting now changes. The corpus
-   suite compares the record only when the submodule is checked out at the
-   gitlink, which it reads from the index as `test/release/check_pin.py` does,
-   so stage the new gitlink with the record. While they differ, as in the advisory Virgil master
-   workflow, it says so and runs its other checks.
+   diff of `test/format/virgil-corpus.txt` for new or removed files, files that
+   start or stop formatting, changes to refusal reports, and changes to the
+   lines that formatting touches. The corpus suite compares the record only
+   when the submodule is checked out at the gitlink, which it reads from the
+   index as `test/release/check_pin.py` does, so stage the new gitlink with the
+   record. While they differ, as in the advisory Virgil master workflow, it
+   says so and runs its other checks.
 5. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade. If `AnalysisTargets:wrapper_runtime_files`
