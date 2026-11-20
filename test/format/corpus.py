@@ -7,12 +7,12 @@ Usage: test/format/corpus.py [--write] build/virgil-lsp
 
 ADR-0019 decision 8. `test/format/virgil-corpus.txt` records the Virgil pin
 and, for every `.v3` file of `aeneas/src`, `lib`, and `apps` in the pinned
-`vendor/virgil`, whether it formatted or its first diagnostic, a hash of
-its formatted text, and the lines of the input that formatting changes.
-This suite formats those files again and fails, naming
-the file and lines, when anything differs from the record or when the
-record's pin isn't the submodule's checkout. With `--write`, it regenerates
-the record instead; review the diff.
+`vendor/virgil`, whether it formatted or the error that `virgil-lsp format
+--check` reports for it, a hash of its formatted text, and the lines of the
+input that formatting changes. This suite formats those files again and
+fails, naming the file and lines, when anything differs from the record or
+when the record's pin isn't the submodule's checkout. With `--write`, it
+regenerates the record instead; review the diff.
 
 The record applies only when the submodule is checked out at the
 superproject's gitlink (from the index, or `HEAD` without an index entry, as
@@ -24,15 +24,19 @@ other check.
 It also requires, for every file of `aeneas/src`, `lib`, `apps`, and `test`
 that parses, that formatting the output again changes nothing and that the
 output keeps the input's parser tokens and comments. The files are those
-that the submodule's Git index tracks, and a tracked file missing from disk,
-as in a sparse checkout, or an untracked `.v3` file there fails the suite.
+of the submodule's checked-out commit, and one missing from disk, as in a
+sparse checkout or after a deletion staged in the submodule, or a `.v3` file
+there that the commit lacks, staged or not and including one inside an
+embedded repository, fails the suite.
 
 The files are formatted in batches by `format-corpus-probe`, built beside
 the server from `test/format/FormatCorpusProbe.v3`, which calls the
 formatter as the `format` command does and compares the tokens that the
 parser consumed, so no second lexer can disagree with the parser. The suite
 also runs `virgil-lsp format --check` once over the recorded files and
-requires it to report exactly the files and lines that the probe does.
+requires it to report exactly the files and lines that the probe does, and
+for each refused file an error that names it and ends with the probe's
+message; the record keeps that error's line, which pins its form.
 """
 import hashlib
 import importlib.util
@@ -55,6 +59,7 @@ PROBE_SHAPES = {'formatted': 4, 'fail': 3, 'syntax': 4, 'cr': 4, 'refused': 4}
 PROBE_ESCAPE = re.compile(r'\\([\\trn])')
 PROBE_MESSAGE = re.compile(r'(?:[^\\\r\t]|\\[\\trn])+')
 UNESCAPED = {'\\': '\\', 't': '\t', 'r': '\r', 'n': '\n'}
+ESCAPED = str.maketrans({c: '\\' + e for e, c in UNESCAPED.items()})
 # Paths that a failure lists before it counts the rest.
 LISTED = 10
 HEADER = """\
@@ -69,11 +74,16 @@ HEADER = """\
 # formatting changes, and their changed lines. The file rows are grouped by
 # directory (aeneas/src, lib, apps) and sorted by path within each group.
 # Each file has a line of three fields separated by tabs: its path in
-# vendor/virgil, then either "refused" and its first diagnostic, or the first
-# 16 hex digits of the SHA-256 of its formatted text, with each CR LF taken as
-# LF so that the checkout's line ends don't matter, and "unchanged" or the
-# lines of the file that an edit touches. A brace or else join touches two
-# lines, and each blank line removed at the end of a file is a line of its own.
+# vendor/virgil, then either "refused" and the line that
+# `virgil-lsp format --check` prints for it on standard error, which ends with
+# its first diagnostic or other reason, with a backslash, tab, CR, or LF
+# escaped as \\\\, \\t, \\r, or \\n and other bytes that aren't UTF-8 as \\xhh;
+# or the first 16 hex digits of the SHA-256 of its formatted text, with each
+# CR LF taken as LF so that the checkout's line ends don't matter, and
+# "unchanged" or the lines of the file that an edit touches. A brace or else
+# join touches the lines on both sides of the line end that it removes, even
+# when it replaces only that line end, and each blank line removed at the end
+# of a file is a line of its own.
 """
 
 failures = 0
@@ -113,31 +123,53 @@ def gitlink():
         return None
 
 
-def source_paths(*options):
-    run = git('ls-files', '-z', *options, '--', *CHECKED)
+def listing(*args):
+    """The NUL-separated paths that `git -C vendor/virgil <args>` prints, as bytes."""
+    run = git(*args)
     if run.returncode != 0:
         fail(f'cannot list the files of {VIRGIL}: {run.stderr.decode(errors="replace").strip()}')
         return set()
-    return {path.decode() for path in set(run.stdout.split(b'\0'))
-            if path.endswith(b'.v3') and usable(path)}
+    return set(run.stdout.split(b'\0')) - {b''}
+
+
+def source_paths(raw):
+    return {path.decode() for path in raw if path.endswith(b'.v3') and usable(path)}
+
+
+def embedded_files(directory):
+    """The files under `directory` of vendor/virgil, a repository of its own, as bytes."""
+    base = os.fsencode(ROOT / VIRGIL) + b'/'
+    found = set()
+    for top, dirs, names in os.walk(base + directory.rstrip(b'/')):
+        dirs[:] = [d for d in dirs if d != b'.git']
+        found.update(os.path.join(top, name)[len(base):] for name in names)
+    return found
 
 
 def inventory():
-    """The tracked `.v3` files of each checked directory, by directory.
+    """The `.v3` files of each checked directory in the checked-out commit, by directory.
 
-    Fails, naming them, for tracked files missing from disk, untracked files
-    found on disk, and paths that the probe and the record can't carry: not
-    UTF-8, or with a tab or line end. Those are left out of the checks.
+    Fails, naming them, for files of the commit missing from disk, as after a
+    sparse checkout or a deletion staged in vendor/virgil; for `.v3` files on
+    disk that the commit lacks, including those staged and those inside an
+    embedded repository, which Git lists as one directory; and for paths that
+    the probe and the record can't carry: not UTF-8, or with a tab or line
+    end. Those are left out of the checks.
     """
-    tracked = source_paths('--cached')
-    untracked = source_paths('--others')
+    committed = listing('ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', *CHECKED)
+    others = listing('ls-files', '-z', '--others', '--', *CHECKED)
+    others |= {path for d in others if d.endswith(b'/') for path in embedded_files(d)}
+    others |= listing('ls-files', '-z', '--cached', '--', *CHECKED)
+    tracked = source_paths(committed)
     base = ROOT / VIRGIL
+    untracked = {p for p in source_paths(others - committed) if (base / p).is_file()}
     missing = {p for p in tracked if not (base / p).is_file()}
     if missing:
-        fail(f'{plural(len(missing), "tracked file")} missing from {VIRGIL}, as in a sparse checkout: '
-             f'{listed(missing)}')
+        fail(f'{plural(len(missing), "file")} of the checked-out commit missing from {VIRGIL}, '
+             f'as in a sparse checkout or after a staged deletion: {listed(missing)}')
     if untracked:
-        fail(f'{plural(len(untracked), "file")} in {VIRGIL} not tracked: {listed(untracked)}')
+        fail(f'{plural(len(untracked), "file")} in {VIRGIL} not in the checked-out commit: '
+             f'{listed(untracked)}')
     present = sorted(tracked - missing)
     return {d: [p for p in present if p.startswith(d + '/')] for d in CHECKED}
 
@@ -265,7 +297,14 @@ def invariants(results):
     return broken
 
 
-def record_text(pin, paths, results):
+def escape(raw):
+    """The bytes `raw` as one field of one line of the record: each backslash, tab, CR, and LF
+    escaped as the probe escapes them, and each byte that isn't UTF-8 as `\\xhh`."""
+    text = raw.decode(errors='surrogateescape').translate(ESCAPED)
+    return text.encode(errors='surrogateescape').decode(errors='backslashreplace')
+
+
+def record_text(pin, paths, results, reports):
     out = [HEADER, f'pin {pin}\n']
     for directory in RECORDED:
         mine = [p for p in paths if p.startswith(directory + '/')]
@@ -279,8 +318,7 @@ def record_text(pin, paths, results):
         if r['kind'] == 'formatted':
             out.append(f'{p}\t{r["hash"]}\t{lines_text(r["lines"])}\n')
         else:
-            message = r['message'].encode(errors='surrogateescape').decode(errors='backslashreplace')
-            out.append(f'{p}\trefused\t{message}\n')
+            out.append(f'{p}\trefused\t{escape(reports[p])}\n')
     return ''.join(out)
 
 
@@ -292,6 +330,8 @@ def read_record(text):
         if not line or line.startswith('#'):
             continue
         if line.startswith('pin '):
+            if pin is not None:
+                raise ValueError(f'the record has a second pin line: {line!r}')
             pin = line[4:]
         elif line.startswith('total '):
             totals.append(line)
@@ -365,36 +405,46 @@ def check_command(exe, paths, results):
 
     Each file that changes gets one `<path>:<line>: not formatted` line on
     standard output, with its first changed line; each refused file gets one
-    error on standard error, with the probe's message; other files get
-    nothing, and nothing else is printed.
+    line on standard error that names the file and ends with the probe's
+    message; other files get nothing, and nothing else is printed. Returns
+    the number of problems and a dict of each refused path to its line on
+    standard error, without the line end, which the record keeps, so that
+    the comparison with the record pins the form of the report.
     """
     run = subprocess.run([str(exe), 'format', '--check'] + [f'{VIRGIL}/{p}' for p in paths],
                          cwd=ROOT, capture_output=True)
-    stdout, stderr = [], []
+    stdout = []
+    refused = [p for p in paths if results[p]['kind'] != 'formatted']
     for p in paths:
         r = results[p]
-        path = f'{VIRGIL}/{p}'
-        if r['kind'] == 'formatted':
-            if r['lines']:
-                stdout.append(f'{path}:{r["lines"][0]}: not formatted\n')
-        else:
-            message = PROBE_ESCAPE.sub(lambda m: UNESCAPED[m[1]], r['message'])
-            location = f'{path}:' if r['form'] == 'diagnostic' else f"cannot format '{path}': "
-            stderr.append(f'virgil-lsp: error: {location}{message}\n')
+        if r['kind'] == 'formatted' and r['lines']:
+            stdout.append(f'{VIRGIL}/{p}:{r["lines"][0]}: not formatted\n')
     problems = 0
-    for name, actual, reports in (('stdout', run.stdout, stdout), ('stderr', run.stderr, stderr)):
-        expected = ''.join(reports).encode(errors='surrogateescape')
-        if actual != expected:
-            lines = itertools.zip_longest(actual.splitlines(keepends=True),
-                                          expected.splitlines(keepends=True), fillvalue=b'')
-            got, want = next((got, want) for got, want in lines if got != want)
-            fail(f'format --check {name}: expected {want!r}, got {got!r}')
+    expected = ''.join(stdout).encode(errors='surrogateescape')
+    if run.stdout != expected:
+        lines = itertools.zip_longest(run.stdout.splitlines(keepends=True),
+                                      expected.splitlines(keepends=True), fillvalue=b'')
+        got, want = next((got, want) for got, want in lines if got != want)
+        fail(f'format --check stdout: expected {want!r}, got {got!r}')
+        problems += 1
+    errors = run.stderr.splitlines(keepends=True)
+    reports = {p: b'' for p in refused} | {p: line[:-1] for p, line in zip(refused, errors)}
+    if len(errors) != len(refused):
+        fail(f'format --check printed {plural(len(errors), "line")} on stderr for '
+             f'{plural(len(refused), "refused file")}: {run.stderr!r}')
+        problems += 1
+    for p, line in zip(refused, errors):
+        message = PROBE_ESCAPE.sub(lambda m: UNESCAPED[m[1]], results[p]['message'])
+        ending = (message + '\n').encode(errors='surrogateescape')
+        if not line.endswith(ending) or f'{VIRGIL}/{p}'.encode() not in line[:-len(ending)]:
+            fail(f'{p}: format --check reported {line!r}, which doesn\'t name the file '
+                 f'and end with the probe\'s message {message!r}')
             problems += 1
-    want_status = int(bool(stdout or stderr))
+    want_status = int(bool(stdout or refused))
     if run.returncode != want_status:
         fail(f'format --check exited with {run.returncode}, not {want_status}')
         problems += 1
-    return problems
+    return problems, reports
 
 
 def main(argv):
@@ -429,8 +479,8 @@ def main(argv):
     broken = invariants(results)
     if any(results[p]['kind'] == 'failed' for p in recorded):
         return 1
-    problems = check_command(exe, recorded, results)
-    text = record_text(pin, recorded, results)
+    problems, reports = check_command(exe, recorded, results)
+    text = record_text(pin, recorded, results, reports)
     if write:
         if failures:
             fail('the record was not written')

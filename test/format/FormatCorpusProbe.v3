@@ -55,19 +55,26 @@ component FormatCorpusProbe {
 					|| at + (e.begin - pos) + e.text.length > output.length) {
 				return fail(path, Strings.format1("the edit at offset %d is out of order or too large", e.begin));
 			}
+			for (i = pos; i < e.begin; i++) output[at++] = input[i];
+			for (b in e.text) output[at++] = b;
 			// The input lines that the edit touches: those of its first and
-			// last replaced bytes, or of its position for an insertion.
+			// last replaced bytes, or of its position for an insertion. An
+			// edit that replaces a line end and leaves the next byte inside
+			// an output line, as a brace or else join does, also touches the
+			// line of that byte, which it moves.
 			while (scanned < e.begin) if (input[scanned++] == '\n') line++;
 			var first = line, final = line;
 			for (i = e.begin; i < e.end - 1; i++) if (input[i] == '\n') final++;
+			if (e.end > e.begin && input[e.end - 1] == '\n' && e.end < input.length
+					&& at > 0 && output[at - 1] != '\n') {
+				final++;
+			}
 			for (n = first; n <= final; n++) {
 				if (n <= last) continue;
 				if (last > 0) lines.putc(',');
 				lines.putd(n);
 				last = n;
 			}
-			for (i = pos; i < e.begin; i++) output[at++] = input[i];
-			for (b in e.text) output[at++] = b;
 			pos = e.end;
 		}
 		if (at + (input.length - pos) != output.length) return fail(path, "the edits don't give the formatted size");

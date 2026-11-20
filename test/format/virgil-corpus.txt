@@ -9,11 +9,16 @@
 # formatting changes, and their changed lines. The file rows are grouped by
 # directory (aeneas/src, lib, apps) and sorted by path within each group.
 # Each file has a line of three fields separated by tabs: its path in
-# vendor/virgil, then either "refused" and its first diagnostic, or the first
-# 16 hex digits of the SHA-256 of its formatted text, with each CR LF taken as
-# LF so that the checkout's line ends don't matter, and "unchanged" or the
-# lines of the file that an edit touches. A brace or else join touches two
-# lines, and each blank line removed at the end of a file is a line of its own.
+# vendor/virgil, then either "refused" and the line that
+# `virgil-lsp format --check` prints for it on standard error, which ends with
+# its first diagnostic or other reason, with a backslash, tab, CR, or LF
+# escaped as \\, \t, \r, or \n and other bytes that aren't UTF-8 as \xhh;
+# or the first 16 hex digits of the SHA-256 of its formatted text, with each
+# CR LF taken as LF so that the checkout's line ends don't matter, and
+# "unchanged" or the lines of the file that an edit touches. A brace or else
+# join touches the lines on both sides of the line end that it removes, even
+# when it replaces only that line end, and each blank line removed at the end
+# of a file is a line of its own.
 pin b86f43f102406e94dc2ac4a85909c38ef414e214
 total aeneas/src: 168 files, 168 formatted, 88 changed, 458 lines
 total lib: 67 files, 66 formatted, 26 changed, 259 lines
@@ -193,7 +198,7 @@ lib/asm/riscv64/RiscV64Assembler.v3	45f671a400baf5e3	14,16
 lib/asm/x86-64/X86_64Assembler.v3	376efb14d51de156	448,451,648,662,681,695,708,722,1675,1679,1681-1682,1684-1685,1687-1688,1690,1692-1693,1695,1697,1980,2975,3664-3665,3676-3677
 lib/asm/x86-64/X86_64Disassembler.v3	d7712206ef138373	unchanged
 lib/asm/x86/X86Assembler.v3	e1a6e9aa900dabfd	23-41
-lib/file/class/Layouts.v3	refused	1:1: ParseError: expected type, variable, or method declaration
+lib/file/class/Layouts.v3	refused	virgil-lsp: error: vendor/virgil/lib/file/class/Layouts.v3:1:1: ParseError: expected type, variable, or method declaration
 lib/file/csv/CsvParser.v3	8d8e75d480ff43c8	65
 lib/file/elf/ElfLayouts.v3	5bd6f0d77fd5df7f	unchanged
 lib/file/json/JsonParser.v3	477b6c47852a88d2	72,195
