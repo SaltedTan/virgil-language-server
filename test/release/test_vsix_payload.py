@@ -38,6 +38,7 @@ if library is None:
     sys.modules['virgil_lsp_release_library'] = library
 RUNTIME = tuple('virgil/' + path for path in RUNTIME_PATHS)
 PINNED = {n[len('virgil/'):]: hashlib.sha256(n.encode()).hexdigest() for n in RUNTIME}
+DEFAULT_LIBRARY = object()
 
 
 class PayloadTests(unittest.TestCase):
@@ -50,21 +51,19 @@ class PayloadTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def fixture(self, target='linux-x64', revision=None, revision_file=None, library_revision=None,
-                manifest_fields=None):
+    def fixture(self, target='linux-x64', revision=None, revision_file=None, *, library=DEFAULT_LIBRARY):
         revision = self.revision if revision is None else revision
         revision_file = self.revision if revision_file is None else revision_file
-        library_revision = self.revision if library_revision is None else library_revision
+        library = {'revision': self.revision} if library is DEFAULT_LIBRARY else library
         files = {n: (n.encode(), 0o644) for n in (
             'LICENSE', 'THIRD_PARTY_NOTICES.md', 'virgil/LICENSE',
             'virgil/lib/util/StringBuilder.v3', *RUNTIME)}
         files['virgil/REVISION'] = ((revision_file + '\n').encode(), 0o644)
         files.update({n: (n.encode(), 0o755) for n in ('virgil-lsp', 'virgil-lsp-worker')})
         manifest = {'target': 'x86-64-linux' if target == 'linux-x64' else 'x86-64-darwin',
-                    'virgilRevision': revision, 'library': {'revision': library_revision},
+                    'virgilRevision': revision, 'library': library,
                     'sha256': {n: hashlib.sha256(files[n][0]).hexdigest()
                                for n in ('virgil-lsp', 'virgil-lsp-worker')}}
-        manifest.update(manifest_fields or {})
         files['manifest.json'] = (json.dumps(manifest).encode(), 0o644)
         archive = self.root / 'server.tar.gz'
         with tarfile.open(archive, 'w:gz') as t:
@@ -135,15 +134,17 @@ class PayloadTests(unittest.TestCase):
         self.check({'extension.vsixmanifest': (self.xml(None), 0o644)}, 'universal', None)
 
     def test_wrong_archive_revision_is_rejected(self):
-        for field in ('revision', 'revision_file', 'library_revision'):
+        wrong_revision = '0' * len(self.revision)
+        for field, value in (('revision', wrong_revision), ('revision_file', wrong_revision),
+                             ('library', {'revision': wrong_revision})):
             with self.subTest(field=field):
-                archive, entries = self.fixture(**{field: '0' * 40})
+                archive, entries = self.fixture(**{field: value})
                 with self.assertRaisesRegex(SystemExit, 'bundle revision does not match the pinned Virgil revision'):
                     self.check(entries, 'linux-x64', archive)
 
     def test_malformed_manifest_is_rejected(self):
         # The right revision, but a library field that isn't a JSON object.
-        archive, entries = self.fixture(manifest_fields={'library': None})
+        archive, entries = self.fixture(library=None)
         with self.assertRaisesRegex(SystemExit, 'invalid bundled payload or target metadata: '
                                     'the manifest and its library field must be JSON objects'):
             self.check(entries, 'linux-x64', archive)

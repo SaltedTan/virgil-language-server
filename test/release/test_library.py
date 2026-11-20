@@ -42,16 +42,15 @@ def commit_virgil(virgil):
     return subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True, env=GIT_ENV).strip()
 
 
-def server_repository(server, object_format, committed, staged=None):
+def server_repository(server, object_format, committed, staged):
     """A server repository with the release scripts and the target table,
-    whose HEAD pins Virgil at committed and whose index, if staged is given,
-    at staged instead, as during a pin update."""
+    whose HEAD and index pin different Virgil revisions."""
     for path in ('scripts/check-release.sh', 'scripts/release-library.py', 'src/analysis/AnalysisTargets.v3'):
         (server / path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / path, server / path)
     for command in (['init', '-q', f'--object-format={object_format}'], ['add', '-A'],
                     ['update-index', '--add', '--cacheinfo', f'160000,{committed},vendor/virgil'], COMMIT,
-                    *([['update-index', '--cacheinfo', f'160000,{staged},vendor/virgil']] if staged else [])):
+                    ['update-index', '--cacheinfo', f'160000,{staged},vendor/virgil']):
         subprocess.run(['git', '-C', str(server), *command], check=True, env=GIT_ENV)
     return server
 
@@ -141,10 +140,7 @@ class LibraryTest(unittest.TestCase):
         git(source, 'init', '--quiet', f'--object-format={object_format}')
         objects = virgil / git(virgil, 'rev-parse', '--git-path', 'objects').decode().strip()
         (source / '.git/objects/info/alternates').write_text(f'{objects}\n')
-        # Only the files that staging reads from the checkout: a blobless
-        # partial clone of vendor/virgil can lack the other blobs, and this
-        # repository has no promisor remote to fetch them from.
-        tree = git(source, 'archive', '--format=tar', pin, '--', 'lib', 'rt/LICENSE')
+        tree = git(virgil, 'archive', '--format=tar', pin, '--', 'lib', 'rt/LICENSE')
         subprocess.run(['tar', '-x', '-f', '-', '-C', str(source)], input=tree, check=True)
         checkout = {path.relative_to(source).as_posix() for path in source.rglob('*')
                     if path.is_file() and '.git' not in path.relative_to(source).parts}
@@ -168,9 +164,10 @@ class LibraryTest(unittest.TestCase):
         # The archive check reads the gitlink in HEAD, so a server repository
         # that commits the staged gitlink runs it.
         object_format = git(virgil, 'rev-parse', '--show-object-format').decode().strip()
-        server = server_repository(self.root / 'server', object_format, pin)
+        staged = pin[:-1] + ('1' if pin.endswith('0') else '0')
+        server = server_repository(self.root / 'server', object_format, pin, staged)
         command = [str(server / 'scripts/check-release.sh'), '--archive', str(self.archive)]
-        env = {**os.environ, 'VIRGIL': os.path.relpath(virgil, server)}
+        env = {**os.environ, 'VIRGIL': os.path.relpath(virgil.resolve(), server.resolve())}
         subprocess.run(command, check=True, cwd=self.root, env=env, capture_output=True, text=True)
         # The internal check command looks the pin up itself.
         check = [sys.executable, str(server / 'scripts/release-library.py'), 'check', str(self.archive)]
