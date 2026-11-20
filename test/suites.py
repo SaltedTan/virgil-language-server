@@ -31,15 +31,23 @@ import time
 DEFAULT_JOBS = 4
 
 
+class Process(subprocess.Popen):
+    killed = False  # whether its group has been sent SIGKILL
+
+
 def send(process, signum):
     """Signals an owned process group, returning whether it still exists."""
+    if signum == signal.SIGKILL:
+        process.killed = True
     try:
         os.killpg(process.pid, signum)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # macOS can report EPERM for an exited process group.
-        if process.poll() is None:
+        # macOS can report EPERM for an exited process group, and for a killed
+        # group whose leader is not reaped yet, which poll() can't see while
+        # the suite's thread waits for it.
+        if process.poll() is None and not process.killed:
             raise
         return False
     return True
@@ -93,9 +101,9 @@ class Suites:
                 self.ran.append(suite)
                 output = None if self.live else tempfile.TemporaryFile()
                 started = time.monotonic()
-                process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
-                                           stdout=output, stderr=subprocess.STDOUT if output else None,
-                                           start_new_session=True)
+                process = Process(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
+                                  stdout=output, stderr=subprocess.STDOUT if output else None,
+                                  start_new_session=True)
                 self.processes.append(process)
         except OSError as error:
             suite.status = 127
@@ -146,13 +154,16 @@ def main(jobs, commands):
         for thread in threads:
             while thread.is_alive():
                 thread.join(0.1)
-                if suites.deadline is not None and time.monotonic() >= suites.deadline:
+                # A nested signal's handler can clear the deadline meanwhile.
+                deadline = suites.deadline
+                if deadline is not None and time.monotonic() >= deadline:
                     suites.stop(signal.SIGKILL, None)
         while suites.signum and not suites.force:
             suites.processes[:] = [process for process in suites.processes if send(process, 0)]
             if not suites.processes:
                 break
-            if suites.deadline is not None and time.monotonic() >= suites.deadline:
+            deadline = suites.deadline
+            if deadline is not None and time.monotonic() >= deadline:
                 suites.stop(signal.SIGKILL, None)
             else:
                 time.sleep(0.1)

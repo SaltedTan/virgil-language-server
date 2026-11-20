@@ -190,6 +190,129 @@ signal.pause()
                 runner.send_signal(signal.SIGTERM)
                 runner.wait(timeout=15)
 
+    def run_nested(self, directory, mode, *suites):
+        """Runs the runner through NESTED in {mode}, sends it SIGTERM once every
+        suite has written its pid to {directory}/ready-*, and checks that the
+        second signal and an EPERM came, that it exits 128 + SIGTERM without a
+        traceback, and that the suites and the pid in {directory}/child are
+        reaped."""
+        script = self.directory / "nested.py"
+        script.write_text(NESTED)
+        runner = subprocess.Popen([sys.executable, str(script), str(SUITES), mode, *suites],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while len(list(directory.glob("ready-*"))) < len(suites) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(len(suites), len(list(directory.glob("ready-*"))), "suites started")
+            runner.send_signal(signal.SIGTERM)
+            output = runner.communicate(timeout=20)[0]
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+                runner.communicate()
+        self.assertIn("nested: second signal", output)
+        self.assertIn("nested: EPERM", output)
+        self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
+        self.assertNotIn("Traceback", output)
+        pids = [int(path.read_text()) for path in directory.glob("ready-*")]
+        pids += [int(path.read_text()) for path in directory.glob("child")]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(alive(pid) for pid in pids):
+            time.sleep(0.05)
+        self.assertEqual([], [pid for pid in pids if alive(pid)], "suites reaped")
+
+    def test_second_signal_during_the_first_handler(self):
+        # Each suite survives TERM and ignores HUP, so only SIGKILL ends it.
+        suite = (f"trap '' HUP; trap : TERM; echo $$ > {self.directory}/ready-$$; "
+                 'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
+        self.run_nested(self.directory, "handler", suite, suite)
+
+    def test_second_signal_during_a_deadline_check(self):
+        for mode in ("deadline-join", "deadline-drain"):
+            with self.subTest(mode=mode):
+                directory = self.directory / mode
+                directory.mkdir()
+                if mode == "deadline-join":
+                    # The suite survives TERM, so its thread still waits.
+                    suite = (f"trap '' HUP; trap : TERM; echo $$ > {directory}/ready-$$; "
+                             'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
+                else:
+                    # The suite exits on TERM and leaves a process in its group
+                    # that ignores TERM and HUP, so the runner drains the group.
+                    suite = (f"(trap '' TERM HUP; exec sleep 30 </dev/null >/dev/null 2>&1) & "
+                             f"echo $! > {directory}/child; trap 'exit 0' TERM; echo $$ > {directory}/ready-$$; wait")
+                self.run_nested(directory, mode, suite)
+
+
+# Runs test/suites.py with a second signal, SIGHUP, delivered at a chosen point
+# while the runner handles the first. In "handler" mode it arrives while the
+# runner forwards SIGTERM, and every later signal to a group sent SIGKILL gets
+# EPERM, as macOS answers once the group's leader is an unreaped zombie. A long
+# switch interval keeps each worker inside process.wait() meanwhile, where
+# poll() can't see that its suite exited. In "deadline-join" and
+# "deadline-drain" modes it arrives between the main thread's check that a
+# deadline is set and its comparison, in the loop that joins the threads or
+# the one that drains the process groups.
+NESTED = '''import importlib.util
+import os
+import signal
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location("suites", sys.argv[1])
+suites = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(suites)
+mode = sys.argv[2]
+killed = set()
+nested = []
+draining = []  # the runner checks the groups that outlive their suites
+
+
+def second_signal(done):
+    """Sends SIGHUP to this process and runs its handler before returning."""
+    nested.append(True)
+    print("nested: second signal", file=sys.stderr, flush=True)
+    os.kill(os.getpid(), signal.SIGHUP)
+    deadline = real_monotonic() + 5
+    while not done() and real_monotonic() < deadline:
+        pass
+
+
+real_killpg = os.killpg
+
+
+def killpg(pgid, signum):
+    if pgid in killed:
+        print("nested: EPERM", file=sys.stderr, flush=True)
+        raise PermissionError(1, "Operation not permitted")
+    if signum == 0:
+        draining.append(True)
+    real_killpg(pgid, signum)
+    if signum == signal.SIGKILL:
+        killed.add(pgid)
+    elif signum == signal.SIGTERM and mode == "handler" and not nested:
+        second_signal(lambda: killed)
+
+
+real_monotonic = time.monotonic
+
+
+def monotonic():
+    caller = sys._getframe(1)
+    if mode != "handler" and not nested and caller.f_code.co_name == "main":
+        runner = caller.f_locals["suites"]
+        if runner.deadline is not None and bool(draining) == (mode == "deadline-drain"):
+            second_signal(lambda: runner.force)
+    return real_monotonic()
+
+
+os.killpg = killpg
+time.monotonic = monotonic
+sys.setswitchinterval(1000)
+sys.exit(suites.main(len(sys.argv) - 3, sys.argv[3:]))
+'''
+
 
 def alive(pid):
     """Whether {pid} still runs. A killed process that its new parent has not
