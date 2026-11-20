@@ -28,7 +28,14 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 HELPER = HERE / "vscode.cjs"
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
+# A semantic version, by the grammar of scripts/check-release.sh: no leading
+# zeros in numbers or numeric prerelease identifiers, and nonempty
+# identifiers, with optional build metadata after "+".
+NUMBER = r"(?:0|[1-9][0-9]*)"
+PRERELEASE_ID = rf"(?:{NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+BUILD_ID = r"[0-9A-Za-z-]+"
+VERSION = (rf"{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*)?"
+           rf"(?:\+{BUILD_ID}(?:\.{BUILD_ID})*)?")
 ARCHIVE = re.compile(rf"virgil-lsp-({VERSION})-x86-64-linux\.tar\.gz")
 VSIX = re.compile(r"virgil-lsp-vscode-([0-9]+\.[0-9]+\.[0-9]+)-linux-x64\.vsix")
 SUMS = "SHA256SUMS"
@@ -82,8 +89,9 @@ def read_sums(path):
 
 
 def version_key(version):
-    """Semantic-version precedence: a prerelease sorts before its release."""
-    core, _, prerelease = version.partition("-")
+    """Semantic-version precedence: a prerelease sorts before its release,
+    and build metadata doesn't count."""
+    core, _, prerelease = version.partition("+")[0].partition("-")
     numbers = tuple(int(part) for part in core.split("."))
     if not prerelease:
         return numbers, (1,)
@@ -170,9 +178,11 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
-def verify_assets(directory, *, allow_untagged=False):
+def verify_assets(directory, *, allow_untagged=False, revision=None):
     """Check one release's three files before anything runs: exact names, the
-    SHA256SUMS lines, and the version and target metadata of both packages."""
+    SHA256SUMS lines, and the version and target metadata of both packages.
+    revision, if given, is the source revision that the build reported for
+    its --version; otherwise an untagged build's is found with git describe."""
     directory = directory.resolve()
     if not directory.is_dir():
         raise Failure(f"{directory} is not a directory")
@@ -195,7 +205,15 @@ def verify_assets(directory, *, allow_untagged=False):
     extension_version = VSIX.fullmatch(package.name)[1]
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
-    version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
+    if revision is None:
+        version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
+    elif not re.fullmatch(r"\S+", revision):
+        raise Failure(f"the build's reported source revision {revision!r} is empty or has white space")
+    elif manifest["tag"] not in [None, revision]:
+        raise Failure(f"{archive.name}: its build reported source revision {revision}, "
+                      f"not its manifest's tag {manifest['tag']}")
+    else:
+        version_revision = revision
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -224,10 +242,15 @@ def described(path, revision):
 def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
-        if old[field] == new[field]:
-            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old[field]}")
-        if version_key(old[field]) > version_key(new[field]):
-            raise Failure(f"--from-assets {name} {old[field]} is newer than --to-assets {name} {new[field]}")
+        old_version, new_version = old[field], new[field]
+        if old_version == new_version:
+            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old_version}")
+        old_key, new_key = version_key(old_version), version_key(new_version)
+        if field == "serverVersion" and old_key == new_key:
+            raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
+                          "differ only in build metadata, so neither is newer")
+        if old_key > new_key:
+            raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
 
 
 def version_output(assets):
@@ -650,6 +673,10 @@ def main(argv=None):
                         help="the older release's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--to-assets", type=Path, required=True,
                         help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
+    parser.add_argument("--to-revision", metavar="REVISION",
+                        help="the source revision that the --to-assets build reported for its --version, "
+                             "as the release workflow's build job records it; by default, the manifest's tag, "
+                             "or for an untagged build git describe of its commit in this checkout")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
@@ -663,7 +690,7 @@ def main(argv=None):
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         raise Failure("the rehearsal runs on Linux x86-64 only")
     # Every check of the assets comes before anything runs.
-    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True)}
+    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True, revision=args.to_revision)}
     check_pair(sets["from"], sets["to"])
     if "DISPLAY" not in os.environ:
         raise Failure("no DISPLAY for VS Code; run the rehearsal under xvfb-run -a")

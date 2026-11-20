@@ -109,6 +109,9 @@ jobs:
           - platform: macOS Apple Silicon via Rosetta 2
             os: macos-15
             target: x86-64-darwin
+    # Only the Linux leg sets this, so the other leg can't overwrite it.
+    outputs:
+      linux-revision: ${{ steps.revision.outputs.linux-revision }}
     env:
       REQUIRE_NVIM: '1'
       ARCHIVE: build/release/virgil-lsp-${{ needs.check.outputs.version }}-${{ matrix.target }}.tar.gz
@@ -168,6 +171,22 @@ jobs:
             cmp "build/$f" "$RUNNER_TEMP"/archive/*/"$f"
           done
           file "$RUNNER_TEMP"/archive/*/virgil-lsp
+      - name: Record the source revision that the Linux archive's --version reports
+        # The upgrade rehearsal expects this revision, rather than describing
+        # the commit again after a tag might have been pushed.
+        id: revision
+        if: matrix.target == 'x86-64-linux'
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          server=$RUNNER_TEMP/archive/virgil-lsp-$VERSION-x86-64-linux/virgil-lsp
+          revision=$("$server" --version | sed -n 's/^  source revision: //p')
+          if [ -z "$revision" ]; then
+            echo "::error::The Linux archive's virgil-lsp --version reported no source revision"
+            exit 1
+          fi
+          echo "Source revision: $revision"
+          echo "linux-revision=$revision" >> "$GITHUB_OUTPUT"
       - name: Record the archive digest for the clean install test
         run: shasum -a 256 build/release/*.tar.gz > "$RUNNER_TEMP/archive.sha256"
       - uses: actions/upload-artifact@v7
@@ -319,9 +338,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # All history and tags: for an untagged build, as in a dry run, the
-          # driver names the --version revision with git describe.
-          fetch-depth: 0
+          # The build job reports the --version revision, so the driver
+          # needs only this checkout's files, not its history or tags.
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
@@ -389,11 +407,13 @@ jobs:
           mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
       - name: Rehearse the upgrade and the rollback
+        env:
+          TO_REVISION: ${{ needs.build.outputs.linux-revision }}
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/upgrade"
           xvfb-run -a python3 test/e2e/upgrade/run.py --from-assets "$RUNNER_TEMP/from" \
-            --to-assets "$RUNNER_TEMP/to" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 | tee "$RUNNER_TEMP/upgrade/run.log"
+            --to-assets "$RUNNER_TEMP/to" --to-revision "$TO_REVISION" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 | tee "$RUNNER_TEMP/upgrade/run.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
