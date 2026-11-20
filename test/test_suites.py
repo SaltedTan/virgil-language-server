@@ -29,6 +29,12 @@ def meeting(name, other, directory):
             f"echo {name}1; sleep 0.2; echo {name}2 >&2; sleep 0.2; echo {name}3")
 
 
+def waiting_suite(directory, term_trap=":"):
+    return (f"trap '' HUP; trap '{term_trap}' TERM; "
+            f"echo $$ > {directory}/$$.tmp; mv {directory}/$$.tmp {directory}/ready-$$; "
+            'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
+
+
 class SuitesTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="suites-")
@@ -189,6 +195,206 @@ signal.pause()
             if runner.poll() is None:
                 runner.send_signal(signal.SIGTERM)
                 runner.wait(timeout=15)
+
+    def run_nested(self, directory, mode, *suites):
+        """Runs the runner through NESTED in {mode}, sends it SIGTERM once every
+        suite has written its pid to {directory}/ready-*, and checks the exit
+        status and the cleanup of the suites and the pid in {directory}/child."""
+        script = self.directory / "nested.py"
+        script.write_text(NESTED)
+        runner = subprocess.Popen([sys.executable, str(script), str(SUITES), mode, *suites],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while len(list(directory.glob("ready-*"))) < len(suites) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(len(suites), len(list(directory.glob("ready-*"))), "suites started")
+            runner.send_signal(signal.SIGTERM)
+            output = runner.communicate(timeout=20)[0]
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+                runner.communicate()
+        self.assertIn("nested: second signal", output)
+        if mode == "denied-kill":
+            self.assertEqual(1, runner.returncode, output)
+            self.assertTrue(output.rstrip().endswith("PermissionError: [Errno 1] first SIGKILL denied"), output)
+        else:
+            self.assertIn("nested: EPERM", output)
+            self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
+            self.assertNotIn("Traceback", output)
+        pids = [int(path.read_text()) for path in directory.glob("ready-*")]
+        pids += [int(path.read_text()) for path in directory.glob("child")]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(alive(pid) for pid in pids):
+            time.sleep(0.05)
+        self.assertEqual([], [pid for pid in pids if alive(pid)], "suites reaped")
+        return output
+
+    def test_second_signal_during_the_first_handler(self):
+        for mode in ("lock", "handler"):
+            with self.subTest(mode=mode):
+                directory = self.directory / mode
+                directory.mkdir()
+                suite = waiting_suite(directory)
+                self.run_nested(directory, mode, suite, suite)
+
+    def test_eperm_on_first_sigkill_to_an_exiting_suite(self):
+        suite = waiting_suite(self.directory, term_trap="exit 0")
+        output = self.run_nested(self.directory, "first-kill-eperm", suite)
+        self.assertIn(f"== {suite}: passed in ", output)
+
+    def test_eperm_on_first_sigkill_to_a_live_suite(self):
+        suite = waiting_suite(self.directory)
+        output = self.run_nested(self.directory, "denied-kill", suite)
+        self.assertIn(f"== {suite}: FAILED (exit status {-signal.SIGKILL})", output)
+
+    def test_second_signal_during_a_grace_period_sigkill(self):
+        suite = waiting_suite(self.directory)
+        self.run_nested(self.directory, "grace-kill", suite, suite)
+
+    def test_second_signal_during_a_deadline_check(self):
+        for mode in ("deadline-join", "deadline-drain"):
+            with self.subTest(mode=mode):
+                directory = self.directory / mode
+                directory.mkdir()
+                if mode == "deadline-join":
+                    # The suite survives TERM, so its thread still waits.
+                    suite = waiting_suite(directory)
+                else:
+                    # The suite exits on TERM and leaves a process in its group
+                    # that ignores TERM and HUP, so the runner drains the group.
+                    suite = (f"(trap '' TERM HUP; touch {directory}/child-ready; "
+                             "exec sleep 30 </dev/null >/dev/null 2>&1) & "
+                             f"echo $! > {directory}/child.tmp; mv {directory}/child.tmp {directory}/child; "
+                             "trap 'exit 0' TERM; "
+                             f"while [ ! -e {directory}/child-ready ]; do sleep 0.05; done; "
+                             f"echo $$ > {directory}/$$.tmp; mv {directory}/$$.tmp {directory}/ready-$$; wait")
+                self.run_nested(directory, mode, suite)
+
+
+# Runs test/suites.py with a second signal, SIGHUP, delivered at a chosen point
+# while the runner is stopping suites. The harness simulates macOS EPERM for
+# groups with an unreaped leader.
+NESTED = '''import importlib.util
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+spec = importlib.util.spec_from_file_location("suites", sys.argv[1])
+suites = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(suites)
+mode = sys.argv[2]
+unreaped = set()
+escalated = set()
+nested = False
+draining = False
+denied = False
+in_flight = None
+
+
+def second_signal():
+    """Sends SIGHUP to this process and runs its handler before returning."""
+    global nested
+    nested = True
+    print("nested: second signal", file=sys.stderr, flush=True)
+    # In grace-kill mode the first group has already received SIGKILL.
+    signal.raise_signal(signal.SIGHUP)
+    assert len(escalated) == len(sys.argv) - 3, "second signal missed a group"
+
+
+class InterruptingLock:
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __enter__(self):
+        if threading.current_thread() is threading.main_thread() and not nested:
+            second_signal()
+        return self.lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self.lock.__exit__(*exc)
+
+
+class SuitesWithInterruptingLock(suites.Suites):
+    def __init__(self, commands, live):
+        super().__init__(commands, live)
+        self.lock = InterruptingLock(self.lock)
+
+
+real_killpg = os.killpg
+
+
+def killpg(pgid, signum):
+    global denied, draining, in_flight
+    assert pgid != in_flight, "group signalled before the previous SIGKILL returned"
+    if pgid in unreaped:
+        if signum == signal.SIGKILL:
+            escalated.add(pgid)
+        print("nested: EPERM", file=sys.stderr, flush=True)
+        raise PermissionError(1, "Operation not permitted")
+    if signum == 0:
+        draining = True
+    if signum == signal.SIGKILL and mode == "denied-kill" and not denied:
+        denied = True
+        raise PermissionError(1, "first SIGKILL denied")
+    real_killpg(pgid, signum)
+    if signum == signal.SIGKILL:
+        escalated.add(pgid)
+        unreaped.add(pgid)
+        if mode == "grace-kill" and not nested:
+            in_flight = pgid
+            try:
+                second_signal()
+            finally:
+                in_flight = None
+    elif signum == signal.SIGTERM and mode in ("handler", "first-kill-eperm", "denied-kill") and not nested:
+        if mode == "first-kill-eperm":
+            # Let the suite exit on TERM before simulating a zombie group.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    os.kill(pgid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline, "suite did not exit on TERM"
+                time.sleep(0.01)
+            unreaped.add(pgid)
+        second_signal()
+
+
+real_poll = subprocess.Popen.poll
+
+
+def poll(process):
+    return None if process.pid in unreaped else real_poll(process)
+
+
+real_monotonic = time.monotonic
+
+
+def monotonic():
+    caller = sys._getframe(1)
+    if not nested and caller.f_code.co_name == "main":
+        runner = caller.f_locals["suites"]
+        if runner.deadline is not None:
+            if mode == "grace-kill":
+                return runner.deadline
+            if mode.startswith("deadline-") and draining == (mode == "deadline-drain"):
+                second_signal()
+    return real_monotonic()
+
+
+if mode == "lock":
+    suites.Suites = SuitesWithInterruptingLock
+os.killpg = killpg
+subprocess.Popen.poll = poll
+time.monotonic = monotonic
+sys.exit(suites.main(len(sys.argv) - 3, sys.argv[3:]))
+'''
 
 
 def alive(pid):
