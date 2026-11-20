@@ -91,7 +91,7 @@ def version_key(version):
     return numbers, (0, parts)
 
 
-def archive_manifest(path, version):
+def archive_manifest(path, version, *, allow_untagged=False):
     """The archive's top directory, manifest.json, and executables' SHA-256s,
     after checking that every member is a regular file or directory under its
     top directory. Each executable is found by name wherever it is: the
@@ -121,10 +121,10 @@ def archive_manifest(path, version):
     for field, value in expected.items():
         if manifest.get(field) != value:
             raise Failure(f"{path.name}: manifest {field} is {manifest.get(field)!r}, not {value!r}")
-    # A release's tag, or none for an untagged build, as a dry run of the
-    # release workflow packages.
-    if manifest.get("tag", False) not in [f"v{version}", None]:
-        raise Failure(f"{path.name}: manifest tag is {manifest.get('tag', 'missing')!r}, not 'v{version}' or null")
+    tags = [f"v{version}", None] if allow_untagged else [f"v{version}"]
+    tag = manifest.get("tag", "missing")
+    if tag not in tags:
+        raise Failure(f"{path.name}: manifest tag is {tag!r}, expected one of {tags!r}")
     for field in ["sourceRevision", "virgilRevision"]:
         if not REVISION.fullmatch(str(manifest.get(field))):
             raise Failure(f"{path.name}: manifest {field} is not a full commit SHA")
@@ -170,7 +170,7 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
-def verify_assets(directory):
+def verify_assets(directory, *, allow_untagged=False):
     """Check one release's three files before anything runs: exact names, the
     SHA256SUMS lines, and the version and target metadata of both packages."""
     directory = directory.resolve()
@@ -193,7 +193,7 @@ def verify_assets(directory):
             raise Failure(f"{file}: SHA-256 {digests[file.name]}, but {SUMS} lists {sums[file.name]}")
     version = ARCHIVE.fullmatch(archive.name)[1]
     extension_version = VSIX.fullmatch(package.name)[1]
-    top, manifest, manifest_bytes, executables = archive_manifest(archive, version)
+    top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
     version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
     return {
@@ -596,7 +596,7 @@ def now():
 
 
 def public(assets):
-    return {key: value for key, value in assets.items() if key not in ["top", "manifest"]}
+    return {key: value for key, value in assets.items() if key not in ["top", "manifest", "versionRevision"]}
 
 
 def rehearse(sets, logs, tracks, receipt):
@@ -647,7 +647,7 @@ def main(argv=None):
     parser.add_argument("--from-assets", type=Path, required=True,
                         help="the older release's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--to-assets", type=Path, required=True,
-                        help="the newer release's archive, linux-x64 VSIX, and SHA256SUMS")
+                        help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
@@ -661,7 +661,7 @@ def main(argv=None):
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         raise Failure("the rehearsal runs on Linux x86-64 only")
     # Every check of the assets comes before anything runs.
-    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets)}
+    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True)}
     check_pair(sets["from"], sets["to"])
     if "DISPLAY" not in os.environ:
         raise Failure("no DISPLAY for VS Code; run the rehearsal under xvfb-run -a")

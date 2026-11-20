@@ -102,17 +102,17 @@ class AssetTests(TemporaryTest):
     def test_accepts_an_untagged_build(self):
         # A release workflow dry run's package: no tag, so --version prints
         # git describe of its commit, which needs that commit in the checkout.
-        result = subprocess.CompletedProcess([], 0, stdout=f"v{OLD[0]}-3-g{'1' * 12}\n", stderr="")
+        result = subprocess.CompletedProcess([], 0, stdout=f"v{OLD[0]}-3-g{'2' * 12}\n", stderr="")
+        directory = make_assets(self.root, *NEW, manifest={"tag": None})
         with mock.patch.object(run.subprocess, "run", return_value=result) as describe:
-            assets = run.verify_assets(make_assets(self.root, manifest={"tag": None}))
-        self.assertEqual(describe.call_args.args[0][-4:], ["describe", "--always", "--abbrev=12", "1" * 40])
+            assets = run.verify_assets(directory, allow_untagged=True)
+        self.assertEqual(describe.call_args.args[0][-4:], ["describe", "--always", "--abbrev=12", "2" * 40])
         self.assertIsNone(assets["tag"])
-        self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-3-g{'1' * 12}")
-        self.assertIn(f"  source revision: v{OLD[0]}-3-g{'1' * 12}\n", run.version_output(assets))
+        self.assertIn(f"  source revision: v{OLD[0]}-3-g{'2' * 12}\n", run.version_output(assets))
         missing = subprocess.CompletedProcess([], 128, stdout="", stderr="fatal: Not a valid object name")
         with mock.patch.object(run.subprocess, "run", return_value=missing):
             with self.assertRaisesRegex(run.Failure, "can't describe; fetch that commit and its tags"):
-                run.verify_assets(make_assets(self.root, manifest={"tag": None}))
+                run.verify_assets(directory, allow_untagged=True)
 
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
@@ -279,9 +279,11 @@ class PropagationTests(TemporaryTest):
                 works.append(self.home.parent)
                 raise run.Failure("worker missing")
         logs = self.root / "logs"
-        args = ["--from-assets", str(make_assets(self.root)), "--to-assets", str(make_assets(self.root, *NEW)),
+        args = ["--from-assets", str(make_assets(self.root)),
+                "--to-assets", str(make_assets(self.root, *NEW, manifest={"tag": None})),
                 "--logs", str(logs), "--vscode", str(executable)]
         with mock.patch.object(run, "Rehearsal", Broken), mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(run, "described", return_value=f"v{OLD[0]}-3-g{'2' * 12}"), \
                 mock.patch.object(tempfile, "tempdir", str(tmp)):
             self.assertEqual(run.main(args), 1)
         self.assertEqual(len(works), 1)
@@ -290,8 +292,21 @@ class PropagationTests(TemporaryTest):
         written = receipt_of(logs)
         self.assertEqual(written["phases"][0]["archive"]["result"], "fail")
         self.assertEqual(written["assets"]["to"]["serverVersion"], NEW[0])
+        self.assertEqual(written["assets"]["from"]["tag"], "v" + OLD[0])
+        self.assertIsNone(written["assets"]["to"]["tag"])
+        for assets in written["assets"].values():
+            self.assertNotIn("versionRevision", assets)
         with self.assertRaisesRegex(run.Failure, "new or empty directory"):
             run.main(args)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and platform.machine() == "x86_64", "Linux x86-64 only")
+    def test_rejects_an_untagged_rollback_baseline(self):
+        old = make_assets(self.root, manifest={"tag": None})
+        new = make_assets(self.root, *NEW)
+        logs = self.root / "logs"
+        with self.assertRaisesRegex(run.Failure, "manifest tag is None"):
+            run.main(["--from-assets", str(old), "--to-assets", str(new), "--logs", str(logs)])
+        self.assertFalse(logs.exists())
 
     def test_assets_are_checked_before_anything_runs(self):
         bad = make_assets(self.root, *NEW, sums=lambda lines: lines[:1])

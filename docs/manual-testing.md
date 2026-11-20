@@ -118,7 +118,7 @@ The maintainer reported full runs from their Mac to pc-ubuntu against the publis
 
 ### Upgrade and rollback rehearsals
 
-Published assets and phase results for runs by hand of the [upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal). The release workflow also runs it on every release and dry run, and keeps each run's receipt in that run's `upgrade-rehearsal` artifact ([In the release workflow](releasing.md#in-the-release-workflow)) rather than here. These runs use the driver's own receipt format and coverage limits described there. The tables identify packages by SHA-256 and record each phase's result.
+These tables identify the published packages by SHA-256 and record each phase's result from rehearsals run by hand. The release workflow also runs the rehearsal on every release and dry run. Its `upgrade-rehearsal-attempt-<n>` artifact holds the command output and any logs and receipt the driver produced. [Upgrade and rollback rehearsal](releasing.md#upgrade-and-rollback-rehearsal)
 
 The published assets that these runs used, with their SHA-256s as their releases' `SHA256SUMS` list them:
 

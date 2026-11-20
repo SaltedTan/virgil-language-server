@@ -306,7 +306,8 @@ jobs:
     # this run's own, and back, in one temporary home and one VS Code profile.
     # The previous release is the most recently published one, prerelease or
     # not, whose tag isn't this run's version; without one, the job fails. The
-    # artifact holds the driver's output, its logs, and receipt.json.
+    # artifact holds run.log once the rehearsal command runs, plus the
+    # driver's logs and receipt.json if it gets far enough to write them.
     name: Upgrade and rollback rehearsal (Linux, archive and VSIX)
     needs: [check, build, vsix]
     runs-on: ubuntu-24.04
@@ -321,12 +322,6 @@ jobs:
           # All history and tags: for an untagged build, as in a dry run, the
           # driver names the --version revision with git describe.
           fetch-depth: 0
-      - name: Install Xvfb if missing
-        run: |
-          if ! command -v xvfb-run >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends xvfb
-          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -343,10 +338,11 @@ jobs:
           node test/e2e/download.cjs "$vscode" .vscode-test
       - name: Choose the previous release
         id: previous
+        shell: bash
         run: |
-          tag=$(gh release list --limit 100 --json tagName,publishedAt,isDraft --jq '
-            [.[] | select((.isDraft | not) and .tagName != "v" + env.VERSION)]
-            | sort_by(.publishedAt, .tagName) | last | .tagName // empty')
+          tag=$(gh api --paginate --slurp 'repos/{owner}/{repo}/releases?per_page=100' | jq -r '
+            [.[][] | select(.draft == false and .published_at != null and .tag_name != "v" + env.VERSION)]
+            | max_by([.published_at, .tag_name]) | .tag_name // empty')
           if [ -z "$tag" ]; then
             echo "::error::No published release other than v$VERSION to rehearse the upgrade from. See docs/releasing.md#upgrade-and-rollback-rehearsal."
             exit 1
@@ -395,7 +391,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: upgrade-rehearsal
+          name: upgrade-rehearsal-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/upgrade
           if-no-files-found: warn
           retention-days: 30
