@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Rehearse a Linux upgrade from one released version to the next and the
-rollback to it, with the released archives and linux-x64 VSIX files.
+"""Rehearse a Linux upgrade from a published release to a newer release or
+untagged build and back, using the Linux archives and linux-x64 VSIX files.
 See docs/releasing.md#upgrade-and-rollback-rehearsal for prerequisites.
 """
 import argparse
