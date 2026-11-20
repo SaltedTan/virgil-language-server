@@ -92,14 +92,14 @@ Durable technical decisions are recorded as short ADRs in [docs/decisions/](docs
 
 ## Project file compatibility review
 
-Server 1.x keeps the version 1 project file's format and project selection ([ADR-0012](docs/decisions/0012-project-configuration-stability.md)). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, or to the Virgil pin with these questions:
+Server 1.x keeps the format and project selection of version 1 and version 2 project files under the [configuration contract](docs/configuration.md#what-server-1x-keeps). Review a change to `src/workspace/`, to `LspProjectDiagnostics` or `LspWorkspaceEvents` in `src/protocol/`, or to the Virgil pin with these questions:
 
-- Does it change how a version 1 file is parsed or validated: a field, type, default, or reserved value, the handling of unknown or repeated fields, or the version literal?
+- Does it change how a version 1 or version 2 file is parsed or validated, including fields, types, defaults, accepted target names, the handling of unknown or repeated fields, or version literals?
 - Does it change which files a project selects or owns: pattern syntax or matching, ordering, exclusion, symbolic links, or the Virgil root?
 - Does it change the governing project file, workspace folders, the active project, or how unsaved and on-disk configuration changes are picked up?
 - Does it change a capacity limit?
 
-If it does, find the change in the [table of what each change needs](docs/configuration.md#what-a-change-needs). A fix that makes the server match the documentation needs only a changelog entry. A new field, a new accepted value, a meaning for reserved pattern characters, or comments need a new format version. These changes to version 1 need a new server major version: removing or renaming a field, giving it another type or default, tightening validation, changing how patterns select, order, own, or exclude files, following symbolic links, changing the Virgil root's precedence or the choice of governing file or active project, and no longer reading version 1. Changes to when the server reads and refreshes configuration (*Behavior* rows), changes to capacity limits, and language option changes from a compiler pin need only a changelog entry. Update the matching row of the [inventory](docs/configuration.md#inventory) and its tests.
+If it does, find the change in the [table of what each change needs](docs/configuration.md#what-a-change-needs). A fix that makes the server match the documentation needs only a changelog entry. A new field, a new accepted value, a meaning for reserved pattern characters, or comments need a new format version. A new server major version is needed to remove or rename a field, change its type or default, remove an accepted value, tighten validation, change how patterns select, order, own, or exclude files, follow symbolic links, change the Virgil root's precedence or the choice of governing file or active project, or drop support for either version. Changes to when the server reads and refreshes configuration (*Behavior* rows), changes to capacity limits, and language option changes from a compiler pin need only a changelog entry. Update the matching row of the [inventory](docs/configuration.md#inventory) and its tests.
 
 For a Virgil pin update, compare the language options (`CLOptions.langOpt` in `vendor/virgil/aeneas/src/main/CLOptions.v3`) at the old and new revisions: their names, their defaults, and whether they need an unstable build. Update the [compiler flags table](docs/configuration.md#compiler-flags). For each option that was removed, renamed, or changed, add a changelog entry that names it and says how to migrate.
 
@@ -115,12 +115,13 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 3. Update the revision in `THIRD_PARTY_NOTICES.md` and `docs/compatibility.md`.
 4. Regenerate the formatter's corpus record with `make all build/format-corpus-probe`
    and `python3 test/format/corpus.py --write build/virgil-lsp`, and review the
-   diff of `test/format/virgil-corpus.txt`: each new or removed file, each file
-   that no longer formats, and each line that formatting now changes. The corpus
-   suite compares the record only when the submodule is checked out at the
-   gitlink, which it reads from the index as `test/release/check_pin.py` does,
-   so stage the new gitlink with the record. While they differ, as in the advisory Virgil master
-   workflow, it says so and runs its other checks.
+   diff of `test/format/virgil-corpus.txt` for new or removed files, files that
+   start or stop formatting, changes to refusal reports, and changes to the
+   lines that formatting touches. The corpus suite compares the record only
+   when the submodule is checked out at the gitlink, which it reads from the
+   index as `test/release/check_pin.py` does, so stage the new gitlink with the
+   record. While they differ, as in the advisory Virgil master workflow, it
+   says so and runs its other checks.
 5. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade. If `AnalysisTargets:wrapper_runtime_files`

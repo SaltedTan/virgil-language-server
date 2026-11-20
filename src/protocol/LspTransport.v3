@@ -35,9 +35,18 @@ class LspTransport(handle: Array<byte> -> Array<byte>, finished: void -> bool, m
 	private def writer = LspFrameWriter.new(write);
 	// Why the connection stopped, once {receive} or {close} has returned false.
 	def var failure: string;
-	// Called for each skipped message, before the next one is handled: it
-	// may have changed a document that the server can't name.
+	// Called when a frame starts being skipped. It may have changed a
+	// document that the server can't name.
 	var skipped: void -> void;
+
+	new() {
+		reader.onSkip = skipStarted;
+	}
+
+	private def skipStarted(reason: string) {
+		if (skipped != null) skipped();
+		warn(Strings.format1("skipped a message: %s", reason));
+	}
 
 	// Server-initiated messages use the same writer and failure path as replies.
 	def send(payload: Array<byte>) {
@@ -59,12 +68,8 @@ class LspTransport(handle: Array<byte> -> Array<byte>, finished: void -> bool, m
 					// Later input, even in the same chunk, is not read.
 					if (finished()) return false;
 				}
-				Skipped(reason) => {
-					warn(Strings.format1("skipped a message: %s", reason));
-					if (skipped != null) skipped();
-				}
 				Malformed(reason) => return fail(Strings.format1("malformed message header: %s", reason));
-				Incomplete => ;
+				_ => ;
 			}
 		}
 		return true;

@@ -17,6 +17,9 @@ component DocumentUri {
 		}
 		return buf.extract();
 	}
+	def canonicalIsFile(key: string) -> bool {
+		return key != null && Strings.startsWith(key, "file:///");
+	}
 	// Decoded, lexically normalized absolute path, or null for non-file,
 	// invalid, or nonlocal URIs. Never resolves symlinks or consults disk.
 	def filePath(uri: string) -> string {

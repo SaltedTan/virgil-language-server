@@ -191,8 +191,9 @@ Dynamic watcher registration requests are answered as a real client would.
 Mandatory semantic cases assert that absent/false hierarchy support returns flat
 `SymbolInformation[]` and true returns `DocumentSymbol[]` (#196). A worker-backed
 project checks that an empty change at version 2 produces a rename edit at
-version 2 (#200), with full-text and rejected ranged-change controls. The runner
-waits for that rename reply before sending shutdown. Typed IDs, decimal options,
+version 2 (#200), with a full-text control. After a rejected ranged change, the
+rename gets RequestFailed, since the server's copy is out of date (#514). The
+runner waits for that rename reply before sending shutdown. Typed IDs, decimal options,
 out-of-range numbers, and invalid lifecycle ordering also have fixed oracles.
 
 ### Successful reply shapes
@@ -300,6 +301,8 @@ Follow the [model update procedure](schema/3.17/README.md).
 
 `code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, statements that swallowed a later line, and invalid params over stdio.
 
+`out_of_sync_edits.py` checks that code actions, prepareRename, and rename refuse a document whose change the server rejected, until a full-text change, and that rename refuses to edit such a document even from another document. It also checks that a rename refuses to edit a file whose didOpen was rejected or that got a didChange or didSave while closed, until the editor closes the file or the server accepts its open. The rename tests also exercise a project source with no references to the renamed name in the snapshot. A rejected change adding a reference, or a rejected open with that reference, blocks a rename from another source both at planning and after a paused preflight. The suite also pauses the worker to check refusal when a target's change is rejected during preflight and when the request document becomes out of sync while waiting for an analysis with parse errors. An accepted change followed by a rejected change still reports that the copy is out of date, both while waiting for analysis and during preflight. The test also checks that a pending rename refuses while the body of an oversized frame is still arriving. After a skipped frame or an undecodable didChange, every open document refuses until it gets a full-text change or is reopened. A code action with empty diagnostics still returns an empty array for a marked document, while one with a matching semicolon diagnostic refuses. `$/setTrace` changes nothing.
+
 ## Seeded source mutations
 
 `source_mutations.py` edits reviewed source and checks that every request
@@ -340,7 +343,10 @@ After each step, the case sends its requests at once and waits for every
 reply. They go round robin through the 20 request methods of the coverage
 manifest (`MAIN_METHODS`), with UTF-16 positions in the current text, mostly
 at names, sometimes at the end or inside a surrogate pair, and params for each
-method. Rename edits are never applied. A prepare request that returns items
+method. Generated code-action requests have empty diagnostics and must return
+`[]`. A replay can accept `RequestFailed` from a code-action request whose
+context names a semicolon diagnostic and admits quick fixes. Rename edits are
+never applied. A prepare request that returns items
 gets supertypes and subtypes, or incoming and outgoing calls, for the first
 item, and a completion that returns items gets `completionItem/resolve` for
 its first item with `data`, or else its first item. `run.json` lists every

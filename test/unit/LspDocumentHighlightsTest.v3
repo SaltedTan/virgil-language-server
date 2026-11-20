@@ -742,7 +742,7 @@ def test_cancel_owned_request(t: Tester) {
 	var p = at(SOURCE, "a + step", 4), replies = Vector<JsonRpcReply>.new();
 	var request = JsonRpcMessage.Request(JsonRpcId.Int(123), "owned", s.positionParams("Refs.v3", p.0, p.1));
 	var r = requests.submit(request, "owned", LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare,
-		null, fun (reply: JsonRpcReply) { replies.put(reply); });
+		null, fun (reply: JsonRpcReply) { replies.put(reply); }, null);
 	t.assert(r != null, "the owned request waits");
 	s.cancel(JsonValue.Int(123));
 	t.asserti(0, replies.length);
