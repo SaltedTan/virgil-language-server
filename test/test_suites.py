@@ -173,11 +173,11 @@ signal.pause()
             while not ready.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertTrue(ready.exists(), "suite started")
+            deadline = time.monotonic() + 10
             runner.send_signal(signal.SIGTERM)
             # Send the second signal only once the runner has forwarded the
             # first: sent sooner, it can arrive before or during the runner's
             # handler for the first, which changes the exit status.
-            deadline = time.monotonic() + 10
             while not cleaned.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertTrue(cleaned.exists(), "first signal forwarded")
@@ -185,6 +185,7 @@ signal.pause()
             runner.send_signal(signal.SIGHUP)
             self.assertEqual(128 + signal.SIGTERM, runner.wait(timeout=5))
             self.assertFalse(alive(int(ready.read_text())), "suite reaped after second signal")
+            self.assertLess(time.monotonic(), deadline, "second signal ended the run before the grace timeout")
         finally:
             if runner.poll() is None:
                 runner.send_signal(signal.SIGTERM)
