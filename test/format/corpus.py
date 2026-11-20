@@ -6,13 +6,11 @@
 Usage: test/format/corpus.py [--write] build/virgil-lsp
 
 ADR-0019 decision 8. `test/format/virgil-corpus.txt` records the Virgil pin
-and, for every `.v3` file of `aeneas/src`, `lib`, and `apps` in the pinned
-`vendor/virgil`, whether it formatted or the error that `virgil-lsp format
---check` reports for it, a hash of its formatted text, and the lines of the
-input that formatting changes. This suite formats those files again and
-fails, naming the file and lines, when anything differs from the record or
-when the record's pin isn't the submodule's checkout. With `--write`, it
-regenerates the record instead; review the diff.
+and a result for each `.v3` file of `aeneas/src`, `lib`, and `apps` in the
+pinned `vendor/virgil`. The suite formats those files again and reports
+differences from the record, including changes to the full refusal lines
+from `virgil-lsp format --check`. With `--write`, it regenerates the record
+instead. Review the diff.
 
 The record applies only when the submodule is checked out at the
 superproject's gitlink (from the index, or `HEAD` without an index entry, as
@@ -34,10 +32,9 @@ the server from `test/format/FormatCorpusProbe.v3`, which calls the
 formatter as the `format` command does and compares the tokens that the
 parser consumed, so no second lexer can disagree with the parser. The suite
 also runs `virgil-lsp format --check` once over the recorded files and
-requires it to report exactly the files and lines that the probe does, and
-for each refused file an error that names its complete path and ends with
-the probe's message. The record keeps each validated error line, which
-pins its form.
+requires it to report each file that would change and its first changed
+line. Each refused file must get an error that names its complete path
+and ends with the probe's message.
 """
 import hashlib
 import importlib.util
@@ -72,6 +69,7 @@ HEADER = """\
 # written by `python3 test/format/corpus.py --write build/virgil-lsp`, which
 # `make test` checks. Review its diff after a formatter change or a pin update.
 #
+# The record has one pin line with the Virgil commit ID.
 # A total line gives a directory's files, those that format, those that
 # formatting changes, and their changed lines. The file rows are grouped by
 # directory (aeneas/src, lib, apps) and sorted by path within each group.
@@ -126,7 +124,7 @@ def gitlink():
 
 
 def listing(*args):
-    """The NUL-separated paths that `git -C vendor/virgil <args>` prints, as bytes."""
+    """The NUL-separated entries that `git -C vendor/virgil <args>` prints, as bytes."""
     run = git(*args)
     if run.returncode != 0:
         fail(f'cannot list the files of {VIRGIL}: {run.stderr.decode(errors="replace").strip()}')

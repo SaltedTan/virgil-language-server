@@ -5,6 +5,7 @@
 # written by `python3 test/format/corpus.py --write build/virgil-lsp`, which
 # `make test` checks. Review its diff after a formatter change or a pin update.
 #
+# The record has one pin line with the Virgil commit ID.
 # A total line gives a directory's files, those that format, those that
 # formatting changes, and their changed lines. The file rows are grouped by
 # directory (aeneas/src, lib, apps) and sorted by path within each group.
