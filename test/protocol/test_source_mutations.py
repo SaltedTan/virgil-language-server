@@ -930,6 +930,7 @@ class StandIn(unittest.TestCase):
                                 s.send("textDocument/didChange", params, request=False)
                         self.assertLess(time.monotonic() - started, 1)
                 finally:
+                    s.deadlines.run = min(s.deadlines.run, time.monotonic() + 0.2)
                     s.close()
 
     def test_restoration_followups_are_saved_and_replayed(self):
