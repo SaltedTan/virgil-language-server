@@ -107,6 +107,7 @@ class LspServer {
 		formatting.warn = projectWarning;
 		selectionRanges.register(dispatcher);
 		completion = LspCompletion.new(documents, projects, publishNotification);
+		documents.onOutOfSync = completion.rememberRefusals;
 		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);

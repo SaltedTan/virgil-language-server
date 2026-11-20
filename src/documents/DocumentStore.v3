@@ -33,6 +33,7 @@ class DocumentVersionIdentity { }
 class DocumentStore {
 	private var reader: string -> Array<byte>;
 	private var boundedReader: (string, int) -> Array<byte>;
+	var onOutOfSync: () -> void;
 
 	private var capacity: int;
 	private var used: long;
@@ -148,6 +149,7 @@ class DocumentStore {
 		if (key == null) return;
 		if (overlays[key] != null) {
 			unsynced[key] = true;
+			if (onOutOfSync != null) onOutOfSync();
 		} else if (!heldOverflow && DocumentUri.canonicalIsFile(key) && !held.has(key)) {
 			if (held.length >= maxHeld || key.length > maxHeldBytes - heldBytes) {
 				heldOverflow = true;
@@ -163,13 +165,14 @@ class DocumentStore {
 	// Marks every open document out of sync.
 	def markAllOutOfSync() {
 		overlays.apply(markOpen);
+		if (onOutOfSync != null) onOutOfSync();
 	}
 	private def markOpen(key: string, doc: DocumentOverlay) {
 		unsynced[key] = true;
 	}
 	// Whether the open document {doc} is marked out of sync.
 	def outOfSync(doc: DocumentOverlay) -> bool {
-		return unsynced.length > 0 && unsynced[doc.uri];
+		return doc != null && unsynced.length > 0 && unsynced[doc.uri];
 	}
 	// Why edits to {uri} computed from the server's copy of it could be wrong,
 	// or null if they can't: the document is open and marked out of sync, or
