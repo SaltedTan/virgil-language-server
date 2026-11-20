@@ -96,7 +96,7 @@ class FileReplacement(path: string) {
 		return text;
 	}
 	// Replaces the file that open() read with {text}. Returns false after
-	// reporting a refusal or failure.
+	// reporting why it couldn't, leaving the file as it is.
 	def replace(text: Array<byte>) -> bool {
 		if (!create()) return refuse("a new file can't be created in its directory");
 		var created = FileStatus.new();

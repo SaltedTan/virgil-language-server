@@ -90,7 +90,7 @@ component FormatHook {
 		currentPoint = -1;
 		reference = null;
 	}
-	// Returns the name of a supplied option that requires --write, or null.
+	// The first option given that only --write uses, or null.
 	def writeOnly() -> string {
 		if (fakes.length > 0) return "--test-fake";
 		if (held != 0) return "--test-hold";
