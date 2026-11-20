@@ -59,6 +59,12 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	// Called once the reply from {answer} is the owner's last reply, which
 	// a newer one replaces and {LspQueryRequests.invalidate} forgets.
 	def kept() { }
+	// The result to send instead of any other for the request, or Null.
+	// Completion's edits come from the server's copy of its document, so a
+	// copy marked out of sync since the request arrived gets an empty list.
+	def refusal() -> JsonValue {
+		return JsonValue.Null;
+	}
 }
 
 // The requests of one method whose replies need a query of a temporary
@@ -132,6 +138,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the request was answered");
 		running = r;
 		if (!current(r)) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document changed");
+		if (r.refusal() != JsonValue.Null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document is out of sync");
 		var ctx = r.context;
 		// The sources are captured now, in this generation.
 		r.generation = generation;
@@ -179,10 +186,14 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 	// runs again, once, if its document is unchanged and no newer request
 	// waits; otherwise the reply is the fallback. A stale result is neither
 	// sent nor kept. An analysis that completed without an answer gets the
-	// permanent fallback: the project as it stands has none there.
+	// permanent fallback: the project as it stands has none there. A request
+	// that {LspQueryRequest.refusal} refuses gets that reply, and nothing is
+	// kept.
 	def complete(r: LspQueryRequest, outcome: AnalysisOutcome) {
 		if (running == r) running = null;
 		if (r.answered) return;
+		var refused = r.refusal();
+		if (refused != JsonValue.Null) return finish(r, JsonRpcReply.Result(refused));
 		if (AnalysisOutcome.Completed.?(outcome) && r.generation != generation) {
 			if (!r.rerun && waiting == null && current(r)) {
 				r.rerun = true;
@@ -238,9 +249,15 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		cachedIdentity = null;
 		cachedUri = null;
 	}
-	// Sends {reply} to {r}, unless it was answered, and withdraws its job.
+	// Sends {reply} to {r}, unless it was answered, and withdraws its job. A
+	// result or fallback that {LspQueryRequest.refusal} refuses is replaced;
+	// an error, such as a cancellation, is sent as it is.
 	def finish(r: LspQueryRequest, reply: JsonRpcReply) {
 		if (r.answered) return;
+		if (!JsonRpcReply.Error.?(reply)) {
+			var refused = r.refusal();
+			if (refused != JsonValue.Null) reply = JsonRpcReply.Result(refused);
+		}
 		r.answered = true;
 		if (waiting == r) waiting = null;
 		if (running == r) running = null;

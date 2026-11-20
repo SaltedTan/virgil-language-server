@@ -14,7 +14,11 @@ didn't have it open. This includes c.v3, which has no reference to B.g in
 the last accepted analysis. After a frame over the payload limit, or a didChange
 over the JSON value limit, every open document refuses until it gets a
 full-text change or is reopened. A valid ignored notification, $/setTrace,
-changes nothing. Each session shuts down and exits with status 0, and every
+changes nothing. Completion answers an empty list, incomplete, for a document
+whose change the server rejected, rather than items whose edits come from the
+server's copy: at once, at the cursor of a cached reply, and for a request
+that waited on the worker when the change came; an accepted full-text change
+restores it. Each session shuts down and exits with status 0, and every
 receive has a deadline.
 
 Run from the repository root:
@@ -51,6 +55,13 @@ TOO_LARGE = "//" + "x" * STORE_BYTES
 A_USE = {"line": 2, "character": 11}
 B_DECL = {"line": 1, "character": 5}
 HELD = "the client may have %s open with text the server doesn't have"
+# The issue's example: the server keeps "whi;" after rejecting the change that
+# deletes the "i", so a completion at "wh|;" would replace the ";" too.
+TYPED = "component A {\n\tdef f() {\n\t\twhi;\n\t}\n}\n"
+EDITED = TYPED.replace("whi;", "wh;")
+WH = {"line": 2, "character": 4}
+DELETE_I = {"start": WH, "end": {"line": 2, "character": 5}}
+COMPLETION_CAPS = {"textDocument": {"completion": {"completionItem": {"insertReplaceSupport": True}}}}
 TARGET = "the server's copy of %s is out of date"
 
 
@@ -109,7 +120,30 @@ class EditSession(FormatSession):
     def rename(self, name, position):
         return self.reply(self.send_rename(name, position), 60)
 
+    def send_completion(self, name, position):
+        return self.send("textDocument/completion", {"textDocument": {"uri": self.uri(name)}, "position": position})
+
+    def rejected_edit(self, name, range, text):
+        """An incremental change, which the server rejects: the client's text
+        now differs from the server's."""
+        uri = self.uri(name)
+        self.versions[uri] += 1
+        self.notify("didChange", name, textDocument={"version": self.versions[uri]},
+                    contentChanges=[{"range": range, "text": text}])
+
     # Checks
+
+    def while_replaces(self, reply, end):
+        """{reply} offers "while", replacing "wh" and the identifier's rest up
+        to {end} on line 2."""
+        items = {i["label"]: i for i in reply.get("result", {}).get("items", [])}
+        assert "while" in items, reply
+        edit = items["while"]["textEdit"]
+        assert edit["insert"] == {"start": {"line": 2, "character": 2}, "end": WH}, edit
+        assert edit["replace"] == {"start": {"line": 2, "character": 2}, "end": {"line": 2, "character": end}}, edit
+
+    def no_completion(self, reply):
+        assert reply.get("result") == {"isIncomplete": True, "items": []}, reply
 
     def action_offered(self, name=SEMI, diagnostics=None):
         msg = self.code_action(name, diagnostics)
@@ -397,6 +431,39 @@ def rejected_open_before_initialize(exe, root):
         s.close()
 
 
+def completion(exe, root):
+    """Completion offers no edit computed from the server's out-of-date copy,
+    even where a cached or a waiting reply would."""
+    s = EditSession(exe, root)
+    try:
+        s.start(COMPLETION_CAPS, rootUri=root.as_uri())
+        s.open("a.v3", TYPED)
+        s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 5)
+        # The same cursor again would get the cached reply.
+        s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 5)
+        s.rejected_edit("a.v3", DELETE_I, "")
+        s.no_completion(s.reply(s.send_completion("a.v3", WH), 60))
+        s.change("a.v3")
+        s.no_completion(s.reply(s.send_completion("a.v3", WH), 60))
+        s.change("a.v3", TYPED)
+        s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 5)
+        # A completion waiting on the worker when the change is rejected.
+        with paused_worker(s):
+            s.change("a.v3", TYPED + "\n")
+            pending = s.send_completion("a.v3", WH)
+            s.result(s.send("virgil-lsp/snapshot"))
+            assert pending not in s.waiting, s.waiting
+            s.rejected_edit("a.v3", DELETE_I, "")
+            s.no_completion(s.reply(s.send_completion("a.v3", WH), 10))
+        s.no_completion(s.reply(pending, 60))
+        # The editor's text, accepted: "while" replaces "wh" and not the ";".
+        s.change("a.v3", EDITED)
+        s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 4)
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-out-of-sync-") as work:
@@ -412,11 +479,12 @@ def main():
         incomplete_skip_during_preflight(exe, root)
         lost_messages(exe, root)
         ignored_notification(exe, root)
+        completion(exe, root)
         (root / "c.v3").write_text(C_TEXT)
         unreferenced_source(exe, root, open_document=True)
         unreferenced_source(exe, root, open_document=False)
     print("out-of-sync edits: rejected changes, rename preflight, rejected opens, unopened changes, "
-          "lost messages, and ignored notifications: passed")
+          "lost messages, ignored notifications, and completion: passed")
 
 
 if __name__ == "__main__":
