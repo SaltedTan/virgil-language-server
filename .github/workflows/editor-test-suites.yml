@@ -240,10 +240,12 @@ jobs:
   lazyvim-macos:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
     # supports arm64-darwin (ADR-0003).
-    name: LazyVim test (archive, macOS Apple Silicon via Rosetta 2, Homebrew Neovim)
+    name: LazyVim test (archive, macOS Apple Silicon via Rosetta 2, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
     env:
+      NVIM_VERSION: 0.12.6
+      NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
       ARCHIVE: virgil-lsp-${{ inputs.version }}-x86-64-darwin.tar.gz
     steps:
       - uses: actions/checkout@v7
@@ -251,8 +253,16 @@ jobs:
           submodules: recursive
       - name: Install Rosetta 2
         run: sudo softwareupdate --install-rosetta --agree-to-license
-      - name: Install Neovim and tmux (Homebrew)
-        run: brew install neovim tmux
+      - name: Install Neovim ${{ env.NVIM_VERSION }}
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-macos-arm64/bin" >> "$GITHUB_PATH"
+      - name: Install tmux (Homebrew)
+        run: brew install tmux
       - name: Show versions
         run: |
           sw_vers
@@ -331,10 +341,12 @@ jobs:
   lazyvim-macos-jvm:
     # The JVM build for Apple Silicon with Rosetta 2 installed. native.py
     # requires an untranslated runner and rejects translated descendants.
-    name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Homebrew Neovim)
+    name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
     env:
+      NVIM_VERSION: 0.12.6
+      NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
       ARCHIVE: virgil-lsp-${{ inputs.version }}-jvm-arm64-darwin.tar.gz
     steps:
       - uses: actions/checkout@v7
@@ -344,8 +356,16 @@ jobs:
         run: |
           python3 test/jvm/test_native.py
           python3 test/jvm/native.py host
-      - name: Install Neovim and tmux (Homebrew)
-        run: brew install neovim tmux
+      - name: Install Neovim ${{ env.NVIM_VERSION }}
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-macos-arm64/bin" >> "$GITHUB_PATH"
+      - name: Install tmux (Homebrew)
+        run: brew install tmux
       - name: Show versions
         run: |
           sw_vers

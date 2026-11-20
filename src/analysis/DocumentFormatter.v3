@@ -100,6 +100,9 @@ component AnalysisFormatMark {
 class FormatterFunHeader {
 	var tabs: int;
 	var anchor: (int, int, int, int);
+	// For a fun outside parentheses and brackets, the tabs of the line where
+	// its statement started, or -1.
+	var statementTabs: int;
 }
 
 // Marks the tokens of a file that parsed (AnalysisFormatMark). The walk keeps
@@ -339,8 +342,10 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 // tabs that indent its body and its '}'. A '(' after the keyword of an if,
 // while, or for statement holds that statement's header ({control}). For a
 // fun expression's '{', {funHeader} holds the enclosing statement's anchor.
-// {caseTabs} are the leading tabs of the line where a match's current case started.
-class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader, parentElseLine: int) {
+// {caseTabs} are the leading tabs of the line where a match's current case
+// started, and {outerStatementTabs} the enclosing statement's line tabs.
+class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader, parentElseLine: int,
+		outerStatementTabs: int, grouped: bool) {
 	var caseTabs: int;
 }
 
@@ -392,8 +397,12 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// leading tabs on the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
+	private var leadingTabs: int;
 	private var lineStart: int;
 	private var afterElseLine: int;
+	// The leading tabs of the line where the current statement started,
+	// which can be partway through that line.
+	private var statementTabs: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
 	private var wantTabs: int;
@@ -431,7 +440,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		started = open = closedControl = continues = lastStartsLine = false;
 		last = lastItem = afterElseLine = -1;
 		chunk = (0, 0, 0, 0);
-		lineTabs = closeTabs = lineStart = 0;
+		lineTabs = leadingTabs = closeTabs = lineStart = statementTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
 		var pos = 0;
@@ -651,16 +660,16 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// current line, and the statement's line unless it is a continuation.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
 		lineStart = k;
-		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
-			var t = wantTabs, i = keepBegin;
-			while (i < keepEnd && input[i] == '\t') {
-				t++;
-				i++;
-			}
-			lineTabs = t;
-		} else {
+		var continuation = codeIndent(k, begin, end, writable) == CONTINUATION;
+		var i = if(writable, keepBegin, begin), limit = if(writable, keepEnd, end);
+		leadingTabs = if(writable, wantTabs);
+		while (i < limit && input[i] == '\t') {
+			leadingTabs++;
+			i++;
+		}
+		lineTabs = if(continuation, leadingTabs, wantTabs);
+		if (!continuation) {
 			chunk = if(writable, (begin, end, wantTabs, wantTabs), (-1, -1, wantTabs, wantTabs));
-			lineTabs = wantTabs;
 		}
 	}
 	private def codeIndent(k: int, begin: int, end: int, writable: bool) -> int {
@@ -774,9 +783,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// Updates the brackets and the last token for the token {k}.
 	private def consume(k: int) {
 		var c = ch(k), m = marks[k];
+		var inner = if(stack.length > 0, stack[stack.length - 1]);
+		var grouped = inner != null && inner.grouped;
+		if (!grouped && startsStatement()) statementTabs = leadingTabs;
 		closedControl = false;
 		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
-		var inner = if(stack.length > 0, stack[stack.length - 1]);
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
 			inner.caseTabs = lineTabs;
 		}
@@ -799,29 +810,45 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		match (c) {
 			'{' => {
 				var base = if(inner != null && inner.kind != '{', lineTabs, chunk.3);
-				stack.put(FormatterBracket.new('{', base + 1, base, false, header, afterElseLine));
+				// The body of a fun outside parentheses and brackets whose
+				// '{' starts its line counts from its statement's line.
+				if (header != null && header.statementTabs >= 0 && lineStart == k) base = header.statementTabs;
+				stack.put(FormatterBracket.new('{', base + 1, base, false, header, afterElseLine, statementTabs, grouped));
 				afterElseLine = -1;
 			}
 			'(', '[' => {
-				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine));
+				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine,
+						0, true));
 				afterElseLine = -1;
 			}
 			')', ']', '}' => if (inner != null) {
 				stack.length--;
 				afterElseLine = inner.parentElseLine;
 				closedControl = c == ')' && inner.control;
-				if (c == '}') closeTabs = inner.close;
+				if (c == '}') {
+					closeTabs = inner.close;
+					statementTabs = inner.outerStatementTabs;
+				}
 				if (inner.funHeader != null) {
 					chunk = inner.funHeader.anchor;
 					continues = true;
 				}
 			}
 			_ => if (header != null) {
-				header.tabs = lineTabs;
+				header.statementTabs = if(grouped, -1, statementTabs);
+				header.tabs = if(header.statementTabs >= 0, leadingTabs, lineTabs);
 				header.anchor = chunk;
 			}
 		}
 		last = k;
+	}
+	// Whether the next token starts a statement, declaration, or braceless
+	// body, also partway through a line.
+	private def startsStatement() -> bool {
+		if (last < 0) return true;
+		var p = ch(last);
+		if (p == '{' || ((p == ';' || p == '}') && !continues)) return true;
+		return closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0;
 	}
 	// The run after the last item (ADR-0019 decision 3, Lines).
 	private def finish(begin: int, end: int) {

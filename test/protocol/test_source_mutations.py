@@ -902,7 +902,7 @@ class StandIn(unittest.TestCase):
         self.assertIn("malformed error for textDocument/rename: its message is not a string", result["error"])
 
     def test_writes_honor_request_deadlines(self):
-        limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 0.3, "run_timeout": 0.4})
+        limits = sm.resolve_limits({"request_timeout": 0.2, "case_timeout": 1.25, "run_timeout": 1.5})
         write = os.write
 
         def bounded_write(fd, data):
@@ -912,21 +912,25 @@ class StandIn(unittest.TestCase):
         for request in (False, True):
             with self.subTest(request=request), tempfile.TemporaryDirectory() as directory:
                 now = time.monotonic()
-                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 0.4, now + 0.3, limits),
+                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 30, now + 20, limits),
                                        VALIDATOR)
                 try:
                     with mock.patch.object(sm.select, "PIPE_BUF", 512), mock.patch.object(sm.os, "write", bounded_write):
-                        s.request("textDocument/hover", {}, 2)
+                        if request:
+                            s.send("textDocument/didOpen", {}, request=False)
+                        else:
+                            s.request("textDocument/hover", {}, 2)
+                        params = {"text": "x" * (1024 * 1024)}
                         started = time.monotonic()
-                        with self.assertRaises(sm.CaseFailure) as caught:
-                            params = {"text": "x" * (1024 * 1024)}
+                        s.deadlines = sm.Deadlines(started + limits["run_timeout"], started + limits["case_timeout"], limits)
+                        with self.assertRaisesRegex(sm.CaseFailure, r"request deadline .* while writing to the server"):
                             if request:
                                 s.request("textDocument/hover", params, 3)
                             else:
                                 s.send("textDocument/didChange", params, request=False)
-                        self.assertIn("request deadline", str(caught.exception))
                         self.assertLess(time.monotonic() - started, 1)
                 finally:
+                    s.deadlines.run = min(s.deadlines.run, time.monotonic() + 0.2)
                     s.close()
 
     def test_restoration_followups_are_saved_and_replayed(self):
