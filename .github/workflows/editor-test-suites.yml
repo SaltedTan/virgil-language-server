@@ -30,6 +30,14 @@ on:
         description: The server version in the archives' names, virgil-lsp-<version>-<target>.tar.gz
         type: string
         required: true
+      advisory-jvm:
+        description: >-
+          Let the two JVM editor lanes fail without failing this workflow, so a
+          caller's jobs that need it still run. Each failed lane still shows as
+          a failed job. The release workflow sets this while the JVM build is a
+          preview; the weekly run leaves it off.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -344,6 +352,8 @@ jobs:
     name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
+    # Advisory while the JVM build is a preview, when the caller asks.
+    continue-on-error: ${{ inputs.advisory-jvm }}
     env:
       NVIM_VERSION: 0.12.6
       NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
@@ -404,6 +414,8 @@ jobs:
     name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta translation)
     runs-on: macos-15
     timeout-minutes: 15
+    # Advisory while the JVM build is a preview, when the caller asks.
+    continue-on-error: ${{ inputs.advisory-jvm }}
     steps:
       - uses: actions/checkout@v7
       - name: Check untranslated Apple Silicon and report Rosetta availability
