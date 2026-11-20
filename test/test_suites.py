@@ -161,8 +161,10 @@ signal.pause()
                             os.kill(child, signal.SIGKILL)
 
     def test_second_signal_kills_an_ignoring_suite(self):
-        ready = self.directory / "ready"
-        suite = f"trap '' TERM HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; exec sleep 60"
+        ready, cleaned = self.directory / "ready", self.directory / "cleaned"
+        # The suite cleans up on TERM and ignores HUP and INT.
+        suite = (f"trap 'touch {cleaned}' TERM; trap '' HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; "
+                 'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
         runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         try:
@@ -170,12 +172,19 @@ signal.pause()
             while not ready.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertTrue(ready.exists(), "suite started")
+            deadline = time.monotonic() + 10
             runner.send_signal(signal.SIGTERM)
-            time.sleep(0.2)
+            # Send the second signal only once the runner has forwarded the
+            # first: sent sooner, it can arrive before or during the runner's
+            # handler for the first, which changes the exit status.
+            while not cleaned.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(cleaned.exists(), "first signal forwarded")
             self.assertIsNone(runner.poll(), "first signal allows cleanup")
             runner.send_signal(signal.SIGHUP)
             self.assertEqual(128 + signal.SIGTERM, runner.wait(timeout=5))
             self.assertFalse(alive(int(ready.read_text())), "suite reaped after second signal")
+            self.assertLess(time.monotonic(), deadline, "second signal ended the run before the grace timeout")
         finally:
             if runner.poll() is None:
                 runner.send_signal(signal.SIGTERM)

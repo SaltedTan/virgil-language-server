@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Rehearse a Linux upgrade from one released version to the next and the
-rollback to it, with the released archives and linux-x64 VSIX files.
+"""Rehearse a Linux upgrade from a published release to a newer release or
+untagged build and back, using the Linux archives and linux-x64 VSIX files.
 See docs/releasing.md#upgrade-and-rollback-rehearsal for prerequisites.
 """
 import argparse
@@ -91,7 +91,7 @@ def version_key(version):
     return numbers, (0, parts)
 
 
-def archive_manifest(path, version):
+def archive_manifest(path, version, *, allow_untagged=False):
     """The archive's top directory, manifest.json, and executables' SHA-256s,
     after checking that every member is a regular file or directory under its
     top directory. Each executable is found by name wherever it is: the
@@ -117,10 +117,14 @@ def archive_manifest(path, version):
             executables[name] = hashlib.sha256(archive.extractfile(found[0]).read()).hexdigest()
     manifest = json.loads(data)
     expected = {"manifestVersion": 1, "name": "virgil-lsp", "version": version,
-                "target": "x86-64-linux", "tag": f"v{version}", "dirty": False}
+                "target": "x86-64-linux", "dirty": False}
     for field, value in expected.items():
         if manifest.get(field) != value:
             raise Failure(f"{path.name}: manifest {field} is {manifest.get(field)!r}, not {value!r}")
+    tags = [f"v{version}", None] if allow_untagged else [f"v{version}"]
+    tag = manifest.get("tag", "missing")
+    if tag not in tags:
+        raise Failure(f"{path.name}: manifest tag is {tag!r}, expected one of {tags!r}")
     for field in ["sourceRevision", "virgilRevision"]:
         if not REVISION.fullmatch(str(manifest.get(field))):
             raise Failure(f"{path.name}: manifest {field} is not a full commit SHA")
@@ -166,7 +170,7 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
-def verify_assets(directory):
+def verify_assets(directory, *, allow_untagged=False):
     """Check one release's three files before anything runs: exact names, the
     SHA256SUMS lines, and the version and target metadata of both packages."""
     directory = directory.resolve()
@@ -189,8 +193,9 @@ def verify_assets(directory):
             raise Failure(f"{file}: SHA-256 {digests[file.name]}, but {SUMS} lists {sums[file.name]}")
     version = ARCHIVE.fullmatch(archive.name)[1]
     extension_version = VSIX.fullmatch(package.name)[1]
-    top, manifest, manifest_bytes, executables = archive_manifest(archive, version)
+    top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
+    version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -198,8 +203,20 @@ def verify_assets(directory):
         "sha256sums": sha256(directory / SUMS),
         "serverVersion": version, "extensionVersion": extension_version, "tag": manifest["tag"],
         "sourceRevision": manifest["sourceRevision"], "virgilRevision": manifest["virgilRevision"],
-        "top": top, "manifest": manifest,
+        "versionRevision": version_revision, "top": top, "manifest": manifest,
     }
+
+
+def described(path, revision):
+    """The source revision that an untagged build's --version prints: git
+    describe of its commit, as the build ran it, in this checkout, which must
+    have the commit and the tags that the build had."""
+    result = subprocess.run(["git", "-C", str(REPO), "describe", "--always", "--abbrev=12", revision],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise Failure(f"{path.name}: an untagged build of {revision}, which this checkout can't describe; "
+                      f"fetch that commit and its tags: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def check_pair(old, new):
@@ -212,7 +229,7 @@ def check_pair(old, new):
 
 
 def version_output(assets):
-    return (f"virgil-lsp {assets['serverVersion']}\n  source revision: {assets['tag']}\n"
+    return (f"virgil-lsp {assets['serverVersion']}\n  source revision: {assets['versionRevision']}\n"
             f"  virgil revision: {assets['virgilRevision']}\n")
 
 
@@ -579,7 +596,7 @@ def now():
 
 
 def public(assets):
-    return {key: value for key, value in assets.items() if key not in ["top", "manifest"]}
+    return {key: value for key, value in assets.items() if key not in ["top", "manifest", "versionRevision"]}
 
 
 def rehearse(sets, logs, tracks, receipt):
@@ -630,7 +647,7 @@ def main(argv=None):
     parser.add_argument("--from-assets", type=Path, required=True,
                         help="the older release's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--to-assets", type=Path, required=True,
-                        help="the newer release's archive, linux-x64 VSIX, and SHA256SUMS")
+                        help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
@@ -644,7 +661,7 @@ def main(argv=None):
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         raise Failure("the rehearsal runs on Linux x86-64 only")
     # Every check of the assets comes before anything runs.
-    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets)}
+    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True)}
     check_pair(sets["from"], sets["to"])
     if "DISPLAY" not in os.environ:
         raise Failure("no DISPLAY for VS Code; run the rehearsal under xvfb-run -a")
