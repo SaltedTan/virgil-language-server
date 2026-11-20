@@ -95,7 +95,7 @@ Installing the plugins and the parsers has a 600-second deadline, and each run 2
 
 ## Neovim 0.11 and 0.12
 
-Neovim 0.12 has a built-in `:lsp` command, and the locked nvim-lspconfig then defines no `:Lsp*` commands. The driver chooses by capability, `exists(':lsp') == 2`, and the step names say which command ran:
+Neovim 0.12 has a built-in `:lsp` command, and the locked nvim-lspconfig then defines no `:Lsp*` commands. The driver chooses by capability, `exists(':lsp') == 2`. Each restart logs the selected command in an `INFO` line.
 
 - With `:lsp`, a bare `:lsp restart` restarts only the clients on the current buffer, so the step checks that `words/Words.v3`'s client is replaced and the library file's client keeps running.
 - Otherwise, a bare `:LspRestart` restarts every client. On Neovim 0.11 it stops each of the two clients twice, and Neovim then ends the server with signal 15, which the step accepts. Java handles that signal and exits with status 143 instead, which this step also accepts for the JVM build.

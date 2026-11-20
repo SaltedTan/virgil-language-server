@@ -262,8 +262,8 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   const closeLabel = `${closeId} (${name} launch)`;
   if (!succeeded(result)) {
     const detail = outcome(result);
-    if (result.code === 0 && result.serverExitFailed) console.error(`FAIL: ${closeLabel}: ${detail}`);
-    else console.error(`FAIL: ${name} launch ${detail}`);
+    if (result.serverExitFailed) console.error(`FAIL: ${closeLabel}: ${detail}`);
+    console.error(`FAIL: ${name} launch ${detail}`);
     printChannelLogs(userData);
     return failure(userData, 'launch', detail, result.error === undefined && result.stopped === undefined);
   }
