@@ -79,6 +79,7 @@ component HostOs {
 	private def X_OK = 1;
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
+	private def SIGXFSZ = 25;
 	private def SIG_IGN = 1L;
 	// Built with the program, so that reading random words allocates nothing.
 	private def words = Array<long>.new(2);
@@ -178,10 +179,14 @@ component HostOs {
 		sys(SYS_setitimer, (ITIMER_REAL, Pointer.atContents(timer), Pointer.NULL));
 	}
 	// Makes writes to a closed pipe fail with EPIPE instead of ending the process.
-	def ignoreSigpipe() {
+	def ignoreSigpipe() { ignore(SIGPIPE); }
+	// Makes writes past an inherited file-size limit fail with EFBIG instead
+	// of ending the process.
+	def ignoreSigxfsz() { ignore(SIGXFSZ); }
+	private def ignore(signal: int) {
 		var action = Array<long>.new(3); // handler, trampoline, mask and flags
 		action[0] = SIG_IGN;
-		sys(SYS_sigaction, (SIGPIPE, Pointer.atContents(action), Pointer.NULL));
+		sys(SYS_sigaction, (signal, Pointer.atContents(action), Pointer.NULL));
 	}
 	// Two words from the kernel's random source, or, if it fails, from the
 	// time and the process ID.

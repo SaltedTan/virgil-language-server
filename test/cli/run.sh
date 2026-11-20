@@ -278,6 +278,14 @@ expect "format --check refuses a directory" 1 "" "cannot format '$F/dir\.v3': it
     format --check "$F/dir.v3"
 expect_bytes "format refuses a directory" 1 "$F/none" "cannot format '$F/dir\.v3': it is not a regular file" -- \
     format "$F/dir.v3"
+# A trailing slash requires a directory. The JVM bridge's Paths.get would drop
+# it and read the regular file, so every build refuses it before reading.
+expect "format --check refuses a trailing slash after a file name" 1 "" \
+    "cannot format '$F/formatted\.v3/': it is not a regular file" -- \
+    format --check "$F/formatted.v3/"
+expect_bytes "format refuses a trailing slash after a file name" 1 "$F/none" \
+    "cannot format '$F/formatted\.v3/': it is not a regular file" -- \
+    format "$F/formatted.v3/"
 expect_bytes "format refuses a device" 1 "$F/none" "cannot format '/dev/null': it is not a regular file" -- \
     format /dev/null
 # A FIFO with no writer, which a blocking open would wait on, is refused
@@ -334,6 +342,9 @@ if [ "$JVM" -eq 0 ]; then
     expect_bytes "format --write refuses formatted text over the output bound" 1 "$F/none" \
         "cannot format '$F/nested\.v3': its formatted text would be larger than 4194304 bytes" -- \
         format --write "$F/nested.v3"
+    expect_bytes "format --write refuses a trailing slash after a file name" 1 "$F/none" \
+        "cannot format '$F/formatted\.v3/': it is not a regular file" -- \
+        format --write "$F/formatted.v3/"
 fi
 
 # --check goes on after a failure and reports every file that would change,
@@ -350,8 +361,19 @@ cp "$F/descriptors.orig" "$F/descriptors.v3"
 expect "format needs a language option to parse" 1 "" "ParseError" -- format --check "$F/descriptors.v3"
 expect_bytes "format accepts a language option" 0 "$F/descriptors.orig" "" -- \
     format -lang:descriptors "$F/descriptors.v3"
-expect_bytes "format --check accepts a language option after the files" 1 "$F/unformatted.check" "" -- \
-    format --check "$F/descriptors.v3" "$F/unformatted.v3" -lang:descriptors=true
+# Both files of the batch need the option, and both are unformatted, so the
+# exact report shows that the option reaches each of them.
+printf 'class A describes B{ }\nclass B descriptor A{ }\n' > "$F/descriptors-a.orig"
+printf 'class C describes D { }\nclass D descriptor C{ }\n' > "$F/descriptors-b.orig"
+cp "$F/descriptors-a.orig" "$F/descriptors-a.v3"
+cp "$F/descriptors-b.orig" "$F/descriptors-b.v3"
+for p in descriptors-a.v3 descriptors-b.v3; do
+    expect "format needs a language option to parse $p" 1 "" "ParseError" -- format --check "$F/$p"
+done
+want "$F/descriptors-batch.check" \
+    "$F/descriptors-a.v3:1: not formatted" "$F/descriptors-b.v3:2: not formatted"
+expect_bytes "format --check accepts a language option after the files" 1 "$F/descriptors-batch.check" "" -- \
+    format --check "$F/descriptors-a.v3" "$F/descriptors-b.v3" -lang:descriptors=true
 
 # A failed write to standard output is reported on standard error, with
 # status 1, in both modes: a full device, and a pipe whose read end was closed
@@ -398,6 +420,18 @@ want "$F/batch-write.err" "virgil-lsp: error: cannot write to standard output" \
     "virgil-lsp: error: cannot read file '$F/missing.v3'"
 expect_write_failure "format --check reports later file failures after standard output fails" closed "$F/batch-write.err" -- \
     format --check "$F/no-eol.v3" "$F/unformatted.v3" "$F/missing.v3"
+# So is a write past an inherited file-size limit, which must not end the
+# command with SIGXFSZ. ulimit -f counts blocks of 512 or 1,024 bytes, and the
+# formatted text of 2,000 functions is about 40 KB, well past either.
+for ((i = 0; i < 2000; i++)); do printf 'def f%d() {\n  var x=1;\n}\n' "$i"; done > "$F/big.orig"
+cp "$F/big.orig" "$F/big.v3"
+(ulimit -f 1 && exec "$EXE" format "$F/big.v3") > "$TMP/out" 2> "$TMP/err"
+got=$?
+ok=1
+[ "$got" -eq 1 ] || { ok=0; echo "  exit: expected 1, got $got"; }
+cmp -s "$F/write.err" "$TMP/err" || { ok=0; echo "  stderr: differs from"; sed 's/^/  expected| /' "$F/write.err"; }
+[ "$(wc -c < "$TMP/out")" -le 1024 ] || { ok=0; echo "  stdout: more than the limit"; }
+finish "format reports a write past the file-size limit" $ok
 
 # Invalid arguments: status 2, nothing on standard output.
 expect "format needs a file" 2 "" "format needs a file" -- format
@@ -620,6 +654,27 @@ PY
     finish "format --write fails silently with stderr closed" "$ok"
     check "format --write preserves the invalid input with stderr closed" cmp -s "$F/syntax.orig" "$W/syntax/in.v3"
     same "format --write creates no file for invalid input with stderr closed" in.v3 "$(entries "$W/syntax")"
+
+    # A new file that would grow past an inherited file-size limit is removed,
+    # the original is kept, and the command goes on to the next file, whose
+    # new file is smaller than the limit.
+    fresh "$W/size-limit"
+    cp "$F/big.orig" "$W/size-limit/big.v3"
+    before=$(meta "$W/size-limit/big.v3")
+    (ulimit -f 1 && exec "$EXE" format --write "$W/size-limit/big.v3" "$W/size-limit/in.v3") \
+        > "$TMP/out" 2> "$TMP/err"
+    got=$?
+    want "$W/size-limit.err" "virgil-lsp: error: cannot write '$W/size-limit/big.v3': its new file can't be written"
+    ok=1
+    [ "$got" -eq 1 ] || { ok=0; echo "  exit: expected 1, got $got"; }
+    [ ! -s "$TMP/out" ] || { ok=0; echo "  stdout: expected empty"; }
+    cmp -s "$W/size-limit.err" "$TMP/err" || { ok=0; echo "  stderr: differs from"; sed 's/^/  expected| /' "$W/size-limit.err"; }
+    finish "format --write reports a new file past the file-size limit" $ok
+    same "format --write keeps a file whose new file passes the file-size limit" "$before" "$(meta "$W/size-limit/big.v3")"
+    check "format --write keeps the bytes of a file whose new file passes the file-size limit" \
+        cmp -s "$F/big.orig" "$W/size-limit/big.v3"
+    check "format --write goes on after the file-size limit" cmp -s "$F/unformatted.want" "$W/size-limit/in.v3"
+    same "format --write removes the new file past the file-size limit" "big.v3 in.v3" "$(entries "$W/size-limit")"
 
     if [ "$CAN_TRACE" -eq 1 ]; then
         fresh "$W/flush"
