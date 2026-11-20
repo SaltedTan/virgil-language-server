@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- On native builds, `virgil-lsp format` no longer ends when a write goes past an inherited file-size limit, such as one set with `ulimit -f`. It ignores `SIGXFSZ`, as it already ignores `SIGPIPE`, so the write fails instead. The command reports the failure on standard error with exit status 1. Under `--write`, it removes the new file, keeps the original, and goes on to the next file ([#530](https://github.com/SaltedTan/virgil-language-server/issues/530)).
-- `virgil-lsp format` refuses a path that ends in `/`, such as `clean.v3/`, before reading it, and reports that it is not a regular file, with exit status 1. The JVM build used to drop the slash and format `clean.v3`. Native builds already refused the path, but reported that they couldn't read it ([#530](https://github.com/SaltedTan/virgil-language-server/issues/530)).
+- Native builds of `virgil-lsp format` now report write failures caused by an inherited file-size limit, including under `--write` ([Running](docs/development.md#running), [#530](https://github.com/SaltedTan/virgil-language-server/issues/530)).
+- `virgil-lsp format` now rejects input paths ending in `/` consistently on native and JVM builds ([Running](docs/development.md#running), [#530](https://github.com/SaltedTan/virgil-language-server/issues/530)).
 
 ## [0.1.0-alpha.8] - 2026-11-20
 
