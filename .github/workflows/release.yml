@@ -170,10 +170,21 @@ jobs:
           file "$RUNNER_TEMP"/archive/*/virgil-lsp
       - name: Record the archive digest for the clean install test
         run: shasum -a 256 build/release/*.tar.gz > "$RUNNER_TEMP/archive.sha256"
+      # The packaged executables are build/'s, checked above, so their
+      # --version prints the source revision that build/'s build info holds.
+      # The rehearsal expects it, rather than describing the commit again
+      # after a tag may have been pushed.
+      - name: Record the source revision that the build described, for the rehearsal
+        run: |
+          sed -n 's/^[[:space:]]*def REVISION = "\(.*\)";$/\1/p' build/gen/BuildInfo.v3 > "$RUNNER_TEMP/source-revision"
+          test -s "$RUNNER_TEMP/source-revision"
+          cat "$RUNNER_TEMP/source-revision"
       - uses: actions/upload-artifact@v7
         with:
           name: checksum-${{ matrix.target }}
-          path: ${{ runner.temp }}/archive.sha256
+          path: |
+            ${{ runner.temp }}/archive.sha256
+            ${{ runner.temp }}/source-revision
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
@@ -311,9 +322,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # All history and tags: for an untagged build, as in a dry run, the
-          # driver names the --version revision with git describe.
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
@@ -384,8 +392,11 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/upgrade"
+          # The build job's own description of the source revision.
+          revision=$(cat "$RUNNER_TEMP/checksum/source-revision")
           xvfb-run -a python3 test/e2e/upgrade/run.py --from-assets "$RUNNER_TEMP/from" \
-            --to-assets "$RUNNER_TEMP/to" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 | tee "$RUNNER_TEMP/upgrade/run.log"
+            --to-assets "$RUNNER_TEMP/to" --to-revision "$revision" --logs "$RUNNER_TEMP/upgrade/logs" 2>&1 |
+            tee "$RUNNER_TEMP/upgrade/run.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
