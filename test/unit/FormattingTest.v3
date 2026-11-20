@@ -799,12 +799,10 @@ def corpus_if_kinds(t: Tester) {
 	var paths = Vector<string>.new();
 	for (dir in ["vendor/virgil/aeneas/src", "vendor/virgil/lib", "vendor/virgil/apps"]) sources(t, dir, paths);
 	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
-	// with 9,854 if statements and 1,139 if expressions. Other revisions,
-	// including advisory Virgil master builds, can have a different inventory.
-	var pinned = Strings.equal(BuildInfo.VIRGIL_REVISION, "b86f43f102406e94dc2ac4a85909c38ef414e214");
-	var statements = 0, expressions = 0;
+	// with 9,854 if statements and 1,139 if expressions.
+	var minimum = 298, checked = 0, statements = 0, expressions = 0;
 	var knownExclusion = "vendor/virgil/lib/file/class/Layouts.v3";
-	var excludedLayout = false;
+	var unexpected = Vector<string>.new();
 	var syntax = SymbolSyntaxIndex.new();
 	for (i < paths.length) {
 		var path = paths[i], text = System.fileLoad(path);
@@ -815,11 +813,12 @@ def corpus_if_kinds(t: Tester) {
 		var input = AeneasAdapter.normalizedRange(text, 0, text.length), errors = AnalysisParseErrors.new(1);
 		syntax.clear();
 		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
+		if (Strings.equal(path, knownExclusion)) {
+			if (errors.numErrors == 0) t.fail1("%s parses without its required language option", path);
+			continue;
+		}
 		if (errors.numErrors > 0) {
-			if (pinned) {
-				if (Strings.equal(path, knownExclusion)) excludedLayout = true;
-				else t.fail1("%s doesn't parse", path);
-			}
+			unexpected.put(path);
 			continue;
 		}
 		var walk = IfKinds.new(syntax).file(file);
@@ -846,10 +845,12 @@ def corpus_if_kinds(t: Tester) {
 			if (expected == IF_STATEMENT) statements++;
 			else if (expected == IF_EXPRESSION) expressions++;
 		}
+		checked++;
 	}
-	if (pinned) {
-		t.asserti(299, paths.length);
-		if (!excludedLayout) t.fail1("expected %s to be present and require a language option", knownExclusion);
+	if (checked < minimum) {
+		var message = StringBuilder.new().put2("checked %d files, expected at least %d", checked, minimum);
+		for (i < unexpected.length) message.puts(". Could not parse ").puts(unexpected[i]);
+		t.fail(message.toString());
 	}
 	t.assert(statements > 9000 && expressions > 1000, Strings.format2("%d statements and %d expressions", statements, expressions));
 }
