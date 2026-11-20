@@ -203,7 +203,10 @@ def tree_size(directory):
 
 
 def alive(pid):
-    """Whether {pid} runs: it exists and, where /proc says, is not a zombie."""
+    """Whether {pid} runs: it exists and, where /proc says, is not a zombie.
+
+    The process can exit between the two checks, so a read that finds no
+    process is "not running" rather than an error."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -212,6 +215,8 @@ def alive(pid):
         return True
     try:
         return Path("/proc/%d/stat" % pid).read_text().split(")")[-1].split()[0] != "Z"
+    except ProcessLookupError:
+        return False
     except FileNotFoundError:
         return not Path("/proc/self").exists()
 
@@ -240,6 +245,13 @@ def without_waitid():
 def children(pid):
     return [int(c) for task in Path("/proc/%d/task" % pid).iterdir()
             for c in (task / "children").read_text().split()]
+
+
+class ProcessLiveness(unittest.TestCase):
+    def test_alive_is_false_when_the_process_vanishes_before_the_stat_read(self):
+        with mock.patch.object(os, "kill"), \
+                mock.patch.object(Path, "read_text", side_effect=ProcessLookupError):
+            self.assertFalse(alive(4242))
 
 
 class Limits(unittest.TestCase):
