@@ -366,7 +366,9 @@ def check_payload(vsix, target, archive):
                 if z.read(member) != data:
                     fail("bundled bytes differ from tested archive: " + name)
                 actual_mode = z.getinfo(member).external_attr >> 16
-                if not stat.S_ISREG(actual_mode) or actual_mode & 0o777 != mode:
+                # A runtime source's special bits count too (its mode is 0644).
+                permissions = stat.S_IMODE(actual_mode) if name.startswith("virgil/rt/") else actual_mode & 0o777
+                if not stat.S_ISREG(actual_mode) or permissions != mode:
                     fail("bundled permissions differ from tested archive: " + name)
         except (KeyError, ValueError, AttributeError, ET.ParseError, OSError, tarfile.TarError) as e:
             fail("invalid bundled payload or target metadata: %s" % e)

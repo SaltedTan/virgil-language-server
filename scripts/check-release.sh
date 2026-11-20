@@ -15,8 +15,7 @@ set -euo pipefail
 # Archive verification is also used before extraction by the smoke test.
 if [ "${1:-}" = --archive ]; then
     ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-    pinned=$(git --no-replace-objects -C "$ROOT" rev-parse HEAD:vendor/virgil)
-    exec python3 "$ROOT/scripts/release-library.py" check "${2:?usage: check-release.sh --archive <archive>}" "$pinned"
+    exec python3 "$ROOT/scripts/release-library.py" check "${2:?usage: check-release.sh --archive <archive>}"
 fi
 if [ "${1:-}" = --runtime-source ]; then
     ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
