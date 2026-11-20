@@ -300,16 +300,16 @@ Which Virgil revision, library, and editors a release supports, how long it gets
 
 ### What server 1.x keeps
 
-From server 1.0 on, every 1.x release reads version 1 files as this page specifies:
+From server 1.0 on, every 1.x release reads version 1 and version 2 files as this page specifies. The maintainer extended this promise to version 2 on 2026-11-20, when deciding the [v1.0 gate](v1-readiness.md#gate-decisions):
 
-- the fields, their types and defaults, the reserved `target` value, and the exact version literal `1`;
+- the fields, their types and defaults, the reserved `target` value of version 1, the target names that version 2 accepts, and the exact version literals `1` and `2`;
 - strict parsing: unknown and repeated fields are errors, and a file with any error defines no projects;
 - the pattern syntax, and how patterns select, order, own, and exclude files, with no symbolic links followed;
 - the Virgil root's precedence, the governing project file, and the choice of each file's active project.
 
-So a version 1 file that one 1.x release accepts, every later 1.x release accepts too, and it selects the same files with the same active projects, as long as each `compilerArgs` entry is still a language option of the later release's pinned compiler and each program stays within the documented limits. Before 1.0, a prerelease may still change these rules, and its release notes say so when it does.
+So a version 1 or version 2 file that one 1.x release accepts, every later 1.x release accepts too, and it selects the same files with the same active projects, as long as each `compilerArgs` entry is still a language option of the later release's pinned compiler and each program stays within the documented limits. Before 1.0, a prerelease may still change these rules, and its release notes say so when it does.
 
-This doesn't promise the configuration diagnostic codes, the wording of diagnostic messages and log lines, the capacity limits, when the server refreshes after a change, or anything about the analysis itself. Type errors and the other semantic results follow the pinned compiler.
+This doesn't promise the configuration diagnostic codes, the wording of diagnostic messages and log lines, the capacity limits, when the server refreshes after a change, or anything about the analysis itself, including the analysis for a version 2 target. Type errors and the other semantic results follow the pinned compiler.
 
 ### Version 2
 
