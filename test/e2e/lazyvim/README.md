@@ -42,7 +42,7 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## What it checks
 
-Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports `PASS` or `FAIL`, with what it saw.
+Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports its ID in [`coverage.json`](../coverage.json) and what it saw, such as `PASS lazyvim.hover.response: ...`. Statuses are `PASS` and `FAIL`, with `XFAIL` or `XPASS` for the [expected failure](#expected-results) in the stock `noroot` run. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
@@ -88,14 +88,14 @@ Installing the plugins and the parsers has a 600-second deadline, and each run 2
 ## Expected results
 
 - `main`: every step passes.
-- `noroot`: every step passes except "Invalid project file warning shown", which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua`, adjust `run.sh`'s expected XFAIL count for `noroot`, and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
+- `noroot`: every step passes except `lazyvim.configuration.warning`, the Invalid project file warning, which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua`, adjust `run.sh`'s expected XFAIL count for `noroot`, and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
 - `noroot-noice-workaround`: every step passes.
 
 `INFO` and `WARN` lines don't change the result.
 
 ## Neovim 0.11 and 0.12
 
-Neovim 0.12 has a built-in `:lsp` command, and the locked nvim-lspconfig then defines no `:Lsp*` commands. The driver chooses by capability, `exists(':lsp') == 2`, and the step names say which command ran:
+Neovim 0.12 has a built-in `:lsp` command, and the locked nvim-lspconfig then defines no `:Lsp*` commands. The driver chooses by capability, `exists(':lsp') == 2`. Each restart logs the selected command in an `INFO` line.
 
 - With `:lsp`, a bare `:lsp restart` restarts only the clients on the current buffer, so the step checks that `words/Words.v3`'s client is replaced and the library file's client keeps running.
 - Otherwise, a bare `:LspRestart` restarts every client. On Neovim 0.11 it stops each of the two clients twice, and Neovim then ends the server with signal 15, which the step accepts. Java handles that signal and exits with status 143 instead, which this step also accepts for the JVM build.

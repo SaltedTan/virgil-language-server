@@ -323,6 +323,14 @@ class LspCompletionRequest extends LspQueryRequest {
 		completion.resolver.keep(declarations);
 		declarations = null;
 	}
+	// The empty list, incomplete, if its document was marked out of sync
+	// while the request waited or ran: every item's edit range comes from
+	// the server's copy of it.
+	def refusal() -> JsonValue {
+		var store = completion.store;
+		if (!refused && !store.outOfSync(store.canonicalOverlay(uri))) return JsonValue.Null;
+		return completion.outOfSyncList();
+	}
 }
 
 // textDocument/completion: the keywords that can start at the cursor, from the
@@ -334,7 +342,10 @@ class LspCompletionRequest extends LspQueryRequest {
 // cancelled, and reused as LspQueryRequests describes. LspCompletionRequest
 // distinguishes temporary and permanent fallback replies. The declarations of
 // the last reply with names stay for completionItem/resolve
-// (LspCompletionResolve). See docs/architecture.md#completion.
+// (LspCompletionResolve). A document marked out of sync gets an empty list,
+// incomplete, instead of items whose edits come from the server's out-of-date
+// copy (DocumentStore.outOfSync), whether the request arrives then or the
+// mark comes while it waits or runs. See docs/architecture.md#completion.
 class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
@@ -370,6 +381,9 @@ class LspCompletion extends LspQueryRequests {
 		}
 		var overlay = store.overlay(uri);
 		if (overlay == null) return respond(request.id, JsonRpcReply.Result(list([], false)));
+		// Ranges computed from an out-of-date copy could replace the wrong
+		// text in the client's; this precedes the cached reply too.
+		if (store.outOfSync(overlay)) return respond(request.id, JsonRpcReply.Result(outOfSyncList()));
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
 		var mapping = projects.forDocument(overlay.uri);
@@ -497,6 +511,13 @@ class LspCompletion extends LspQueryRequests {
 			k = k / 10;
 		}
 		return digits;
+	}
+	// The reply for a document marked out of sync: no items, and incomplete,
+	// so that the client asks again after its next change rather than
+	// filtering an empty list, and without the error that an edit refusal
+	// would show at each keystroke.
+	def outOfSyncList() -> JsonValue {
+		return list([], true);
 	}
 	// {r}'s keywords alone. {incomplete} says that a later request may have
 	// the names at this position, so that the client asks again rather than
