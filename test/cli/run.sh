@@ -567,11 +567,13 @@ if sys.argv[2] == "1":
     # The jar that the launcher runs: a development launcher names it by
     # absolute path, and a packaged one beside the launcher's resolved path.
     import re
-    run = re.search(r"""-jar (?:'([^']*)'|"\$dir/([^"/]*)")""", exe.read_text())
+    run = re.search(r""" -jar (?:'([^']+)'|(/[A-Za-z0-9_@%+=:,./-]+)|"\$dir/([^"/]+)") "\$@"$""",
+                    exe.read_text(), re.M)
     if run is None:
         print(f"{exe} names no jar that it runs")
         sys.exit(1)
-    path = Path(run.group(1)) if run.group(1) is not None else exe.resolve().parent / run.group(2)
+    absolute = run[1] or run[2]
+    path = Path(absolute) if absolute is not None else exe.resolve().parent / run[3]
     with zipfile.ZipFile(path) as jar:
         found = any([has_hook(entry.filename, jar.read(entry)) for entry in jar.infolist()]) or found
 sys.exit(found)
