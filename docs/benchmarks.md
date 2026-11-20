@@ -4506,3 +4506,93 @@ should either allow one server collection, which took 18 to 52 ms in a hit on
 this host, on top of the hit's own time, or apply to hits without a collection
 and count server collections around each request separately, which the
 committed probes don't yet do.
+
+## Drift since the budget baseline (2026-11-21)
+
+Measured on 2026-11-21 AEDT (18:36 to 18:55 UTC on 2026-11-20) for
+[#557](https://github.com/SaltedTan/virgil-language-server/issues/557). The
+[v1.0 readiness trial](v1-readiness.md#trial-fill-in-on-010-alpha8) found
+`0.1.0-alpha.8`'s analysis medians 3% to 14% above the
+[adopted baseline](performance-budgets.md#measured-baselines), which was
+recorded at `139db845` with the host's load average at 0.5 to 1.0; the trial's
+load was 2 to 4. Both revisions pin Virgil `b86f43f1`, so this comparison
+crosses no pin change.
+
+`139db845` and `v0.1.0-alpha.8` (`23b17e49`) were each checked out clean in
+their own detached worktree, at equal-length paths, and built with
+`BENCH=1 all bench-metadata` into equal-length `build/base-r1` and
+`build/next-r1` directories, with the same stable compiler and the default
+384 MiB worker heap. Neither build is dirty. Each build keeps its own generated
+BuildInfo, so their revision strings differ in length. The alpha.8 server and
+worker are 1,054,536 and 994,776 bytes, against 983,712 and 927,984 bytes at
+`139db845`. The client and the pinned corpus came from main `508b984d`, whose
+`scripts/bench-lsp.py` is unchanged since alpha.8.
+
+Each run started after the one-minute load average had stayed below 1.0 for
+three readings a minute apart, and held the shared benchmark lock. A read-only
+process check found no other benchmark; four web workers, at about 10% of a
+CPU each, ran throughout. The client and its child processes ran on P-core
+hardware thread 12. All three pinned projects used six alternating process
+blocks, two warmups, and five measured operations per block, and the Aeneas
+project also ran `--error-result`. Every semantic check passed and no samples
+were removed. The command ran twice:
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-lsp.py \
+  --exe build/base-r1/virgil-lsp --exe build/next-r1/virgil-lsp \
+  --error-result --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
+  --output comparison.json
+```
+
+The one-minute load average, the benchmark's own processes included, was 0.39
+to 2.62 during the first run and 0.80 to 1.88 during the second; the
+five-minute average was 0.90 to 1.62 and 1.05 to 1.28. Times are
+**median (p10–p90), milliseconds**, over 30 measured operations per build and
+scenario. The adoption column is the baseline's p50:
+
+| Measurement | Adoption | `139db845`, run 1 | alpha.8, run 1 | `139db845`, run 2 | alpha.8, run 2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Aeneas fresh analysis | 347.288 | 360.904 (351.586–372.550) | 362.474 (354.609–373.606) | 361.004 (351.933–370.020) | 359.440 (354.530–370.073) |
+| Aeneas reused analysis | 289.981 | 309.663 (297.871–321.362) | 312.779 (299.394–323.624) | 309.077 (297.531–320.362) | 313.127 (302.233–322.833) |
+| Aeneas error analysis | 328.439 | 313.265 (302.964–322.936) | 313.448 (306.988–321.486) | 314.682 (304.093–320.318) | 313.222 (304.298–321.889) |
+| Aeneas rename | 316.391 | 333.727 (321.218–340.503) | 336.451 (326.056–344.530) | 332.479 (323.682–340.331) | 334.331 (325.992–342.446) |
+| Aeneas completion miss | 115.136 | 120.105 (117.105–135.150) | 119.923 (115.732–131.676) | 121.595 (117.034–132.180) | 120.741 (116.404–135.322) |
+| Aeneas semantic diagnostics | 507.046 | 519.345 (502.278–528.148) | 522.226 (505.226–532.395) | 511.988 (500.225–529.389) | 515.107 (500.478–528.615) |
+| Util fresh analysis | 14.976 | 15.790 (14.912–16.628) | 15.895 (15.044–16.900) | 15.341 (14.751–16.597) | 15.173 (14.809–16.018) |
+| Util reused analysis | 12.661 | 12.920 (12.727–13.317) | 13.193 (12.766–14.255) | 13.115 (12.829–14.311) | 13.098 (12.797–13.629) |
+| Util rename | 15.041 | 15.413 (15.070–16.548) | 15.612 (15.120–16.546) | 15.894 (15.314–17.282) | 15.466 (15.030–16.282) |
+| Small fresh analysis | 0.485 | 0.384 (0.344–0.533) | 0.397 (0.343–0.760) | 0.392 (0.339–0.628) | 0.384 (0.349–0.668) |
+| Small reused analysis | 0.172 | 0.181 (0.168–0.205) | 0.197 (0.176–0.264) | 0.179 (0.163–0.220) | 0.186 (0.177–0.203) |
+
+The Aeneas error-analysis adoption value comes from the error-result capture,
+whose last four blocks ran under load; the others come from the full-scenario
+capture.
+
+**Result: the drift is not a regression in alpha.8.** All 34 latency cells of
+both runs have overlapping p10–p90 intervals, and none is flagged by
+`scripts/bench-report.py`. Every Aeneas and util fresh, reused, and error
+analysis median is within 2.1% of `139db845` in each run, in both
+directions, and their rename, completion-miss, and semantic-diagnostic medians
+are within 2.7%. alpha.8's largest Aeneas analysis change in either run is
+reused analysis at +1.0% and +1.3%. In
+the first run, block medians of Aeneas fresh analysis were 352.2 to 371.0 ms
+at `139db845` and 354.4 to 373.2 ms at alpha.8, and of reused analysis 302.1
+to 316.3 and 309.5 to 319.1 ms; the builds' blocks interleave. Small reused
+analysis is 8.3% and 4.3% slower in the two runs, a difference of 7 to 16 µs
+within overlapping intervals. Worker memory is unchanged: the Aeneas
+scenarios leave 9,946,232, 9,929,240, and 9,163,680 bytes under the 201,326,592-byte
+collection boundary at `139db845` and 9,955,616, 9,919,984, and 9,152,032 at
+alpha.8, fresh, reused, and with an error result, and no Aeneas analysis
+collects during handling.
+
+`139db845` itself now measures 3.9% (fresh analysis), 6.6% to 6.8% (reused
+analysis), 5.1% to 5.5% (rename), and 4.3% to 5.6% (completion miss) above
+its own adoption values for Aeneas. Its binaries were built at a different path
+from the adoption build, the kernel moved from `7.0.0-42-generic` to
+`7.0.0-43-generic`, and the host's background load differs, so the gap between
+these runs and the adoption capture is attributable to the measurement, not to
+the source changes between `139db845` and alpha.8. No change needs bisecting,
+and the baseline and targets are unchanged. Raw comparison JSON, the build
+logs, and the load log are retained outside the repository in
+`$HOME/.cache/overnight-scratch/bench-557/`.
