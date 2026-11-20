@@ -11,8 +11,9 @@
 // - A document that isn't open, or whose language isn't virgil, gets [].
 // - A document marked out of sync (DocumentStore.outOfSync) gets
 //   RequestFailed before it is parsed.
-// - A document with a carriage return that no line feed follows, or a syntax
-//   error, gets [], and one over the parse budget gets RequestFailed.
+// - The adapter checks for a lone CR before counting tokens.
+//   A lone CR or a syntax error gets []. Exceeding the budget gets
+//   RequestFailed when the text has no lone CR.
 // - RequestFailed, before any edit is built, if the document store couldn't
 //   hold the formatted text in place of the current one or if the reply
 //   would exceed MAX_REPLY_BYTES.
