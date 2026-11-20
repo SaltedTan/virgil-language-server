@@ -55,7 +55,7 @@ A matrix cell's level combines the API and UI state evidence of its automated ch
 
 ## The release gate
 
-The release gate requires automated evidence only. A `required` check must pass wherever a run plans it, or fail only as its expected-failure rule allows; a skip is neither, so a skip fails the gate. No required check is manual. A person may record matrix features and VS Code checklist steps with the `manual` suite, but the gate never requires a manual record. Its observations never change a matrix cell or a checklist step's automated result, whether they pass or fail. Which lanes the gate requires, at which pinned editor versions, comes with the gate itself.
+The release gate requires automated evidence only. A `required` check must pass wherever a run plans it, or fail only as its expected-failure rule allows; a skip is neither, so a skip fails the gate. No required check is manual. A person may record matrix features and VS Code checklist steps with the `manual` suite, but the gate never requires a manual record. Its observations never change a matrix cell or a checklist step's automated result, whether they pass or fail. Which lanes the gate requires, at which pinned editor versions, comes with the gate itself; the [draft v1.0 readiness ledger](../../docs/v1-readiness.md#required-editor-lanes) records the lanes the maintainer chose on 2026-11-20.
 
 A run's lane is the ID of the CI job that ran it, such as `lazyvim-linux`, `vscode-vsix-macos`, or `vscode-remote-ssh-linux`, or `local` outside CI. The editor version is in the run's provenance, not in the lane.
 
