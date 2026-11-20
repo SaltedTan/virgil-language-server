@@ -367,7 +367,7 @@ def bounds(exe, work):
         uri, other = "untitled:aggregate.v3", "untitled:aggregate-other.txt"
         text = nested(20, ";\n" * 1000)
         s.open(uri, text)
-        s.open(other, "x" * (1024 * 1024 - 12000 - len(text)), language="plaintext")
+        s.open(other, "x" * (STORE_BYTES - 12000 - len(text)), language="plaintext")
         s.refused(uri, text="would not fit in the open-document capacity")
         s.close_document(other)
         assert apply(text, s.edits(uri)) == command(exe, work, text)
