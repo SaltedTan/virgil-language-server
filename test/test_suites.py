@@ -161,8 +161,11 @@ signal.pause()
                             os.kill(child, signal.SIGKILL)
 
     def test_second_signal_kills_an_ignoring_suite(self):
-        ready = self.directory / "ready"
-        suite = f"trap '' TERM HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; exec sleep 60"
+        ready, cleaned = self.directory / "ready", self.directory / "cleaned"
+        # The suite cleans up on TERM and ignores HUP and INT, so only a kill
+        # ends it.
+        suite = (f"trap 'touch {cleaned}' TERM; trap '' HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; "
+                 "while :; do sleep 0.1; done")
         runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         try:
@@ -171,7 +174,13 @@ signal.pause()
                 time.sleep(0.05)
             self.assertTrue(ready.exists(), "suite started")
             runner.send_signal(signal.SIGTERM)
-            time.sleep(0.2)
+            # Send the second signal only once the runner has forwarded the
+            # first: sent sooner, it can arrive before or during the runner's
+            # handler for the first, which changes the exit status.
+            deadline = time.monotonic() + 10
+            while not cleaned.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(cleaned.exists(), "first signal forwarded")
             self.assertIsNone(runner.poll(), "first signal allows cleanup")
             runner.send_signal(signal.SIGHUP)
             self.assertEqual(128 + signal.SIGTERM, runner.wait(timeout=5))
