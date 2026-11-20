@@ -4514,9 +4514,9 @@ Measured on 2026-11-21 AEDT (18:36 to 18:55 UTC on 2026-11-20) for
 [v1.0 readiness trial](v1-readiness.md#trial-fill-in-on-010-alpha8) found
 `0.1.0-alpha.8`'s analysis medians 3% to 14% above the
 [adopted baseline](performance-budgets.md#measured-baselines), which was
-recorded at `139db845` with the host's load average at 0.5 to 1.0; the trial's
-load was 2 to 4. Both revisions pin Virgil `b86f43f1`, so this comparison
-crosses no pin change.
+recorded at `139db845`. The adoption captures started at one-minute load
+averages of 0.5 to 1.0. The trial ran at a load of 2 to 4. Both revisions
+pin Virgil `b86f43f1`, so this comparison crosses no pin change.
 
 `139db845` and `v0.1.0-alpha.8` (`23b17e49`) were each checked out clean in
 their own detached worktree, at equal-length paths, and built with
@@ -4531,16 +4531,19 @@ worker are 1,054,536 and 994,776 bytes, against 983,712 and 927,984 bytes at
 Each run started after the one-minute load average had stayed below 1.0 for
 three readings a minute apart, and held the shared benchmark lock. A read-only
 process check found no other benchmark; four web workers, at about 10% of a
-CPU each, ran throughout. The client and its child processes ran on P-core
-hardware thread 12. All three pinned projects used six alternating process
-blocks, two warmups, and five measured operations per block, and the Aeneas
-project also ran `--error-result`. Every semantic check passed and no samples
-were removed. The command ran twice:
+CPU each, ran throughout. On the Intel Core i7-14700KF reference host, the
+client and its child processes ran on P-core hardware thread 12. All three
+pinned projects used six alternating process blocks, two warmups, and five
+measured operations per block, and the Aeneas project also ran `--error-result`.
+Every semantic check passed and no samples were removed. Run the command from
+the client checkout. For the second run, wait for the same starting conditions
+and use `--output comparison-2.json` in place of `--output comparison.json`.
 
 ```sh
 flock /path/to/shared/bench.lock taskset -c 12 \
   python3 scripts/bench-lsp.py \
-  --exe build/base-r1/virgil-lsp --exe build/next-r1/virgil-lsp \
+  --exe /path/to/base-worktree/build/base-r1/virgil-lsp \
+  --exe /path/to/next-worktree/build/next-r1/virgil-lsp \
   --error-result --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
   --output comparison.json
 ```
@@ -4565,9 +4568,9 @@ scenario. The adoption column is the baseline's p50:
 | Small fresh analysis | 0.485 | 0.384 (0.344–0.533) | 0.397 (0.343–0.760) | 0.392 (0.339–0.628) | 0.384 (0.349–0.668) |
 | Small reused analysis | 0.172 | 0.181 (0.168–0.205) | 0.197 (0.176–0.264) | 0.179 (0.163–0.220) | 0.186 (0.177–0.203) |
 
-The Aeneas error-analysis adoption value comes from the error-result capture,
-whose last four blocks ran under load; the others come from the full-scenario
-capture.
+The Aeneas error-analysis adoption value comes from the error-result capture.
+Its last four blocks ran under load, and the one-minute load average was 10.0
+when it ended. The other adoption values come from the full-scenario capture.
 
 **Result: the drift is not a regression in alpha.8.** All 34 latency cells of
 both runs have overlapping p10–p90 intervals, and none is flagged by
