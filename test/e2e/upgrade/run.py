@@ -30,7 +30,7 @@ REPO = HERE.parents[2]
 HELPER = HERE / "vscode.cjs"
 # With optional prerelease and build metadata, as scripts/check-release.sh
 # accepts.
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
+VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 ARCHIVE = re.compile(rf"virgil-lsp-({VERSION})-x86-64-linux\.tar\.gz")
 VSIX = re.compile(r"virgil-lsp-vscode-([0-9]+\.[0-9]+\.[0-9]+)-linux-x64\.vsix")
 SUMS = "SHA256SUMS"
@@ -199,26 +199,26 @@ def verify_assets(directory, *, allow_untagged=False, revision=None):
     extension_version = VSIX.fullmatch(package.name)[1]
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
-    if revision is not None:
-        # A tag's build describes it by its tag; any other, by a name that
-        # ends in its commit's abbreviated SHA, unless its commit is tagged.
-        commit = re.fullmatch(r"(?:.+-g)?([0-9a-f]{12,40})", revision)
-        if manifest["tag"]:
-            wrong = revision != manifest["tag"]
-        else:
-            wrong = commit is not None and not manifest["sourceRevision"].startswith(commit[1])
-        if wrong:
+    tag = manifest["tag"]
+    expected_tag = tag or f"v{version}"
+    if revision is None:
+        revision = tag or described(archive, manifest["sourceRevision"])
+    elif revision != expected_tag:
+        if tag is not None:
+            raise Failure(f"{archive.name}: source revision {revision!r} must match its tag {tag!r}")
+        commit = (re.fullmatch(r"([0-9a-f]{12})", revision)
+                  or re.fullmatch(r".+-[0-9]+-g([0-9a-f]{12})(?:-dirty)?", revision))
+        if commit is None or not manifest["sourceRevision"].startswith(commit[1]):
             raise Failure(f"{archive.name}: its build described its source revision as {revision!r}, "
-                          f"which doesn't name its commit {manifest['sourceRevision']} or tag {manifest['tag']!r}")
-    version_revision = manifest["tag"] or revision or described(archive, manifest["sourceRevision"])
+                          f"which doesn't name its commit {manifest['sourceRevision']} or tag {expected_tag!r}")
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
         "vsix": {"name": package.name, "sha256": digests[package.name], "path": str(package)},
         "sha256sums": sha256(directory / SUMS),
-        "serverVersion": version, "extensionVersion": extension_version, "tag": manifest["tag"],
+        "serverVersion": version, "extensionVersion": extension_version, "tag": tag,
         "sourceRevision": manifest["sourceRevision"], "virgilRevision": manifest["virgilRevision"],
-        "versionRevision": version_revision, "top": top, "manifest": manifest,
+        "versionRevision": revision, "top": top, "manifest": manifest,
     }
 
 

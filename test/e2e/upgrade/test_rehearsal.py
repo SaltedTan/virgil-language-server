@@ -156,17 +156,28 @@ class AssetTests(TemporaryTest):
         # The release workflow passes the build job's own description, so a
         # tag pushed since then doesn't change it, and needs no git here.
         source = "2" * 40
+        distance = f"v{OLD[0]}-3-g{source[:12]}"
         directory = make_assets(self.root, *NEW, manifest={"tag": None})
         with mock.patch.object(run, "REPO", self.root / "missing"):
-            for revision in [f"v{OLD[0]}-3-g{source[:12]}", source[:12], f"v{NEW[0]}"]:
-                assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
-                self.assertIn(f"  source revision: {revision}\n", run.version_output(assets))
-            with self.assertRaisesRegex(run.Failure, "doesn't name its commit"):
-                run.verify_assets(directory, allow_untagged=True, revision=f"v{OLD[0]}-3-g{'4' * 12}")
+            for revision in [distance, f"{distance}-dirty", source[:12], f"v{NEW[0]}"]:
+                with self.subTest(revision=revision):
+                    assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
+                    self.assertIn(f"  source revision: {revision}\n", run.version_output(assets))
+            for revision in ["", f"v{OLD[0]}", "4" * 12, f"v{OLD[0]}-3-g{'4' * 12}", distance[:-1]]:
+                with self.subTest(revision=revision):
+                    with self.assertRaisesRegex(run.Failure, "doesn't name its commit"):
+                        run.verify_assets(directory, allow_untagged=True, revision=revision)
         tagged = make_assets(self.root, *NEW)
         self.assertEqual(run.verify_assets(tagged, revision=f"v{NEW[0]}")["versionRevision"], f"v{NEW[0]}")
-        with self.assertRaisesRegex(run.Failure, "doesn't name its commit .* or tag 'v0.1.0-alpha.5'"):
-            run.verify_assets(tagged, revision=f"v{OLD[0]}-3-g{source[:12]}")
+        with self.assertRaisesRegex(run.Failure, "must match its tag 'v0.1.0-alpha.5'"):
+            run.verify_assets(tagged, revision=distance)
+
+    def test_accepts_exact_tags_with_sha_like_metadata(self):
+        for version in ["0.1.0-alpha.9+linux-g0123456789ab", "0.1.0-alpha.9+linux-3-g0123456789ab"]:
+            with self.subTest(version=version):
+                directory = make_assets(self.root, version, NEW[1], manifest={"tag": None})
+                assets = run.verify_assets(directory, allow_untagged=True, revision=f"v{version}")
+                self.assertIn(f"  source revision: v{version}\n", run.version_output(assets))
 
     def test_accepts_build_metadata(self):
         # scripts/check-release.sh accepts SemVer build metadata in VERSION.
@@ -180,6 +191,11 @@ class AssetTests(TemporaryTest):
         same = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+other", NEW[1]))
         with self.assertRaisesRegex(run.Failure, "same server version"):
             run.check_pair(old, same)
+
+    def test_rejects_empty_build_metadata_identifiers(self):
+        for version in ["0.1.0-alpha.9+", "0.1.0-alpha.9+.linux", "0.1.0-alpha.9+linux..5", "0.1.0-alpha.9+linux."]:
+            with self.subTest(version=version):
+                self.rejected("must hold exactly", server=version, extension=NEW[1])
 
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
