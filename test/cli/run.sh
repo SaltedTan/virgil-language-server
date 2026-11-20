@@ -137,10 +137,27 @@ if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1; then
         CAN_TRACE=1
     fi
 fi
-# can_inject <syscall> <fault>: the installed strace can inject <fault> into <syscall>.
+# can_inject <fsync|fchmod> <fault>: the installed strace can inject <fault>
+# into that call. The probe makes the call on a scratch file with mode 644 and
+# checks that the fault took effect: the injected error, or for retval=0 a
+# success that left the mode alone.
 can_inject() {
-    [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 && \
-        "${STRACE[@]}" -o /dev/null -e "trace=$1" -e "inject=$1:$2" true > /dev/null 2>&1
+    [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 || return 1
+    rm -f "$TMP/inject-probe"
+    : > "$TMP/inject-probe"
+    chmod 644 "$TMP/inject-probe"
+    "${STRACE[@]}" -o /dev/null -e "trace=$1" -e "inject=$1:$2" python3 -c '
+import errno, os, sys
+
+call, fault, path = sys.argv[1:]
+fd = os.open(path, os.O_RDWR)
+try:
+    os.fsync(fd) if call == "fsync" else os.fchmod(fd, 0o600)
+    got = "retval=0"
+except OSError as e:
+    got = "error=" + errno.errorcode[e.errno]
+sys.exit(got != fault or os.stat(path).st_mode & 0o777 != 0o644)
+' "$1" "$2" "$TMP/inject-probe" > /dev/null 2>&1
 }
 expect_bytes() {
     local name=$1 code=$2 want=$3 err_pat=$4
@@ -566,14 +583,14 @@ found = has_hook(exe, exe.read_bytes())
 if sys.argv[2] == "1":
     # The jar that the launcher runs: a development launcher names it by
     # absolute path, and a packaged one beside the launcher's resolved path.
-    import re
-    run = re.search(r""" -jar (?:'([^']+)'|(/[A-Za-z0-9_@%+=:,./-]+)|"\$dir/([^"/]+)") "\$@"$""",
-                    exe.read_text(), re.M)
-    if run is None:
+    import shlex
+    execs = [line for line in exe.read_text().replace("\\\n", "").splitlines() if line.startswith("exec ")]
+    words = shlex.split(execs[-1]) if execs else []
+    if "-jar" not in words[:-1]:
         print(f"{exe} names no jar that it runs")
         sys.exit(1)
-    absolute = run[1] or run[2]
-    path = Path(absolute) if absolute is not None else exe.resolve().parent / run[3]
+    operand = words[words.index("-jar") + 1]
+    path = exe.resolve().parent / operand[len("$dir/"):] if operand.startswith("$dir/") else Path(operand)
     with zipfile.ZipFile(path) as jar:
         found = any([has_hook(entry.filename, jar.read(entry)) for entry in jar.infolist()]) or found
 sys.exit(found)
