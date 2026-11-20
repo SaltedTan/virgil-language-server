@@ -216,9 +216,13 @@ signal.pause()
                 runner.kill()
                 runner.communicate()
         self.assertIn("nested: second signal", output)
-        self.assertIn("nested: EPERM", output)
-        self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
-        self.assertNotIn("Traceback", output)
+        if mode == "denied-kill":
+            self.assertEqual(1, runner.returncode, output)
+            self.assertTrue(output.rstrip().endswith("PermissionError: [Errno 1] first SIGKILL denied"), output)
+        else:
+            self.assertIn("nested: EPERM", output)
+            self.assertEqual(128 + signal.SIGTERM, runner.returncode, output)
+            self.assertNotIn("Traceback", output)
         pids = [int(path.read_text()) for path in directory.glob("ready-*")]
         pids += [int(path.read_text()) for path in directory.glob("child")]
         deadline = time.monotonic() + 5
@@ -240,8 +244,14 @@ signal.pause()
         output = self.run_nested(self.directory, "first-kill-eperm", suite)
         self.assertIn(f"== {suite}: passed in ", output)
 
+    def test_eperm_on_first_sigkill_to_a_live_suite(self):
+        suite = waiting_suite(self.directory)
+        output = self.run_nested(self.directory, "denied-kill", suite)
+        self.assertIn(f"== {suite}: FAILED (exit status {-signal.SIGKILL})", output)
+
     def test_second_signal_during_a_grace_period_sigkill(self):
-        self.run_nested(self.directory, "grace-kill", waiting_suite(self.directory))
+        suite = waiting_suite(self.directory)
+        self.run_nested(self.directory, "grace-kill", suite, suite)
 
     def test_second_signal_during_a_deadline_check(self):
         for mode in ("deadline-join", "deadline-drain"):
@@ -282,6 +292,8 @@ unreaped = set()
 escalated = set()
 nested = False
 draining = False
+denied = False
+in_flight = None
 
 
 def second_signal():
@@ -289,7 +301,7 @@ def second_signal():
     global nested
     nested = True
     print("nested: second signal", file=sys.stderr, flush=True)
-    escalated.clear()
+    # In grace-kill mode the first group has already received SIGKILL.
     signal.raise_signal(signal.SIGHUP)
     assert len(escalated) == len(sys.argv) - 3, "second signal missed a group"
 
@@ -317,7 +329,8 @@ real_killpg = os.killpg
 
 
 def killpg(pgid, signum):
-    global draining
+    global denied, draining, in_flight
+    assert pgid != in_flight, "group signalled before the previous SIGKILL returned"
     if pgid in unreaped:
         if signum == signal.SIGKILL:
             escalated.add(pgid)
@@ -325,14 +338,30 @@ def killpg(pgid, signum):
         raise PermissionError(1, "Operation not permitted")
     if signum == 0:
         draining = True
+    if signum == signal.SIGKILL and mode == "denied-kill" and not denied:
+        denied = True
+        raise PermissionError(1, "first SIGKILL denied")
     real_killpg(pgid, signum)
     if signum == signal.SIGKILL:
         escalated.add(pgid)
         unreaped.add(pgid)
         if mode == "grace-kill" and not nested:
-            second_signal()
-    elif signum == signal.SIGTERM and mode in ("handler", "first-kill-eperm") and not nested:
+            in_flight = pgid
+            try:
+                second_signal()
+            finally:
+                in_flight = None
+    elif signum == signal.SIGTERM and mode in ("handler", "first-kill-eperm", "denied-kill") and not nested:
         if mode == "first-kill-eperm":
+            # Let the suite exit on TERM before simulating a zombie group.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    os.kill(pgid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline, "suite did not exit on TERM"
+                time.sleep(0.01)
             unreaped.add(pgid)
         second_signal()
 

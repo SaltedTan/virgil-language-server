@@ -31,15 +31,40 @@ import time
 DEFAULT_JOBS = 4
 
 
+class Process(subprocess.Popen):
+    killing = False
+    killed = False
+
+
 def send(process, signum):
     """Signals an owned process group, returning whether it still exists."""
+    if process.killing:
+        # A nested handler can reach this group before killpg's result is recorded.
+        return True
+    killing = signum == signal.SIGKILL
     try:
+        if killing:
+            process.killing = True
         os.killpg(process.pid, signum)
-    except (ProcessLookupError, PermissionError):
-        # We signal only groups we started. macOS can return EPERM if the
-        # group's only member is an unreaped zombie.
+    except ProcessLookupError:
         return False
-    return True
+    except PermissionError:
+        if process.killed or process.poll() is not None:
+            return False
+        # On macOS getpgid cannot see a zombie leader, even while wait()
+        # holds the lock that prevents poll() from observing its exit.
+        try:
+            os.getpgid(process.pid)
+        except ProcessLookupError:
+            return False
+        raise
+    else:
+        if killing:
+            process.killed = True
+        return True
+    finally:
+        if killing:
+            process.killing = False
 
 
 class Suite:
@@ -88,9 +113,9 @@ class Suites:
                 self.ran.append(suite)
                 output = None if self.live else tempfile.TemporaryFile()
                 started = time.monotonic()
-                process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
-                                           stdout=output, stderr=subprocess.STDOUT if output else None,
-                                           start_new_session=True)
+                process = Process(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
+                                  stdout=output, stderr=subprocess.STDOUT if output else None,
+                                  start_new_session=True)
                 self.processes.append(process)
         except OSError as error:
             suite.status = 127
