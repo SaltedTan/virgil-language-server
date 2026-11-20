@@ -108,8 +108,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		return cachedResult;
 	}
 	// Queues {r}'s analysis of {text} for {overlay} in {project}, at {cursor},
-	// with its query's fields set, as the waiting request. The request that
-	// waited, if any, gets its fallback reply.
+	// with its query's fields set, superseding the previous waiting request.
 	def queue(r: LspQueryRequest, overlay: DocumentOverlay, cursor: int, project: ProjectContext, text: Array<byte>) {
 		r.uri = overlay.uri;
 		r.identity = overlay.identity;
@@ -234,14 +233,15 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 			}
 		}
 	}
+	// Record the refusal while the mark is present so resynchronization
+	// cannot revive pending edits computed from the old overlay.
 	def rememberRefusals() {
 		for (r in [waiting, running]) {
 			if (r != null && r.refusal() != JsonValue.Null) r.refused = true;
 		}
 	}
-	// Answers the waiting and running requests with their permanent fallback
-	// replies, at shutdown, exit, or the end of the input: no later request
-	// can ask again.
+	// Finishes pending requests at shutdown, exit, or end of input. The
+	// fallback is permanent because no later request can ask again.
 	def close() {
 		for (r in [waiting, running]) if (r != null) finish(r, r.permanentFallback());
 	}
