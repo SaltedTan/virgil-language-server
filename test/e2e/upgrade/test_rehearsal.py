@@ -23,6 +23,7 @@ import zipfile
 
 import run
 
+REPO = Path(run.__file__).resolve().parents[3]
 OLD, NEW = ("0.1.0-alpha.4", "0.1.3"), ("0.1.0-alpha.5", "0.1.4")
 REVISIONS = {OLD[0]: ("1" * 40, "a" * 40), NEW[0]: ("2" * 40, "b" * 40)}
 
@@ -152,6 +153,49 @@ class AssetTests(TemporaryTest):
             assets = run.verify_assets(directory, allow_untagged=True)
         self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-1-g{commits['manifest'][:12]}")
 
+    def test_uses_the_build_reported_revision(self):
+        # The release workflow passes the build job's --version revision, so
+        # a tag pushed after the build can't change what the driver expects:
+        # it doesn't describe the commit, and needs no history for it.
+        reported = f"v{OLD[0]}-1-g{'2' * 12}"
+        directory = make_assets(self.root, *NEW, manifest={"tag": None})
+        with mock.patch.object(run, "described", side_effect=AssertionError("described")):
+            assets = run.verify_assets(directory, allow_untagged=True, revision=reported)
+        self.assertEqual(assets["versionRevision"], reported)
+        self.assertIn(f"  source revision: {reported}\n", run.version_output(assets))
+        tagged = make_assets(self.root, *NEW)
+        assets = run.verify_assets(tagged, allow_untagged=True, revision=f"v{NEW[0]}")
+        self.assertEqual(assets["versionRevision"], f"v{NEW[0]}")
+        with self.assertRaisesRegex(run.Failure, f"reported source revision {reported}, not its manifest's tag"):
+            run.verify_assets(tagged, allow_untagged=True, revision=reported)
+        for bad in ["", "two words", "line\n"]:
+            with self.assertRaisesRegex(run.Failure, "empty or has white space"):
+                run.verify_assets(directory, allow_untagged=True, revision=bad)
+
+    def test_accepts_build_metadata(self):
+        # check-release.sh accepts SemVer build metadata in VERSION.
+        version = "0.1.0-alpha.9+linux.5"
+        assets = run.verify_assets(make_assets(self.root, version, NEW[1]))
+        self.assertEqual((assets["serverVersion"], assets["tag"]), (version, f"v{version}"))
+
+    def test_versions_match_the_release_check(self):
+        # The archive names' versions are exactly those that the release
+        # version check accepts.
+        versions = ["0.1.0", "10.20.30", "0.1.0-alpha.9", "0.1.0-alpha.9+linux.5", "1.0.0+20261121",
+                    "1.0.0-0", "1.0.0-x-y.0a", "1.0.0+001", "1.0.0-rc.1+build.1-2", "01.0.0", "1.0.0-01",
+                    "1.0.0-", "1.0.0-alpha..1", "1.0.0+", "1.0.0+a..b", "1.0.0+a_b", "1.0", "1.0.0-a_b",
+                    "1.0.0.0", "v1.0.0"]
+        root = self.root / "release"
+        root.mkdir()
+        for version in versions:
+            (root / "VERSION").write_text(version + "\n")
+            (root / "CHANGELOG.md").write_text(f"## [{version}]\n")
+            check = subprocess.run([str(REPO / "scripts/check-release.sh"), f"v{version}", str(root)],
+                                   capture_output=True, text=True)
+            name = f"virgil-lsp-{version}-x86-64-linux.tar.gz"
+            with self.subTest(version=version):
+                self.assertEqual(run.ARCHIVE.fullmatch(name) is not None, check.returncode == 0, check.stderr)
+
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
         self.rejected("must hold exactly", vsix_name=f"virgil-lsp-vscode-{OLD[1]}-darwin-arm64.vsix")
@@ -216,10 +260,16 @@ class AssetTests(TemporaryTest):
         same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
         with self.assertRaisesRegex(run.Failure, "same extension version"):
             run.check_pair(old, same_extension)
+        metadata = run.verify_assets(make_assets(self.root, OLD[0] + "+linux.5", NEW[1]))
+        with self.assertRaisesRegex(run.Failure, f"server {OLD[0]} and --to-assets server {OLD[0]}\\+linux.5 "
+                                                 "differ only in build metadata"):
+            run.check_pair(old, metadata)
 
     def test_version_order(self):
         versions = ["0.1.0-alpha.4", "0.1.0-alpha.5", "0.1.0-alpha.10", "0.1.0-beta", "0.1.0", "0.1.1", "0.10.0"]
         self.assertEqual(sorted(reversed(versions), key=run.version_key), versions)
+        self.assertEqual(run.version_key("0.1.0-alpha.9+linux-x.5"), run.version_key("0.1.0-alpha.9"))
+        self.assertEqual(run.version_key("0.1.0+linux-5"), run.version_key("0.1.0"))
 
 
 def receipt_of(directory):
@@ -345,6 +395,20 @@ class PropagationTests(TemporaryTest):
         with self.assertRaisesRegex(run.Failure, "manifest tag is None"):
             run.main(["--from-assets", str(old), "--to-assets", str(new), "--logs", str(logs)])
         self.assertFalse(logs.exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and platform.machine() == "x86_64", "Linux x86-64 only")
+    def test_passes_the_reported_revision_to_the_destination(self):
+        calls = []
+
+        def verify(directory, **options):
+            calls.append(options)
+            return {}
+        with mock.patch.object(run, "verify_assets", verify), \
+                mock.patch.object(run, "check_pair", side_effect=run.Failure("stop")):
+            with self.assertRaisesRegex(run.Failure, "stop"):
+                run.main(["--from-assets", "from", "--to-assets", "to", "--to-revision", "v1.0.0-1-gabc",
+                          "--logs", str(self.root / "logs")])
+        self.assertEqual(calls, [{}, {"allow_untagged": True, "revision": "v1.0.0-1-gabc"}])
 
     def test_assets_are_checked_before_anything_runs(self):
         bad = make_assets(self.root, *NEW, sums=lambda lines: lines[:1])
