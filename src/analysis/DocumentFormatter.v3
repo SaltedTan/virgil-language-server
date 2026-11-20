@@ -99,6 +99,7 @@ component AnalysisFormatMark {
 
 class FormatterFunHeader {
 	var tabs: int;
+	var statementIndent: (int, int, int, int);
 	var anchor: (int, int, int, int);
 }
 
@@ -342,6 +343,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 // {caseTabs} are the leading tabs of the line where a match's current case started.
 class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader) {
 	var caseTabs: int;
+	var statementIndent: (int, int, int, int);
 }
 
 // Formats a document that parsed: one forward pass over the parser's tokens
@@ -392,7 +394,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// holds the corresponding values for the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineIndent: (int, int, int, int);
-	private var afterElse: bool;
+	private var lineStart: int;
+	private var fileStatementIndent: (int, int, int, int);
+	private var afterElseDepth: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
 	private var wantTabs: int;
@@ -427,9 +431,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def pass() -> bool {
 		size = input.length;
 		count = 0;
-		started = open = closedControl = continues = lastStartsLine = afterElse = false;
-		last = lastItem = -1;
-		chunk = lineIndent = (0, 0, 0, 0);
+		started = open = closedControl = continues = lastStartsLine = false;
+		last = lastItem = lineStart = afterElseDepth = -1;
+		chunk = lineIndent = fileStatementIndent = (0, 0, 0, 0);
 		closeTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
@@ -649,7 +653,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// whose old indentation is from {begin} to {end}, and makes it the
 	// current line, and the statement's line unless it is a continuation.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
-		afterElse = false;
+		lineStart = k;
+		afterElseDepth = -1;
 		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
 			var t = wantTabs, i = keepBegin;
 			while (i < keepEnd && input[i] == '\t') {
@@ -664,8 +669,10 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def codeIndent(k: int, begin: int, end: int, writable: bool) -> int {
 		var kind = classify(k);
 		if (kind == CONTINUATION) {
-			if (writable) shift(begin, end);
-			else {
+			if (writable) {
+				var header = funHeaders[k];
+				shift(begin, end, if(header != null && ch(k) == '{', header.statementIndent, chunk));
+			} else {
 				wantTabs = 0;
 				keepBegin = begin;
 				keepEnd = end;
@@ -733,21 +740,21 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// A continuation keeps its old indentation, from {begin} to {end}, unless
 	// its statement's first line was reindented and that line's old
 	// indentation is a prefix of it, which the new one then replaces.
-	private def shift(begin: int, end: int) {
+	private def shift(begin: int, end: int, anchor: (int, int, int, int)) {
 		wantTabs = 0;
 		keepBegin = begin;
 		keepEnd = end;
-		if (chunk.0 < 0) return;
-		var n = chunk.1 - chunk.0;
+		if (anchor.0 < 0) return;
+		var n = anchor.1 - anchor.0;
 		if (n > end - begin) return;
-		var same = n == chunk.2;
+		var same = n == anchor.2;
 		for (i < n) {
-			var b = input[chunk.0 + i];
+			var b = input[anchor.0 + i];
 			if (b != input[begin + i]) return;
 			if (b != '\t') same = false;
 		}
 		if (same) return;
-		wantTabs = chunk.2;
+		wantTabs = anchor.2;
 		keepBegin = begin + n;
 	}
 	// A comment that starts a line, with old indentation from {begin} to
@@ -761,7 +768,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			keepBegin = keepEnd = begin;
 			return;
 		}
-		if (inner != null && inner.kind != '{') return shift(begin, end);
+		if (inner != null && inner.kind != '{') return shift(begin, end, chunk);
 		wantTabs = following.0;
 		keepBegin = following.1;
 		keepEnd = following.2;
@@ -773,14 +780,20 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		codeIndent(next, begin, end, !crossing);
 		return (wantTabs, keepBegin, keepEnd);
 	}
+	private def startsStatement() -> bool {
+		if (last < 0) return true;
+		var p = ch(last);
+		return p == '{' || (!continues && (p == ';' || p == '}'))
+			|| closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0;
+	}
 	// Updates the brackets and the last token for the token {k}.
 	private def consume(k: int) {
 		var c = ch(k), m = marks[k];
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
-		if ((inner == null || inner.kind == '{') && last >= 0 && c != '}' && !isElse(k)) {
-			var p = ch(last);
-			var startsBody = c != '{' && (closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0);
-			if (startsBody || (!continues && (p == ';' || p == '}'))) chunk = lineIndent;
+		var grouped = inner != null && inner.kind != '{';
+		if (!grouped && c != '}' && startsStatement()) {
+			if (inner == null) fileStatementIndent = lineIndent;
+			else inner.statementIndent = lineIndent;
 		}
 		closedControl = false;
 		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
@@ -789,23 +802,24 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		// An "else" anchors only its own body on its if's or match's line; a
 		// control header after it on its line takes that line's tabs.
-		if (afterElse && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
+		if (afterElseDepth == stack.length && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
 			chunk = (chunk.0, chunk.1, chunk.2, lineIndent.3);
-			afterElse = false;
+			afterElseDepth = -1;
 		}
 		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineIndent.3);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
-			afterElse = true;
+			afterElseDepth = stack.length;
 			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
 		} else if (ifs.length > 0 && isElse(k)) {
-			afterElse = true;
+			afterElseDepth = stack.length;
 			chunk = (chunk.0, chunk.1, chunk.2, ifs[ifs.length - 1]);
 			ifs.length--;
 		}
 		var header = funHeaders[k];
 		match (c) {
 			'{' => {
-				var base = if(inner != null && inner.kind != '{', lineIndent.3, chunk.3);
+				var base = if(grouped, lineIndent.3, chunk.3);
+				if (!grouped && header != null && k == lineStart) base = header.statementIndent.3;
 				stack.put(FormatterBracket.new('{', base + 1, base, false, header));
 			}
 			'(', '[' => {
@@ -813,6 +827,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			}
 			')', ']', '}' => if (inner != null) {
 				stack.length--;
+				if (afterElseDepth > stack.length) afterElseDepth = -1;
 				closedControl = c == ')' && inner.control;
 				if (c == '}') closeTabs = inner.close;
 				if (inner.funHeader != null) {
@@ -822,6 +837,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			}
 			_ => if (header != null) {
 				header.tabs = lineIndent.3;
+				if (!grouped) header.statementIndent = if(inner != null, inner.statementIndent, fileStatementIndent);
 				header.anchor = chunk;
 			}
 		}
