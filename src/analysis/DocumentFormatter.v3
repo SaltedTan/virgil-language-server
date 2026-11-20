@@ -340,7 +340,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 // while, or for statement holds that statement's header ({control}). For a
 // fun expression's '{', {funHeader} holds the enclosing statement's anchor.
 // {caseTabs} are the leading tabs of the line where a match's current case started.
-class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader) {
+class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader, parentElseLine: int) {
 	var caseTabs: int;
 }
 
@@ -392,6 +392,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// leading tabs on the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
+	private var lineStart: int;
+	private var afterElseLine: int;
 	// The indentation chosen for a line: {wantTabs} tabs, then the bytes of
 	// {input} from {keepBegin} to {keepEnd}.
 	private var wantTabs: int;
@@ -427,9 +429,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		size = input.length;
 		count = 0;
 		started = open = closedControl = continues = lastStartsLine = false;
-		last = lastItem = -1;
+		last = lastItem = afterElseLine = -1;
 		chunk = (0, 0, 0, 0);
-		lineTabs = closeTabs = 0;
+		lineTabs = closeTabs = lineStart = 0;
 		stack.length = 0;
 		ifs.length = 0;
 		var pos = 0;
@@ -540,8 +542,10 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		}
 		var indent = if(lastEnd >= 0, lastEnd + 1, begin);
 		if (comment) {
-			if (!leading) commentIndent(indent, end, following);
-			else if (crossing) codeIndent(next, indent, end, true);
+			// A block comment that starts its line and ends on the line of
+			// the next code is a comment line, whose code line after it is
+			// the one where the comment closes.
+			if (!leading || crossing) commentIndent(indent, end, following);
 			else codeLine(next, indent, end, true);
 		} else {
 			codeLine(next, indent, end, true);
@@ -646,6 +650,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// whose old indentation is from {begin} to {end}, and makes it the
 	// current line, and the statement's line unless it is a continuation.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
+		lineStart = k;
 		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
 			var t = wantTabs, i = keepBegin;
 			while (i < keepEnd && input[i] == '\t') {
@@ -775,10 +780,18 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
 			inner.caseTabs = lineTabs;
 		}
+		// An "else" anchors only its own body on its if's or match's line; a
+		// control header after it on its line takes that line's tabs.
+		if (afterElseLine == lineStart && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
+			chunk = (chunk.0, chunk.1, chunk.2, lineTabs);
+			afterElseLine = -1;
+		}
 		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
+			afterElseLine = lineStart;
 			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
 		} else if (ifs.length > 0 && isElse(k)) {
+			afterElseLine = lineStart;
 			chunk = (chunk.0, chunk.1, chunk.2, ifs[ifs.length - 1]);
 			ifs.length--;
 		}
@@ -786,13 +799,16 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		match (c) {
 			'{' => {
 				var base = if(inner != null && inner.kind != '{', lineTabs, chunk.3);
-				stack.put(FormatterBracket.new('{', base + 1, base, false, header));
+				stack.put(FormatterBracket.new('{', base + 1, base, false, header, afterElseLine));
+				afterElseLine = -1;
 			}
 			'(', '[' => {
-				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null));
+				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine));
+				afterElseLine = -1;
 			}
 			')', ']', '}' => if (inner != null) {
 				stack.length--;
+				afterElseLine = inner.parentElseLine;
 				closedControl = c == ')' && inner.control;
 				if (c == '}') closeTabs = inner.close;
 				if (inner.funHeader != null) {
