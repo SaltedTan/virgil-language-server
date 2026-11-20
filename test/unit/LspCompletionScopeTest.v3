@@ -35,6 +35,8 @@ def X = [
 	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
 	T("LspCompletionScope:out_of_sync", test_out_of_sync),
 	T("LspCompletionScope:out_of_sync_while_waiting", test_out_of_sync_while_waiting),
+	T("LspCompletionScope:out_of_sync_settled", test_out_of_sync_settled),
+	T("LspCompletionScope:out_of_sync_superseded", test_out_of_sync_superseded),
 	T("LspCompletionScope:admission", test_admission),
 	T("LspCompletionScope:submit_refused", test_submit_refused),
 	T("LspCompletionScope:takes_turns", test_takes_turns),
@@ -722,6 +724,61 @@ def test_out_of_sync_while_waiting(t: Tester) {
 	t.assert(s.server.completion.resolver.latest == latest, "the running answer isn't kept");
 	assertScopeNames(t, s.result(t, complete0(t, s, text)));
 	s.server.close();
+}
+// As test_out_of_sync_while_waiting, but both requests settle while the
+// document is still marked out of sync, with its overlay and the query
+// generation unchanged: the running analysis's answer is refused before it is
+// kept, and the waiting one's analysis is refused before it starts.
+def test_out_of_sync_settled(t: Tester) {
+	var s = session(t);
+	complete(t, s, inScale("\t\tfa$"));
+	var latest = s.server.completion.resolver.latest;
+	t.assert(latest != null, "a list with names is kept");
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text), analyses = s.server.completion.analyses;
+	var waiting = sendBefore(t, s, text);
+	t.assert(s.reply(running) == null && s.reply(waiting) == null, "both wait");
+	rejectChange(s, "Main.v3");
+	s.settle();
+	t.assert(outOfSyncList(s, running), "the running completion gets the empty list");
+	t.assert(outOfSyncList(s, waiting), "the waiting completion gets the empty list");
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	t.asserti(analyses, s.server.completion.analyses);
+	t.assert(s.server.completion.resolver.latest == latest, "the running answer isn't kept");
+	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
+	assertScopeNames(t, s.result(t, complete0(t, s, text)));
+	s.server.close();
+}
+
+// A request refused while it waits stays refused after an accepted full-text
+// change: a fresh request that then supersedes it, while another still runs,
+// sends it the empty list, incomplete, rather than its keyword fallback, and
+// the fresh one gets the names.
+def test_out_of_sync_superseded(t: Tester) {
+	var s = session(t);
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text);
+	var waiting = sendBefore(t, s, text);
+	t.assert(s.reply(running) == null && s.reply(waiting) == null, "both wait");
+	rejectChange(s, "Main.v3");
+	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
+	var fresh = request(t, s, text);
+	t.assert(outOfSyncList(s, waiting), "the superseded completion gets the empty list");
+	t.asserti(1, s.count(waiting));
+	t.assert(s.reply(running) == null && s.reply(fresh) == null, "the others wait");
+	s.settle();
+	t.assert(outOfSyncList(s, running), "the running completion gets the empty list");
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	assertScopeNames(t, s.result(t, fresh));
+	s.server.close();
+}
+// Sends a completion one character before the "$" in {marked}, Main.v3's
+// current text, and returns its id.
+def sendBefore(t: Tester, s: RenameTestSession, marked: string) -> int {
+	var u = unmark(marked), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	return s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 }
 def assertScopeNames(t: Tester, result: JsonValue) {
 	t.assert(itemOf(result, "total") != JsonValue.Null, "the local total is offered");
