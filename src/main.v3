@@ -199,8 +199,9 @@ component VirgilLsp {
 			Log.error1("format prints one file; pass --check or --write for several; run '%s --help'", BuildInfo.NAME);
 			return 2;
 		}
-		if (FormatHook.enabled && !write && FormatHook.hasFakes()) {
-			Log.error("--test-fake requires --write");
+		var writeOnly = if(FormatHook.enabled && !write, FormatHook.writeOnly());
+		if (writeOnly != null) {
+			Log.error1("%s requires --write", writeOnly);
 			return 2;
 		}
 		// Before any file is opened (docs/decisions/0019-formatter.md, decision 6).
