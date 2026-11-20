@@ -4581,16 +4581,15 @@ both runs have overlapping p10–p90 intervals, and none is flagged by
 analysis median is within 2.1% of `139db845` in each run, in both
 directions, and their rename, completion-miss, and semantic-diagnostic medians
 are within 2.7%. alpha.8's largest Aeneas analysis change in either run is
-reused analysis at +1.0% and +1.3%. In
-the first run, block medians of Aeneas fresh analysis were 352.2 to 371.0 ms
-at `139db845` and 354.4 to 373.2 ms at alpha.8, and of reused analysis 302.1
-to 316.3 and 309.5 to 319.1 ms; the builds' blocks interleave. Small reused
-analysis is 8.3% and 4.3% slower in the two runs, a difference of 7 to 16 µs
-within overlapping intervals. Worker memory is unchanged: the Aeneas
-scenarios leave 9,946,232, 9,929,240, and 9,163,680 bytes under the 201,326,592-byte
-collection boundary at `139db845` and 9,955,616, 9,919,984, and 9,152,032 at
-alpha.8, fresh, reused, and with an error result, and no Aeneas analysis
-collects during handling.
+reused analysis at +1.0% and +1.3%. In the first run, block medians of Aeneas
+fresh analysis were 352.2 to 371.0 ms at `139db845` and 354.4 to 373.2 ms at
+alpha.8, and of reused analysis 302.1 to 316.3 and 309.5 to 319.1 ms; the
+builds' blocks interleave. Small reused analysis is 8.3% and 4.3% slower in the
+two runs, a difference of 7 to 16 µs within overlapping intervals. Worker
+memory is unchanged: the Aeneas scenarios leave 9,946,232, 9,929,240, and
+9,163,680 bytes under the 201,326,592-byte collection boundary at `139db845`
+and 9,955,616, 9,919,984, and 9,152,032 at alpha.8, fresh, reused, and with an
+error result, and no Aeneas analysis collects during handling.
 
 `139db845` itself now measures 3.9% (fresh analysis), 6.6% to 6.8% (reused
 analysis), 5.1% to 5.5% (rename), and 4.3% to 5.6% (completion miss) above
