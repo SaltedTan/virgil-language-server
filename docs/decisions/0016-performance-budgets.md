@@ -25,7 +25,7 @@ What the adoption does not cover:
 
 - No CI gate is enabled, and no workflow, test setting, heap, or code changes with it.
 - The thresholds of [#347](https://github.com/SaltedTan/virgil-language-server/issues/347) (a >5% per-scenario allocation increase, new worker collections in clean analyses, the <2 MiB semispace-headroom warning, scenario exclusions, and its baseline-migration rules) are not in the adopted table. #347 may now be implemented and calibrated, but enabling its gate needs the maintainer's separate approval of its resource-policy file.
-- The [v1.0 readiness ledger](../v1-readiness.md#4-performance-budgets) defines the evidence a candidate needs.
+- The v1.0 readiness clause for performance budgets still needs a run of a candidate checked against the adopted table; no candidate has been checked yet.
 
 ## Consequences
 

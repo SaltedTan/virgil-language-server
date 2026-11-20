@@ -5,9 +5,7 @@ requests over real stdio pipes. The [syntax-error tolerance benchmark](#semantic
 measures semantic availability and correctness while editing. Both use Python
 3.9+ and its standard library, including the
 [`Session` protocol client](../test/protocol/worker.py). The [weekly comparison](#scheduled-comparison)
-reports timing changes as advisory results. The adopted [performance budgets](performance-budgets.md)
-also have advisory enforcement. See the [v1.0 readiness ledger](v1-readiness.md#4-performance-budgets)
-for the draft candidate evidence requirements.
+reports changes without timing budgets; these measurements do not gate releases. The adopted performance budgets are in [performance-budgets.md](performance-budgets.md); their enforcement is advisory, so they don't gate releases either. The [v1.0 readiness ledger](v1-readiness.md#4-performance-budgets) states the evidence a v1.0 candidate will need.
 
 ## Run
 
