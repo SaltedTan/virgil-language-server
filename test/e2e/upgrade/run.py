@@ -200,17 +200,10 @@ def verify_assets(directory, *, allow_untagged=False, revision=None):
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
     tag = manifest["tag"]
-    expected_tag = tag or f"v{version}"
     if revision is None:
         revision = tag or described(archive, manifest["sourceRevision"])
-    elif revision != expected_tag:
-        if tag is not None:
-            raise Failure(f"{archive.name}: source revision {revision!r} must match its tag {tag!r}")
-        commit = (re.fullmatch(r"([0-9a-f]{12})", revision)
-                  or re.fullmatch(r".+-[0-9]+-g([0-9a-f]{12})(?:-dirty)?", revision))
-        if commit is None or not manifest["sourceRevision"].startswith(commit[1]):
-            raise Failure(f"{archive.name}: its build described its source revision as {revision!r}, "
-                          f"which doesn't name its commit {manifest['sourceRevision']} or tag {expected_tag!r}")
+    elif revision == "":
+        raise Failure("--to-revision must be nonempty")
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
@@ -239,10 +232,13 @@ def described(path, revision):
 def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
-        if version_key(old[field]) == version_key(new[field]):
-            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old[field]}")
-        if version_key(old[field]) > version_key(new[field]):
-            raise Failure(f"--from-assets {name} {old[field]} is newer than --to-assets {name} {new[field]}")
+        old_version, new_version = old[field], new[field]
+        old_key, new_key = version_key(old_version), version_key(new_version)
+        if old_key == new_key:
+            raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
+                          "have equal SemVer precedence")
+        if old_key > new_key:
+            raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
 
 
 def version_output(assets):
@@ -667,9 +663,9 @@ def main(argv=None):
                         help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
     parser.add_argument("--to-revision",
-                        help="the source revision that the --to-assets build described, which its --version "
-                             "prints; by default its tag, or for an untagged build, git describe of its "
-                             "commit in this checkout")
+                        help="the nonempty source revision recorded by the --to-assets build, checked verbatim "
+                             "against the installed servers' --version output. If omitted, use the manifest's "
+                             "tag or git describe of its commit in this checkout")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
     parser.add_argument("--rollback-without-force", action="store_true",

@@ -153,31 +153,20 @@ class AssetTests(TemporaryTest):
         self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-1-g{commits['manifest'][:12]}")
 
     def test_takes_the_builds_description(self):
-        # The release workflow passes the build job's own description, so a
-        # tag pushed since then doesn't change it, and needs no git here.
-        source = "2" * 40
-        distance = f"v{OLD[0]}-3-g{source[:12]}"
+        repository = self.root / "repository"
+        commit = history(repository)["manifest"]
+        git(repository, "tag", "-a", "-m", "candidate", "release-candidate", commit)
+        revision = git(repository, "describe", "--always", "--abbrev=12", commit)
+        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commit})
+        with mock.patch.object(run, "REPO", self.root / "missing"):
+            assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
+        self.assertIn("  source revision: release-candidate\n", run.version_output(assets))
+
+    def test_rejects_an_empty_revision_override(self):
         directory = make_assets(self.root, *NEW, manifest={"tag": None})
         with mock.patch.object(run, "REPO", self.root / "missing"):
-            for revision in [distance, f"{distance}-dirty", source[:12], f"v{NEW[0]}"]:
-                with self.subTest(revision=revision):
-                    assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
-                    self.assertIn(f"  source revision: {revision}\n", run.version_output(assets))
-            for revision in ["", f"v{OLD[0]}", "4" * 12, f"v{OLD[0]}-3-g{'4' * 12}", distance[:-1]]:
-                with self.subTest(revision=revision):
-                    with self.assertRaisesRegex(run.Failure, "doesn't name its commit"):
-                        run.verify_assets(directory, allow_untagged=True, revision=revision)
-        tagged = make_assets(self.root, *NEW)
-        self.assertEqual(run.verify_assets(tagged, revision=f"v{NEW[0]}")["versionRevision"], f"v{NEW[0]}")
-        with self.assertRaisesRegex(run.Failure, "must match its tag 'v0.1.0-alpha.5'"):
-            run.verify_assets(tagged, revision=distance)
-
-    def test_accepts_exact_tags_with_sha_like_metadata(self):
-        for version in ["0.1.0-alpha.9+linux-g0123456789ab", "0.1.0-alpha.9+linux-3-g0123456789ab"]:
-            with self.subTest(version=version):
-                directory = make_assets(self.root, version, NEW[1], manifest={"tag": None})
-                assets = run.verify_assets(directory, allow_untagged=True, revision=f"v{version}")
-                self.assertIn(f"  source revision: v{version}\n", run.version_output(assets))
+            with self.assertRaisesRegex(run.Failure, "--to-revision must be nonempty"):
+                run.verify_assets(directory, allow_untagged=True, revision="")
 
     def test_accepts_build_metadata(self):
         # scripts/check-release.sh accepts SemVer build metadata in VERSION.
@@ -186,11 +175,14 @@ class AssetTests(TemporaryTest):
         self.assertEqual(assets["serverVersion"], version)
         self.assertEqual(assets["top"], f"virgil-lsp-{version}-x86-64-linux")
         self.assertEqual(run.version_key(version), run.version_key("0.1.0-alpha.9"))
-        old = run.verify_assets(make_assets(self.root))
+        old = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+linux.5", OLD[1]))
         run.check_pair(old, assets)
-        same = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+other", NEW[1]))
-        with self.assertRaisesRegex(run.Failure, "same server version"):
+        same = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+linux.6", NEW[1]))
+        with self.assertRaises(run.Failure) as failure:
             run.check_pair(old, same)
+        self.assertEqual(str(failure.exception),
+                         "--from-assets server 0.1.0-alpha.4+linux.5 and --to-assets server 0.1.0-alpha.4+linux.6 "
+                         "have equal SemVer precedence")
 
     def test_rejects_empty_build_metadata_identifiers(self):
         for version in ["0.1.0-alpha.9+", "0.1.0-alpha.9+.linux", "0.1.0-alpha.9+linux..5", "0.1.0-alpha.9+linux."]:
@@ -254,12 +246,12 @@ class AssetTests(TemporaryTest):
         old = run.verify_assets(make_assets(self.root))
         new = run.verify_assets(make_assets(self.root, *NEW))
         run.check_pair(old, new)
-        with self.assertRaisesRegex(run.Failure, "same server version"):
+        with self.assertRaisesRegex(run.Failure, "server .* have equal SemVer precedence"):
             run.check_pair(old, old)
         with self.assertRaisesRegex(run.Failure, "is newer than"):
             run.check_pair(new, old)
         same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
-        with self.assertRaisesRegex(run.Failure, "same extension version"):
+        with self.assertRaisesRegex(run.Failure, "extension .* have equal SemVer precedence"):
             run.check_pair(old, same_extension)
 
     def test_version_order(self):
