@@ -124,10 +124,15 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		typeCons(prog.typeEnv, values, types, level);
 		level++;
 		// Layouts are values (MethodEnv.lookupVar), and the one argument that
-		// Ref<...> takes (VstCompoundVerifier.resolveRefType).
+		// Ref<...> takes (VstCompoundVerifier.resolveRefType). As a value, a
+		// name resolves to a type before a layout, so a layout named like a
+		// type of the program's type environment, such as the target's
+		// Pointer or the synthetic System, is not one: the type is.
 		if (layouts && prog.layouts != null) {
-			var l = level;
-			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true));
+			var l = level, typecons = prog.typeEnv.typecons;
+			prog.layouts.apply(fun (name: string, decl: VstLayout) {
+				if (!values || !typecons.has(name)) add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true);
+			});
 		}
 		return answer(thisLevel, prefix, values, types, target);
 	}
