@@ -16,6 +16,7 @@ def X = [
 	T("AnalysisScope:excluded_shadowing", test_excluded_shadowing),
 	T("AnalysisScope:hidden_target_builtins", test_hidden_target_builtins),
 	T("AnalysisScope:target_builtin_layouts", test_target_builtin_layouts),
+	T("AnalysisScope:language_builtin_layouts", test_language_builtin_layouts),
 	T("AnalysisScope:matches", test_matches),
 	T("AnalysisScope:lambdas", test_lambdas),
 	T("AnalysisScope:type_parameters", test_type_parameters),
@@ -475,6 +476,43 @@ def test_target_builtin_layouts(t: Tester) {
 	t.assert_string("Linux Pointer", layoutNames(p));
 	t.assert_string("Linux Pointer System", layoutNames(q));
 	t.asserti(0, p.hiddenBuiltins.length);
+}
+// The type environment falls back to the language's builtin types
+// (V3.lookupToplevelType) before MethodEnv.lookupVar tries a layout, so a
+// layout named int is not a value and hides no builtin, while Ref<...> still
+// takes it. A layout named array is a value except with read-only arrays,
+// which make array a type. A layout with no builtin's name stays a value.
+def test_language_builtin_layouts(t: Tester) {
+	var layouts = "layout int {\n\t+0 value: u8;\n\t=1;\n}\nlayout array {\n\t+0 value: u8;\n\t=1;\n}\nlayout Plain {\n\t+0 value: u8;\n\t=1;\n}\n";
+	var value = unmark(Strings.format1("%scomponent K {\n\tdef r: Ref<int>;\n\tdef f() -> int { return $0; }\n}\n", layouts));
+	var ref = unmark(Strings.format1("%scomponent K {\n\tdef r: Ref<$int>;\n}\n", layouts));
+	var sources = [AnalysisSource.new(MAIN, value.0)], refSources = [AnalysisSource.new(MAIN, ref.0)];
+	var readOnly = ["-lang:read-only-arrays"];
+	var a = AeneasAdapter.analyzeForScope(sources, [], null, false);
+	var b = AeneasAdapter.analyzeForScope(sources, readOnly, null, false);
+	var c = AeneasAdapter.analyzeForScope(refSources, [], null, false);
+	t.assert(a.verified, "fixture verifies");
+	t.assert(b.verified, "read-only arrays fixture verifies");
+	t.assert(c.verified, "Ref fixture verifies");
+	for (kinds in [V, V | TY]) {
+		var p = a.scopeAt(MAIN, value.1, kinds, "");
+		var q = b.scopeAt(MAIN, value.1, kinds, "");
+		if (p == null || q == null) return t.fail("no scope answer");
+		t.assert_string("Plain array", layoutNames(p));
+		t.assert_string("Plain", layoutNames(q));
+		// A value hides array, which completion offers only with the option;
+		// a type would not.
+		t.assert_string(if(kinds == V, "array", ""), spacedNames(p.hiddenBuiltins, p.hiddenBuiltins.length));
+		t.assert_string("", spacedNames(q.hiddenBuiltins, q.hiddenBuiltins.length));
+	}
+	for (analysis in [a, b]) {
+		var l = analysis.scopeAt(MAIN, value.1, L, "");
+		if (l == null) return t.fail("no scope answer");
+		t.assert_string("Plain array int", layoutNames(l));
+	}
+	var r = c.scopeAt(MAIN, ref.1, L, "");
+	if (r == null) return t.fail("no scope answer");
+	t.assert_string("Plain array int", layoutNames(r));
 }
 // The names of the layouts among {s}'s declarations, in order.
 def layoutNames(s: AnalysisScopeAnswer) -> string {
