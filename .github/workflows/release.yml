@@ -173,7 +173,8 @@ jobs:
       - name: Record the packaged source revision for the rehearsal
         if: matrix.target == 'x86-64-linux'
         run: |
-          output=$("$RUNNER_TEMP"/archive/*/virgil-lsp --version)
+          servers=("$RUNNER_TEMP"/archive/*/virgil-lsp)
+          output=$("${servers[@]}" --version)
           revision=$(sed -n 's/^  source revision: //p' <<< "$output")
           PYTHONPATH=test/e2e/upgrade python3 -B - "$RUNNER_TEMP"/archive/*/manifest.json "$revision" <<'PY'
           import json
