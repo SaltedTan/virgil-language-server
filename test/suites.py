@@ -31,18 +31,40 @@ import time
 DEFAULT_JOBS = 4
 
 
+class Process(subprocess.Popen):
+    killing = False
+    killed = False
+
+
 def send(process, signum):
     """Signals an owned process group, returning whether it still exists."""
+    if process.killing:
+        # A nested handler can reach this group before killpg's result is recorded.
+        return True
+    killing = signum == signal.SIGKILL
     try:
+        if killing:
+            process.killing = True
         os.killpg(process.pid, signum)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # macOS can report EPERM for an exited process group.
-        if process.poll() is None:
-            raise
-        return False
-    return True
+        if process.killed or process.poll() is not None:
+            return False
+        # On macOS getpgid cannot see a zombie leader, even while wait()
+        # holds the lock that prevents poll() from observing its exit.
+        try:
+            os.getpgid(process.pid)
+        except ProcessLookupError:
+            return False
+        raise
+    else:
+        if killing:
+            process.killed = True
+        return True
+    finally:
+        if killing:
+            process.killing = False
 
 
 class Suite:
@@ -63,22 +85,20 @@ class Suites:
         self.ran = []
         self.live = live  # stream each suite's output, with one at a time
         self.lock = threading.RLock()
-        self.signum = 0
+        self.signals = []
         self.deadline = None
-        self.force = False
         self.processes = []
 
     def stop(self, signum, _frame):
+        self.signals.append(signum)
+        if len(self.signals) == 1:
+            self.deadline = time.monotonic() + 10
+        if len(self.signals) > 1:
+            self.deadline = None
         # Only workers hold this lock outside handlers; nested signals can reenter it.
         with self.lock:
-            if not self.signum:
-                self.signum = signum
-                self.deadline = time.monotonic() + 10
-            else:
-                self.force = True
-                self.deadline = None
             for process in self.processes:
-                send(process, signal.SIGKILL if self.force else self.signum)
+                send(process, signal.SIGKILL if len(self.signals) > 1 else self.signals[0])
 
     def thread(self):
         while self.run():
@@ -87,15 +107,15 @@ class Suites:
     def run(self):
         try:
             with self.lock:
-                if self.signum or not self.waiting:
+                if self.signals or not self.waiting:
                     return False
                 suite = self.waiting.pop(0)
                 self.ran.append(suite)
                 output = None if self.live else tempfile.TemporaryFile()
                 started = time.monotonic()
-                process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
-                                           stdout=output, stderr=subprocess.STDOUT if output else None,
-                                           start_new_session=True)
+                process = Process(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
+                                  stdout=output, stderr=subprocess.STDOUT if output else None,
+                                  start_new_session=True)
                 self.processes.append(process)
         except OSError as error:
             suite.status = 127
@@ -104,7 +124,7 @@ class Suites:
         suite.status = process.wait()
         suite.seconds = time.monotonic() - started
         with self.lock:
-            if not self.signum:
+            if not self.signals:
                 self.processes.remove(process)
         if output is None:
             self.write(suite, b"")
@@ -137,7 +157,7 @@ def main(jobs, commands):
     threads = []
     try:
         for _ in range(jobs):
-            if suites.signum:
+            if suites.signals:
                 break
             thread = threading.Thread(target=suites.thread)
             thread.start()
@@ -146,13 +166,16 @@ def main(jobs, commands):
         for thread in threads:
             while thread.is_alive():
                 thread.join(0.1)
-                if suites.deadline is not None and time.monotonic() >= suites.deadline:
+                # A nested signal's handler can clear the deadline meanwhile.
+                deadline = suites.deadline
+                if deadline is not None and time.monotonic() >= deadline:
                     suites.stop(signal.SIGKILL, None)
-        while suites.signum and not suites.force:
+        while len(suites.signals) == 1:
             suites.processes[:] = [process for process in suites.processes if send(process, 0)]
             if not suites.processes:
                 break
-            if suites.deadline is not None and time.monotonic() >= suites.deadline:
+            deadline = suites.deadline
+            if deadline is not None and time.monotonic() >= deadline:
                 suites.stop(signal.SIGKILL, None)
             else:
                 time.sleep(0.1)
@@ -161,8 +184,8 @@ def main(jobs, commands):
             send(process, signal.SIGKILL)
         for thread in threads:
             thread.join()
-    if suites.signum:
-        return 128 + suites.signum
+    if suites.signals:
+        return 128 + suites.signals[0]
     elapsed = time.monotonic() - started
 
     print("\nsuite times:")
@@ -174,7 +197,7 @@ def main(jobs, commands):
     for suite in failed:
         print(f"FAIL: {suite.command}")
     # A signal during the report is recorded too, and still decides the status.
-    return 128 + suites.signum if suites.signum else int(bool(failed))
+    return 128 + suites.signals[0] if suites.signals else int(bool(failed))
 
 
 if __name__ == "__main__":
