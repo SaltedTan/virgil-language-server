@@ -13,7 +13,8 @@
 //                                  the input path as $1 and the new file's as
 //                                  $2, an empty environment, and standard
 //                                  output going to standard error. The
-//                                  command must succeed.
+//                                  command must succeed, and each point takes
+//                                  one command, which can't be empty.
 //   --test-hold=<field>,...        once the first command is about to run, the
 //                                  input's metadata reports the fields dev,
 //                                  ino, size, mtime, or ctime with the values
@@ -24,7 +25,9 @@
 //                                  and gid can start at check1 or check2.
 // The points: open (before the input open, in every mode), opened (after the
 // --write input open), check1 and check2 (before each check of --write), and
-// cleanup (before --write removes its new file after a failure).
+// cleanup (before --write removes its new file after a failure). Only the
+// open hook runs without --write, so format refuses the other points,
+// --test-hold, and --test-fake there (writeOnly).
 component FormatHook {
 	def enabled = false;
 
@@ -52,7 +55,7 @@ component FormatHook {
 			var spec = Arrays.range(arg, "--test-hook=".length, arg.length);
 			var colon = find(spec, ':');
 			var point = if(colon > 0, index(POINTS, Arrays.range(spec, 0, colon)), -1);
-			if (point < 0) return false;
+			if (point < 0 || commands[point] != null || colon + 1 == spec.length) return false;
 			commands[point] = Arrays.range(spec, colon + 1, spec.length);
 			return true;
 		}
@@ -87,8 +90,14 @@ component FormatHook {
 		currentPoint = -1;
 		reference = null;
 	}
-	def hasFakes() -> bool {
-		return fakes.length > 0;
+	// The first option given that only --write uses, or null.
+	def writeOnly() -> string {
+		if (fakes.length > 0) return "--test-fake";
+		if (held != 0) return "--test-hold";
+		for (point = OPENED; point < POINTS.length; point++) {
+			if (commands[point] != null) return Strings.format1("--test-hook=%s", POINTS[point]);
+		}
+		return null;
 	}
 	// Runs the command for {point}, if there is one, with {path} and {temp}.
 	def at(point: int, path: string, temp: string) {
