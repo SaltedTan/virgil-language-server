@@ -291,18 +291,22 @@ jobs:
       version: ${{ needs.check.outputs.version }}
 
   editor-tests:
-    # The jobs that the weekly editor-tests.yml also runs, here on this run's
-    # own files: the build jobs' archives and the vsix job's VSIX, which they
-    # check against its recorded SHA-256. They never build or package again.
-    # The two JVM editor lanes are advisory while the JVM build is a preview:
-    # they run and show their failures, but don't hold back checksums or
-    # publish. Every other editor job must pass.
+    # Required editor tests run on this run's archives and VSIX files, which
+    # they check against the recorded SHA-256. They never build or package again.
     name: Editor tests
     needs: [check, build, build-jvm, vsix]
     uses: ./.github/workflows/editor-test-suites.yml
     with:
       version: ${{ needs.check.outputs.version }}
-      advisory-jvm: true
+      lanes: required
+
+  editor-tests-jvm:
+    name: Editor tests, JVM preview
+    needs: [check, build, build-jvm, vsix]
+    uses: ./.github/workflows/editor-test-suites.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      lanes: jvm
 
   upgrade-rehearsal:
     # See docs/releasing.md#in-the-release-workflow for the baseline and evidence.
