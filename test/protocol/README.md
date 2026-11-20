@@ -319,12 +319,13 @@ during preflight or a request document becomes out of sync while waiting for
 analysis. An accepted change followed by a rejected change still reports
 that the server's copy is out of date in both cases.
 
-After a skipped frame or an undecodable `didChange`, requests that need current
-text refuse for every open document until it gets an accepted full-text change
-or is reopened. A pending rename refuses while the body of an oversized frame
-is still arriving. For a marked document, a code action with empty diagnostics
-returns `[]` and one with a matching semicolon diagnostic refuses. An ignored
-`$/setTrace` leaves edit requests working.
+After a skipped frame or an undecodable `didChange`, the suite checks that every
+open document is marked out of sync, using code actions, `prepareRename`, and
+rename. It checks recovery by full-text change and by reopening. A pending
+rename refuses while the body of an oversized frame is still arriving. For a
+marked document, a code action with empty diagnostics returns `[]` and one with
+a matching semicolon diagnostic refuses. An ignored `$/setTrace` leaves edit
+requests working.
 
 ## Seeded source mutations
 
