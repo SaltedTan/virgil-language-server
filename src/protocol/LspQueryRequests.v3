@@ -10,6 +10,7 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	// Its reply has been sent.
 	var answered: bool;
 	var job: LspAnalysisJob;
+	var refused: bool;
 	// The open document as the request found it, its project, the text to
 	// analyze for it, as typed or repaired, and the query's offset, kinds,
 	// and prefix (AnalysisScopeRequest).
@@ -231,6 +232,11 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 			if (r != null && r.id.equal(id)) {
 				finish(r, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, Strings.format1("the %s was cancelled", what))));
 			}
+		}
+	}
+	def rememberRefusals() {
+		for (r in [waiting, running]) {
+			if (r != null && r.refusal() != JsonValue.Null) r.refused = true;
 		}
 	}
 	// Answers the waiting and running requests with their permanent fallback

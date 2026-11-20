@@ -455,9 +455,11 @@ def completion(exe, root):
             assert pending not in s.waiting, s.waiting
             s.rejected_edit("a.v3", DELETE_I, "")
             s.no_completion(s.reply(s.send_completion("a.v3", WH), 10))
+            s.change("a.v3", EDITED)
+            s.result(s.send("virgil-lsp/snapshot"))
+            assert pending not in s.waiting, s.waiting
         s.no_completion(s.reply(pending, 60))
         # The editor's text, accepted: "while" replaces "wh" and not the ";".
-        s.change("a.v3", EDITED)
         s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 4)
         s.shutdown()
     finally:

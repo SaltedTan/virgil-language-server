@@ -680,7 +680,8 @@ def test_closed_while_waiting(t: Tester) {
 def test_out_of_sync(t: Tester) {
 	var s = session(t);
 	var marked = inScale("\t\tto$");
-	var first = complete(t, s, marked), analyses = s.server.completion.analyses;
+	assertScopeNames(t, s.result(t, complete0(t, s, marked)));
+	var analyses = s.server.completion.analyses;
 	rejectChange(s, "Main.v3");
 	var id = request(t, s, marked);
 	t.assert(outOfSyncList(s, id), "an empty list, not the cached reply");
@@ -688,7 +689,7 @@ def test_out_of_sync(t: Tester) {
 	t.assert(outOfSyncList(s, request(t, s, marked)), "still empty after a version-only change");
 	t.asserti(analyses, s.server.completion.analyses);
 	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
-	t.assert_string(first, complete(t, s, marked));
+	assertScopeNames(t, s.result(t, complete0(t, s, marked)));
 	t.asserti(analyses + 1, s.server.completion.analyses);
 	s.server.close();
 }
@@ -716,8 +717,12 @@ def test_out_of_sync_while_waiting(t: Tester) {
 	t.asserti(analyses, s.server.completion.analyses);
 	t.assert(s.server.completion.resolver.latest == latest, "the running answer isn't kept");
 	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
-	t.assert(!keywordsOnly(t, s, complete0(t, s, text), false), "declarations once the document is in sync");
+	assertScopeNames(t, s.result(t, complete0(t, s, text)));
 	s.server.close();
+}
+def assertScopeNames(t: Tester, result: JsonValue) {
+	t.assert(itemOf(result, "total") != JsonValue.Null, "the local total is offered");
+	t.assert(itemOf(result, "factor") != JsonValue.Null, "the parameter factor is offered");
 }
 // Sends an incremental didChange of {name}, which the server rejects and
 // which marks the document out of sync; the client's text would now differ.
@@ -741,7 +746,9 @@ def rejectChange(s: RenameTestSession, name: string) {
 def outOfSyncList(s: RenameTestSession, id: int) -> bool {
 	var r = s.reply(id);
 	if (r == null || r.has("error")) return false;
-	return array(member(r["result"], "items")).length == 0 && member(r["result"], "isIncomplete") == JsonValue.Bool(true);
+	var items = member(r["result"], "items");
+	return JsonValue.JArray.?(items) && JsonValue.JArray.!(items).v.length == 0
+		&& member(r["result"], "isIncomplete") == JsonValue.Bool(true);
 }
 
 // The completion's result is admitted within the workspace's snapshot budget,

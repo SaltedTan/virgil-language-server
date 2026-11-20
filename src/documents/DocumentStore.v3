@@ -33,6 +33,7 @@ class DocumentVersionIdentity { }
 class DocumentStore {
 	private var reader: string -> Array<byte>;
 	private var boundedReader: (string, int) -> Array<byte>;
+	var onOutOfSync: () -> void;
 
 	private var capacity: int;
 	private var used: long;
@@ -156,6 +157,7 @@ class DocumentStore {
 				heldBytes += key.length;
 			}
 		}
+		if (onOutOfSync != null) onOutOfSync();
 	}
 	private def removeHeld(key: string) {
 		if (key != null && held.length > 0 && held.remove(key)) heldBytes -= key.length;
@@ -163,6 +165,7 @@ class DocumentStore {
 	// Marks every open document out of sync.
 	def markAllOutOfSync() {
 		overlays.apply(markOpen);
+		if (onOutOfSync != null) onOutOfSync();
 	}
 	private def markOpen(key: string, doc: DocumentOverlay) {
 		unsynced[key] = true;

@@ -327,7 +327,7 @@ class LspCompletionRequest extends LspQueryRequest {
 	// while the request waited or ran: every item's edit range comes from
 	// the server's copy of it.
 	def refusal() -> JsonValue {
-		if (uri == null || completion.store.canonicalEditRefusal(uri, null) == null) return JsonValue.Null;
+		if (!refused && (uri == null || completion.store.canonicalEditRefusal(uri, null) == null)) return JsonValue.Null;
 		return completion.outOfSyncList();
 	}
 }
