@@ -502,7 +502,11 @@ against the targets above. They are meaningful only on the reference host
 (i7-14700KF, CPU 12, pinned, warm file caches, the recorded build and
 corpus), because source and path layout, the governor, and the file cache
 move the numbers. They need a recorded baseline and a re-baseline when the
-build, corpus, or host changes.
+build, corpus, or host changes. For a v1.0 candidate, the
+[readiness ledger](v1-readiness.md#4-performance-budgets) records the
+maintainer's decision of 2026-11-20: the adopted targets apply to every
+candidate as they stand, without a new baseline, and a re-baseline only
+refreshes the recorded drift tables.
 
 The hosted timing A/B of the [weekly scheduled
 comparison](benchmarks.md#scheduled-comparison) stays advisory: its 25%
