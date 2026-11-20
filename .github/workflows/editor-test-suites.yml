@@ -3,8 +3,9 @@
 
 name: Editor test suites
 
-# The editor tests that both the weekly editor tests workflow and the release
-# workflow run, on the files of the run that calls this one: the archives in
+# The weekly editor tests workflow runs all jobs in one call. The release
+# workflow calls the required and JVM preview jobs separately. Both test the
+# files of the run that calls this workflow: the archives in
 # its archive-x86-64-linux, archive-x86-64-darwin, and archive-jvm-arm64-darwin
 # artifacts and the VSIX in
 # its vsix-<target> artifacts, never building the server or packaging the VSIX again.
@@ -30,6 +31,12 @@ on:
         description: The server version in the archives' names, virgil-lsp-<version>-<target>.tar.gz
         type: string
         required: true
+      lanes:
+        description: >-
+          Editor lanes to run: all, required (the release gates), or jvm
+          (the two advisory JVM preview editor tests).
+        type: string
+        default: all
 
 permissions:
   contents: read
@@ -40,6 +47,7 @@ permissions:
 
 jobs:
   clean-install-bundle:
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: Bundle the README install test
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -56,6 +64,7 @@ jobs:
           if-no-files-found: error
 
   clean-install-linux:
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: Clean README install (Linux, archive and VSIX)
     needs: clean-install-bundle
     runs-on: ubuntu-24.04
@@ -112,6 +121,7 @@ jobs:
           retention-days: 30
 
   lazyvim-linux:
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: LazyVim test (archive, linux, Neovim ${{ matrix.nvim }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -177,6 +187,7 @@ jobs:
     # there, and runs the Extension Host suite in the remote extension host
     # with the bundled Linux server, three times. The artifact holds the
     # test's logs and manifest, never Microsoft's downloads or the test's keys.
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: VS Code Remote-SSH test (bundled VSIX, linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -240,6 +251,7 @@ jobs:
   lazyvim-macos:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
     # supports arm64-darwin (ADR-0003).
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: LazyVim test (archive, macOS Apple Silicon via Rosetta 2, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
@@ -295,6 +307,7 @@ jobs:
     # macOS needs no virtual display.
     # The artifact holds the test's output and, if a launch failed, that
     # launch's VS Code logs.
+    if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: VS Code Extension Host test (bundled VSIX, macOS Apple Silicon via Rosetta 2)
     runs-on: macos-15
     timeout-minutes: 15
@@ -341,6 +354,8 @@ jobs:
   lazyvim-macos-jvm:
     # The JVM build for Apple Silicon with Rosetta 2 installed. native.py
     # requires an untranslated runner and rejects translated descendants.
+    if: inputs.lanes == 'all' || inputs.lanes == 'jvm'
+    continue-on-error: ${{ inputs.lanes == 'jvm' }}
     name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
@@ -401,6 +416,8 @@ jobs:
     # Apple Silicon without translation, as lazyvim-macos-jvm. The artifact
     # holds the test's output, observed descendants, and, if a launch failed,
     # that launch's VS Code logs.
+    if: inputs.lanes == 'all' || inputs.lanes == 'jvm'
+    continue-on-error: ${{ inputs.lanes == 'jvm' }}
     name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta translation)
     runs-on: macos-15
     timeout-minutes: 15
