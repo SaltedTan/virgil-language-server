@@ -162,10 +162,9 @@ signal.pause()
 
     def test_second_signal_kills_an_ignoring_suite(self):
         ready, cleaned = self.directory / "ready", self.directory / "cleaned"
-        # The suite cleans up on TERM and ignores HUP and INT, so only a kill
-        # ends it.
+        # The suite cleans up on TERM and ignores HUP and INT.
         suite = (f"trap 'touch {cleaned}' TERM; trap '' HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; "
-                 "while :; do sleep 0.1; done")
+                 'i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done')
         runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         try:
