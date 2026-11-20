@@ -293,14 +293,14 @@ async function scenario(failures, name, check, restore) {
   try {
     await restore();
   } catch (error) {
-    if (failure !== undefined) console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
+    if (failure !== undefined) console.error(`FAIL: ${name}: ${failure.stack}`);
     throw new Error(`restoring the state after "${name}" failed: ${error.message}`);
   }
   if (failure === undefined) {
-    console.log(`PASS: VS Code ${name}`);
+    console.log(`PASS: ${name}`);
   } else {
     failures.push(name);
-    console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
+    console.error(`FAIL: ${name}: ${failure.stack}`);
   }
 }
 
@@ -341,11 +341,12 @@ async function singleFile(extension) {
   assert.equal(bad.document.languageId, 'virgil');
   await waitFor('activation by a .v3 document', () => extension.isActive);
   await expectParserDiagnostic(bad);
+  console.log('PASS: vscode.diagnostics.single-file-parser');
   const server = selectedServer();
   await checkBundledSelection(extension);
   // The channel writes its log file asynchronously.
   await waitFor('the server to start from virgil.server.path', () => channelLog().includes(`Starting ${server} --stdio`));
-  console.log('PASS: VS Code activation on a .v3 file and parser diagnostics');
+  console.log('PASS: vscode.startup.activation');
 }
 
 async function workspace(extension) {
@@ -359,6 +360,7 @@ async function workspace(extension) {
   const root = configuredRoot || path.join(path.dirname(selectedServer()), 'virgil');
   if (configuredRoot) assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),
     'the Virgil root was not taken from virgil.virgilRoot');
+  console.log('PASS: vscode.startup.workspace-activation');
 
   const folding = await open('folding.v3');
   const folds = await vscode.commands.executeCommand('vscode.executeFoldingRangeProvider', folding.document.uri);
@@ -386,7 +388,9 @@ async function workspace(extension) {
   const bad = await open('bad.v3');
   const original = bad.document.getText();
   await expectParserDiagnostic(bad);
+  console.log('PASS: vscode.diagnostics.parser');
   assert.deepEqual(await symbols(bad), [], 'broken source should have no document symbols');
+  console.log('PASS: vscode.symbols.broken-empty');
 
   // An unsaved edit must reach the server through the client's didChange,
   // clear the diagnostic, and update the outline. Undo brings both back.
@@ -400,8 +404,10 @@ async function workspace(extension) {
   ]);
   // A variant's case is its child, and selects its own name.
   assert.deepEqual(await children(bad, 'V'), [{ name: 'A', kind: vscode.SymbolKind.EnumMember, selection: [1, 14, 1, 15] }]);
+  console.log('PASS: vscode.symbols.hierarchy');
   await undo(bad, original);
   await expectParserDiagnostic(bad);
+  console.log('PASS: vscode.diagnostics.unsaved-cycle');
 
   // vscode.diagnostics.semicolon-fix: use the real provider and editor edit.
   const semicolon = await open('semicolon.v3');
@@ -435,6 +441,7 @@ async function workspace(extension) {
   assert.deepEqual(semantic.map((d) => [code(d), d.source, d.message, d.range.start.line]), [
     ['TypeError', 'aeneas', 'expected int in var initialization, got Array<byte>', 6],
   ]);
+  console.log('PASS: vscode.diagnostics.semantic');
 
   // Go to definition from that analysis: StringBuilder resolves to its class in
   // the closed lib/util file, which the server reads again to convert the range.
@@ -446,11 +453,13 @@ async function workspace(extension) {
   assert.deepEqual(await definitions(words, use, column), [
     [library, declaration, 6, declaration, 19],
   ]);
+  console.log('PASS: vscode.definition.response');
   const typeCall = words.document.lineAt(use).text.indexOf('.puts(') + 1;
   assert.deepEqual(await typeDefinitions(words, use, typeCall), [
     [library, declaration, 6, declaration, 19],
   ]);
   assert.deepEqual(await typeDefinitions(words, use, words.document.lineAt(use).text.indexOf('line:')), []);
+  console.log('PASS: vscode.type-definition.response');
   await vscode.window.showTextDocument(words.document, { preview: false });
   const inlay = await open('words', 'Inlay.v3');
   const hints = await vscode.commands.executeCommand('vscode.executeInlayHintProvider',
@@ -460,6 +469,7 @@ async function workspace(extension) {
     [4, 33, vscode.InlayHintKind.Type, ': int'],
     [4, 41, vscode.InlayHintKind.Parameter, 'count:'],
   ]);
+  console.log('PASS: vscode.inlay-hints.response');
   // The same file's semantic tokens, with UTF-16 columns after the comment's
   // non-ASCII text. int, a built-in type, has none.
   assert.deepEqual(await semanticTokens(inlay.document.uri), INLAY_TOKENS);
@@ -471,6 +481,7 @@ async function workspace(extension) {
   assert.deepEqual(await hovers(words, use, column), [
     [[`\`\`\`virgil\nclass StringBuilder\n\`\`\`\n\n${STRING_BUILDER_DOC}`], [use, column, use, column + 'StringBuilder'.length]],
   ]);
+  console.log('PASS: vscode.hover.response');
   // Signature help just after the ( of .puts(a) on the same line shows the
   // method's label with its one parameter as label offsets, which the client
   // supports. The fixture's type error leaves the program parsed and analyzed.
@@ -478,11 +489,13 @@ async function workspace(extension) {
   assert.deepEqual(await signatureHelp(words, use, puts), {
     activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
   });
+  console.log('PASS: vscode.signature.complete');
   // Workspace symbols come from the same analysis: join, which nothing uses,
   // is a method in the project's own words/Words.v3.
   assert.deepEqual((await workspaceSymbols('join')).slice(0, 1), [
     ['join', vscode.SymbolKind.Method, words.document.uri.fsPath, 5, 5, 5, 9],
   ]);
+  console.log('PASS: vscode.workspace-symbols.join');
 
   // The references of the same class include the use, the class's name, and
   // uses in other closed lib/util files, which the server reads again; each
@@ -497,6 +510,7 @@ async function workspace(extension) {
   assert.deepEqual(uses.filter((u) => u.text !== 'StringBuilder'
     || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
   assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
+  console.log('PASS: vscode.references.library');
 
   // vscode.document-highlight.response: only this document's StringBuilder use.
   assert.deepEqual(await documentHighlights(words, use, column), [
@@ -585,6 +599,7 @@ async function workspace(extension) {
   await assert.rejects(vscode.commands.executeCommand(
     'vscode.executeDocumentRenameProvider', words.document.uri, new vscode.Position(use, 6), 'text',
   ), refusal);
+  console.log('PASS: vscode.rename.refusal');
 
   // Rename needs a program that verifies, so an unsaved edit fixes the type
   // error first. The server's versioned edit renames both uses of the local
@@ -607,6 +622,7 @@ async function workspace(extension) {
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the rename', () => words.document.getText() === fixed);
   await undo(words, unedited);
+  console.log('PASS: vscode.rename.apply-undo');
 
   // Completion takes its keywords from the unsaved text alone, which no
   // longer parses: "whi" starts a statement, so the keywords of a statement
@@ -642,6 +658,7 @@ async function workspace(extension) {
   await waitFor('the undo of the completion', () => words.document.getText() === typed);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the prefix', () => words.document.getText() === unedited && !words.document.isDirty);
+  console.log('PASS: vscode.completion.keyword');
 
   // It also offers the declarations in scope, from an analysis of the
   // project with the unsaved text, repaired at the cursor: the local "line"
@@ -689,6 +706,7 @@ async function workspace(extension) {
   await waitFor('the undo of the declaration completion', () => words.document.getText() === prefixed);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the declaration prefix', () => words.document.getText() === unedited && !words.document.isDirty);
+  console.log('PASS: vscode.completion.local');
 
   // After ".", which triggers completion, the members of the receiver's type
   // alone, from an analysis of the project with the unsaved text, repaired
@@ -715,6 +733,7 @@ async function workspace(extension) {
   await waitFor('the undo of the member completion', () => words.document.getText() === dotted);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the receiver', () => words.document.getText() === unedited && !words.document.isDirty);
+  console.log('PASS: vscode.completion.member');
 
   // Signature help in a call still being typed, with no ")", comes from the
   // unsaved text repaired at the cursor: just after the "(" of .puts( the
@@ -726,12 +745,14 @@ async function workspace(extension) {
     activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
   });
   await undo(words, unedited);
+  console.log('PASS: vscode.signature.unclosed-first');
   const second = '\t\tvar n = Ints.max(1, ';
   await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), `${second}\n`));
   assert.deepEqual(await signatureHelp(words, use + 1, second.length), {
     activeSignature: 0, activeParameter: 1, signatures: [['def max(a: int, b: int) -> int', [[8, 14], [16, 22]]]],
   });
   await undo(words, unedited);
+  console.log('PASS: vscode.signature.unclosed-second');
 
   // Inside the comment on line 3 the server offers nothing, either where
   // completion is invoked after the word StringBuilder or after a ".", which
@@ -743,12 +764,14 @@ async function workspace(extension) {
     'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word),
   );
   assert.deepEqual(invoked.items.map((i) => i.label), [], 'completion in a comment offered items');
+  console.log('PASS: vscode.completion.comment-invoked');
   await edit(words, (builder) => builder.insert(new vscode.Position(comment, word), '.'));
   const commented = await vscode.commands.executeCommand(
     'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word + 1), '.',
   );
   assert.deepEqual(commented.items.map((i) => i.label), [], 'completion after a "." in a comment offered items');
   await undo(words, unedited);
+  console.log('PASS: vscode.completion.comment-dot');
 
   await projectFileOnDisk(failures, bad, words);
 
@@ -762,6 +785,7 @@ async function workspace(extension) {
   assert.deepEqual(unknown.map((d) => [code(d), d.source, d.range.start.line]), [['UnknownField', 'virgil-lsp', 1]]);
   await undo(config, configText);
   await waitFor('cleared configuration diagnostics after undoing the edit', () => diagnostics(config).length === 0);
+  console.log('PASS: vscode.configuration.unsaved');
 
   // The restart sends shutdown and exit, so the server exits with status 0
   // before its replacement starts and serves the open documents.
@@ -776,9 +800,7 @@ async function workspace(extension) {
   // replacement's, from its copy of words/Words.v3.
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
-  console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, member, and insert-replace completion, completion item documentation, '
-    + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
+  console.log('PASS: vscode.restart.clean');
 
   // The scenarios that restart the server, or could disturb it, come last.
   await trace(failures, words);
@@ -932,7 +954,7 @@ async function projectFileOnDisk(failures, bad, words) {
   const uri = vscode.Uri.file(file);
   const original = fs.readFileSync(file, 'utf8');
   const settled = () => vscode.languages.getDiagnostics(uri).length === 0 && hasTypeError(words);
-  await scenario(failures, 'project file changed on disk while closed: UnknownField, cleared when restored', async () => {
+  await scenario(failures, 'vscode.configuration.disk-watch', async () => {
     assert.ok(vscode.workspace.textDocuments.every((d) => d.uri.fsPath !== file), 'the project file is open');
     // The server also reads the project file again whenever it looks up a
     // document's project, as for the outline of a visible editor, and when an
@@ -969,7 +991,7 @@ async function level(value) {
 
 async function trace(failures, words) {
   const unedited = words.document.getText();
-  await scenario(failures, 'message trace at the Trace log level, with textDocument/didChange', async () => {
+  await scenario(failures, 'vscode.trace.did-change', async () => {
     const log = logFromHere();
     await level(vscode.LogLevel.Trace);
     // The client traces the $/setTrace notification that starts the trace.
@@ -1002,7 +1024,7 @@ async function semanticTokensOff(failures, words) {
       return text.includes(`${name} changed; restarting the server`) && text.includes('Started virgil-lsp ');
     }, 20000);
   };
-  await scenario(failures, 'virgil.semanticTokens off: a restart, and no semantic tokens provider', async () => {
+  await scenario(failures, 'vscode.semantic-tokens.off', async () => {
     await restartWith('off');
     assert.ok(vscode.workspace.textDocuments.some((d) => d.uri.toString() === inlay.toString()), 'Inlay.v3 is not open');
     assert.equal(await semanticTokens(inlay), undefined);
@@ -1055,7 +1077,7 @@ async function noVirgilRoot(failures, words) {
     await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
     assert.deepEqual(vscode.languages.getDiagnostics(config), [], 'MissingVirgilRoot did not clear');
   };
-  await scenario(failures, 'no Virgil root: a restart that says so in the output channel', async () => {
+  await scenario(failures, 'vscode.configuration.rootless-log', async () => {
     assert.equal(process.env.VIRGIL_LOC, undefined, 'VIRGIL_LOC is set in the extension host');
     const log = logFromHere();
     await setSetting('virgil.virgilRoot', '');
@@ -1066,7 +1088,7 @@ async function noVirgilRoot(failures, words) {
         && text.includes(`Starting ${copy} --stdio`);
     });
   }, restore);
-  await scenario(failures, 'no Virgil root: a running server, and MissingVirgilRoot on .virgil-lsp.json, cleared when restored', async () => {
+  await scenario(failures, 'vscode.configuration.rootless-live', async () => {
     const log = logFromHere();
     await setSetting('virgil.virgilRoot', '');
     const missing = await waitFor('MissingVirgilRoot on .virgil-lsp.json', () => {
@@ -1115,7 +1137,7 @@ async function restoreServer(server, words) {
 async function missingServer(failures, words) {
   const server = selectedServer();
   const missing = path.join(path.dirname(project), 'missing', 'virgil-lsp');
-  await scenario(failures, 'nonexistent virgil.server.path: the output channel, no client, and recovery', async () => {
+  await scenario(failures, 'vscode.startup-errors.missing-server', async () => {
     const log = logFromHere();
     await setSetting('virgil.server.path', missing);
     await waitFor('the missing server in the output channel', () => log().includes(
@@ -1135,7 +1157,7 @@ async function missingWorker(failures, words) {
   const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'no-worker-'));
   const copy = path.join(directory, 'virgil-lsp');
-  await scenario(failures, 'virgil.server.path without virgil-lsp-worker: the output channel and recovery', async () => {
+  await scenario(failures, 'vscode.startup-errors.missing-worker', async () => {
     fs.copyFileSync(server, copy);
     fs.chmodSync(copy, 0o755);
     const log = logFromHere();
@@ -1421,10 +1443,8 @@ function expectInOrder(text, lines) {
 async function actionDuringRecovery(failures, words, action) {
   const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
-  const name = action === 'restart'
-    ? 'server killed, and Virgil: Restart Language Server during the recovery'
-    : 'server killed, and virgil.server.path changed during the recovery';
-  await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
+  const name = action === 'restart' ? 'vscode.recovery.restart' : 'vscode.recovery.server-path';
+  await scenario(failures, name, async () => {
     // The trace starts before the server that is killed, so that no
     // $/setTrace is on its way to it then.
     const traced = logFromHere();
@@ -1500,7 +1520,7 @@ async function writeAfterServerDied(failures, bad, words) {
   const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'write-error-'));
   const documents = [bad.document, words.document];
-  await scenario(failures, 'server killed, then a write to it fails with EPIPE: one restart, which gets the open documents', async () => {
+  await scenario(failures, 'vscode.recovery.write-error', async () => {
     fs.writeFileSync(path.join(directory, 'record'), '');
     fs.writeFileSync(path.join(directory, 'linger'), '');
     const { pid } = await startRecoveryServer(server, directory);
@@ -1582,8 +1602,7 @@ async function lostFraming(failures, bad, words, pendingRequest = false) {
     const [child] = recorded(directory, 'child').map(Number);
     return groupProcesses().filter((p) => p.args.includes(directory) || p.pid === child || p.ppid === child);
   };
-  const name = pendingRequest ? 'vscode.recovery.lost-framing-request'
-    : 'a line on the server\'s output that is not a message: the client reports it and stops';
+  const name = pendingRequest ? 'vscode.recovery.lost-framing-request' : 'vscode.recovery.lost-framing';
   await scenario(failures, name, async () => {
     fs.writeFileSync(path.join(directory, 'stray'), '');
     const { pid } = await startRecoveryServer(server, directory);
@@ -1680,7 +1699,7 @@ async function crashLimit(failures, bad, words) {
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'crashes-'));
   const limit = 'The Virgil Language Server server crashed 5 times in the last 3 minutes. '
     + 'The server will not be restarted. See the output for more information.';
-  await scenario(failures, 'server killed 5 times in a row: 4 restarts, then the crash limit and no client', async () => {
+  await scenario(failures, 'vscode.recovery.crash-limit', async () => {
     let { pid } = await startRecoveryServer(server, directory);
     const log = logFromHere();
     for (let crash = 1; crash <= 4; crash++) {
@@ -1739,8 +1758,7 @@ async function pendingEditRestart(failures, bad, words) {
   const uri = document.uri.toString();
   const saved = fs.readFileSync(document.uri.fsPath, 'utf8');
   const active = vscode.window.activeTextEditor?.document;
-  await scenario(failures, 'Virgil: Restart Language Server with an unsaved edit still pending: '
-    + 'the new server gets its exact text, then a later edit', async () => {
+  await scenario(failures, 'vscode.restart.pending-edit', async () => {
     // Breadcrumbs request bad.v3's document symbols when the new client's
     // provider registers. vscode-languageclient 10.1.2 could send that
     // request before bad.v3's didOpen, behind the hidden documents' didOpens
@@ -1855,6 +1873,7 @@ async function run() {
   if (installed !== undefined) {
     assert.equal(path.dirname(extension.extensionPath), installed,
       `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
+    console.log('PASS: vscode.startup.installed-copy');
   }
   const recovery = process.env.VIRGIL_E2E_RECOVERY;
   if (recovery !== undefined) await closeDuringRecovery(extension, recovery);

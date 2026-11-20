@@ -267,13 +267,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     const document = pathToFileURL(path.join(project, 'bad.v3')).href;
     const problem = recoveryProblem(records, userData, document);
     if (problem !== undefined) {
-      console.error(`FAIL: VS Code window close during the recovery (${name} launch): ${problem}`);
+      console.error(`FAIL: vscode.recovery.window-close (${name} launch): ${problem}`);
       printChannelLogs(userData);
       return failure(userData, 'recovery', problem);
     }
-    console.log(`PASS: VS Code window close during the recovery (${name} launch): the recovery finished, the recovered server `
-      + 'got a textDocument/didOpen for the open bad.v3 before exit, then shutdown and exit and exited with status 0, and no '
-      + 'virgil-lsp or virgil-lsp-worker was left running');
+    console.log(`PASS: vscode.recovery.window-close (${name} launch)`);
     return { passed: true };
   }
   // Closing the window deactivates the extension, which sends shutdown and
@@ -281,12 +279,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   // record the exit.
   const exit = lastServerExit(userData);
   if (exit !== undefined && !exit.includes('Server process exited successfully')) {
-    console.error(`FAIL: VS Code window close (${name} launch): the server did not exit cleanly: ${exit}`);
+    console.error(`FAIL: vscode.shutdown.window-close (${name} launch): the server did not exit cleanly: ${exit}`);
     printChannelLogs(userData);
     return failure(userData, 'server', exit);
   }
-  console.log(`PASS: VS Code window close (${name} launch): no virgil-lsp or virgil-lsp-worker left running, `
-    + 'and no unclean server exit in the log');
+  console.log(`PASS: vscode.shutdown.window-close (${name} launch)`);
   return { passed: true };
 }
 

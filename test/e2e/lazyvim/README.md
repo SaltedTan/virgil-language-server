@@ -42,7 +42,7 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## What it checks
 
-Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports `PASS` or `FAIL`, with what it saw.
+Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports `PASS` or `FAIL` with its ID in [`coverage.json`](../coverage.json), then what it saw, such as `PASS lazyvim.hover.response: ...`. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
@@ -88,7 +88,7 @@ Installing the plugins and the parsers has a 600-second deadline, and each run 2
 ## Expected results
 
 - `main`: every step passes.
-- `noroot`: every step passes except "Invalid project file warning shown", which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua`, adjust `run.sh`'s expected XFAIL count for `noroot`, and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
+- `noroot`: every step passes except `lazyvim.configuration.warning`, the Invalid project file warning, which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua`, adjust `run.sh`'s expected XFAIL count for `noroot`, and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
 - `noroot-noice-workaround`: every step passes.
 
 `INFO` and `WARN` lines don't change the result.
