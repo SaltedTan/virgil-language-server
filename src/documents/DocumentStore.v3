@@ -9,6 +9,12 @@ component DocumentLimits {
 	def EXCEEDED = "aggregate open-document capacity exceeded; close documents or reduce text and retry";
 	// Files whose disk changes are tracked one by one; see DocumentStore.diskChanged.
 	def MAX_DISK_STAMPS = 8192;
+	// Files that aren't open but that the client holds, tracked one by one;
+	// see DocumentStore.markOutOfSync.
+	def MAX_HELD = 8192;
+	// Why edits computed from the server's copy of an open document marked
+	// out of sync could land in the wrong place in the client's text.
+	def OUT_OF_DATE = "the server's copy of this document is out of date, since a change to it was rejected or lost; change the whole document or reopen it";
 }
 
 // An accepted version of an open document. Treat text bytes as read-only.
@@ -64,6 +70,16 @@ class DocumentStore {
 	// accepted full-text change, or a close, clears a mark; a version-only
 	// change keeps it. See docs/architecture.md#document-store.
 	private def unsynced = OrderedStringMap<bool>.new();
+	// The files that aren't open but that the client holds, by canonical URI:
+	// the server rejected their didOpen, or got a didChange or didSave for
+	// them, so the client's text may differ from the file on disk. A close of
+	// the URI, or an accepted open, clears a record. Beyond {maxHeld} files,
+	// {heldOverflow} stands for every file that isn't open, for the rest of
+	// the session.
+	private def held = OrderedStringMap<bool>.new();
+	private var heldOverflow: bool;
+	// Supply MAX_HELD in production; tests lower it.
+	var maxHeld = DocumentLimits.MAX_HELD;
 
 	// Visit only documents the client has open, without copying their text.
 	def eachOpen(visit: (string, DocumentOverlay) -> void) { overlays.apply(visit); }
@@ -100,6 +116,7 @@ class DocumentStore {
 		if (charge > long.view(capacity) - used) return DocumentLimits.EXCEEDED;
 		overlays[key] = DocumentOverlay.new(key, languageId, version, text, null);
 		used += charge;
+		if (held.length > 0) held.remove(key);
 		return null;
 	}
 	def change(uri: string, version: int, text: Array<byte>) -> string {
@@ -122,10 +139,19 @@ class DocumentStore {
 		var remaining = used - cost(doc.uri, doc.languageId, doc.text.length);
 		return cost(doc.uri, doc.languageId, length) <= long.view(capacity) - remaining;
 	}
-	// Marks the document {uri} out of sync, if it is open.
+	// Marks the document {uri} out of sync if it is open. Otherwise records
+	// that the client holds the file {uri}, with text the server may not have,
+	// until its close: the client sent a didOpen the server rejected, or a
+	// change or save of a document the server doesn't have open.
 	def markOutOfSync(uri: string) {
-		var doc = overlay(uri);
-		if (doc != null) unsynced[doc.uri] = true;
+		var key = DocumentUri.normalize(uri);
+		if (key == null) return;
+		if (overlays[key] != null) {
+			unsynced[key] = true;
+		} else if (!heldOverflow && !held.has(key)) {
+			if (held.length >= maxHeld) heldOverflow = true;
+			else held[key] = true;
+		}
 	}
 	// Marks every open document out of sync.
 	def markAllOutOfSync() {
@@ -137,6 +163,29 @@ class DocumentStore {
 	// Whether the open document {doc} is marked out of sync.
 	def outOfSync(doc: DocumentOverlay) -> bool {
 		return unsynced.length > 0 && unsynced[doc.uri];
+	}
+	// Why edits to {uri} computed from the server's copy of it could be wrong,
+	// or null if they can't: the document is open and marked out of sync, or
+	// it isn't open and the client may hold it (markOutOfSync). Formatting,
+	// code actions, and rename refuse with the reason. {name} names the
+	// document in the reason, or null for the request's own document.
+	def editRefusal(uri: string, name: string) -> string {
+		var key = DocumentUri.normalize(uri);
+		if (key == null) return null;
+		var doc = overlays[key];
+		if (doc != null) {
+			if (!outOfSync(doc)) return null;
+			if (name == null) return DocumentLimits.OUT_OF_DATE;
+			return Strings.format1("the server's copy of %s is out of date, since a change to it was rejected or lost; change the whole document or reopen it", name);
+		}
+		if (name == null) name = "this document";
+		if (held.length > 0 && held[key]) {
+			return Strings.format1("the client may have %s open with text the server doesn't have, since the server rejected its open or got a change to it while it wasn't open; close it in the editor and open it again", name);
+		}
+		if (heldOverflow) {
+			return Strings.format2("the server can't tell whether the client has %s open with text it doesn't have, since it rejected the opens or changes of more than %d files that weren't open; restart the server", name, maxHeld);
+		}
+		return null;
 	}
 	// A didChange with no content changes: the text stays byte-for-byte the
 	// same, and only the version moves. The new record keeps the old identity,
@@ -181,9 +230,14 @@ class DocumentStore {
 		if (overlay(uri) == null) return "document is not open";
 		return null;
 	}
+	// A close of a file that isn't open clears its record, if any, since the
+	// client no longer holds it (markOutOfSync).
 	def close(uri: string) -> string {
-		var doc = overlay(uri);
-		if (doc == null) return "document is not open";
+		var key = DocumentUri.normalize(uri), doc = canonicalOverlay(key);
+		if (doc == null) {
+			if (key != null && held.length > 0) held.remove(key);
+			return "document is not open";
+		}
 		overlays.remove(doc.uri);
 		used -= cost(doc.uri, doc.languageId, doc.text.length);
 		if (unsynced.length > 0) unsynced.remove(doc.uri);

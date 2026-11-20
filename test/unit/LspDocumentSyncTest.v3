@@ -13,6 +13,7 @@ def X = [
 	T("LspDocumentSync:capacity_change_episode", test_sync_capacity_change_episode),
 	T("LspDocumentSync:capacity_close_rearm", test_sync_capacity_close_rearm),
 	T("LspDocumentSync:capacity_no_rearm", test_sync_capacity_no_rearm),
+	T("LspDocumentSync:held", test_sync_held),
 	()
 ];
 
@@ -265,4 +266,27 @@ def test_sync_capacity_no_rearm(t: Tester) {
 	t.asserti(5, rec.lines.length);
 	syncNotify(t, server, "didClose", SYNC_ID);
 	t.assert(syncCapacityWarning(t, server, "didOpen", syncOpen("untitled:c", "a longer text that does not fit")), "released bytes must rearm");
+}
+
+// A rejected didOpen, and a didChange or didSave of a document that isn't
+// open, record that the client holds the file until a didClose of its URI;
+// an ignored notification records nothing.
+def test_sync_held(t: Tester) {
+	var server = LspServer.new(SYNC_FITS - 1);
+	t.assert(server.handle(INITIALIZE) != null, "initialize must reply");
+	var store = server.documents, uri = "file:/a b.v3";
+	server.handle("{\"jsonrpc\":\"2.0\",\"method\":\"$/setTrace\",\"params\":{\"value\":\"verbose\"}}");
+	t.assert(store.editRefusal(uri, "a") == null, "$/setTrace records nothing");
+	server.handle(Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/%s\",\"params\":%s}", "didOpen", SYNC_OPEN));
+	t.assert(store.overlay(uri) == null, "the open must be over capacity");
+	t.assert(store.editRefusal(uri, "a") != null, "a rejected open is recorded");
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.assert(store.editRefusal(uri, "a") == null, "a close clears the record");
+	syncNotify(t, server, "didChange", syncChange(2, "[{\"text\":\"x\"}]"));
+	t.assert(store.editRefusal(uri, "a") != null, "a change of a closed document is recorded");
+	syncNotify(t, server, "didClose", SYNC_ID);
+	syncNotify(t, server, "didSave", SYNC_ID);
+	t.assert(store.editRefusal(uri, "a") != null, "a save of a closed document is recorded");
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.assert(store.editRefusal(uri, "a") == null, "a close clears the record");
 }

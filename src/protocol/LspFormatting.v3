@@ -91,9 +91,8 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		if (resultLimit < 2) return replyTooLarge();
 		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
 		if (overlay == null || !Strings.equal(overlay.languageId, "virgil")) return noEdits();
-		if (store.outOfSync(overlay)) {
-			return failed("the server's copy of this document is out of date, since a change to it was rejected or lost; change the whole document or reopen it");
-		}
+		var refusal = store.editRefusal(overlay.uri, null);
+		if (refusal != null) return failed(refusal);
 		var owner = projects.forDocument(overlay.uri);
 		var r = AeneasAdapter.formatting(overlay.uri, overlay.text, owner.compilerArgs(), AnalysisFormatEnd.MIRROR);
 		match (r.kind) {

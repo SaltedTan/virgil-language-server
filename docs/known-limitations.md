@@ -52,6 +52,12 @@ more code after it on its line, such as `i++ j++`, can lose a fix that would
 be right. A layout field or a layout's size gets no fix either. There is no
 fix-all or action on save ([Code actions](architecture.md#code-actions)).
 
+After the server rejects a change to a document, or skips a message it can't
+read, the document's code actions get an error saying the server's copy is out
+of date, until a change replaces the whole text or the document is closed and
+reopened. A request that names no semicolon diagnostic still gets an empty list,
+so moving the cursor shows no error.
+
 ## Semantic features need a project file
 
 Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, type definition, inlay hints, hover, references, document highlights, implementations, type hierarchy, call hierarchy, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs a Virgil root: the one the editor sends, or else the library that a release archive bundles. With neither, as with a development build and no root set, or when the editor sends a root that isn't an absolute path, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
@@ -204,6 +210,7 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 ## Protocol numbers and synchronization
 
 - JSON numbers must be signed 32-bit integers. A fraction, exponent, or out-of-range integer anywhere in an admitted request to a supported method, including unused `initializationOptions`, gets `InvalidParams` (-32602) with the request's original ID. The dispatcher ignores notifications containing these numbers, except `exit`; document synchronization notifications admitted by the lifecycle also log a warning. Numeric request IDs outside that range instead get `InvalidRequest` (-32600) with a null ID. This is a `JsonValue` representation limit, including for otherwise valid free-form LSP data ([JSON rules](architecture.md#json-limitations-and-workarounds), [lifecycle admission](architecture.md#lifecycle)).
+- When the server rejects a change to an open document, for example over the 1 MiB open-document capacity or because it is incremental, its copy of that document no longer matches the editor. When it skips a message, such as one over the 4 MiB message limit, or can't decode one, such as malformed JSON, it can't tell which document the message changed, so this holds for every open document. Formatting, code actions, prepare rename, and rename then refuse, saying the server's copy is out of date, rather than compute edits that could land in the wrong place. Hover, definition, references, and the other features that don't edit keep answering from the server's copy, which can be out of date. A change that replaces the whole text, or closing and reopening the document, ends this; a change that only raises the version doesn't ([document store](architecture.md#document-store)).
 - The server negotiates full synchronization. A `didChange` containing a range or `rangeLength` is ignored and logged as “incremental changes are not supported,” with no notification reply. The overlay's text and version stay unchanged. An empty `contentChanges` with a newer version is accepted as a version-only update; subsequent versioned rename edits carry that version ([document synchronization](architecture.md#document-store)).
 
 ## What rename refuses
@@ -224,6 +231,9 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 - A rename has at most 10,000 edits and a reply of at most 4 MiB of encoded JSON. A larger one is refused whole, never sent in part ([edits](architecture.md#rename)).
 - The editor must accept versioned edits (`workspace.workspaceEdit.documentChanges`), so that an edit to a document that changed meanwhile is refused. VS Code does. Neovim 0.11.6 applies them but omits them from its capabilities, so the shipped [Neovim configurations](../editors/nvim/README.md#rename) declare them for it, and Neovim checks the version of only the first document of an edit ([client requirements](architecture.md#rename)).
 - It never edits comments, strings, `#packing` hints, or file names.
+- It refuses to edit a document whose last change the server rejected, or that was open when the server skipped or couldn't decode a message, until the document gets a change that replaces its whole text or is closed and reopened. That includes a rename started from another document. It also refuses to edit a file whose open the server rejected, for example over the open-document capacity, or that the editor sent a change or save for while the server didn't have it open: the editor may hold text that differs from the file on disk. A close of that file in the editor ends the refusal ([document store](architecture.md#document-store)).
+- After 8,192 such files that aren't open, the server stops tracking them one by one and refuses to edit any file that isn't open, until it restarts.
+- A file opened inside a message the server skipped or couldn't decode is unknown to the server. If the editor opened it with unsaved text and has sent no change, save, or close for it since, a rename can still compute that file's edits from its bytes on disk, and they can land in the wrong place in the editor's text. Saving or editing the file, or closing and reopening it, lets the server see it ([document store](architecture.md#document-store)).
 
 ## Names that definition, type definition, hover, references, and document highlights don't cover
 

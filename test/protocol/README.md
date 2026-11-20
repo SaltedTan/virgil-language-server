@@ -191,8 +191,9 @@ Dynamic watcher registration requests are answered as a real client would.
 Mandatory semantic cases assert that absent/false hierarchy support returns flat
 `SymbolInformation[]` and true returns `DocumentSymbol[]` (#196). A worker-backed
 project checks that an empty change at version 2 produces a rename edit at
-version 2 (#200), with full-text and rejected ranged-change controls. The runner
-waits for that rename reply before sending shutdown. Typed IDs, decimal options,
+version 2 (#200), with a full-text control. After a rejected ranged change, the
+rename gets RequestFailed, since the server's copy is out of date (#514). The
+runner waits for that rename reply before sending shutdown. Typed IDs, decimal options,
 out-of-range numbers, and invalid lifecycle ordering also have fixed oracles.
 
 ### Successful reply shapes
@@ -299,6 +300,8 @@ assertion; the default budget is intended to stay below about one minute.
 Follow the [model update procedure](schema/3.17/README.md).
 
 `code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, statements that swallowed a later line, and invalid params over stdio.
+
+`out_of_sync_edits.py` checks that code actions, prepareRename, and rename refuse a document whose change the server rejected, until a full-text change, and that a rename from another document refuses to edit it or a file whose didOpen was rejected or that got a didChange or didSave while not open, until its didClose. After a skipped frame or an undecodable didChange, every open document refuses until it gets a full-text change or is reopened; `$/setTrace` changes nothing.
 
 ## Seeded source mutations
 

@@ -198,8 +198,8 @@ def coverage_drift(capabilities):
 
 
 # The error codes each method documents (docs/architecture.md): RequestFailed
-# for bounded replies and rename and formatting refusals, ContentModified for
-# semantic tokens.
+# for bounded replies, rename and formatting refusals, and code actions for a
+# document out of sync, ContentModified for semantic tokens.
 # Valid params never get InvalidParams, and no request is cancelled.
 REQUEST_FAILED, CONTENT_MODIFIED = -32803, -32801
 DOCUMENTED_ERRORS = {
@@ -207,6 +207,7 @@ DOCUMENTED_ERRORS = {
     "textDocument/prepareRename": {REQUEST_FAILED},
     "textDocument/documentSymbol": {REQUEST_FAILED},
     "textDocument/formatting": {REQUEST_FAILED},
+    "textDocument/codeAction": {REQUEST_FAILED},
     "textDocument/references": {REQUEST_FAILED},
     "textDocument/documentHighlight": {REQUEST_FAILED},
     "textDocument/implementation": {REQUEST_FAILED},

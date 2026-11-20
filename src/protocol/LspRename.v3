@@ -49,7 +49,9 @@ class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: Lsp
 // snapshot's exact analyzed bytes with the edits applied as an ordinary
 // ANALYZE, through the scheduler's jobs (LspAnalysisJob), and compares the
 // result with the snapshot (LspRenameBindings); the result is then dropped.
-// One rename is checked at a time. See docs/architecture.md#rename.
+// A rename refuses if the requested document or any document it would edit
+// may hold text the server doesn't have (DocumentStore.editRefusal). One
+// rename is checked at a time. See docs/architecture.md#rename.
 class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: LspSnapshotRequests,
 		send: Array<byte> -> void) {
 	def REQUIRES = "a valid textDocument.uri, position, and newName";
@@ -102,6 +104,8 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// placeholder that {delivered} replaces with the preflight.
 	def plan(r: LspRenameRequest, at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
 		if (r.answered) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var refusal = store.editRefusal(at.snapshot.documentVersions[at.index].uri, null);
+		if (refusal != null) return (true, fail(refusal));
 		var selected = LspRenameEligibility.select(at, projects, offset);
 		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
 		if (selected.2 != null) return (true, fail(selected.2));
@@ -136,6 +140,10 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				if (spells(text, spans[k], spans[k + 1], name)) begins.put(spans[k]);
 			}
 			if (begins.length == 0) continue;
+			// Each edited document must be one whose text the server has:
+			// not marked out of sync if open, nor held by the client if not.
+			refusal = targetRefusal(s, j);
+			if (refusal != null) return (true, fail(refusal));
 			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16));
 			var positions = Array<int>.new(4 * begins.length);
 			bytes += JsonRpcJson.stringBytes(s.documentVersions[j].uri) + DOCUMENT_BYTES;
@@ -245,6 +253,11 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				|| LspRenameEligibility.check(p.at, projects, p.selection.decl, p.selection.token) != null) {
 			return fail("the documents changed while the rename was checked");
 		}
+		// A change rejected meanwhile leaves the snapshot current.
+		for (j in p.files) {
+			var refusal = targetRefusal(s, j);
+			if (refusal != null) return fail(refusal);
+		}
 		var changes = Array<JsonValue>.new(p.files.length);
 		for (f < changes.length) {
 			var j = p.files[f], v = s.documentVersions[j], positions = p.ranges[f];
@@ -311,6 +324,11 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			ResultJson(r) => send(JsonRpcMessage.RawResponse(id, r).encode());
 			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
 		}
+	}
+	// Why the rename can't edit file {j} of {s}, named by its path, or null
+	// if it can (DocumentStore.editRefusal).
+	private def targetRefusal(s: AnalysisSnapshot, j: int) -> string {
+		return store.editRefusal(s.documentVersions[j].uri, s.paths[j]);
 	}
 	// The RequestFailed reply for a rename that cannot be made, with the reason.
 	def fail(reason: string) -> JsonRpcReply {
