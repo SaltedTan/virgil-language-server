@@ -29,6 +29,7 @@ def X = [
 	T("Formatting:comment_lookahead_linear", comment_lookahead_linear),
 	T("Formatting:unjoined_brace", unjoined_brace),
 	T("Formatting:unjoined_ungrouped_fun_brace", unjoined_ungrouped_fun_brace),
+	T("Formatting:unjoined_fun_after_block_comment", unjoined_fun_after_block_comment),
 	T("Formatting:code_after_comment", code_after_comment),
 	T("Formatting:block_comment_opener", block_comment_opener),
 	T("Formatting:else_line", else_line),
@@ -511,6 +512,12 @@ def unjoined_ungrouped_fun_brace(t: Tester) {
 		"def f() {\n\tg(\n\t  1); var callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
 	both(t, "def f() {\n    var callback = fun () -> int // keep\n\t\t{ return\n        1;\n};\n}\n",
 		"def f() {\n\tvar callback = fun () -> int // keep\n\t{ return\n        1;\n\t};\n}\n");
+}
+def unjoined_fun_after_block_comment(t: Tester) {
+	both(t, "def f() {\n\t/* note\n\t\t\t*/ var callback =\n\t\tfun () // keep\n\t\t{\nreturn;\n};\n}\n",
+		"def f() {\n\t/* note\n\t\t\t*/ var callback =\n\t\tfun () // keep\n\t\t{\n\t\t\t\treturn;\n\t\t\t};\n}\n");
+	both(t, "def f() {\n\t/* note\n\t\t\t*/ var callback = fun () // keep\n{\nreturn;\n};\n}\n",
+		"def f() {\n\t/* note\n\t\t\t*/ var callback = fun () // keep\n\t\t\t{\n\t\t\t\treturn;\n\t\t\t};\n}\n");
 }
 def code_after_comment(t: Tester) {
 	// A line that starts with a comment and then has code is a code line,

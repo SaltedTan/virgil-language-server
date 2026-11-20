@@ -397,6 +397,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// leading tabs on the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
+	private var leadingTabs: int;
 	private var lineStart: int;
 	private var afterElseLine: int;
 	// The leading tabs of the line where the current statement started,
@@ -439,7 +440,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		started = open = closedControl = continues = lastStartsLine = false;
 		last = lastItem = afterElseLine = -1;
 		chunk = (0, 0, 0, 0);
-		lineTabs = closeTabs = lineStart = statementTabs = 0;
+		lineTabs = leadingTabs = closeTabs = lineStart = statementTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
 		var pos = 0;
@@ -659,16 +660,16 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// current line, and the statement's line unless it is a continuation.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
 		lineStart = k;
-		if (codeIndent(k, begin, end, writable) == CONTINUATION) {
-			var t = wantTabs, i = keepBegin;
-			while (i < keepEnd && input[i] == '\t') {
-				t++;
-				i++;
-			}
-			lineTabs = t;
-		} else {
+		var continuation = codeIndent(k, begin, end, writable) == CONTINUATION;
+		var i = if(writable, keepBegin, begin), limit = if(writable, keepEnd, end);
+		leadingTabs = if(writable, wantTabs);
+		while (i < limit && input[i] == '\t') {
+			leadingTabs++;
+			i++;
+		}
+		lineTabs = if(continuation, leadingTabs, wantTabs);
+		if (!continuation) {
 			chunk = if(writable, (begin, end, wantTabs, wantTabs), (-1, -1, wantTabs, wantTabs));
-			lineTabs = wantTabs;
 		}
 	}
 	private def codeIndent(k: int, begin: int, end: int, writable: bool) -> int {
@@ -783,7 +784,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def consume(k: int) {
 		var c = ch(k), m = marks[k];
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
-		if (startsStatement(k, inner)) statementTabs = lineTabs;
+		if (startsStatement(inner)) statementTabs = leadingTabs;
 		closedControl = false;
 		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
@@ -815,39 +816,37 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 				afterElseLine = -1;
 			}
 			'(', '[' => {
-				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine,
-					statementTabs));
+				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine, 0));
 				afterElseLine = -1;
 			}
 			')', ']', '}' => if (inner != null) {
 				stack.length--;
 				afterElseLine = inner.parentElseLine;
-				statementTabs = inner.outerStatementTabs;
 				closedControl = c == ')' && inner.control;
-				if (c == '}') closeTabs = inner.close;
+				if (c == '}') {
+					closeTabs = inner.close;
+					statementTabs = inner.outerStatementTabs;
+				}
 				if (inner.funHeader != null) {
 					chunk = inner.funHeader.anchor;
 					continues = true;
 				}
 			}
 			_ => if (header != null) {
-				header.tabs = lineTabs;
-				header.anchor = chunk;
 				header.statementTabs = if(inner == null || inner.kind == '{', statementTabs, -1);
+				header.tabs = if(header.statementTabs >= 0, leadingTabs, lineTabs);
+				header.anchor = chunk;
 			}
 		}
 		last = k;
 	}
-	// Whether the token {k}, with the innermost open bracket {inner}, starts
-	// a statement, a declaration, an enum case, a match pattern, or a
-	// braceless body, also partway through a line: where a line that it
-	// started would not be a continuation (classify).
-	private def startsStatement(k: int, inner: FormatterBracket) -> bool {
+	// Whether the next token starts a statement, declaration, or braceless
+	// body, also partway through a line and outside parentheses or brackets.
+	private def startsStatement(inner: FormatterBracket) -> bool {
 		if (inner != null && inner.kind != '{') return false;
 		if (last < 0) return true;
 		var p = ch(last);
 		if (p == '{' || ((p == ';' || p == '}') && !continues)) return true;
-		if ((marks[k] & (AnalysisFormatMark.ENUM_CASE | AnalysisFormatMark.CASE_START | AnalysisFormatMark.PATTERN_START)) != 0) return true;
 		return closedControl || isElse(last) || (marks[last] & AnalysisFormatMark.CASE_ARROW) != 0;
 	}
 	// The run after the last item (ADR-0019 decision 3, Lines).
