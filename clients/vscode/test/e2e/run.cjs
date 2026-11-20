@@ -337,7 +337,7 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         finished = true;
         clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
-        resolve({ ...exited, stopped, serverExitFailed });
+        resolve({ ...exited, stopped, ...(serverExitFailed ? { serverExitFailed } : {}) });
       };
       if (anyway) done();
       else {
