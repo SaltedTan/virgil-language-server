@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The [configuration contract](docs/configuration.md#what-server-1x-keeps) now promises that every 1.x server reads version 2 project files as specified, as it already did for version 1: their fields, the target names that version 2 accepts, strict parsing, and file selection. The analysis for a target isn't part of the promise. Before 1.0, a prerelease may still change these rules.
 - The release workflow runs the [Linux upgrade and rollback rehearsal](docs/releasing.md#in-the-release-workflow) on releases and dry runs. Publishing requires a pass.
 - For contributors, the macOS LazyVim tests in the weekly editor tests and release workflows now use Neovim 0.12.6 from its release archive, checked against a pinned SHA-256, instead of whatever version Homebrew installs, as the Linux tests already do.
+- For contributors, during the JVM preview the release workflow runs the two advisory JVM editor jobs independently of checksums and publishing. The release run can succeed with a failed advisory job.
 
 ### Fixed
 
