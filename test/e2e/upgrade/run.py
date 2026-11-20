@@ -28,9 +28,7 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 HELPER = HERE / "vscode.cjs"
-# With optional prerelease and build metadata, as scripts/check-release.sh
-# accepts.
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
 ARCHIVE = re.compile(rf"virgil-lsp-({VERSION})-x86-64-linux\.tar\.gz")
 VSIX = re.compile(r"virgil-lsp-vscode-([0-9]+\.[0-9]+\.[0-9]+)-linux-x64\.vsix")
 SUMS = "SHA256SUMS"
@@ -84,9 +82,8 @@ def read_sums(path):
 
 
 def version_key(version):
-    """Semantic-version precedence: a prerelease sorts before its release,
-    and build metadata doesn't count."""
-    core, _, prerelease = version.partition("+")[0].partition("-")
+    """Semantic-version precedence: a prerelease sorts before its release."""
+    core, _, prerelease = version.partition("-")
     numbers = tuple(int(part) for part in core.split("."))
     if not prerelease:
         return numbers, (1,)
@@ -173,10 +170,9 @@ def vsix_metadata(path, extension_version, manifest, manifest_bytes, executables
                 raise Failure(f"{path.name}: its bundled {name} is not the archive's")
 
 
-def verify_assets(directory, *, allow_untagged=False, revision=None):
+def verify_assets(directory, *, allow_untagged=False):
     """Check one release's three files before anything runs: exact names, the
-    SHA256SUMS lines, and the version and target metadata of both packages.
-    revision is the source revision that the build described, if known."""
+    SHA256SUMS lines, and the version and target metadata of both packages."""
     directory = directory.resolve()
     if not directory.is_dir():
         raise Failure(f"{directory} is not a directory")
@@ -199,19 +195,15 @@ def verify_assets(directory, *, allow_untagged=False, revision=None):
     extension_version = VSIX.fullmatch(package.name)[1]
     top, manifest, manifest_bytes, executables = archive_manifest(archive, version, allow_untagged=allow_untagged)
     vsix_metadata(package, extension_version, manifest, manifest_bytes, executables)
-    tag = manifest["tag"]
-    if revision is None:
-        revision = tag or described(archive, manifest["sourceRevision"])
-    elif revision == "":
-        raise Failure("--to-revision must be nonempty")
+    version_revision = manifest["tag"] or described(archive, manifest["sourceRevision"])
     return {
         "directory": str(directory),
         "archive": {"name": archive.name, "sha256": digests[archive.name], "path": str(archive)},
         "vsix": {"name": package.name, "sha256": digests[package.name], "path": str(package)},
         "sha256sums": sha256(directory / SUMS),
-        "serverVersion": version, "extensionVersion": extension_version, "tag": tag,
+        "serverVersion": version, "extensionVersion": extension_version, "tag": manifest["tag"],
         "sourceRevision": manifest["sourceRevision"], "virgilRevision": manifest["virgilRevision"],
-        "versionRevision": revision, "top": top, "manifest": manifest,
+        "versionRevision": version_revision, "top": top, "manifest": manifest,
     }
 
 
@@ -232,13 +224,10 @@ def described(path, revision):
 def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
-        old_version, new_version = old[field], new[field]
-        old_key, new_key = version_key(old_version), version_key(new_version)
-        if old_key == new_key:
-            raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
-                          "have equal SemVer precedence")
-        if old_key > new_key:
-            raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
+        if old[field] == new[field]:
+            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old[field]}")
+        if version_key(old[field]) > version_key(new[field]):
+            raise Failure(f"--from-assets {name} {old[field]} is newer than --to-assets {name} {new[field]}")
 
 
 def version_output(assets):
@@ -662,10 +651,6 @@ def main(argv=None):
     parser.add_argument("--to-assets", type=Path, required=True,
                         help="the newer release or untagged build's archive, linux-x64 VSIX, and SHA256SUMS")
     parser.add_argument("--logs", type=Path, required=True, help="a new or empty directory for logs and the receipt")
-    parser.add_argument("--to-revision",
-                        help="the nonempty source revision recorded by the --to-assets build, checked verbatim "
-                             "against the installed servers' --version output. If omitted, use the manifest's "
-                             "tag or git describe of its commit in this checkout")
     parser.add_argument("--vscode", type=Path,
                         help="the VS Code executable; by default the Extension Host test's cached one")
     parser.add_argument("--rollback-without-force", action="store_true",
@@ -678,8 +663,7 @@ def main(argv=None):
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         raise Failure("the rehearsal runs on Linux x86-64 only")
     # Every check of the assets comes before anything runs.
-    sets = {"from": verify_assets(args.from_assets),
-            "to": verify_assets(args.to_assets, allow_untagged=True, revision=args.to_revision)}
+    sets = {"from": verify_assets(args.from_assets), "to": verify_assets(args.to_assets, allow_untagged=True)}
     check_pair(sets["from"], sets["to"])
     if "DISPLAY" not in os.environ:
         raise Failure("no DISPLAY for VS Code; run the rehearsal under xvfb-run -a")

@@ -152,43 +152,6 @@ class AssetTests(TemporaryTest):
             assets = run.verify_assets(directory, allow_untagged=True)
         self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-1-g{commits['manifest'][:12]}")
 
-    def test_takes_the_builds_description(self):
-        repository = self.root / "repository"
-        commit = history(repository)["manifest"]
-        git(repository, "tag", "-a", "-m", "candidate", "release-candidate", commit)
-        revision = git(repository, "describe", "--always", "--abbrev=12", commit)
-        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commit})
-        with mock.patch.object(run, "REPO", self.root / "missing"):
-            assets = run.verify_assets(directory, allow_untagged=True, revision=revision)
-        self.assertIn("  source revision: release-candidate\n", run.version_output(assets))
-
-    def test_rejects_an_empty_revision_override(self):
-        directory = make_assets(self.root, *NEW, manifest={"tag": None})
-        with mock.patch.object(run, "REPO", self.root / "missing"):
-            with self.assertRaisesRegex(run.Failure, "--to-revision must be nonempty"):
-                run.verify_assets(directory, allow_untagged=True, revision="")
-
-    def test_accepts_build_metadata(self):
-        # scripts/check-release.sh accepts SemVer build metadata in VERSION.
-        version = "0.1.0-alpha.9+linux.5"
-        assets = run.verify_assets(make_assets(self.root, version, NEW[1]))
-        self.assertEqual(assets["serverVersion"], version)
-        self.assertEqual(assets["top"], f"virgil-lsp-{version}-x86-64-linux")
-        self.assertEqual(run.version_key(version), run.version_key("0.1.0-alpha.9"))
-        old = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+linux.5", OLD[1]))
-        run.check_pair(old, assets)
-        same = run.verify_assets(make_assets(self.root, "0.1.0-alpha.4+linux.6", NEW[1]))
-        with self.assertRaises(run.Failure) as failure:
-            run.check_pair(old, same)
-        self.assertEqual(str(failure.exception),
-                         "--from-assets server 0.1.0-alpha.4+linux.5 and --to-assets server 0.1.0-alpha.4+linux.6 "
-                         "have equal SemVer precedence")
-
-    def test_rejects_empty_build_metadata_identifiers(self):
-        for version in ["0.1.0-alpha.9+", "0.1.0-alpha.9+.linux", "0.1.0-alpha.9+linux..5", "0.1.0-alpha.9+linux."]:
-            with self.subTest(version=version):
-                self.rejected("must hold exactly", server=version, extension=NEW[1])
-
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")
         self.rejected("must hold exactly", vsix_name=f"virgil-lsp-vscode-{OLD[1]}-darwin-arm64.vsix")
@@ -246,12 +209,12 @@ class AssetTests(TemporaryTest):
         old = run.verify_assets(make_assets(self.root))
         new = run.verify_assets(make_assets(self.root, *NEW))
         run.check_pair(old, new)
-        with self.assertRaisesRegex(run.Failure, "server .* have equal SemVer precedence"):
+        with self.assertRaisesRegex(run.Failure, "same server version"):
             run.check_pair(old, old)
         with self.assertRaisesRegex(run.Failure, "is newer than"):
             run.check_pair(new, old)
         same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
-        with self.assertRaisesRegex(run.Failure, "extension .* have equal SemVer precedence"):
+        with self.assertRaisesRegex(run.Failure, "same extension version"):
             run.check_pair(old, same_extension)
 
     def test_version_order(self):
@@ -356,9 +319,9 @@ class PropagationTests(TemporaryTest):
         logs = self.root / "logs"
         args = ["--from-assets", str(make_assets(self.root)),
                 "--to-assets", str(make_assets(self.root, *NEW, manifest={"tag": None})),
-                "--to-revision", f"v{OLD[0]}-3-g{'2' * 12}", "--logs", str(logs), "--vscode", str(executable)]
+                "--logs", str(logs), "--vscode", str(executable)]
         with mock.patch.object(run, "Rehearsal", Broken), mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
-                mock.patch.object(run, "REPO", self.root / "missing"), \
+                mock.patch.object(run, "described", return_value=f"v{OLD[0]}-3-g{'2' * 12}"), \
                 mock.patch.object(tempfile, "tempdir", str(tmp)):
             self.assertEqual(run.main(args), 1)
         self.assertEqual(len(works), 1)
