@@ -450,14 +450,19 @@ def version(s, mode, work):
                                       "contentChanges": changes}, request=False)
     # Do not send shutdown until the rename reply arrives: it could cancel the
     # preflight and hide the stale-version bug that this oracle is meant to find.
-    after = s.success("textDocument/rename", at)
-    expected = 1 if mode == "ranged-change-rejected" else 2
-    edits = after["documentChanges"]
-    assert edits and all(e["textDocument"]["version"] == expected for e in edits), (
-        "#200 empty/full change: rename TextDocumentEdit must carry version %d" % expected, after)
     if mode == "ranged-change-rejected":
+        # The rejected change leaves the server's copy out of date, so rename
+        # refuses rather than edit it (#514).
+        after = s.call("textDocument/rename", at)
+        assert after.get("error", {}).get("code") == -32803, after
+        assert "the server's copy of this document is out of date" in after["error"]["message"], after
         s.barrier()
         assert "incremental changes are not supported" in s.logs(), s.logs()
+        return
+    after = s.success("textDocument/rename", at)
+    edits = after["documentChanges"]
+    assert edits and all(e["textDocument"]["version"] == 2 for e in edits), (
+        "#200 empty/full change: rename TextDocumentEdit must carry version 2", after)
     if mode == "full-change-version-control":
         source_backed_replies(s, uri, text)
 

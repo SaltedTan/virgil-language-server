@@ -217,6 +217,22 @@ DOCUMENTED_ERRORS = {
     "textDocument/semanticTokens/full": {CONTENT_MODIFIED},
 }
 
+
+def semicolon_filter(params):
+    context = params.get("context") if isinstance(params, dict) else None
+    if not isinstance(context, dict):
+        return None
+    only = context.get("only")
+    if isinstance(only, list) and not any(kind in ("", "quickfix") for kind in only):
+        return False
+    diagnostics = context.get("diagnostics")
+    if not isinstance(diagnostics, list):
+        return None
+    messages = ('";" expected', "',' or ';' expected", "',' or ';' expected after field declaration")
+    return any(isinstance(d, dict) and d.get("source") == "aeneas" and d.get("message") in messages
+               for d in diagnostics)
+
+
 # The documented window/showMessage for a failed automatic analysis
 # (LspSemanticDiagnostics.failed), with the supervisor's failure reasons and
 # the worker's exit status (AnalysisSupervisor.describe).
@@ -937,7 +953,7 @@ class MutationSession(Session):
         if request:
             key = (type(ident), ident)
             assert key not in self.expected, ("the harness reused an ID", key)
-            self.expected[key] = method
+            self.expected[key] = (method, params)
         return ident
 
     def receive(self, deadline):
@@ -969,7 +985,8 @@ class MutationSession(Session):
             if key not in self.expected:
                 raise CaseFailure("protocol-failure", "reply to no outstanding request: a changed ID type, or a reply "
                                   "to a notification: %s" % json.dumps(msg)[:400])
-            method = self.expected[key]
+            method, params = self.expected[key]
+            semicolon = semicolon_filter(params) if method == "textDocument/codeAction" else None
             if ("result" in msg) == ("error" in msg):
                 raise CaseFailure("protocol-failure", "invalid reply envelope: %s" % json.dumps(msg)[:400])
             if "error" in msg:
@@ -977,8 +994,11 @@ class MutationSession(Session):
                 if problem:
                     raise CaseFailure("protocol-failure", "malformed error for %s: %s: %s" % (
                         method, problem, json.dumps(msg)[:400]))
-                if msg["error"]["code"] not in DOCUMENTED_ERRORS.get(method, set()):
+                code = msg["error"]["code"]
+                if code not in DOCUMENTED_ERRORS.get(method, set()) and not (semicolon is True and code == REQUEST_FAILED):
                     raise CaseFailure("protocol-failure", "undocumented error for %s: %s" % (method, json.dumps(msg)[:400]))
+            elif semicolon is False and msg["result"] != []:
+                raise CaseFailure("protocol-failure", "code action without an applicable semicolon diagnostic must return []")
             elif method in reply_shapes.RESULTS:
                 self.shape(lambda: self.validator.result(method, msg["result"]))
             self.replies[key] = msg
@@ -1004,7 +1024,7 @@ class MutationSession(Session):
         return min((d for k, d in self.sent_at.items() if k not in self.replies), default=float("inf"))
 
     def waiting_for(self):
-        missing = [(m, k[1]) for k, m in self.expected.items() if k not in self.replies]
+        missing = [(method, k[1]) for k, (method, _) in self.expected.items() if k not in self.replies]
         return ", ".join("%s id %s" % (m, json.dumps(i)) for m, i in missing[:4]) or "a message"
 
     def collect(self, keys):
