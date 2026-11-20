@@ -5,16 +5,13 @@
 // placeholder of the name at a position, or RequestFailed with the reason it
 // cannot be renamed, including a document marked out of sync
 // (DocumentStore.editRefusal). See docs/architecture.md#prepare-rename.
-class LspPrepareRename(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
+class LspPrepareRename(store: DocumentStore, projects: WorkspaceProjects) {
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
 		dispatcher.onDeferredRequest("textDocument/prepareRename", receive(requests, _));
 	}
 	private def receive(requests: LspSnapshotRequests, request: JsonRpcMessage.Request) {
-		if (LspRenameEligibility.closedRequest(store, request)) {
-			var error = JsonRpcError.new(LspErrorCode.REQUEST_FAILED, LspRenameEligibility.OPEN_DOCUMENT);
-			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
-		}
-		requests.submit(request, "prepareRename", "a valid textDocument.uri and position", prepare, fail, null);
+		requests.submit(request, "prepareRename", "a valid textDocument.uri and position",
+			prepare, fail, null, LspRenameEligibility.documentRefusal(store, _));
 	}
 	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
 		return answer;
@@ -23,9 +20,6 @@ class LspPrepareRename(store: DocumentStore, projects: WorkspaceProjects, send: 
 	// {offset}, or false if neither is there and the caller should try the byte
 	// before it (see LspRenameEligibility.select).
 	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
-		// A rename from an out-of-date copy would edit the wrong places.
-		var refusal = store.editRefusal(at.snapshot.documentVersions[at.index].uri, null);
-		if (refusal != null) return (true, fail(refusal));
 		var selected = LspRenameEligibility.select(at, projects, offset);
 		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
 		if (selected.2 != null) return (true, fail(selected.2));

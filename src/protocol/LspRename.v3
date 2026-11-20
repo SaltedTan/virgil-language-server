@@ -90,12 +90,15 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		}
 		var invalid = LspRenameNames.check(newName);
 		if (invalid != null) return respond(request.id, fail(invalid));
-		if (LspRenameEligibility.closedRequest(store, request)) return respond(request.id, fail(LspRenameEligibility.OPEN_DOCUMENT));
-		if (pending != null) return respond(request.id, fail("another rename is being checked; try again once it is answered"));
 		var r = LspRenameRequest.new(this, request.id, newName);
-		pending = r;
-		var waiting = requests.submit(request, "rename", REQUIRES, r.prepare, fail, r.deliver);
+		if (pending == null) pending = r;
+		var waiting = requests.submit(request, "rename", REQUIRES, r.prepare, fail, r.deliver, requestRefusal(r, _));
 		if (pending == r) r.waiting = waiting;
+	}
+	private def requestRefusal(r: LspRenameRequest, key: string) -> string {
+		var refusal = LspRenameEligibility.documentRefusal(store, key);
+		if (refusal != null) return refusal;
+		return if(pending != r, "another rename is being checked; try again once it is answered");
 	}
 	// Plans {r} from the current snapshot {at} if its position selects an
 	// eligible name, as prepareRename would, and the new name and the client
@@ -104,8 +107,6 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// placeholder that {delivered} replaces with the preflight.
 	def plan(r: LspRenameRequest, at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
 		if (r.answered) return (true, JsonRpcReply.Result(JsonValue.Null));
-		var refusal = store.editRefusal(at.snapshot.documentVersions[at.index].uri, null);
-		if (refusal != null) return (true, fail(refusal));
 		var selected = LspRenameEligibility.select(at, projects, offset);
 		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
 		if (selected.2 != null) return (true, fail(selected.2));
@@ -142,7 +143,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			if (begins.length == 0) continue;
 			// Each edited document must be one whose text the server has:
 			// not marked out of sync if open, nor held by the client if not.
-			refusal = targetRefusal(s, j);
+			var refusal = targetRefusal(s, j);
 			if (refusal != null) return (true, fail(refusal));
 			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16));
 			var positions = Array<int>.new(4 * begins.length);

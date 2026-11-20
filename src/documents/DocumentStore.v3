@@ -12,6 +12,7 @@ component DocumentLimits {
 	// Files that aren't open but that the client holds, tracked one by one;
 	// see DocumentStore.markOutOfSync.
 	def MAX_HELD = 8192;
+	def MAX_HELD_BYTES = 1024 * 1024;
 	// Why edits computed from the server's copy of an open document marked
 	// out of sync could land in the wrong place in the client's text.
 	def OUT_OF_DATE = "the server's copy of this document is out of date, since a change to it was rejected or lost; change the whole document or reopen it";
@@ -73,13 +74,14 @@ class DocumentStore {
 	// The files that aren't open but that the client holds, by canonical URI:
 	// the server rejected their didOpen, or got a didChange or didSave for
 	// them, so the client's text may differ from the file on disk. A close of
-	// the URI, or an accepted open, clears a record. Beyond {maxHeld} files,
+	// the URI, or an accepted open, clears a record. Beyond either held limit,
 	// {heldOverflow} stands for every file that isn't open, for the rest of
 	// the session.
 	private def held = OrderedStringMap<bool>.new();
 	private var heldOverflow: bool;
-	// Supply MAX_HELD in production; tests lower it.
+	private var heldBytes: int;
 	var maxHeld = DocumentLimits.MAX_HELD;
+	var maxHeldBytes = DocumentLimits.MAX_HELD_BYTES;
 
 	// Visit only documents the client has open, without copying their text.
 	def eachOpen(visit: (string, DocumentOverlay) -> void) { overlays.apply(visit); }
@@ -116,7 +118,7 @@ class DocumentStore {
 		if (charge > long.view(capacity) - used) return DocumentLimits.EXCEEDED;
 		overlays[key] = DocumentOverlay.new(key, languageId, version, text, null);
 		used += charge;
-		if (held.length > 0) held.remove(key);
+		removeHeld(key);
 		return null;
 	}
 	def change(uri: string, version: int, text: Array<byte>) -> string {
@@ -148,10 +150,17 @@ class DocumentStore {
 		if (key == null) return;
 		if (overlays[key] != null) {
 			unsynced[key] = true;
-		} else if (!heldOverflow && !held.has(key)) {
-			if (held.length >= maxHeld) heldOverflow = true;
-			else held[key] = true;
+		} else if (!heldOverflow && DocumentUri.filePath(key) != null && !held.has(key)) {
+			if (held.length >= maxHeld || key.length > maxHeldBytes - heldBytes) {
+				heldOverflow = true;
+			} else {
+				held[key] = true;
+				heldBytes += key.length;
+			}
 		}
+	}
+	private def removeHeld(key: string) {
+		if (key != null && held.length > 0 && held.remove(key)) heldBytes -= key.length;
 	}
 	// Marks every open document out of sync.
 	def markAllOutOfSync() {
@@ -178,12 +187,13 @@ class DocumentStore {
 			if (name == null) return DocumentLimits.OUT_OF_DATE;
 			return Strings.format1("the server's copy of %s is out of date, since a change to it was rejected or lost; change the whole document or reopen it", name);
 		}
+		if ((!heldOverflow && held.length == 0) || DocumentUri.filePath(key) == null) return null;
 		if (name == null) name = "this document";
 		if (held.length > 0 && held[key]) {
-			return Strings.format1("the client may have %s open with text the server doesn't have, since the server rejected its open or got a change to it while it wasn't open; close it in the editor and open it again", name);
+			return Strings.format1("the client may have %s open with text the server doesn't have, since it received an open, change, or save for that file without keeping an overlay; close it in the editor and open it again", name);
 		}
 		if (heldOverflow) {
-			return Strings.format2("the server can't tell whether the client has %s open with text it doesn't have, since it rejected the opens or changes of more than %d files that weren't open; restart the server", name, maxHeld);
+			return Strings.format1("the server can't tell whether the client has %s open with text it doesn't have, since it reached its limit for tracking files the client may hold; restart the server", name);
 		}
 		return null;
 	}
@@ -235,7 +245,7 @@ class DocumentStore {
 	def close(uri: string) -> string {
 		var key = DocumentUri.normalize(uri), doc = canonicalOverlay(key);
 		if (doc == null) {
-			if (key != null && held.length > 0) held.remove(key);
+			removeHeld(key);
 			return "document is not open";
 		}
 		overlays.remove(doc.uri);

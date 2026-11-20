@@ -125,7 +125,7 @@ class LspServer {
 		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents, projects);
 		inlayHints.register(dispatcher, snapshotRequests);
 		semanticTokens = LspSemanticTokens.new(publishNotification, dispatcher.pending, documents, projects);
-		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
+		prepareRename = LspPrepareRename.new(documents, projects);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);

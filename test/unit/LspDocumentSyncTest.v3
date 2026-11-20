@@ -289,4 +289,15 @@ def test_sync_held(t: Tester) {
 	t.assert(store.editRefusal(uri, "a") != null, "a save of a closed document is recorded");
 	syncNotify(t, server, "didClose", SYNC_ID);
 	t.assert(store.editRefusal(uri, "a") == null, "a close clears the record");
+	for (text in ["null", "2147483648"]) {
+		syncNotify(t, server, "didSave", Strings.format1("{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":%s}", text));
+		t.assert(store.editRefusal(uri, "a") != null, "a malformed save of a closed file is recorded");
+		syncNotify(t, server, "didClose", SYNC_ID);
+	}
+	server.handle("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"textDocument/didSave\",\"params\":{\"textDocument\":{\"uri\":\"file:/a b.v3\"}}}");
+	t.assert(store.editRefusal(uri, "a") != null, "a decoder-rejected save of a closed file is recorded");
+	t.assert(store.open(uri, "virgil", 1, "x") == null, "open failed");
+	syncNotify(t, server, "didSave", "{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":null}");
+	server.handle("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"textDocument/didSave\",\"params\":{\"textDocument\":{\"uri\":\"file:/a b.v3\"}}}");
+	t.assert(store.editRefusal(uri, null) == null, "malformed saves of open overlays preserve synchronization");
 }

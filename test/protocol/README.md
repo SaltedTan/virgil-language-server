@@ -301,7 +301,7 @@ Follow the [model update procedure](schema/3.17/README.md).
 
 `code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, statements that swallowed a later line, and invalid params over stdio.
 
-`out_of_sync_edits.py` checks that code actions, prepareRename, and rename refuse a document whose change the server rejected, until a full-text change, and that a rename from another document refuses to edit it or a file whose didOpen was rejected or that got a didChange or didSave while not open, until its didClose. After a skipped frame or an undecodable didChange, every open document refuses until it gets a full-text change or is reopened; `$/setTrace` changes nothing.
+`out_of_sync_edits.py` checks that code actions, prepareRename, and rename refuse a document whose change the server rejected, until a full-text change, and that a rename from another document refuses to edit it or a file whose didOpen was rejected or that got a didChange or didSave while not open, until its didClose. The rename tests pause the worker to check refusal when a target's change is rejected during preflight and when the request document becomes out of sync while waiting for an analysis with parse errors. After a skipped frame or an undecodable didChange, every open document refuses until it gets a full-text change or is reopened. A code action with empty diagnostics still returns an empty array for a marked document, while one with a matching semicolon diagnostic refuses. `$/setTrace` changes nothing.
 
 ## Seeded source mutations
 

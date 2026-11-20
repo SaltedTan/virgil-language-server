@@ -22,11 +22,15 @@ Run from the repository root:
   python3 test/protocol/out_of_sync_edits.py build/virgil-lsp
 """
 
+from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 
+from fingerprints import worker_pid
 from formatting import FormatSession, OUT_OF_SYNC, REQUEST_FAILED, STORE_BYTES, large_frame, value_limit
 
 CAPS = {"workspace": {"workspaceEdit": {"documentChanges": True}},
@@ -48,6 +52,16 @@ A_USE = {"line": 2, "character": 11}
 B_DECL = {"line": 1, "character": 5}
 HELD = "the client may have %s open with text the server doesn't have"
 TARGET = "the server's copy of %s is out of date"
+
+
+@contextmanager
+def paused_worker(session):
+    pid = worker_pid(session)
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        yield
+    finally:
+        os.kill(pid, signal.SIGCONT)
 
 
 class EditSession(FormatSession):
@@ -74,18 +88,26 @@ class EditSession(FormatSession):
         self.send("textDocument/" + method, dict(params, textDocument=dict(
             params.get("textDocument", {}), uri=self.uri(name))), request=False)
 
-    def code_action(self, name):
+    def code_action(self, name, diagnostics=None):
         """The code actions at the missing semicolon's error in SEMI_TEXT."""
-        return self.reply(self.send("textDocument/codeAction", {
-            "textDocument": {"uri": self.uri(name)}, "range": {"start": SEMI_ERROR, "end": SEMI_ERROR}}), 60)
+        params = {"textDocument": {"uri": self.uri(name)}, "range": {"start": SEMI_ERROR, "end": SEMI_ERROR}}
+        if diagnostics is not None:
+            params["context"] = {"diagnostics": diagnostics}
+        return self.reply(self.send("textDocument/codeAction", params), 60)
+
+    def send_prepare(self, name, position):
+        return self.send("textDocument/prepareRename", {
+            "textDocument": {"uri": self.uri(name)}, "position": position})
 
     def prepare(self, name, position):
-        return self.reply(self.send("textDocument/prepareRename", {
-            "textDocument": {"uri": self.uri(name)}, "position": position}), 60)
+        return self.reply(self.send_prepare(name, position), 60)
 
-    def rename(self, name, position, new_name="h"):
-        return self.reply(self.send("textDocument/rename", {
-            "textDocument": {"uri": self.uri(name)}, "position": position, "newName": new_name}), 60)
+    def send_rename(self, name, position):
+        return self.send("textDocument/rename", {
+            "textDocument": {"uri": self.uri(name)}, "position": position, "newName": "h"})
+
+    def rename(self, name, position):
+        return self.reply(self.send_rename(name, position), 60)
 
     # Checks
 
@@ -94,6 +116,7 @@ class EditSession(FormatSession):
         assert [a["title"] for a in msg.get("result", [])] == ['Insert missing ";"'], msg
         edit = msg["result"][0]["edit"]["documentChanges"][0]["edits"][0]
         assert edit["range"]["start"] == SEMI_POINT, msg
+        return msg["result"][0]["diagnostics"][0]
 
     def no_action(self, name):
         msg = self.code_action(name)
@@ -158,8 +181,13 @@ def other_documents(exe, root):
         s.open("a.v3", A_TEXT)
         s.open("b.v3", B_TEXT)
         s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 1})
-        # A rejected change to the open b.v3.
-        s.change("b.v3", TOO_LARGE)
+        with paused_worker(s):
+            pending = s.send_rename("a.v3", A_USE)
+            s.refuses(s.rename("a.v3", A_USE), "another rename is being checked")
+            assert pending not in s.waiting, s.waiting
+            s.change("b.v3", TOO_LARGE)
+            s.result(s.send("virgil-lsp/snapshot"))
+        s.refuses(s.reply(pending, 60), TARGET % b_path)
         s.refuses(s.rename("a.v3", A_USE), TARGET % b_path)
         s.prepares("a.v3", A_USE)
         s.change("b.v3", B_TEXT)
@@ -203,11 +231,14 @@ def lost_messages(exe, root):
             s.open("b.v3", B_TEXT)
             s.open(SEMI, SEMI_TEXT)
             s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 1})
-            s.action_offered()
+            diagnostic = s.action_offered()
             lose(s)
             s.all_refuse("a.v3", A_USE)
             s.all_refuse("b.v3", B_DECL)
             s.refuses(s.code_action(SEMI))
+            empty = s.code_action(SEMI, [])
+            assert empty.get("result") == [], empty
+            s.refuses(s.code_action(SEMI, [diagnostic]))
             # a.v3's change ends its own refusal, but a rename from it would
             # still edit b.v3.
             s.change("a.v3", A_TEXT)
@@ -247,6 +278,33 @@ def ignored_notification(exe, root):
         s.close()
 
 
+def refusal_before_analysis(exe, root):
+    s = EditSession(exe, root)
+    try:
+        s.begin()
+        s.open("a.v3", A_TEXT)
+        s.prepares("a.v3", A_USE)
+        broken = "component A {\n"
+        with paused_worker(s):
+            s.change("a.v3", broken)
+            prepare = s.send_prepare("a.v3", A_USE)
+            rename = s.send_rename("a.v3", A_USE)
+            s.result(s.send("virgil-lsp/snapshot"))
+            assert prepare not in s.waiting and rename not in s.waiting, s.waiting
+            s.change("a.v3", TOO_LARGE)
+            s.result(s.send("virgil-lsp/snapshot"))
+        s.refuses(s.reply(prepare, 60))
+        s.refuses(s.reply(rename, 60))
+        s.refuses(s.prepare("a.v3", A_USE))
+        s.refuses(s.rename("a.v3", A_USE))
+        s.change("a.v3", broken)
+        s.refuses(s.prepare("a.v3", A_USE), "the project's analysis has parse errors")
+        s.refuses(s.rename("a.v3", A_USE), "the project's analysis has parse errors")
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-out-of-sync-") as work:
@@ -257,6 +315,7 @@ def main():
         (root / "b.v3").write_text(B_TEXT)
         rejected_change(exe, root)
         other_documents(exe, root)
+        refusal_before_analysis(exe, root)
         lost_messages(exe, root)
         ignored_notification(exe, root)
     print("out-of-sync edits: rejected changes, other documents, rejected opens, unopened changes, "

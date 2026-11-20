@@ -32,24 +32,21 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			.onNotification("textDocument/didClose", didClose);
 	}
 	// Called for a parsed message that the decoder rejected, with the ID it
-	// validated and the message's object. A didOpen or didChange marks its
-	// document unless {id} is valid: the message was then a request, which
-	// changes no document. An ID member the decoder rejects, such as null or
+	// validated and the message's object. A didOpen, didChange, or didSave
+	// records its document unless {id} is valid: the message was then a request,
+	// which changes no document. An ID member the decoder rejects, such as null or
 	// a boolean, leaves {id} null, so the message may have been a change.
 	def rejectedMessage(id: JsonRpcId, obj: HashMap<string, JsonValue>) {
 		if (!JsonRpcId.Null.?(id) || !stringMember(obj, "method")) return;
-		if (changesText(JsonValue.String.!(obj["method"]).v)) {
-			markRejected(documentUri(objectMember(obj, "params")));
-		}
+		markRejected(JsonValue.String.!(obj["method"]).v, documentUri(objectMember(obj, "params")));
 	}
 	// The decoder replaced unsupported numbers with null. Do not read params,
-	// except a didOpen's or didChange's URI, which is a string, to mark it.
+	// except a synchronization notification's URI, which is a string.
 	def unsupportedNumbers(n: JsonRpcMessage.Notification) {
-		var changes = changesText(n.method);
-		if (changes || Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
+		if (changesText(n.method) || Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
 			ignored(n, "params contain a number that is not a 32-bit integer");
+			markRejected(n.method, documentUri(members(n)));
 		}
-		if (changes) markRejected(documentUri(members(n)));
 	}
 	private def changesText(method: string) -> bool {
 		return Strings.equal(method, "textDocument/didOpen") || Strings.equal(method, "textDocument/didChange");
@@ -118,16 +115,15 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	}
 	private def didSave(n: JsonRpcMessage.Notification) {
 		var params = members(n), uri = documentUri(params);
+		markRejected(n.method, uri);
 		if (uri == null || (params.has("text") && !stringMember(params, "text"))) {
 			ignored(n, "invalid didSave params");
 			return;
 		}
 		// Unsolicited save text is not versioned and cannot overwrite edits.
-		// A save of a document that isn't open shows that the client holds it.
 		var reason = store.save(uri);
 		ignored(n, reason);
-		if (reason != null) markRejected(uri);
-		else if (onSave != null) onSave(store.overlay(uri));
+		if (reason == null && onSave != null) onSave(store.overlay(uri));
 	}
 	// A close of a document that isn't open clears the store's record that
 	// the client holds it (DocumentStore.close).
@@ -154,10 +150,13 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	private def rejected(n: JsonRpcMessage.Notification, doc: HashMap<string, JsonValue>, reason: string) {
 		if (reason == null) return;
 		ignored(n, reason);
-		if (stringMember(doc, "uri")) markRejected(JsonValue.String.!(doc["uri"]).v);
+		if (stringMember(doc, "uri")) markRejected(n.method, JsonValue.String.!(doc["uri"]).v);
 	}
-	private def markRejected(uri: string) {
-		if (uri != null) store.markOutOfSync(uri);
+	private def markRejected(method: string, uri: string) {
+		if (uri == null) return;
+		if (changesText(method) || (Strings.equal(method, "textDocument/didSave") && store.overlay(uri) == null)) {
+			store.markOutOfSync(uri);
+		}
 	}
 	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
 		if (reason == null) return;
