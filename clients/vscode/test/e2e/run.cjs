@@ -258,32 +258,35 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     for (const file of servers) fs.accessSync(file, fs.constants.X_OK);
   }
   const result = await runGroup(executable, args, { env, stdin: 'inherit', signal, servers });
+  const closeId = records === undefined ? 'vscode.shutdown.window-close' : 'vscode.recovery.window-close';
+  const closeLabel = `${closeId} (${name} launch)`;
   if (!succeeded(result)) {
-    console.error(`FAIL: ${name} launch ${outcome(result)}`);
+    const detail = outcome(result);
+    if (result.code === 0 && result.serverExitFailed) console.error(`FAIL: ${closeLabel}: ${detail}`);
+    else console.error(`FAIL: ${name} launch ${detail}`);
     printChannelLogs(userData);
-    return failure(userData, 'launch', outcome(result), result.error === undefined && result.stopped === undefined);
+    return failure(userData, 'launch', detail, result.error === undefined && result.stopped === undefined);
   }
   if (records !== undefined) {
     const document = pathToFileURL(path.join(project, 'bad.v3')).href;
     const problem = recoveryProblem(records, userData, document);
     if (problem !== undefined) {
-      console.error(`FAIL: vscode.recovery.window-close (${name} launch): ${problem}`);
+      console.error(`FAIL: ${closeLabel}: ${problem}`);
       printChannelLogs(userData);
       return failure(userData, 'recovery', problem);
     }
-    console.log(`PASS: vscode.recovery.window-close (${name} launch)`);
-    return { passed: true };
+  } else {
+    // Closing the window deactivates the extension, which sends shutdown and
+    // exit. The channel may close before the server exits, so its log need not
+    // record the exit.
+    const exit = lastServerExit(userData);
+    if (exit !== undefined && !exit.includes('Server process exited successfully')) {
+      console.error(`FAIL: ${closeLabel}: the server did not exit cleanly: ${exit}`);
+      printChannelLogs(userData);
+      return failure(userData, 'server', exit);
+    }
   }
-  // Closing the window deactivates the extension, which sends shutdown and
-  // exit. The channel may close before the server exits, so its log need not
-  // record the exit.
-  const exit = lastServerExit(userData);
-  if (exit !== undefined && !exit.includes('Server process exited successfully')) {
-    console.error(`FAIL: vscode.shutdown.window-close (${name} launch): the server did not exit cleanly: ${exit}`);
-    printChannelLogs(userData);
-    return failure(userData, 'server', exit);
-  }
-  console.log(`PASS: vscode.shutdown.window-close (${name} launch)`);
+  console.log(`PASS: ${closeLabel}`);
   return { passed: true };
 }
 
@@ -305,6 +308,7 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
 function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
     let stopped;
+    let serverExitFailed = false;
     let exited;
     let deadline;
     // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
@@ -333,7 +337,7 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         finished = true;
         clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
-        resolve({ ...exited, stopped });
+        resolve({ ...exited, stopped, serverExitFailed });
       };
       if (anyway) done();
       else {
@@ -346,10 +350,11 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       }
       return true;
     };
-    const stop = (reason) => {
+    const stop = (reason, failedServerExit = false) => {
       // Without a pid, the keeper didn't start, and its result follows.
       if (stopped !== undefined || group.pid === undefined) return;
       stopped = reason;
+      serverExitFailed = failedServerExit;
       group.signal('SIGTERM');
       deadline = Date.now() + STOP_GRACE_MS;
     };
@@ -383,14 +388,14 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
           if (scan === undefined) return;
           running = scan.unavailable ? undefined : listed.filter((p) => scan.processes.some((member) => member.pid === p.pid));
         } catch (error) {
-          stop(`could not be checked for servers left running: ${error.message}`);
+          stop(`could not be checked for servers left running: ${error.message}`, true);
           return;
         }
         if (running?.length === 0 || stopped !== undefined) return;
         if (Date.now() > limit) {
           const left = running?.map((p) => `${path.basename(p.executable)} (pid ${p.pid})`).join(', ');
           stop(left === undefined ? `could not check for servers left running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`
-            : `left ${left} running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`);
+            : `left ${left} running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`, true);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));

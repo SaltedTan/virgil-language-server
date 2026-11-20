@@ -1862,20 +1862,20 @@ async function closeDuringRecovery(extension, directory) {
   const { pid } = await startRecoveryServer(server, directory);
   await expectParserDiagnostic(await open('bad.v3'));
   await killAndHold(directory, pid, server, extensionHostLog());
-  console.log('PASS: VS Code server killed; closing the window during the recovery');
+  console.log('VS Code server killed. Closing the window during recovery.');
 }
 
 async function run() {
   const extension = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(extension, `${EXTENSION_ID} is not loaded`);
+  const recovery = process.env.VIRGIL_E2E_RECOVERY;
   // run.cjs sets this when it installed the extension from a VSIX.
   const installed = process.env.VIRGIL_E2E_EXTENSIONS_DIR;
   if (installed !== undefined) {
     assert.equal(path.dirname(extension.extensionPath), installed,
       `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
-    console.log('PASS: vscode.startup.installed-copy');
+    if (recovery === undefined) console.log('PASS: vscode.startup.installed-copy');
   }
-  const recovery = process.env.VIRGIL_E2E_RECOVERY;
   if (recovery !== undefined) await closeDuringRecovery(extension, recovery);
   else if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
   else await workspace(extension);

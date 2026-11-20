@@ -42,7 +42,7 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## What it checks
 
-Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports `PASS` or `FAIL` with its ID in [`coverage.json`](../coverage.json), then what it saw, such as `PASS lazyvim.hover.response: ...`. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
+Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports its ID in [`coverage.json`](../coverage.json) and what it saw, such as `PASS lazyvim.hover.response: ...`. Statuses are `PASS` and `FAIL`, with `XFAIL` or `XPASS` for the [expected failure](#expected-results) in the stock `noroot` run. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
