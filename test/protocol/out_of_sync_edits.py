@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Code actions and rename refuse edits the server can't compute (#514).
 
-A project of two files, a.v3 calling B.g in b.v3, and an untitled document
+A project with a.v3 calling B.g in b.v3, and an untitled document
 with a missing semicolon, over the server's real pipes with its analysis
 worker. A change rejected over the document store's capacity makes code
 actions, prepareRename, and rename answer RequestFailed for that document; a
 version-only change keeps the refusal, and an accepted full-text change ends
-it. A rename from another document refuses when it would edit a document
-whose change was rejected, a file whose didOpen was rejected, or a file that
-got a didChange or didSave while the server didn't have it open, until a
-didClose of that file. After a frame over the payload limit, or a didChange
+it. A rename refuses when the project contains a source whose change or
+open was rejected, or that got a didChange or didSave while the server
+didn't have it open. This includes c.v3, which has no reference to B.g in
+the last accepted analysis. After a frame over the payload limit, or a didChange
 over the JSON value limit, every open document refuses until it gets a
 full-text change or is reopened. A valid ignored notification, $/setTrace,
 changes nothing. Each session shuts down and exits with status 0, and every
@@ -43,6 +43,8 @@ CAPS = {"workspace": {"workspaceEdit": {"documentChanges": True}},
                          "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["quickfix"]}}}}}
 A_TEXT = "component A {\n\tdef f() -> int {\n\t\treturn B.g();\n\t}\n}\n"
 B_TEXT = "component B {\n\tdef g() -> int {\n\t\treturn 1;\n\t}\n}\n"
+C_TEXT = "component C {\n\tdef other() -> int {\n\t\treturn 0;\n\t}\n}\n"
+C_WITH_CALL = C_TEXT.replace("return 0;", "return B.g();")
 # Over the store's capacity whatever else is open.
 TOO_LARGE = "//" + "x" * STORE_BYTES
 # The use of B.g in a.v3, and its declaration in b.v3.
@@ -225,6 +227,42 @@ def other_documents(exe, root):
         s.close()
 
 
+def unreferenced_source(exe, root, open_document):
+    c_path = str(root / "c.v3")
+    s = EditSession(exe, root)
+    try:
+        s.begin()
+        s.open("a.v3", A_TEXT)
+        if open_document:
+            s.open("c.v3", C_TEXT)
+        edited = {"a.v3": 1, "b.v3": None}
+        s.renames("a.v3", A_USE, edited)
+        with paused_worker(s):
+            pending = s.send_rename("a.v3", A_USE)
+            s.refuses(s.rename("a.v3", A_USE), "another rename is being checked")
+            assert pending not in s.waiting, s.waiting
+            if open_document:
+                s.notify("didChange", "c.v3", textDocument={"version": 2}, contentChanges=[{
+                    "range": {"start": {"line": 2, "character": 9}, "end": {"line": 2, "character": 10}},
+                    "text": "B.g()"}])
+            else:
+                s.open("c.v3", C_WITH_CALL + TOO_LARGE)
+            s.result(s.send("virgil-lsp/snapshot"))
+        reason = (TARGET if open_document else HELD) % c_path
+        s.refuses(s.reply(pending, 60), reason)
+        s.refuses(s.rename("a.v3", A_USE), reason)
+        s.prepares("a.v3", A_USE)
+        if open_document:
+            s.change("c.v3", C_WITH_CALL)
+            edited["c.v3"] = 2
+        else:
+            s.close_document("c.v3")
+        s.renames("a.v3", A_USE, edited)
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def lost_messages(exe, root):
     """After a skipped frame or an undecodable didChange, every open document
     refuses until it gets a full-text change or is reopened."""
@@ -374,6 +412,9 @@ def main():
         incomplete_skip_during_preflight(exe, root)
         lost_messages(exe, root)
         ignored_notification(exe, root)
+        (root / "c.v3").write_text(C_TEXT)
+        unreferenced_source(exe, root, open_document=True)
+        unreferenced_source(exe, root, open_document=False)
     print("out-of-sync edits: rejected changes, rename preflight, rejected opens, unopened changes, "
           "lost messages, and ignored notifications: passed")
 

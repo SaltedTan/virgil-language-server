@@ -49,7 +49,7 @@ class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: Lsp
 // snapshot's exact analyzed bytes with the edits applied as an ordinary
 // ANALYZE, through the scheduler's jobs (LspAnalysisJob), and compares the
 // result with the snapshot (LspRenameBindings); the result is then dropped.
-// A rename refuses if the requested document or any document it would edit
+// A rename refuses if any source in the project's analysis
 // may hold text the server doesn't have (DocumentStore.editRefusal). One
 // rename is checked at a time. See docs/architecture.md#rename.
 class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: LspSnapshotRequests,
@@ -108,6 +108,8 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// placeholder that {delivered} replaces with the preflight.
 	def plan(r: LspRenameRequest, at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
 		if (r.answered) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var refusal = textRefusal(at, null);
+		if (refusal != null) return (true, fail(refusal));
 		var selected = LspRenameEligibility.select(at, projects, offset);
 		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
 		if (selected.2 != null) return (true, fail(selected.2));
@@ -142,10 +144,6 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				if (spells(text, spans[k], spans[k + 1], name)) begins.put(spans[k]);
 			}
 			if (begins.length == 0) continue;
-			// Each edited document must be one whose text the server has:
-			// not marked out of sync if open, nor held by the client if not.
-			var refusal = targetRefusal(s, j);
-			if (refusal != null) return (true, fail(refusal));
 			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16));
 			var positions = Array<int>.new(4 * begins.length);
 			bytes += JsonRpcJson.stringBytes(s.documentVersions[j].uri) + DOCUMENT_BYTES;
@@ -218,7 +216,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var p = r.plan;
 		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
 		if (r.answered || ctx != p.ctx || !p.ctx.config.current || p.at.snapshot.degraded()) {
-			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, textRefusal(p, CHANGED));
+			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, textRefusal(p.at, CHANGED));
 		}
 		var sources = p.sources;
 		p.sources = null;
@@ -247,7 +245,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var reason = LspRenameBindings.compare(s, edited, p.family, p.edits, where(s, _, _));
 		if (reason != null) return fail(reason);
 		checked++;
-		var refusal = textRefusal(p, null);
+		var refusal = textRefusal(p.at, null);
 		if (refusal != null) return fail(refusal);
 		// The preflight took time: every source must still be what was
 		// analyzed and edited, and the project the same, with the same files,
@@ -300,7 +298,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	}
 	def configChanged() {
 		if (pending != null && pending.plan != null && !pending.plan.ctx.config.current) {
-			finish(pending, fail(textRefusal(pending.plan, CHANGED)));
+			finish(pending, fail(textRefusal(pending.plan.at, CHANGED)));
 		}
 	}
 	private def drop(reason: string) {
@@ -324,18 +322,13 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
 		}
 	}
-	// Why the rename can't edit file {j} of {s}, named by its path, or null
-	// if it can (DocumentStore.editRefusal).
-	private def targetRefusal(s: AnalysisSnapshot, j: int) -> string {
-		return store.canonicalEditRefusal(s.documentVersions[j].uri, s.paths[j]);
-	}
-	private def textRefusal(p: LspRenamePlan, fallback: string) -> string {
-		var s = p.at.snapshot;
-		var refusal = store.canonicalEditRefusal(s.documentVersions[p.at.index].uri, null);
+	private def textRefusal(at: LspSnapshotPosition, fallback: string) -> string {
+		var s = at.snapshot;
+		var refusal = store.canonicalEditRefusal(s.documentVersions[at.index].uri, null);
 		if (refusal != null) return refusal;
-		for (j in p.files) {
-			if (j == p.at.index) continue;
-			refusal = targetRefusal(s, j);
+		for (i < s.documentVersions.length) {
+			if (i == at.index) continue;
+			refusal = store.canonicalEditRefusal(s.documentVersions[i].uri, s.paths[i]);
 			if (refusal != null) return refusal;
 		}
 		return fallback;
