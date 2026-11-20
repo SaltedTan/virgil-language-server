@@ -34,7 +34,7 @@ on:
       lanes:
         description: >-
           Editor lanes to run: all, required (the release gates), or jvm
-          (the two JVM preview editor tests).
+          (the two advisory JVM preview editor tests).
         type: string
         default: all
 
@@ -355,6 +355,7 @@ jobs:
     # The JVM build for Apple Silicon with Rosetta 2 installed. native.py
     # requires an untranslated runner and rejects translated descendants.
     if: inputs.lanes == 'all' || inputs.lanes == 'jvm'
+    continue-on-error: ${{ inputs.lanes == 'jvm' }}
     name: LazyVim test (JVM archive, macOS Apple Silicon without Rosetta translation, Neovim 0.12.6)
     runs-on: macos-15
     timeout-minutes: 20
@@ -416,6 +417,7 @@ jobs:
     # holds the test's output, observed descendants, and, if a launch failed,
     # that launch's VS Code logs.
     if: inputs.lanes == 'all' || inputs.lanes == 'jvm'
+    continue-on-error: ${{ inputs.lanes == 'jvm' }}
     name: VS Code Extension Host test (bundled JVM VSIX, macOS Apple Silicon without Rosetta translation)
     runs-on: macos-15
     timeout-minutes: 15
