@@ -321,7 +321,7 @@ A server that reads version 2 reads version 1 alongside it. A version 1 file kee
 
 `compilerArgs` accepts the language options of the pinned compiler, read from `CLOptions.langOpt` through [`AeneasAdapter.languageOptions()`](../src/analysis/AeneasAdapter.v3). Which names exist, their defaults, and what they change in parsing and type checking belong to that compiler, not to the format. For example, `-lang:read-only-arrays`, `-lang:covariant-arrays`, `-lang:open-types`, and `-lang:descriptors` exist only because the pinned Aeneas is an unstable build ([Compiler flags](#compiler-flags)).
 
-When a new pin removes or renames a language option, the release's notes say so, and a file that still lists it gets an error on that entry, currently with the code `UnsupportedCompilerFlag`. The error's message names the flag and lists the options that remain, as in `unknown language option '-lang:x'; the language options are -lang:read-only-arrays, …`. To migrate, remove the entry or replace it with the option that took its place. Alternatively, keep using the last release whose pin had it ([Virgil revision table](compatibility.md#virgil-revision)). The format version stays 1.
+When a new pin removes or renames a language option, the release's notes say so, and a file that still lists it gets an error on that entry, currently with the code `UnsupportedCompilerFlag`. The error's message names the flag and lists the options that remain, as in `unknown language option '-lang:x'; the language options are -lang:read-only-arrays, …`. To migrate, remove the entry or replace it with the option that took its place. Alternatively, keep using the last release whose pin had it ([Virgil revision table](compatibility.md#virgil-revision)). A pin change leaves the format version unchanged.
 
 When a new pin changes an option's default or meaning but keeps its name, the server can't tell, so the file stays valid and gets no configuration diagnostic. This is a limitation: the release's notes are the only notice, and the change shows only in the analysis.
 
@@ -331,12 +331,12 @@ When a new pin changes an option's default or meaning but keeps its name, the se
 | --- | --- |
 | The server disagrees with this page | A fix in any release, with a changelog entry |
 | A capacity limit changes | Any release, with a changelog entry |
-| A field is added, a new value is accepted (such as a target name, which version 2 adds), reserved pattern characters get a meaning, or comments are allowed | A new format version, which a 1.x server may read alongside version 1 |
-| A version 1 field is removed, renamed, or given another type or default; or validation is tightened; or patterns, ownership, exclusion, symbolic links, root precedence, or active-project choice change for version 1 | A new server major version |
-| A server stops reading version 1 | A new server major version |
+| A field is added, a new value is accepted (such as a target name, which version 2 adds), reserved pattern characters get a meaning, or comments are allowed | A new format version, which a 1.x server may read alongside versions 1 and 2 |
+| For version 1 or 2, a field is removed, renamed, or given another type or default, an accepted value is removed (including a version 2 target name), validation is tightened, or patterns, ownership, exclusion, symbolic links, root precedence, governing file, or active-project choice change | A new server major version |
+| A server stops reading either version 1 or version 2 | A new server major version |
 | A pin adds, removes, or changes a language option | A note in the release's changelog; no new format version |
 
-A new field isn't forward-compatible. A server rejects a field that it doesn't know, currently as `UnknownField`, so every earlier server would reject a version 1 file that used it, and that file would define no projects there. A new format version makes that failure explicit: an earlier server reports the unsupported version, currently as `UnsupportedVersion`, and checks nothing else.
+A new field isn't forward-compatible. A server rejects a field that it doesn't know, currently as `UnknownField`, so an earlier server that reads the file's version would reject a file that used the new field, and that file would define no projects there. With a new format version, an earlier server reports the unsupported version, currently as `UnsupportedVersion`, and checks nothing else.
 
 ### What stays as it is
 
@@ -346,7 +346,7 @@ A new field isn't forward-compatible. A server rejects a field that it doesn't k
 
 ### Inventory
 
-Each rule that the promise covers, the code that implements it, and the tests that cover it. *Format* rows are fixed for version 1. *Selection* rows are kept by every 1.x server. *Pin* rows follow each release's pinned compiler. *Limit* rows may change in any release, with a changelog entry, and a file is kept working only within the current limits. *Behavior* rows describe when the server reads and refreshes, which may change in 1.x as long as the result for a saved file stays the same.
+Each rule that the promise covers, the code that implements it, and the tests that cover it. *Format* rows are fixed for versions 1 and 2. *Selection* rows are kept by every 1.x server. *Pin* rows follow each release's pinned compiler. *Limit* rows may change in any release, with a changelog entry, and a file is kept working only within the current limits. *Behavior* rows describe when the server reads and refreshes, which may change in 1.x as long as the result for a saved file stays the same.
 
 | Behavior | Production code | Existing tests | Scope |
 | --- | --- | --- | --- |
