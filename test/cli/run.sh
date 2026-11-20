@@ -121,26 +121,26 @@ expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
 # With TRACE=1 and strace available, the command runs under strace, which
 # records its opens and reads, with each descriptor's path, and the calls that
 # add, rename, or remove a directory entry, in $TMP/trace. CAN_TRACE says that
-# the installed strace accepts that filter, and KILL_ON_EXIT holds its option
-# to kill the command when strace is killed at the deadline, if it has one.
+# the installed strace accepts that filter.
 TRACE=0
-TRACE_FILTER='trace=open,openat,openat2,read,readv,pread64,preadv,preadv2,creat,mknod,mknodat,link,linkat,symlink,symlinkat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat'
+TRACE_ENTRY_CALLS='creat,mknod,mknodat,link,linkat,symlink,symlinkat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat,rmdir'
+TRACE_FILTER="trace=open,openat,openat2,read,readv,pread64,preadv,preadv2,$TRACE_ENTRY_CALLS"
 CAN_TRACE=0
-KILL_ON_EXIT=()
+STRACE=(strace)
 if [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1; then
-    ! strace -o /dev/null -y -e "$TRACE_FILTER" true > /dev/null 2>&1 || CAN_TRACE=1
-    if [ "$CAN_TRACE" -eq 1 ]; then
-        if strace -o /dev/null --kill-on-exit true > /dev/null 2>&1; then
-            KILL_ON_EXIT=(--kill-on-exit)
-        else
-            echo "note: strace has no --kill-on-exit, so a traced format command that blocks can outlive its deadline"
-        fi
+    if strace -o /dev/null --kill-on-exit true > /dev/null 2>&1; then
+        STRACE+=(--kill-on-exit)
+    else
+        echo "note: strace has no --kill-on-exit, so a traced format command that blocks can outlive its deadline"
+    fi
+    if "${STRACE[@]}" -o /dev/null -y -e "$TRACE_FILTER" true > /dev/null 2>&1; then
+        CAN_TRACE=1
     fi
 fi
 # can_inject <syscall> <fault>: the installed strace can inject <fault> into <syscall>.
 can_inject() {
     [ "$JVM" -eq 0 ] && command -v strace > /dev/null 2>&1 && \
-        strace -o /dev/null -e "trace=$1" -e "inject=$1:$2" true > /dev/null 2>&1
+        "${STRACE[@]}" -o /dev/null -e "trace=$1" -e "inject=$1:$2" true > /dev/null 2>&1
 }
 expect_bytes() {
     local name=$1 code=$2 want=$3 err_pat=$4
@@ -148,7 +148,7 @@ expect_bytes() {
     local prefix=()
     rm -f "$TMP/trace"
     if [ "$TRACE" -eq 1 ] && [ "$CAN_TRACE" -eq 1 ]; then
-        prefix=(strace ${KILL_ON_EXIT[@]+"${KILL_ON_EXIT[@]}"} -o "$TMP/trace" -y -e "$TRACE_FILTER")
+        prefix=("${STRACE[@]}" -o "$TMP/trace" -y -e "$TRACE_FILTER")
     fi
     python3 -c '
 import subprocess
@@ -182,7 +182,11 @@ check_trace() {
     if [ "$kind" = read ]; then
         matches=$(grep -E '^(read|readv|pread64|preadv|preadv2)\(' "$TMP/trace" | grep -F -- "<$path>")
     elif [ "$kind" = change ]; then
-        matches=$(grep -E '^((creat|mknod|mknodat|link|linkat|symlink|symlinkat|rename|renameat|renameat2|unlink|unlinkat|mkdir|mkdirat)\(|(open|openat|openat2)\(.*O_CREAT)' "$TMP/trace")
+        local mutation="(${TRACE_ENTRY_CALLS//,/|})\("
+        local open_call='(open\(|openat2?\((AT_FDCWD|-?[0-9]+)(<[^>]*>)?, )'
+        local quoted_path='"([^"\\]|\\.)*"(\.\.\.)?'
+        local create_flags='(\{flags=)?([[:alnum:]_]+\|)*O_CREAT([|,}]|$)'
+        matches=$(grep -E "^($mutation|$open_call$quoted_path, $create_flags)" "$TMP/trace")
         path="a directory entry"
     else
         matches=$(awk -v target="$path" -v link="$link" '
@@ -335,15 +339,15 @@ for mode in --check "" --write; do
             "cannot format '$F/$p': it is not a regular file" -- format $mode "$F/$p"
         check_trace "format ${mode:-without a flag} never reads $p" read "$F/fifo.v3"
         check_trace "format ${mode:-without a flag} changes no directory entry for $p" change
+        [ "$(readlink "$F/fifo-link.v3")" = fifo.v3 ] || {
+            fail=$((fail + 1)); echo "FAIL: format ${mode:-without a flag} changed the link to the FIFO for $p"; }
+        [ "$(identity "$F/fifo.v3")" = "$fifo" ] || {
+            fail=$((fail + 1)); echo "FAIL: format ${mode:-without a flag} replaced the FIFO or changed its mode for $p"; }
+        [ "$(entries "$F")" = "$listing" ] || {
+            fail=$((fail + 1)); echo "FAIL: format ${mode:-without a flag} left or removed an entry beside the FIFO for $p"; }
     done
 done
 TRACE=0
-[ -p "$F/fifo.v3" ] && [ "$(readlink "$F/fifo-link.v3")" = fifo.v3 ] || {
-    fail=$((fail + 1)); echo "FAIL: format changed the FIFO or its link"; }
-[ "$(identity "$F/fifo.v3")" = "$fifo" ] || {
-    fail=$((fail + 1)); echo "FAIL: format replaced the FIFO or changed its mode"; }
-[ "$(entries "$F")" = "$listing" ] || {
-    fail=$((fail + 1)); echo "FAIL: format left or removed a file beside the FIFO"; }
 
 # The input bound is the server's source budget for a project's files, 4 MiB,
 # and the output bound is the same: a file over it is refused, and so is a
@@ -725,7 +729,7 @@ PY
     else
         fresh "$W/flush"
         before=$(meta "$W/flush/in.v3")
-        strace -o "$TMP/trace" -e trace=fsync -e inject=fsync:error=EIO \
+        "${STRACE[@]}" -o "$TMP/trace" -e trace=fsync -e inject=fsync:error=EIO \
             "$EXE" format --write "$W/flush/in.v3" > "$TMP/out" 2> "$TMP/err"
         got=$?
         check_stream stderr "$TMP/err" "cannot write '$W/flush/in\.v3': its new file can't be flushed" && \
@@ -750,7 +754,7 @@ PY
         fi
         before=$(meta "$d/in.v3")
         (umask 077
-            strace -o "$TMP/trace" -e trace=fchmod -e "inject=fchmod:$fault" \
+            "${STRACE[@]}" -o "$TMP/trace" -e trace=fchmod -e "inject=fchmod:$fault" \
                 "$EXE" format --write "$d/in.v3"
         ) > "$TMP/out" 2> "$TMP/err"
         got=$?
@@ -852,11 +856,13 @@ sys.exit(1)' "$W/read-only-file/in.v3"
         same "format --write leaves a link's $target target" "$before" "$(meta "$d/target.v3")"
         same "format --write leaves a link to a $target file" target.v3 "$(readlink "$d/link.v3")"
     done
+    fifo=$(identity "$d/fifo")
     expect_bytes "format --write refuses a symbolic link to a FIFO promptly" 1 "$F/none" \
         "cannot write '$d/fifo-link\.v3': it is a symbolic link" -- format --write "$d/fifo-link.v3"
     check_trace "format --write never opens a link's FIFO" open "$d/fifo" "$d/fifo-link.v3"
+    check_trace "format --write changes no directory entry for a link to a FIFO" change
     TRACE=0
-    check "format --write leaves the FIFO" test -p "$d/fifo"
+    same "format --write keeps the identity and mode of a link's FIFO" "$fifo" "$(identity "$d/fifo")"
     same "format --write leaves a link to a FIFO" fifo "$(readlink "$d/fifo-link.v3")"
     check "format --write leaves the link's target" cmp -s "$F/unformatted.orig" "$d/target.v3"
     same "format --write leaves no new file beside links" "fifo fifo-link.v3 link.v3 target.v3" \
