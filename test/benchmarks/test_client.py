@@ -345,32 +345,33 @@ class ResourceTest(unittest.TestCase):
         # /proc/<pid>/task. If it leaves while stop()'s final pass reads its
         # children, process_tree falls back to ps, and ps, a child of this
         # process, has no HWM (#579).
-        server = subprocess.Popen([sys.executable, "-c", "import subprocess, sys, time\n"
+        server = subprocess.Popen([sys.executable, "-c", "import subprocess, sys\n"
                                    "worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-                                   "print(worker.pid, flush=True)\n"
-                                   "time.sleep(30)\n"], stdout=subprocess.PIPE, text=True)
-        try:
-            child = int(server.stdout.readline())
-            tree = bench.process_tree(server.pid)
-            self.assertEqual(tree[server.pid][0], "server")
-            self.assertEqual(tree[child][0], "worker")
-            self.assertTrue(all(rss > 0 and hwm >= rss for _, rss, hwm in tree.values()))
-            sampler = bench.ResourceSampler(server.pid).start()
-            # start() samples before its thread runs, so the worker's HWM is
-            # recorded before the kill below.
-            with sampler.lock:
-                self.assertIsNotNone(sampler.processes[child]["hwm_bytes"])
-            os.kill(child, signal.SIGKILL)
-            # The server doesn't reap it; an exited, unreaped worker is left out.
-            deadline = time.monotonic() + 10
-            while not bench.command("ps", "-o", "stat=", "-p", str(child)).startswith("Z"):
-                self.assertLess(time.monotonic(), deadline, "the worker did not exit")
-                time.sleep(0.01)
-            summary = sampler.stop()
-        finally:
-            server.kill()
-            server.wait()
-            server.stdout.close()
+                                   "try:\n"
+                                   "    print(worker.pid, flush=True)\n"
+                                   "    sys.stdin.read(1)\n"
+                                   "finally:\n"
+                                   "    worker.kill()\n"
+                                   "    worker.wait()\n"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(server.communicate)
+        child = int(server.stdout.readline())
+        tree = bench.process_tree(server.pid)
+        self.assertEqual(tree[server.pid][0], "server")
+        self.assertEqual(tree[child][0], "worker")
+        self.assertTrue(all(rss > 0 and hwm >= rss for _, rss, hwm in tree.values()))
+        sampler = bench.ResourceSampler(server.pid).start()
+        self.addCleanup(sampler.stop)
+        # start() samples before its thread runs, so the worker's HWM is
+        # recorded before the kill below.
+        with sampler.lock:
+            self.assertIsNotNone(sampler.processes[child]["hwm_bytes"])
+        os.kill(child, signal.SIGKILL)
+        # An exited, unreaped worker is left out.
+        deadline = time.monotonic() + 10
+        while not bench.command("ps", "-o", "stat=", "-p", str(child)).startswith("Z"):
+            self.assertLess(time.monotonic(), deadline, "the worker did not exit")
+            time.sleep(0.01)
+        summary = sampler.stop()
         self.assertIsNone(sampler.thread)
         self.assertFalse(any(t.name == "resource-sampler" for t in threading.enumerate()))
         worker = next(p for p in summary["processes"] if p["pid"] == child)
