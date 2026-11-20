@@ -343,7 +343,10 @@ After each step, the case sends its requests at once and waits for every
 reply. They go round robin through the 20 request methods of the coverage
 manifest (`MAIN_METHODS`), with UTF-16 positions in the current text, mostly
 at names, sometimes at the end or inside a surrogate pair, and params for each
-method. Rename edits are never applied. A prepare request that returns items
+method. Generated code-action requests have empty diagnostics and must return
+`[]`. A replay can accept `RequestFailed` from a code-action request whose
+context names a semicolon diagnostic and admits quick fixes. Rename edits are
+never applied. A prepare request that returns items
 gets supertypes and subtypes, or incoming and outgoing calls, for the first
 item, and a completion that returns items gets `completionItem/resolve` for
 its first item with `data`, or else its first item. `run.json` lists every

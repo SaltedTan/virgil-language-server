@@ -28,6 +28,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import shape_model  # noqa: E402
 import source_mutations as sm  # noqa: E402
+from code_actions import DIAGNOSTIC  # noqa: E402
 from reply_shapes import ReplyValidator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -150,6 +151,13 @@ FAKE = textwrap.dedent("""\
             write({"jsonrpc": "2.0", "id": ident, "error": {"code": -32603, "message": "internal"}})
         elif MODE == "bare-error" and method == "textDocument/rename":
             write({"jsonrpc": "2.0", "id": ident, "error": {"code": -32803}})
+        elif method == "textDocument/codeAction" and MODE == "code-action-refusal":
+            write({"jsonrpc": "2.0", "id": ident, "error": {
+                "code": -32803, "message": "the server's copy of this document is out of date"}})
+        elif method == "textDocument/codeAction" and MODE == "code-action-edit":
+            write({"jsonrpc": "2.0", "id": ident, "result": [{"title": "Insert semicolon"}]})
+        elif method == "textDocument/codeAction" and MODE == "code-action-empty":
+            write({"jsonrpc": "2.0", "id": ident, "result": []})
         else:
             write({"jsonrpc": "2.0", "id": ident, "result": None})
 """)
@@ -970,6 +978,37 @@ class StandIn(unittest.TestCase):
         result, _, _ = self.run_fake("undocumented-error")
         self.assertEqual(result["outcome"], "protocol-failure", result)
         self.assertIn("undocumented error for textDocument/hover", result["error"])
+
+    def test_code_action_reply_respects_request_filters(self):
+        method = "textDocument/codeAction"
+        cases = (
+            ("refusal", {"diagnostics": []}, "undocumented error"),
+            ("edit", {"diagnostics": []}, "must return"),
+            ("empty", {"diagnostics": []}, None),
+            ("refusal", {"diagnostics": [DIAGNOSTIC]}, None),
+            ("refusal", {"diagnostics": [dict(DIAGNOSTIC, source="other")]}, "undocumented error"),
+            ("refusal", {"diagnostics": [DIAGNOSTIC], "only": ["refactor"]}, "undocumented error"),
+        )
+        for response, context, error in cases:
+            with self.subTest(response=response, context=context), tempfile.TemporaryDirectory() as directory:
+                now = time.monotonic()
+                params = {"textDocument": {"uri": "untitled:semicolon.v3"}, "range": DIAGNOSTIC["range"],
+                          "context": context}
+                session = sm.MutationSession(fake_server(directory, "code-action-" + response),
+                                             sm.Deadlines(now + 15, now + 10, LIMITS), VALIDATOR)
+                try:
+                    session.call("initialize", {"capabilities": sm.CLIENT_CAPABILITIES}, 1)
+                    if error is not None:
+                        with self.assertRaisesRegex(sm.CaseFailure, error):
+                            session.call(method, params, 2)
+                    else:
+                        reply = session.call(method, params, 2)
+                        if response == "empty":
+                            self.assertEqual(reply["result"], [])
+                        else:
+                            self.assertEqual(reply["error"]["code"], -32803)
+                finally:
+                    session.close()
 
     def test_unsent_restoration_followups_are_never_exercised(self):
         with tempfile.TemporaryDirectory() as directory:

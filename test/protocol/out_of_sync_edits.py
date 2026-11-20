@@ -31,21 +31,18 @@ import sys
 import tempfile
 import time
 
+from code_actions import (
+    DIAGNOSTIC as SEMI_DIAGNOSTIC, ERROR as SEMI_ERROR, POINT as SEMI_POINT, TEXT as SEMI_TEXT, URI as SEMI,
+)
 from fingerprints import worker_pid
 from formatting import FormatSession, MAX_PAYLOAD, OUT_OF_SYNC, REQUEST_FAILED, STORE_BYTES, large_frame, value_limit
+from worker import send_payload
 
 CAPS = {"workspace": {"workspaceEdit": {"documentChanges": True}},
         "textDocument": {"rename": {"prepareSupport": True},
                          "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["quickfix"]}}}}}
 A_TEXT = "component A {\n\tdef f() -> int {\n\t\treturn B.g();\n\t}\n}\n"
 B_TEXT = "component B {\n\tdef g() -> int {\n\t\treturn 1;\n\t}\n}\n"
-# The ";" goes after "return 1", at line 2, character 10; the parser reports
-# its absence at the "}" on the next line. A_TEXT and B_TEXT have no error
-# there.
-SEMI = "untitled:semicolon.v3"
-SEMI_TEXT = "component C {\n\tdef f() {\n\t\treturn 1 // trailing\n\t}\n}\n"
-SEMI_ERROR = {"line": 3, "character": 1}
-SEMI_POINT = {"line": 2, "character": 10}
 # Over the store's capacity whatever else is open.
 TOO_LARGE = "//" + "x" * STORE_BYTES
 # The use of B.g in a.v3, and its declaration in b.v3.
@@ -112,12 +109,11 @@ class EditSession(FormatSession):
 
     # Checks
 
-    def action_offered(self, name=SEMI):
-        msg = self.code_action(name)
+    def action_offered(self, name=SEMI, diagnostics=None):
+        msg = self.code_action(name, diagnostics)
         assert [a["title"] for a in msg.get("result", [])] == ['Insert missing ";"'], msg
         edit = msg["result"][0]["edit"]["documentChanges"][0]["edits"][0]
-        assert edit["range"]["start"] == SEMI_POINT, msg
-        return msg["result"][0]["diagnostics"][0]
+        assert edit == {"range": {"start": SEMI_POINT, "end": SEMI_POINT}, "newText": ";"}, msg
 
     def no_action(self, name):
         msg = self.code_action(name)
@@ -150,12 +146,15 @@ def rejected_change(exe, root):
     """A change over the store's capacity: a version-only change keeps the
     refusal, and an accepted full-text change ends it."""
     s = EditSession(exe, root)
+    filler = "untitled:capacity.v3"
+    replacement = A_TEXT + "//" + "x" * (3 * STORE_BYTES // 4)
     try:
         s.begin()
         s.open("a.v3", A_TEXT)
+        s.open(filler, "//" + "x" * (STORE_BYTES // 2))
         s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": None})
         s.no_action("a.v3")
-        s.change("a.v3", TOO_LARGE)
+        s.change("a.v3", replacement)
         s.all_refuse("a.v3", A_USE)
         s.change("a.v3")
         s.all_refuse("a.v3", A_USE)
@@ -166,6 +165,9 @@ def rejected_change(exe, root):
         s.change("a.v3", A_TEXT)
         s.prepares("a.v3", A_USE)
         s.renames("a.v3", A_USE, {"a.v3": 5, "b.v3": None})
+        s.close_document(filler)
+        s.change("a.v3", replacement)
+        s.renames("a.v3", A_USE, {"a.v3": 6, "b.v3": None})
         s.shutdown()
         assert "aggregate open-document capacity exceeded" in s.logs()
     finally:
@@ -235,14 +237,14 @@ def lost_messages(exe, root):
             s.open("b.v3", B_TEXT)
             s.open(SEMI, SEMI_TEXT)
             s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 1})
-            diagnostic = s.action_offered()
+            s.action_offered(diagnostics=[SEMI_DIAGNOSTIC])
             lose(s)
             s.all_refuse("a.v3", A_USE)
             s.all_refuse("b.v3", B_DECL)
             s.refuses(s.code_action(SEMI))
             empty = s.code_action(SEMI, [])
             assert empty.get("result") == [], empty
-            s.refuses(s.code_action(SEMI, [diagnostic]))
+            s.refuses(s.code_action(SEMI, [SEMI_DIAGNOSTIC]))
             # a.v3's change ends its own refusal, but a rename from it would
             # still edit b.v3.
             s.change("a.v3", A_TEXT)
@@ -341,6 +343,22 @@ def incomplete_skip_during_preflight(exe, root):
         s.close()
 
 
+def rejected_open_before_initialize(exe, root):
+    s = EditSession(exe, root)
+    try:
+        early_open = {"jsonrpc": "2.0", "id": None, "method": "textDocument/didOpen", "params": {
+            "textDocument": {"uri": s.uri("b.v3"), "languageId": "virgil", "version": 1, "text": B_TEXT}}}
+        send_payload(s, json.dumps(early_open).encode())
+        reply = s.null_reply()
+        assert reply["id"] is None and reply["error"]["code"] == -32600, reply
+        s.begin()
+        s.open("a.v3", A_TEXT)
+        s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": None})
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-out-of-sync-") as work:
@@ -349,6 +367,7 @@ def main():
             {"version": 1, "projects": [{"name": "p", "sources": ["*.v3"]}]}))
         (root / "a.v3").write_text(A_TEXT)
         (root / "b.v3").write_text(B_TEXT)
+        rejected_open_before_initialize(exe, root)
         rejected_change(exe, root)
         other_documents(exe, root)
         refusal_before_analysis(exe, root)

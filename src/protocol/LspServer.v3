@@ -312,7 +312,7 @@ class LspServer {
 	// Called when the transport starts skipping a message, or the decoder
 	// cannot parse one. It may have changed any open document.
 	def messageSkipped() {
-		documents.markAllOutOfSync();
+		if (state == LspServerState.RUNNING) documents.markAllOutOfSync();
 	}
 	// Decodes and handles one payload. Returns a reply or server-notification
 	// payload, or null if there is nothing to send.
@@ -322,7 +322,7 @@ class LspServer {
 		match (input) {
 			Rejected(id, error, obj) => {
 				if (error.code == JsonRpcErrorCode.PARSE_ERROR) messageSkipped();
-				else documentSync.rejectedMessage(id, obj);
+				else if (state == LspServerState.RUNNING) documentSync.rejectedMessage(id, obj);
 			}
 			Valid(msg, unsupportedNumbers) => {
 				match (msg) {
