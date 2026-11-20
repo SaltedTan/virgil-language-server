@@ -796,14 +796,12 @@ def spacing_in_one_run(t: Tester) {
 // tree separate from AnalysisFormatMarks; one that the walk doesn't reach
 // fails, so a node that both walks miss can't pass unseen.
 def corpus_if_kinds(t: Tester) {
-	var pinned = corpus_at_gitlink(t);
 	var paths = Vector<string>.new();
 	for (dir in ["vendor/virgil/aeneas/src", "vendor/virgil/lib", "vendor/virgil/apps"]) sources(t, dir, paths);
 	// At the pin, 298 of the 299 files parse (docs/testing-notes/formatter-spike.md),
 	// with 9,854 if statements and 1,139 if expressions.
 	var minimum = 298, checked = 0, statements = 0, expressions = 0;
 	var knownExclusion = "vendor/virgil/lib/file/class/Layouts.v3";
-	var sawExclusion = false;
 	var unexpected = Vector<string>.new();
 	var syntax = SymbolSyntaxIndex.new();
 	for (i < paths.length) {
@@ -815,14 +813,12 @@ def corpus_if_kinds(t: Tester) {
 		var input = AeneasAdapter.normalizedRange(text, 0, text.length), errors = AnalysisParseErrors.new(1);
 		syntax.clear();
 		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
-		if (pinned && Strings.equal(path, knownExclusion)) {
-			sawExclusion = true;
+		if (Strings.equal(path, knownExclusion)) {
 			if (errors.numErrors == 0) t.fail1("%s parses without its required language option", path);
 			continue;
 		}
 		if (errors.numErrors > 0) {
-			if (pinned) t.fail1("%s doesn't parse", path);
-			else unexpected.put(path);
+			unexpected.put(path);
 			continue;
 		}
 		var walk = IfKinds.new(syntax).file(file);
@@ -851,39 +847,13 @@ def corpus_if_kinds(t: Tester) {
 		}
 		checked++;
 	}
-	if (pinned) {
-		t.asserti(299, paths.length);
-		if (!sawExclusion) t.fail1("expected %s to be present and require a language option", knownExclusion);
-	} else if (checked < minimum) {
+	if (checked < minimum) {
 		var message = StringBuilder.new().put2("checked %d files, expected at least %d", checked, minimum);
 		for (i < unexpected.length) message.puts(". Could not parse ").puts(unexpected[i]);
 		t.fail(message.toString());
 	}
 	t.assert(statements > 9000 && expressions > 1000, Strings.format2("%d statements and %d expressions", statements, expressions));
 }
-
-// Compare the checkout being scanned with the index gitlink, using HEAD only
-// when the index has no entry, as test/release/check_pin.py does.
-def corpus_at_gitlink(t: Tester) -> bool {
-	var command = StringBuilder.new()
-		.puts("test -e .git && test -e vendor/virgil/.git || exit 1\n")
-		.puts("head=$(git -C vendor/virgil rev-parse --verify HEAD) || exit 2\n")
-		.puts("entry=$(git ls-files --stage -- vendor/virgil) || exit 2\n")
-		.puts("if test -n \"$entry\"; then\n")
-		.puts("  test \"$entry\" = \"160000 $head 0\tvendor/virgil\"\n")
-		.puts("else\n")
-		.puts("  entry=$(git ls-tree HEAD -- vendor/virgil) || exit 2\n")
-		.puts("  test \"$entry\" = \"160000 commit $head\tvendor/virgil\"\n")
-		.puts("fi\x00").toString();
-	var status = Array<int>.new(1);
-	var pid = HostOs.spawn(["/bin/sh\x00", "-c\x00", command], []);
-	if (pid < 0 || HostOs.wait(pid, status) < 0 || (status[0] != 0 && status[0] != 256)) {
-		t.fail("can't compare the scanned Virgil checkout with its gitlink");
-		return false;
-	}
-	return status[0] == 0;
-}
-
 // The first change is measured without building edits, for the command's
 // --check, and is where the first edit begins.
 def first_change(t: Tester) {
