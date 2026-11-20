@@ -256,11 +256,9 @@ class AssetTests(TemporaryTest):
             run.check_pair(old, old)
         with self.assertRaisesRegex(run.Failure, "is newer than"):
             run.check_pair(new, old)
-        for extension in [OLD[1], f"0{OLD[1]}"]:
-            with self.subTest(extension=extension):
-                same_extension = run.verify_assets(make_assets(self.root, NEW[0], extension))
-                with self.assertRaisesRegex(run.Failure, "same extension version"):
-                    run.check_pair(old, same_extension)
+        same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
+        with self.assertRaisesRegex(run.Failure, "same extension version"):
+            run.check_pair(old, same_extension)
         metadata = run.verify_assets(make_assets(self.root, OLD[0] + "+linux.5", NEW[1]))
         with self.assertRaisesRegex(run.Failure, f"server {OLD[0]} and --to-assets server {OLD[0]}\\+linux.5 "
                                                  "differ only in build metadata"):

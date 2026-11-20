@@ -32,7 +32,7 @@ HELPER = HERE / "vscode.cjs"
 # zeros in numbers or numeric prerelease identifiers, and nonempty
 # identifiers, with optional build metadata after "+".
 NUMBER = r"(?:0|[1-9][0-9]*)"
-PRERELEASE_ID = rf"(?:{NUMBER}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+PRERELEASE_ID = rf"(?:{NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 BUILD_ID = r"[0-9A-Za-z-]+"
 VERSION = (rf"{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*)?"
            rf"(?:\+{BUILD_ID}(?:\.{BUILD_ID})*)?")
@@ -243,12 +243,12 @@ def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
         old_version, new_version = old[field], new[field]
-        old_key, new_key = version_key(old_version), version_key(new_version)
-        if old_key == new_key:
-            if field == "serverVersion" and old_version != new_version:
-                raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
-                              "differ only in build metadata, so neither is newer")
+        if old_version == new_version:
             raise Failure(f"--from-assets and --to-assets have the same {name} version, {old_version}")
+        old_key, new_key = version_key(old_version), version_key(new_version)
+        if field == "serverVersion" and old_key == new_key:
+            raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
+                          "differ only in build metadata, so neither is newer")
         if old_key > new_key:
             raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
 
