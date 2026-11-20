@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -27,13 +28,32 @@ spec.loader.exec_module(lib)
 RUNTIME = ('rt/x86-64-linux/Fixture.v3', 'rt/native/Fixture.v3', 'rt/gc/Fixture.v3', 'rt/gc/Second.v3')
 
 
+GIT_ENV = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+COMMIT = ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'fixture']
+
+
+def git(directory, *args):
+    return subprocess.check_output(['git', '--no-replace-objects', '-C', str(directory), *args])
+
+
 def commit_virgil(virgil):
-    env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
-    for command in (['init', '-q'], ['-c', 'core.autocrlf=false', 'add', '-A'],
-                    ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
-                     'commit', '-q', '-m', 'fixture']):
-        subprocess.run(['git', '-C', str(virgil), *command], check=True, env=env)
-    return subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True, env=env).strip()
+    for command in (['init', '-q'], ['-c', 'core.autocrlf=false', 'add', '-A'], COMMIT):
+        subprocess.run(['git', '-C', str(virgil), *command], check=True, env=GIT_ENV)
+    return subprocess.check_output(['git', '-C', str(virgil), 'rev-parse', 'HEAD'], text=True, env=GIT_ENV).strip()
+
+
+def server_repository(server, object_format, committed, staged=None):
+    """A server repository with the release scripts and the target table,
+    whose HEAD pins Virgil at committed and whose index, if staged is given,
+    at staged instead, as during a pin update."""
+    for path in ('scripts/check-release.sh', 'scripts/release-library.py', 'src/analysis/AnalysisTargets.v3'):
+        (server / path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / path, server / path)
+    for command in (['init', '-q', f'--object-format={object_format}'], ['add', '-A'],
+                    ['update-index', '--add', '--cacheinfo', f'160000,{committed},vendor/virgil'], COMMIT,
+                    *([['update-index', '--cacheinfo', f'160000,{staged},vendor/virgil']] if staged else [])):
+        subprocess.run(['git', '-C', str(server), *command], check=True, env=GIT_ENV)
+    return server
 
 
 class LibraryTest(unittest.TestCase):
@@ -100,12 +120,12 @@ class LibraryTest(unittest.TestCase):
             self.assertEqual(lib.sha((self.source / path).read_bytes()),
                              self.manifest['library']['files'][path])
 
-    def test_pinned_runtime_sources(self):
-        def git(directory, *args):
-            return subprocess.check_output(['git', '--no-replace-objects', '-C', str(directory), *args])
-
-        virgil = ROOT / (os.environ.get('VIRGIL') or 'vendor/virgil')
-        pin = git(ROOT, 'rev-parse', 'HEAD:vendor/virgil').decode().strip()
+    def stage_pinned(self, server, virgil):
+        """Stage the Virgil revision of server's vendor/virgil gitlink in the
+        index, which a pin update tests before committing it, and check its
+        runtime against that revision's bin/v3c-x86-64-linux. Returns the
+        revision and the staged bundle."""
+        pin = git(server, 'rev-parse', ':vendor/virgil').decode().strip()
         wrapper = git(virgil, 'show', f'{pin}:bin/v3c-x86-64-linux').decode()
         selected, = re.findall(r'^RT_FILES=\$\(echo ([^\n]+)\)$', wrapper, re.MULTILINE)
         terms = selected.split()
@@ -121,7 +141,14 @@ class LibraryTest(unittest.TestCase):
         git(source, 'init', '--quiet', f'--object-format={object_format}')
         objects = virgil / git(virgil, 'rev-parse', '--git-path', 'objects').decode().strip()
         (source / '.git/objects/info/alternates').write_text(f'{objects}\n')
-        git(source, 'checkout', '--quiet', '--detach', pin)
+        # Only the files that staging reads from the checkout: a blobless
+        # partial clone of vendor/virgil can lack the other blobs, and this
+        # repository has no promisor remote to fetch them from.
+        tree = git(source, 'archive', '--format=tar', pin, '--', 'lib', 'rt/LICENSE')
+        subprocess.run(['tar', '-x', '-f', '-', '-C', str(source)], input=tree, check=True)
+        checkout = {path.relative_to(source).as_posix() for path in source.rglob('*')
+                    if path.is_file() and '.git' not in path.relative_to(source).parts}
+        self.assertEqual(set(), {p for p in checkout if not p.startswith('lib/') and p != 'rt/LICENSE'})
         bundle = self.root / 'pinned'
         lib.stage(source, bundle, pin)
         files = lib.metadata(bundle, pin)['files']
@@ -129,19 +156,59 @@ class LibraryTest(unittest.TestCase):
                          {path: digest for path, digest in files.items() if path.startswith('rt/')})
         self.assertEqual(['LICENSE', 'REVISION'],
                          sorted(p for p in files if not p.startswith(('lib/', 'rt/'))))
+        return pin, bundle
+
+    def test_pinned_runtime_sources(self):
+        virgil = ROOT / (os.environ.get('VIRGIL') or 'vendor/virgil')
+        pin, bundle = self.stage_pinned(ROOT, virgil)
         self.bundle.rename(self.root / 'fixture')
         bundle.rename(self.bundle)
         self.manifest.update(virgilRevision=pin, library=lib.metadata(self.bundle, pin))
         self.pack()
-        command = [str(ROOT / 'scripts/check-release.sh'), '--archive', str(self.archive)]
-        env = {**os.environ, 'VIRGIL': os.path.relpath(virgil, ROOT)}
+        # The archive check reads the gitlink in HEAD, so a server repository
+        # that commits the staged gitlink runs it.
+        object_format = git(virgil, 'rev-parse', '--show-object-format').decode().strip()
+        server = server_repository(self.root / 'server', object_format, pin)
+        command = [str(server / 'scripts/check-release.sh'), '--archive', str(self.archive)]
+        env = {**os.environ, 'VIRGIL': os.path.relpath(virgil, server)}
         subprocess.run(command, check=True, cwd=self.root, env=env, capture_output=True, text=True)
+        # The internal check command looks the pin up itself.
+        check = [sys.executable, str(server / 'scripts/release-library.py'), 'check', str(self.archive)]
+        subprocess.run(check, check=True, cwd=self.root, env=env, capture_output=True, text=True)
+        result = subprocess.run([*check, pin], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('unrecognized arguments', result.stderr)
         (self.bundle / 'rt/native/RiRuntime.v3').write_bytes(b'changed')
         self.manifest['library'] = lib.metadata(self.bundle, pin)
         self.pack()
         result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('pinned Virgil runtime: changed rt/native/RiRuntime.v3', result.stderr)
+
+    def test_pinned_runtime_sources_at_staged_gitlink(self):
+        # During a pin update, the new gitlink is staged but not committed.
+        # Here only the staged revision has rt/gc, which the target table
+        # selects, so staging the committed one would fail. The staged
+        # revision's other blobs are missing, as in a blobless partial clone.
+        virgil = self.root / 'git-virgil'
+        _, committed = self.git_virgil({
+            'bin/v3c-x86-64-linux': '#!/bin/sh\nRT_FILES=$(echo $RT/x86-64-linux/*.v3 $RT/native/*.v3)\n',
+            'lib/util/A.v3': 'class A {}\n', 'rt/LICENSE': 'license\n',
+            'rt/x86-64-linux/Linux.v3': 'component Linux {}\n', 'rt/native/Native.v3': 'component Native {}\n'})
+        (virgil / 'bin/v3c-x86-64-linux').write_text(
+            '#!/bin/sh\nRT_FILES=$(echo $RT/x86-64-linux/*.v3 $RT/native/*.v3 $RT/gc/*.v3)\n')
+        (virgil / 'rt/gc').mkdir()
+        (virgil / 'rt/gc/Gc.v3').write_text('component Gc {}\n')
+        (virgil / 'aeneas').mkdir()
+        (virgil / 'aeneas/Unrelated.v3').write_text('component Unrelated {}\n')
+        staged = commit_virgil(virgil)
+        oid = git(virgil, 'rev-parse', f'{staged}:aeneas/Unrelated.v3').decode().strip()
+        (virgil / '.git/objects' / oid[:2] / oid[2:]).unlink()
+        object_format = git(virgil, 'rev-parse', '--show-object-format').decode().strip()
+        server = server_repository(self.root / 'server', object_format, committed, staged)
+        pin, bundle = self.stage_pinned(server, virgil)
+        self.assertEqual(staged, pin)
+        self.assertEqual(b'component Gc {}\n', (bundle / 'rt/gc/Gc.v3').read_bytes())
 
     def test_runtime_ignores_git_replacement_blob(self):
         path = RUNTIME[0]
@@ -428,17 +495,30 @@ class LibraryTest(unittest.TestCase):
             self.check()
 
     def test_archive_runtime_mode(self):
+        # Special bits count, though they don't change the permissions.
         self.pack()
         original = self.archive.read_bytes()
-        with tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as before, \
-                tarfile.open(self.archive, 'w:gz') as after:
-            for member in before:
-                if member.name == f'{self.stage.name}/virgil/{RUNTIME[0]}':
-                    member.mode = 0
-                after.addfile(member, before.extractfile(member) if member.isfile() else None)
-        with mock.patch.dict(os.environ, VIRGIL=str(self.source)):
-            with self.assertRaisesRegex(ValueError, 'has mode 0, expected 644'):
-                lib.check_archive(self.archive, self.revision)
+        for mode in (0, 0o2644):
+            with self.subTest(mode=f'{mode:o}'):
+                with tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as before, \
+                        tarfile.open(self.archive, 'w:gz') as after:
+                    for member in before:
+                        if member.name == f'{self.stage.name}/virgil/{RUNTIME[0]}':
+                            member.mode = mode
+                        after.addfile(member, before.extractfile(member) if member.isfile() else None)
+                with mock.patch.dict(os.environ, VIRGIL=str(self.source)):
+                    with self.assertRaisesRegex(ValueError, f'has mode {mode:o}, expected 644'):
+                        lib.check_archive(self.archive, self.revision)
+
+    def test_manifest_not_an_object(self):
+        # A manifest or library field that isn't a JSON object, even with the
+        # right revision, is a validation error.
+        for case, manifest in (('null library', {**self.manifest, 'library': None}),
+                               ('array library', {**self.manifest, 'library': []}), ('array', [self.manifest])):
+            with self.subTest(manifest=case):
+                self.manifest = manifest
+                with self.assertRaisesRegex(ValueError, 'manifest and its library field must be JSON objects'):
+                    self.check()
 
     def test_archive_extra_directory(self):
         (self.bundle / 'bin').mkdir()

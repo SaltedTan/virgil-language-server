@@ -89,7 +89,7 @@ def payload(archive, target):
                 raise ValueError("unexpected archive file: " + name)
             mode = member.mode & 0o777
             if name.startswith("virgil/rt/"):
-                library.check_runtime_mode(name, mode)
+                library.check_runtime_mode(name, member.mode)
             files[name] = (tar.extractfile(member).read(), mode)
     if not REQUIRED <= files.keys() or not any(n.startswith("virgil/lib/") for n in files):
         raise ValueError("archive lacks executables, library, metadata, or notices")

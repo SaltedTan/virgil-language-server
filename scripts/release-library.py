@@ -120,8 +120,6 @@ def runtime_patterns(source=TARGETS_SOURCE):
                 raise ValueError(f'unsupported runtime pattern in {source}: {pattern!r}')
             if pattern not in patterns:
                 patterns.append(pattern)
-    if not patterns:
-        raise ValueError(f'the supported targets in {source} have no runtime patterns')
     return patterns
 
 
@@ -223,12 +221,16 @@ def compare_runtime(actual, expected, what):
 
 
 def check_runtime_mode(path, mode):
+    """Refuse a runtime source whose mode isn't exactly 0644, special bits
+    such as setgid included."""
     if mode != 0o644:
         raise ValueError(f'{path} has mode {mode:o}, expected 644')
 
 
 def check_bundle_revision(manifest, bundled_revision, revision):
-    if (manifest['virgilRevision'] != revision or manifest['library']['revision'] != revision
+    if not isinstance(manifest, dict) or not isinstance(manifest.get('library'), dict):
+        raise ValueError('the manifest and its library field must be JSON objects')
+    if (manifest.get('virgilRevision') != revision or manifest['library'].get('revision') != revision
             or bundled_revision != (revision + '\n').encode()):
         raise ValueError('bundle revision does not match the pinned Virgil revision')
 
@@ -325,14 +327,14 @@ def check_archive(archive, revision):
                 directories[entry.name.rstrip('/')] = mode
             elif entry.isfile():
                 if entry.name.startswith(runtime_root + '/'):
-                    check_runtime_mode(entry.name, mode)
+                    check_runtime_mode(entry.name, entry.mode)
                 entries[entry.name] = tar.extractfile(entry).read()
                 modes[entry.name] = mode
             else:
                 raise ValueError(f"unexpected archive entry: {entry.name}")
         manifest = json.loads(entries[f'{name}/manifest.json'])
-        library = manifest['library']
         check_bundle_revision(manifest, entries[f'{bundle_root}/REVISION'], revision)
+        library = manifest['library']
         files = {key.removeprefix(bundle_root + '/'): sha(data)
                  for key, data in entries.items() if key.startswith(bundle_root + '/')}
         if files != library['files']:
@@ -392,7 +394,6 @@ def main():
     p.add_argument('revision')
     p = sub.add_parser('check')
     p.add_argument('archive', type=Path)
-    p.add_argument('revision')
     p = sub.add_parser('archive')
     p.add_argument('stage', type=Path)
     p.add_argument('output', type=Path)
@@ -402,7 +403,7 @@ def main():
         if args.command == 'stage':
             stage(args.source, args.destination, args.revision)
         elif args.command == 'check':
-            check_archive(args.archive, args.revision)
+            check_archive(args.archive, pinned_revision())
         else:
             archive(args.stage, args.output, args.epoch)
     except (OSError, ValueError, KeyError, UnicodeDecodeError, tarfile.TarError) as error:
