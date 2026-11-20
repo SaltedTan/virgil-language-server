@@ -547,11 +547,16 @@ def headers_after_inline_else(t: Tester) {
 		"\tif (true)\n\t\tg(); else h(); while (true) // keep\n",
 		"\tif (true)\n\t\tg(); else while (true) // keep\n",
 		"\tif (true)\n\t\tg(); else if (true) // keep\n",
+		"\tif (\n\t\ttrue) g(); else while (true) // keep\n",
 		"\tmatch (0) {\n\t\t_ => g(); } else while (true) // keep\n"
 	]) {
 		var prefix = Strings.format1("def f() {\n%s", header);
 		both(t, Strings.format2("%s%s", prefix, brace), Strings.format2("%s%s", prefix, indented));
 	}
+	both(t, "def f() {\n\tif (true)\n\t\tif (true)\n\t\t\tg(); else h(); else while (true) // keep\n\t{\n\th();\n\t}\n}\n",
+		"def f() {\n\tif (true)\n\t\tif (true)\n\t\t\tg(); else h(); else while (true) // keep\n\t\t\t{\n\t\t\t\th();\n\t\t\t}\n}\n");
+	both(t, "def f() {\n\tmatch (0) {\n\t\t_ => g(\n\t\t\t1); } else while (true)\n\t{\n\th();\n\t}\n}\n",
+		"def f() {\n\tmatch (0) {\n\t\t_ => g(\n\t\t\t1); } else while (true) {\n\t\t\t\th();\n\t\t\t}\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tg(); else match (0) // keep\n\t{\n\t_ => ;\n\t}\n}\n",
 		"def f() {\n\tif (true)\n\t\tg(); else match (0) // keep\n\t\t{\n\t\t\t_ => ;\n\t\t}\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tg(); else while (true)\n\th();\n\tmatch (0) {\n\t\t_ => g(); } else for (i < 1)\n\th();\n}\n",
@@ -581,6 +586,10 @@ def unjoined_fun_brace(t: Tester) {
 		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t\t\t{\n\t\treturn;\n\t};\n}\n");
 	both(t, "def f() {\n    var callback = fun () // keep\n    {\n\treturn;\n    };\n}\n",
 		"def f() {\n\tvar callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
+	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n",
+		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else h = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
 	var input = "def x = fun () // keep\n  {\n\treturn;\n};\n";
 	both(t, input, input);
 }
