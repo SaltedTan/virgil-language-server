@@ -141,6 +141,7 @@ SUITES = \
 	'python3 test/protocol/selection_ranges.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/call_hierarchy.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/code_actions.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/out_of_sync_edits.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/document_symbol_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/outline_parse_budget.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \

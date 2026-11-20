@@ -16,6 +16,9 @@ def X = [
 	T("DocumentStore:disk_stamps", test_store_disk_stamps),
 	T("DocumentStore:fits", test_store_fits),
 	T("DocumentStore:out_of_sync", test_store_out_of_sync),
+	T("DocumentStore:held", test_store_held),
+	T("DocumentStore:held_overflow", test_store_held_overflow),
+	T("DocumentStore:held_byte_overflow", test_store_held_byte_overflow),
 	()
 ];
 
@@ -276,6 +279,77 @@ def test_store_out_of_sync(t: Tester) {
 	t.assert(!store.outOfSync(store.overlay(b)), "a close and reopen clears the mark");
 	t.assert_string("new", store.read(b));
 	t.assert(store.outOfSync(store.overlay(a)), "the other document keeps its mark");
+}
+
+// editRefusal gives the out-of-date reason for a marked open document, and
+// names a file that isn't open but that the client holds, until its close or
+// an accepted open.
+def test_store_held(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), a = "file:///a%20b.v3", alias = "file:/a b.v3";
+	var b = "file:///b.v3";
+	t.assert(store.editRefusal(a, null) == null, "an unrecorded closed file can be edited");
+	store.markOutOfSync(alias);
+	var reason = store.editRefusal(a, "a.v3");
+	t.assert_string("the client may have a.v3 open with text the server doesn't have, since it received an open, change, or save for that file without keeping an overlay; close it in the editor and open it again", reason);
+	t.assert(store.editRefusal(b, "b.v3") == null, "another closed file can be edited");
+	t.assert_string("document is not open", store.close(a));
+	t.assert(store.editRefusal(alias, "a.v3") == null, "a close clears the record");
+	store.markOutOfSync(a);
+	t.assert(store.open(alias, "virgil", 1, "x") == null, "open failed");
+	t.assert(store.editRefusal(a, null) == null, "an accepted open clears the record");
+	t.assert(store.close(a) == null, "close failed");
+	t.assert(store.editRefusal(a, "a.v3") == null, "a closed document isn't recorded");
+	t.assert(store.open(a, "virgil", 1, "x") == null, "open failed");
+	store.markOutOfSync(a);
+	t.assert_string("the server's copy of this document is out of date, since a change to it was rejected or lost; change the whole document or reopen it",
+		store.editRefusal(alias, null));
+	reason = store.editRefusal(a, "a.v3");
+	t.assert(reason != null && Strings.startsWith(reason, "the server's copy of a.v3 is out of date"), reason);
+	t.assert(store.change(a, 2, "y") == null, "change failed");
+	t.assert(store.editRefusal(a, "a.v3") == null, "an accepted change clears the mark");
+}
+// Beyond maxHeld files, every file that isn't open is refused for the rest
+// of the session; open documents keep their own marks.
+def test_store_held_overflow(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), a = "file:///a.v3", b = "file:///b.v3";
+	var c = "file:///c.v3", d = "file:///d.v3";
+	store.maxHeld = 2;
+	t.assert(store.open(d, "virgil", 1, "x") == null, "open failed");
+	store.markOutOfSync(a);
+	store.markOutOfSync(a);
+	store.markOutOfSync(b);
+	store.markOutOfSync("untitled:x");
+	t.assert(store.editRefusal(c, "c.v3") == null, "a third file is unrecorded below the cap");
+	store.markOutOfSync(c);
+	var reason = store.editRefusal(c, "c.v3");
+	t.assert(reason != null && Strings.startsWith(reason, "the server can't tell whether the client has c.v3 open"), reason);
+	t.assert(store.close(c) != null && store.close(a) != null && store.close(b) != null, "closes of closed files are ignored");
+	t.assert(store.editRefusal("file:///e.v3", "e.v3") != null, "the overflow stands for every closed file");
+	t.assert(store.editRefusal(d, null) == null, "an open document isn't refused");
+	t.assert(store.editRefusal("untitled:x", null) == null, "overflow applies only to files");
+	t.assert(store.open("untitled:x", "virgil", 1, "x") == null, "open failed");
+	store.markOutOfSync("untitled:x");
+	t.assert(store.editRefusal("untitled:x", null) != null, "an open opaque overlay keeps its mark");
+}
+
+def test_store_held_byte_overflow(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
+	var a = "file:///a%20b.v3", alias = "file:/a b.v3", b = "file:///b.v3", c = "file:///c.v3";
+	store.maxHeldBytes = 16;
+	store.markOutOfSync(alias);
+	store.markOutOfSync(a);
+	t.assert(store.editRefusal(a, null) != null, "the canonical key fits exactly");
+	t.assert(store.editRefusal(c, null) == null, "the alias is charged only once");
+	t.assert(store.close(alias) != null, "the overlay was never open");
+	store.markOutOfSync(b);
+	t.assert(store.editRefusal(c, null) == null, "close released the held bytes");
+	t.assert(store.open(b, "virgil", 1, "x") == null, "open failed");
+	store.markOutOfSync(alias);
+	t.assert(store.editRefusal(c, null) == null, "open released the held bytes");
+	store.markOutOfSync(c);
+	t.assert_string("the server can't tell whether the client has this document open with text it doesn't have, since it reached its limit for tracking files the client may hold; restart the server",
+		store.editRefusal(c, null));
+	t.assert(store.editRefusal(b, null) == null, "overflow ignores accepted overlays");
 }
 
 def test_store_disk_stamps(t: Tester) {

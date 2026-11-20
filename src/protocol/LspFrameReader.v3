@@ -61,6 +61,7 @@ class LspFrameReader(maxPayload: int) {
 	private var skipReason: string;	// set while a message is being skipped
 	private var skipRemaining: long;	// payload bytes left to skip
 	private var failure: string;	// set once the header is malformed
+	var onSkip: string -> void;
 
 	// Takes in {data}. Ignored once the stream is malformed. See
 	// docs/architecture.md#framing for the caller's memory contract.
@@ -239,6 +240,7 @@ class LspFrameReader(maxPayload: int) {
 	private def skip(reason: string, length: long) {
 		skipReason = reason;
 		skipRemaining = length;
+		if (onSkip != null) onSkip(reason);
 	}
 	private def fail(reason: string) -> bool {
 		failure = reason;

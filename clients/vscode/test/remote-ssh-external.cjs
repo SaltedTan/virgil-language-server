@@ -15,6 +15,18 @@ const external = require('./e2e/remote-ssh/external.cjs');
 
 const dir = path.join(__dirname, 'e2e', 'remote-ssh');
 
+// Whether the process that had this identity, { pid, start }, as processInfo
+// in ./e2e/processes.cjs gives it, has ended: it has gone, its PID is now
+// another process's, or it is a zombie or dead. A process whose parent exits
+// before reaping it, as host.cjs and the fake lsappinfo do, is reaped by init
+// or a subreaper; while that reaper releases it, /proc/<pid> still lists it,
+// with state X, so that a check right after the parent exits can see it.
+function ended(identity) {
+  const { processInfo, zombie } = require('./e2e/processes.cjs');
+  const current = processInfo(identity.pid);
+  return current === undefined || current.start !== identity.start || current.state === 'X' || zombie(current);
+}
+
 function descriptor(overrides = {}) {
   return {
     alias: 'virgil-remote-ssh-test',
@@ -229,7 +241,7 @@ test('the preferences guard restores a domain through defaults', { skip: process
 
 test('the focus guard stops its listener and descendants after delayed notifications', { skip: process.platform !== 'linux' }, async (t) => {
   const focus = require('./e2e/remote-ssh/focus.cjs');
-  const { processInfo, signalProcesses, zombie } = require('./e2e/processes.cjs');
+  const { signalProcesses } = require('./e2e/processes.cjs');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-focus-'));
   const pids = path.join(root, 'pids.jsonl');
   const originalPath = process.env.PATH;
@@ -278,8 +290,7 @@ setInterval(() => {}, 1000);
     const identities = fs.readFileSync(pids, 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(identities.length >= (delay === '1' ? 3 : 2), 'the listener and its descendants ran');
     for (const identity of identities) {
-      const current = processInfo(identity.pid);
-      assert.ok(current === undefined || current.start !== identity.start || zombie(current), `pid ${identity.pid} survived`);
+      assert.ok(ended(identity), `pid ${identity.pid} survived`);
     }
   }
 });
@@ -376,7 +387,7 @@ process.exit(spawnSync('cp', process.argv.slice(2), { env: { ...process.env, PAT
 
 
 test('host.cjs tears down its listening target after publication and cleanup failures', { skip: process.platform !== 'linux' }, async (t) => {
-  const { processInfo, signalProcesses, zombie } = require('./e2e/processes.cjs');
+  const { signalProcesses } = require('./e2e/processes.cjs');
   const net = require('node:net');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-host-failures-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -448,8 +459,7 @@ for (const name of ['mkdirSync', 'copyFileSync', 'chmodSync', 'writeFileSync', '
       assert.equal(result.status, scenario === 'ordinary' ? 0 : 3, result.stdout + result.stderr);
       if (scenario !== 'startup') {
         const server = JSON.parse(fs.readFileSync(serverFile, 'utf8'));
-        const current = processInfo(server.pid);
-        assert.ok(current === undefined || current.start !== server.start || zombie(current), `pid ${server.pid} survived`);
+        assert.ok(ended(server), `pid ${server.pid} survived`);
         const open = await new Promise((resolve) => {
           const socket = net.connect(server.port, '127.0.0.1');
           socket.once('connect', () => { socket.destroy(); resolve(true); });
