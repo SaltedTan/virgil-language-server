@@ -121,6 +121,8 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
    gitlink, which it reads from the index as `test/release/check_pin.py` does,
    so stage the new gitlink with the record. While they differ, as in the advisory Virgil master
    workflow, it says so and runs its other checks.
+   Update the file count and expected parse exclusions in
+   [`Formatting:corpus_if_kinds`](test/unit/FormattingTest.v3) if they changed.
 5. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade. If `AnalysisTargets:wrapper_runtime_files`
