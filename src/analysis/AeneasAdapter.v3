@@ -364,11 +364,11 @@ class ProgramAnalysis {
 		return null;
 	}
 	private def scopeIn(program: Program, syntax: SymbolSyntaxIndex, path: string, offset: int, kinds: int, prefix: string,
-			target: AnalysisTarget) -> AnalysisScopeAnswer {
+			options: Array<string>, target: AnalysisTarget) -> AnalysisScopeAnswer {
 		if (program == null) return null;
 		for (f in program.vst.files) {
 			if (f == null || !Strings.equal(f.fileName, path)) continue;
-			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).find(offset, kinds, prefix, target);
+			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).find(offset, kinds, prefix, options, target);
 			if (answer != null) answer.paths = program.files;
 			return answer;
 		}
@@ -443,15 +443,17 @@ class ProgramAnalysis {
 // (AeneasAdapter.analyzeForScope).
 class AnalysisScopedProgram extends ProgramAnalysis {
 	private def syntax: OrderedStringMap<SymbolSyntaxIndex>;
+	// The language options and the target that the program was analyzed with.
+	private def options: Array<string>;
 	private def target: AnalysisTarget;
 	// Null if the program did not parse.
 	private var program: Program;
 
-	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program, syntax, target) super(d, s, p, v, prog) {
+	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program, syntax, options, target) super(d, s, p, v, prog) {
 		if (p) program = prog;
 	}
 	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
-		return scopeIn(program, syntax[path], path, offset, kinds, prefix, target);
+		return scopeIn(program, syntax[path], path, offset, kinds, prefix, options, target);
 	}
 	def membersAt(path: string, offset: int, prefix: string) -> AnalysisMemberAnswer {
 		return membersIn(program, syntax[path], path, offset, prefix);
@@ -903,7 +905,7 @@ component AeneasAdapter {
 		diagnostics = capDiagnostics(diagnostics);
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
-		var analysis: ProgramAnalysis = if(scoped, AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax, activeTarget),
+		var analysis: ProgramAnalysis = if(scoped, AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax, options, activeTarget),
 			ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog));
 		analysis.comments = comments;
 		return analysis;

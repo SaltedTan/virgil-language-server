@@ -82,8 +82,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
-	// Null if verification did not reach the offset (see reached).
-	def find(offset: int, kinds: int, prefix: string, target: AnalysisTarget) -> AnalysisScopeAnswer {
+	// {options} and {target} are the language options and the target that
+	// the program was analyzed with. Null if verification did not reach the
+	// offset (see reached).
+	def find(offset: int, kinds: int, prefix: string, options: Array<string>, target: AnalysisTarget) -> AnalysisScopeAnswer {
 		this.offset = offset;
 		locate();
 		if (!reached()) return null;
@@ -124,13 +126,16 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		typeCons(prog.typeEnv, values, types, level);
 		level++;
 		// MethodEnv.lookupVar resolves types before layouts in expressions.
-		// Source types have already claimed their names in valueNames. Check
-		// the target builtin list here to avoid a type-table scan per layout.
+		// Source types have already claimed their names in valueNames. The
+		// builtin types are those that the program's type environment falls
+		// back to (V3.lookupToplevelType, with the analysis's language
+		// options) and the target's, which AeneasAdapter.builtinTypes lists
+		// in byte order; search that list rather than the type table.
 		// Ref<...> looks up its argument as a layout (VstCompoundVerifier.resolveRefType).
 		if (layouts && prog.layouts != null) {
-			var l = level, builtins = AeneasAdapter.targetBuiltinTypes(target);
+			var l = level, builtins = if(values, AeneasAdapter.builtinTypes(options, target));
 			prog.layouts.apply(fun (name: string, decl: VstLayout) {
-				if (values) for (builtin in builtins) if (Strings.equal(builtin, name)) return;
+				if (builtins != null && sortedHas(builtins, name)) return;
 				add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true);
 			});
 		}
@@ -224,6 +229,17 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		answer.hiddenBuiltins = hidden.extract();
 		answer.nameComparisons = valueNames.compares + typeNames.compares;
 		return answer;
+	}
+	// Whether {names}, in byte order (AnalysisTables.compareBytes), holds {name}.
+	private def sortedHas(names: Array<string>, name: string) -> bool {
+		var low = 0, high = names.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2, c = AnalysisTables.compareBytes(names[mid], name);
+			if (c == 0) return true;
+			if (c < 0) low = mid + 1;
+			else high = mid;
+		}
+		return false;
 	}
 	// Adds {d} at {level} unless an earlier candidate has its name in the
 	// namespace of {names}, or it is a candidate already: a type is added for
