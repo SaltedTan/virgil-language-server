@@ -345,7 +345,7 @@ class AnalysisFormatMarks(file: VstFile, syntax: SymbolSyntaxIndex) extends VstV
 // {caseTabs} are the leading tabs of the line where a match's current case
 // started, and {outerStatementTabs} the enclosing statement's line tabs.
 class FormatterBracket(kind: byte, body: int, close: int, control: bool, funHeader: FormatterFunHeader, parentElseLine: int,
-		outerStatementTabs: int) {
+		outerStatementTabs: int, grouped: bool) {
 	var caseTabs: int;
 }
 
@@ -784,7 +784,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private def consume(k: int) {
 		var c = ch(k), m = marks[k];
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
-		if (startsStatement(inner)) statementTabs = leadingTabs;
+		var grouped = inner != null && inner.grouped;
+		if (!grouped && startsStatement()) statementTabs = leadingTabs;
 		closedControl = false;
 		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
@@ -812,11 +813,12 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 				// The body of a fun outside parentheses and brackets whose
 				// '{' starts its line counts from its statement's line.
 				if (header != null && header.statementTabs >= 0 && lineStart == k) base = header.statementTabs;
-				stack.put(FormatterBracket.new('{', base + 1, base, false, header, afterElseLine, statementTabs));
+				stack.put(FormatterBracket.new('{', base + 1, base, false, header, afterElseLine, statementTabs, grouped));
 				afterElseLine = -1;
 			}
 			'(', '[' => {
-				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine, 0));
+				stack.put(FormatterBracket.new(c, 0, 0, last >= 0 && (marks[last] & AnalysisFormatMark.CONTROL) != 0, null, afterElseLine,
+						0, true));
 				afterElseLine = -1;
 			}
 			')', ']', '}' => if (inner != null) {
@@ -833,7 +835,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 				}
 			}
 			_ => if (header != null) {
-				header.statementTabs = if(inner == null || inner.kind == '{', statementTabs, -1);
+				header.statementTabs = if(grouped, -1, statementTabs);
 				header.tabs = if(header.statementTabs >= 0, leadingTabs, lineTabs);
 				header.anchor = chunk;
 			}
@@ -841,9 +843,8 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		last = k;
 	}
 	// Whether the next token starts a statement, declaration, or braceless
-	// body, also partway through a line and outside parentheses or brackets.
-	private def startsStatement(inner: FormatterBracket) -> bool {
-		if (inner != null && inner.kind != '{') return false;
+	// body, also partway through a line.
+	private def startsStatement() -> bool {
 		if (last < 0) return true;
 		var p = ch(last);
 		if (p == '{' || ((p == ';' || p == '}') && !continues)) return true;
