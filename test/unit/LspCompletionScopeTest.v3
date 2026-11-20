@@ -33,6 +33,8 @@ def X = [
 	T("LspCompletionScope:answer_too_large", test_answer_too_large),
 	T("LspCompletionScope:shutdown", test_shutdown),
 	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
+	T("LspCompletionScope:out_of_sync", test_out_of_sync),
+	T("LspCompletionScope:out_of_sync_while_waiting", test_out_of_sync_while_waiting),
 	T("LspCompletionScope:admission", test_admission),
 	T("LspCompletionScope:submit_refused", test_submit_refused),
 	T("LspCompletionScope:takes_turns", test_takes_turns),
@@ -663,11 +665,93 @@ def test_closed_while_waiting(t: Tester) {
 	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 	var analyses = s.server.completion.analyses;
 	s.closeDocument("Main.v3");
+	s.server.documents.maxHeld = 0;
+	rejectChange(s, "Other.v3");
 	s.settle();
+	t.assert(keywordsOnly(t, s, running, true), "an incomplete reply for the closed document");
 	t.assert(keywordsOnly(t, s, waiting, true), "an incomplete reply for the closed document");
 	t.asserti(1, s.count(running));
 	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
+}
+
+// A completion for a document whose last change the server rejected gets an
+// empty list, incomplete, at once and without an analysis, even at the cursor
+// of a cached reply, since every item's edit range would come from the
+// server's out-of-date copy. A version-only change keeps that; an accepted
+// full-text change ends it.
+def test_out_of_sync(t: Tester) {
+	var s = session(t);
+	var marked = inScale("\t\tto$");
+	assertScopeNames(t, s.result(t, complete0(t, s, marked)));
+	var analyses = s.server.completion.analyses;
+	rejectChange(s, "Main.v3");
+	var id = request(t, s, marked);
+	t.assert(outOfSyncList(s, id), "an empty list, not the cached reply");
+	s.versionOnly("Main.v3", s.file("Main.v3").version + 1);
+	t.assert(outOfSyncList(s, request(t, s, marked)), "still empty after a version-only change");
+	t.asserti(analyses, s.server.completion.analyses);
+	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
+	assertScopeNames(t, s.result(t, complete0(t, s, marked)));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	s.server.close();
+}
+
+// A change that the server rejects while a completion runs, and another
+// waits, gives both the empty list, incomplete: the running one's answer is
+// neither sent nor kept for completionItem/resolve, and the waiting one's
+// analysis never starts.
+def test_out_of_sync_while_waiting(t: Tester) {
+	var s = session(t);
+	complete(t, s, inScale("\t\tfa$"));
+	var latest = s.server.completion.resolver.latest;
+	t.assert(latest != null, "a list with names is kept");
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text), analyses = s.server.completion.analyses;
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(s.reply(running) == null && s.reply(waiting) == null, "both wait");
+	rejectChange(s, "Main.v3");
+	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
+	s.settle();
+	t.assert(outOfSyncList(s, running), "the running completion gets the empty list");
+	t.assert(outOfSyncList(s, waiting), "the waiting completion gets the empty list");
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	t.asserti(analyses, s.server.completion.analyses);
+	t.assert(s.server.completion.resolver.latest == latest, "the running answer isn't kept");
+	assertScopeNames(t, s.result(t, complete0(t, s, text)));
+	s.server.close();
+}
+def assertScopeNames(t: Tester, result: JsonValue) {
+	t.assert(itemOf(result, "total") != JsonValue.Null, "the local total is offered");
+	t.assert(itemOf(result, "factor") != JsonValue.Null, "the parameter factor is offered");
+}
+// Sends an incremental didChange of {name}, which the server rejects and
+// which marks the document out of sync; the client's text would now differ.
+def rejectChange(s: RenameTestSession, name: string) {
+	var f = s.file(name), doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+	var range = Strings.newMap<JsonValue>(), at = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	f.version++;
+	doc["uri"] = JsonValue.String(s.uri(name));
+	doc["version"] = JsonValue.Int(f.version);
+	at["line"] = JsonValue.Int(0);
+	at["character"] = JsonValue.Int(0);
+	range["start"] = JsonValue.JObject(at);
+	range["end"] = JsonValue.JObject(at);
+	change["range"] = JsonValue.JObject(range);
+	change["text"] = JsonValue.String(" ");
+	params["textDocument"] = JsonValue.JObject(doc);
+	params["contentChanges"] = JsonValue.JArray([JsonValue.JObject(change)]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(params)).encode());
+}
+// Whether {id}'s reply is a CompletionList with no items, incomplete.
+def outOfSyncList(s: RenameTestSession, id: int) -> bool {
+	var r = s.reply(id);
+	if (r == null || r.has("error")) return false;
+	var items = member(r["result"], "items");
+	return JsonValue.JArray.?(items) && JsonValue.JArray.!(items).v.length == 0
+		&& member(r["result"], "isIncomplete") == JsonValue.Bool(true);
 }
 
 // The completion's result is admitted within the workspace's snapshot budget,

@@ -15,6 +15,7 @@ def X = [
 	T("AnalysisScope:deep_nesting", test_deep_nesting),
 	T("AnalysisScope:excluded_shadowing", test_excluded_shadowing),
 	T("AnalysisScope:hidden_target_builtins", test_hidden_target_builtins),
+	T("AnalysisScope:target_builtin_layouts", test_target_builtin_layouts),
 	T("AnalysisScope:matches", test_matches),
 	T("AnalysisScope:lambdas", test_lambdas),
 	T("AnalysisScope:type_parameters", test_type_parameters),
@@ -438,6 +439,52 @@ def test_hidden_target_builtins(t: Tester) {
 		}
 		t.asserti(1, Arrays.filter(n.declarations, fun (d: AnalysisDeclaration) => Strings.equal(d.name, "System")).length);
 	}
+}
+
+// A name resolves to a type before a layout as a value (MethodEnv.lookupVar),
+// so in an x86-64-linux program, layouts named like the target's Pointer type
+// and Linux component are not values: they neither appear nor hide those
+// builtins, which completion then offers. Ref<...> still takes them. In a
+// portable program, which has neither builtin, both layouts are values, and
+// a layout named like its synthetic System is not.
+def test_target_builtin_layouts(t: Tester) {
+	var layouts = "layout Pointer {\n\t+0 value: u8;\n\t=1;\n}\nlayout Linux {\n\t+0 value: u8;\n\t=1;\n}\n";
+	var native = unmark(Strings.format1("%scomponent K {\n\tdef size = $Pointer.SIZE;\n\tdef r: Ref<Pointer>;\n}\n", layouts));
+	var ref = unmark(Strings.format1("%scomponent K {\n\tdef r: Ref<$Pointer>;\n\tdef l: Ref<Linux>;\n}\n", layouts));
+	var portable = unmark(Strings.format1("%slayout System {\n\t+0 value: u8;\n\t=1;\n}\ncomponent K {\n\tdef r: Ref<Pointer>;\n\tdef l: Ref<Linux>;\n\tdef s: Ref<System>;\n\tdef f() -> int { return $0; }\n}\n", layouts));
+	var target = AnalysisTargets.X86_64_LINUX;
+	var runtime = AnalysisTargetFiles.runtimeSources(t, target);
+	if (runtime == null) return;
+	var a = AeneasAdapter.analyzeForScope(Arrays.concat([AnalysisSource.new(MAIN, native.0)], runtime), [], target, false);
+	var b = AeneasAdapter.analyzeForScope(Arrays.concat([AnalysisSource.new(MAIN, ref.0)], runtime), [], target, false);
+	var c = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, portable.0)], [], null, false);
+	t.assert(a.verified, "target fixture verifies");
+	t.assert(b.verified, "target Ref fixture verifies");
+	t.assert(c.verified, "portable fixture verifies");
+	for (kinds in [V, V | TY]) {
+		var n = a.scopeAt(MAIN, native.1, kinds, "");
+		if (n == null) return t.fail("no scope answer");
+		t.assert_string("", layoutNames(n));
+		t.asserti(0, n.hiddenBuiltins.length);
+	}
+	var r = b.scopeAt(MAIN, ref.1, L, "");
+	var p = c.scopeAt(MAIN, portable.1, V, "");
+	var q = c.scopeAt(MAIN, portable.1, L, "");
+	if (r == null || p == null || q == null) return t.fail("no scope answer");
+	t.assert_string("Linux Pointer", layoutNames(r));
+	t.assert_string("Linux Pointer", layoutNames(p));
+	t.assert_string("Linux Pointer System", layoutNames(q));
+	t.asserti(0, p.hiddenBuiltins.length);
+}
+// The names of the layouts among {s}'s declarations, in order.
+def layoutNames(s: AnalysisScopeAnswer) -> string {
+	var buf = StringBuilder.new();
+	for (d in s.declarations) {
+		if (d.kind != AnalysisDeclKind.LAYOUT) continue;
+		if (buf.length > 0) buf.putc(' ');
+		buf.puts(d.name);
+	}
+	return buf.toString();
 }
 
 def test_matches(t: Tester) {
