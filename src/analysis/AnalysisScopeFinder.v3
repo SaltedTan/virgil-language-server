@@ -123,11 +123,16 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		level++;
 		typeCons(prog.typeEnv, values, types, level);
 		level++;
-		// Layouts are values (MethodEnv.lookupVar), and the one argument that
-		// Ref<...> takes (VstCompoundVerifier.resolveRefType).
+		// MethodEnv.lookupVar resolves types before layouts in expressions.
+		// Source types have already claimed their names in valueNames. Check
+		// the target builtin list here to avoid a type-table scan per layout.
+		// Ref<...> looks up its argument as a layout (VstCompoundVerifier.resolveRefType).
 		if (layouts && prog.layouts != null) {
-			var l = level;
-			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true));
+			var l = level, builtins = AeneasAdapter.targetBuiltinTypes(target);
+			prog.layouts.apply(fun (name: string, decl: VstLayout) {
+				if (values) for (builtin in builtins) if (Strings.equal(builtin, name)) return;
+				add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true);
+			});
 		}
 		return answer(thisLevel, prefix, values, types, target);
 	}
