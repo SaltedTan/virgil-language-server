@@ -146,7 +146,7 @@ can_inject() {
     rm -f "$TMP/inject-probe"
     : > "$TMP/inject-probe"
     chmod 644 "$TMP/inject-probe"
-    "${STRACE[@]}" -o /dev/null -e "trace=$1" -e "inject=$1:$2" python3 -c '
+    "${STRACE[@]}" -o "$TMP/inject-probe.trace" -e "trace=$1" -e "inject=$1:$2" python3 -c '
 import errno, os, sys
 
 call, fault, path = sys.argv[1:]
@@ -157,7 +157,8 @@ try:
 except OSError as e:
     got = "error=" + errno.errorcode[e.errno]
 sys.exit(got != fault or os.stat(path).st_mode & 0o777 != 0o644)
-' "$1" "$2" "$TMP/inject-probe" > /dev/null 2>&1
+' "$1" "$2" "$TMP/inject-probe" > /dev/null 2>&1 &&
+        grep -Eq "^$1\(.*\) += .* \(INJECTED\)$" "$TMP/inject-probe.trace"
 }
 expect_bytes() {
     local name=$1 code=$2 want=$3 err_pat=$4
