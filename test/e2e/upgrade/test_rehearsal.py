@@ -23,7 +23,6 @@ import zipfile
 
 import run
 
-REPO = Path(run.__file__).resolve().parents[3]
 OLD, NEW = ("0.1.0-alpha.4", "0.1.3"), ("0.1.0-alpha.5", "0.1.4")
 REVISIONS = {OLD[0]: ("1" * 40, "a" * 40), NEW[0]: ("2" * 40, "b" * 40)}
 
@@ -190,7 +189,7 @@ class AssetTests(TemporaryTest):
         for version in versions:
             (root / "VERSION").write_text(version + "\n")
             (root / "CHANGELOG.md").write_text(f"## [{version}]\n")
-            check = subprocess.run([str(REPO / "scripts/check-release.sh"), f"v{version}", str(root)],
+            check = subprocess.run([str(run.REPO / "scripts/check-release.sh"), f"v{version}", str(root)],
                                    capture_output=True, text=True)
             name = f"virgil-lsp-{version}-x86-64-linux.tar.gz"
             with self.subTest(version=version):
@@ -257,9 +256,11 @@ class AssetTests(TemporaryTest):
             run.check_pair(old, old)
         with self.assertRaisesRegex(run.Failure, "is newer than"):
             run.check_pair(new, old)
-        same_extension = run.verify_assets(make_assets(self.root, NEW[0], OLD[1]))
-        with self.assertRaisesRegex(run.Failure, "same extension version"):
-            run.check_pair(old, same_extension)
+        for extension in [OLD[1], f"0{OLD[1]}"]:
+            with self.subTest(extension=extension):
+                same_extension = run.verify_assets(make_assets(self.root, NEW[0], extension))
+                with self.assertRaisesRegex(run.Failure, "same extension version"):
+                    run.check_pair(old, same_extension)
         metadata = run.verify_assets(make_assets(self.root, OLD[0] + "+linux.5", NEW[1]))
         with self.assertRaisesRegex(run.Failure, f"server {OLD[0]} and --to-assets server {OLD[0]}\\+linux.5 "
                                                  "differ only in build metadata"):
@@ -397,18 +398,17 @@ class PropagationTests(TemporaryTest):
         self.assertFalse(logs.exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux") and platform.machine() == "x86_64", "Linux x86-64 only")
-    def test_passes_the_reported_revision_to_the_destination(self):
-        calls = []
-
-        def verify(directory, **options):
-            calls.append(options)
-            return {}
-        with mock.patch.object(run, "verify_assets", verify), \
-                mock.patch.object(run, "check_pair", side_effect=run.Failure("stop")):
-            with self.assertRaisesRegex(run.Failure, "stop"):
-                run.main(["--from-assets", "from", "--to-assets", "to", "--to-revision", "v1.0.0-1-gabc",
-                          "--logs", str(self.root / "logs")])
-        self.assertEqual(calls, [{}, {"allow_untagged": True, "revision": "v1.0.0-1-gabc"}])
+    def test_rejects_a_reported_revision_that_disagrees_with_the_destination_tag(self):
+        old = make_assets(self.root)
+        new = make_assets(self.root, *NEW)
+        logs = self.root / "logs"
+        check = subprocess.run([sys.executable, run.__file__, "--from-assets", str(old), "--to-assets", str(new),
+                                "--to-revision", f"v{OLD[0]}", "--logs", str(logs)],
+                               capture_output=True, text=True, timeout=10)
+        self.assertEqual(check.returncode, 1, check.stderr)
+        self.assertIn(f"virgil-lsp-{NEW[0]}-x86-64-linux.tar.gz: its build reported source revision v{OLD[0]}, "
+                      f"not its manifest's tag v{NEW[0]}", check.stderr)
+        self.assertFalse(logs.exists())
 
     def test_assets_are_checked_before_anything_runs(self):
         bad = make_assets(self.root, *NEW, sums=lambda lines: lines[:1])

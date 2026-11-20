@@ -242,13 +242,15 @@ def described(path, revision):
 def check_pair(old, new):
     """The rehearsal needs a strictly newer server and extension to upgrade to."""
     for field, name in [("serverVersion", "server"), ("extensionVersion", "extension")]:
-        if old[field] == new[field]:
-            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old[field]}")
-        if version_key(old[field]) == version_key(new[field]):
-            raise Failure(f"--from-assets {name} {old[field]} and --to-assets {name} {new[field]} "
-                          "differ only in build metadata, so neither is newer")
-        if version_key(old[field]) > version_key(new[field]):
-            raise Failure(f"--from-assets {name} {old[field]} is newer than --to-assets {name} {new[field]}")
+        old_version, new_version = old[field], new[field]
+        old_key, new_key = version_key(old_version), version_key(new_version)
+        if old_key == new_key:
+            if field == "serverVersion" and old_version != new_version:
+                raise Failure(f"--from-assets {name} {old_version} and --to-assets {name} {new_version} "
+                              "differ only in build metadata, so neither is newer")
+            raise Failure(f"--from-assets and --to-assets have the same {name} version, {old_version}")
+        if old_key > new_key:
+            raise Failure(f"--from-assets {name} {old_version} is newer than --to-assets {name} {new_version}")
 
 
 def version_output(assets):
