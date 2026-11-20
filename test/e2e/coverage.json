@@ -2226,7 +2226,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
-      "description": "With LazyVim's default autoformat, <C-s> on the misindented format.v3 saves exactly the formatted text, through one answered formatting request, and leaves the buffer unmodified."
+      "description": "With LazyVim's default autoformat, <C-s> on the misindented format.v3, starting from a valid unsaved edit (return b; changed to return b + 1;), saves exactly the formatted text including that edit, through one answered formatting request, and leaves the buffer unmodified."
     },
     {
       "id": "lazyvim.formatting.final-newline",
