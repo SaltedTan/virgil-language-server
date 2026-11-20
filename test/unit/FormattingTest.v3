@@ -28,6 +28,7 @@ def X = [
 	T("Formatting:growth", growth),
 	T("Formatting:comment_lookahead_linear", comment_lookahead_linear),
 	T("Formatting:unjoined_brace", unjoined_brace),
+	T("Formatting:unjoined_ungrouped_fun_brace", unjoined_ungrouped_fun_brace),
 	T("Formatting:code_after_comment", code_after_comment),
 	T("Formatting:block_comment_opener", block_comment_opener),
 	T("Formatting:else_line", else_line),
@@ -480,6 +481,36 @@ def unjoined_brace(t: Tester) {
 		"def f() {\n\tm(\n\t\tfun () // keep\n\t\t{\n\t\t\tn();\n\t\t});\n}\n");
 	both(t, "def f() {\n\tvar fs = [\n\t\tfun (\n\t\t\tx: int)\n\n\t\t\t\t{\n\t\t\t\t\tn();\n\t\t\t\t}];\n}\n",
 		"def f() {\n\tvar fs = [\n\t\tfun (\n\t\t\tx: int)\n\n\t\t{\n\t\t\tn();\n\t\t}];\n}\n");
+}
+// The '{' of a fun outside parentheses and brackets that a comment or a
+// blank line keeps on its own line stays at the fun's line indentation, and
+// its body and '}' count from the line where the fun's statement started,
+// also partway through that line. Inside parentheses or brackets they count
+// from the '{' line (fun_in_parentheses).
+def unjoined_ungrouped_fun_brace(t: Tester) {
+	both(t, "def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n",
+		"def f() {\n\tvar callback =\n\t\tfun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n");
+	both(t, "def f() {\n\tvar callback =\n\t\tfun ()\n\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n",
+		"def f() {\n\tvar callback =\n\t\tfun ()\n\n\t\t{\n\t\treturn;\n\t};\n}\n");
+	// A representation hint's own '}' doesn't move the statement's line.
+	for (hint in ["fun () {\n\t\t\treturn;\n\t\t}", "fun () { return; }"]) {
+		both(t, Strings.format1("def f() {\n\tvar callback =\n\t\tfun () #hint(%s) // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n", hint),
+			Strings.format1("def f() {\n\tvar callback =\n\t\tfun () #hint(%s) // keep\n\t\t{\n\t\treturn;\n\t};\n}\n", hint));
+	}
+	// A statement that starts partway through a line, after a ';' or a '{'.
+	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n{\nreturn;\n};\n}\n",
+		"def f() {\n\tg(\n\t\t1); var callback = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n{\nreturn;\n}; }\n}\n",
+		"def f() {\n\tif (\n\t\ttrue) { var callback = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t}; }\n}\n");
+	// After another fun's body in the same statement.
+	both(t, "def f() {\n\tvar callback = fun () -> int // keep\n\t{\n\t\treturn 1;\n\t}, other =\n\t\tfun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n}\n",
+		"def f() {\n\tvar callback = fun () -> int // keep\n\t{\n\t\treturn 1;\n\t}, other =\n\t\tfun () // keep\n\t\t{\n\t\treturn;\n\t};\n}\n");
+	// Continuation prefixes: the '{' keeps its line's indentation, and a
+	// continuation in the body still shifts only against the '{' line.
+	both(t, "def f() {\n    g(\n      1); var callback = fun () // keep\n    {\nreturn;\n};\n}\n",
+		"def f() {\n\tg(\n\t  1); var callback = fun () // keep\n\t{\n\t\treturn;\n\t};\n}\n");
+	both(t, "def f() {\n    var callback = fun () -> int // keep\n\t\t{ return\n        1;\n};\n}\n",
+		"def f() {\n\tvar callback = fun () -> int // keep\n\t{ return\n        1;\n\t};\n}\n");
 }
 def code_after_comment(t: Tester) {
 	// A line that starts with a comment and then has code is a code line,
