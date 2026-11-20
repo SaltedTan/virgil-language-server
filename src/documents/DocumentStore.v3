@@ -149,6 +149,7 @@ class DocumentStore {
 		if (key == null) return;
 		if (overlays[key] != null) {
 			unsynced[key] = true;
+			if (onOutOfSync != null) onOutOfSync();
 		} else if (!heldOverflow && DocumentUri.canonicalIsFile(key) && !held.has(key)) {
 			if (held.length >= maxHeld || key.length > maxHeldBytes - heldBytes) {
 				heldOverflow = true;
@@ -157,7 +158,6 @@ class DocumentStore {
 				heldBytes += key.length;
 			}
 		}
-		if (onOutOfSync != null) onOutOfSync();
 	}
 	private def removeHeld(key: string) {
 		if (key != null && held.length > 0 && held.remove(key)) heldBytes -= key.length;
@@ -172,7 +172,7 @@ class DocumentStore {
 	}
 	// Whether the open document {doc} is marked out of sync.
 	def outOfSync(doc: DocumentOverlay) -> bool {
-		return unsynced.length > 0 && unsynced[doc.uri];
+		return doc != null && unsynced.length > 0 && unsynced[doc.uri];
 	}
 	// Why edits to {uri} computed from the server's copy of it could be wrong,
 	// or null if they can't: the document is open and marked out of sync, or

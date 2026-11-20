@@ -665,7 +665,10 @@ def test_closed_while_waiting(t: Tester) {
 	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 	var analyses = s.server.completion.analyses;
 	s.closeDocument("Main.v3");
+	s.server.documents.maxHeld = 0;
+	rejectChange(s, "Other.v3");
 	s.settle();
+	t.assert(keywordsOnly(t, s, running, true), "an incomplete reply for the closed document");
 	t.assert(keywordsOnly(t, s, waiting, true), "an incomplete reply for the closed document");
 	t.asserti(1, s.count(running));
 	t.asserti(analyses, s.server.completion.analyses);
@@ -709,6 +712,7 @@ def test_out_of_sync_while_waiting(t: Tester) {
 	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 	t.assert(s.reply(running) == null && s.reply(waiting) == null, "both wait");
 	rejectChange(s, "Main.v3");
+	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
 	s.settle();
 	t.assert(outOfSyncList(s, running), "the running completion gets the empty list");
 	t.assert(outOfSyncList(s, waiting), "the waiting completion gets the empty list");
@@ -716,7 +720,6 @@ def test_out_of_sync_while_waiting(t: Tester) {
 	t.asserti(1, s.count(waiting));
 	t.asserti(analyses, s.server.completion.analyses);
 	t.assert(s.server.completion.resolver.latest == latest, "the running answer isn't kept");
-	s.change("Main.v3", s.file("Main.v3").version + 1, s.text("Main.v3"));
 	assertScopeNames(t, s.result(t, complete0(t, s, text)));
 	s.server.close();
 }

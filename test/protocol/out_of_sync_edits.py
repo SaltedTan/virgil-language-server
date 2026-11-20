@@ -447,20 +447,19 @@ def completion(exe, root):
         s.no_completion(s.reply(s.send_completion("a.v3", WH), 60))
         s.change("a.v3", TYPED)
         s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 5)
-        # A completion waiting on the worker when the change is rejected.
-        with paused_worker(s):
-            s.change("a.v3", TYPED + "\n")
-            pending = s.send_completion("a.v3", WH)
-            s.result(s.send("virgil-lsp/snapshot"))
-            assert pending not in s.waiting, s.waiting
-            s.rejected_edit("a.v3", DELETE_I, "")
-            s.no_completion(s.reply(s.send_completion("a.v3", WH), 10))
-            s.change("a.v3", EDITED)
-            s.result(s.send("virgil-lsp/snapshot"))
-            assert pending not in s.waiting, s.waiting
-        s.no_completion(s.reply(pending, 60))
-        # The editor's text, accepted: "while" replaces "wh" and not the ";".
-        s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 4)
+        for lose in (lambda session: session.rejected_edit("a.v3", DELETE_I, ""), large_frame, value_limit):
+            with paused_worker(s):
+                s.change("a.v3", TYPED + "\n")
+                pending = s.send_completion("a.v3", WH)
+                s.result(s.send("virgil-lsp/snapshot"))
+                assert pending not in s.waiting, s.waiting
+                lose(s)
+                s.no_completion(s.reply(s.send_completion("a.v3", WH), 10))
+                s.change("a.v3", EDITED)
+                s.result(s.send("virgil-lsp/snapshot"))
+                assert pending not in s.waiting, s.waiting
+            s.no_completion(s.reply(pending, 60))
+            s.while_replaces(s.reply(s.send_completion("a.v3", WH), 60), 4)
         s.shutdown()
     finally:
         s.close()

@@ -327,7 +327,8 @@ class LspCompletionRequest extends LspQueryRequest {
 	// while the request waited or ran: every item's edit range comes from
 	// the server's copy of it.
 	def refusal() -> JsonValue {
-		if (!refused && (uri == null || completion.store.canonicalEditRefusal(uri, null) == null)) return JsonValue.Null;
+		var store = completion.store;
+		if (!refused && !store.outOfSync(store.canonicalOverlay(uri))) return JsonValue.Null;
 		return completion.outOfSyncList();
 	}
 }
@@ -343,7 +344,7 @@ class LspCompletionRequest extends LspQueryRequest {
 // the last reply with names stay for completionItem/resolve
 // (LspCompletionResolve). A document marked out of sync gets an empty list,
 // incomplete, instead of items whose edits come from the server's out-of-date
-// copy (DocumentStore.editRefusal), whether the request arrives then or the
+// copy (DocumentStore.outOfSync), whether the request arrives then or the
 // mark comes while it waits or runs. See docs/architecture.md#completion.
 class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
@@ -382,7 +383,7 @@ class LspCompletion extends LspQueryRequests {
 		if (overlay == null) return respond(request.id, JsonRpcReply.Result(list([], false)));
 		// Ranges computed from an out-of-date copy could replace the wrong
 		// text in the client's; this precedes the cached reply too.
-		if (store.canonicalEditRefusal(overlay.uri, null) != null) return respond(request.id, JsonRpcReply.Result(outOfSyncList()));
+		if (store.outOfSync(overlay)) return respond(request.id, JsonRpcReply.Result(outOfSyncList()));
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
 		var mapping = projects.forDocument(overlay.uri);
