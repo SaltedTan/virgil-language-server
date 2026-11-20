@@ -42,7 +42,7 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## What it checks
 
-Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it.
+Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports its ID in [`coverage.json`](../coverage.json) and what it saw, such as `PASS lazyvim.hover.response: ...`. Statuses are `PASS` and `FAIL`, with `XFAIL` or `XPASS` for the [expected failure](#expected-results) in the stock `noroot` run. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
@@ -70,8 +70,6 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
 lazy.nvim fires `VeryLazy` only after `UIEnter`, which needs an attached UI. Under `--headless`, LazyVim never loads noice.nvim, mini.pairs, or its keymaps, so the test would check another editor than a user's. tmux gives Neovim a real 200 × 50 terminal without a display. The driver types with `nvim_input()` and reads the editor's state, not the screen; tmux keeps the screen for failures. The startup step fails if no UI attached or `VeryLazy` never fired; the driver never fires it itself.
 
 ## Outputs
-
-The driver reports each step by its ID from [`coverage.json`](../coverage.json) with `PASS` or `FAIL`, such as `PASS lazyvim.hover.response`, and adds details when available. See [Expected results](#expected-results) for the stock `noroot` run's `XFAIL` and `XPASS` verdicts. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only failures, without their IDs.
 
 The output directory gets:
 
