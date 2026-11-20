@@ -15,9 +15,9 @@
 // where an `if`, "++", or "--" could begin a statement earlier on that line
 // proves too. The edit carries
 // the open document's version, so a client without versioned documentChanges
-// gets nothing. A document marked out of sync gets RequestFailed instead
-// (DocumentStore.editRefusal). There is no command, no fix-all, and no save
-// action.
+// gets nothing. After the capability, kind, overlay, and diagnostic checks,
+// an out-of-sync document gets RequestFailed (DocumentStore.canonicalEditRefusal).
+// There is no command, no fix-all, and no save action.
 class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 	def TITLE = "Insert missing \";\"";
 	def KIND = "quickfix";

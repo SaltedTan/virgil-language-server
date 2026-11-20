@@ -50,8 +50,8 @@ class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: Lsp
 // ANALYZE, through the scheduler's jobs (LspAnalysisJob), and compares the
 // result with the snapshot (LspRenameBindings); the result is then dropped.
 // A rename refuses if any source in the project's analysis
-// may hold text the server doesn't have (DocumentStore.editRefusal). One
-// rename is checked at a time. See docs/architecture.md#rename.
+// may hold text the server doesn't have (DocumentStore.canonicalEditRefusal).
+// One rename is checked at a time. See docs/architecture.md#rename.
 class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: LspSnapshotRequests,
 		send: Array<byte> -> void) {
 	def REQUIRES = "a valid textDocument.uri, position, and newName";

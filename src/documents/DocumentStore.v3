@@ -139,9 +139,9 @@ class DocumentStore {
 		return cost(doc.uri, doc.languageId, length) <= long.view(capacity) - remaining;
 	}
 	// Marks the document {uri} out of sync if it is open. Otherwise records
-	// that the client holds the file {uri}, with text the server may not have,
-	// until its close: the client sent a didOpen the server rejected, or a
-	// change or save of a document the server doesn't have open.
+	// that the client holds the local file {uri}, with text the server may not
+	// have. A rejected didOpen or a change or save without an overlay can
+	// establish a hold. A close or an accepted open clears the record.
 	def markOutOfSync(uri: string) {
 		var key = DocumentUri.normalize(uri);
 		if (key == null) return;
@@ -170,14 +170,13 @@ class DocumentStore {
 	def outOfSync(doc: DocumentOverlay) -> bool {
 		return unsynced.length > 0 && unsynced[doc.uri];
 	}
-	// Why edits to {uri} computed from the server's copy of it could be wrong,
-	// or null if they can't: the document is open and marked out of sync, or
-	// it isn't open and the client may hold it (markOutOfSync). Formatting,
-	// code actions, and rename refuse with the reason. {name} names the
-	// document in the reason, or null for the request's own document.
+	// Applies the synchronization check to a raw {uri}.
 	def editRefusal(uri: string, name: string) -> string {
 		return canonicalEditRefusal(DocumentUri.normalize(uri), name);
 	}
+	// Refuses edits from a marked overlay or a closed file the editor may hold.
+	// A null {name} describes the request's own document. A null result means
+	// synchronization alone does not block the edit.
 	def canonicalEditRefusal(key: string, name: string) -> string {
 		if (key == null) return null;
 		if (name == null) name = "this document";

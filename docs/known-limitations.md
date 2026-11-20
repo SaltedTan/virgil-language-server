@@ -58,8 +58,8 @@ The server first returns an empty list if the client lacks literal actions or
 versioned edits, excludes quick fixes, asks about a closed document, or supplies
 diagnostics without a semicolon error from this server. For requests that pass
 those checks, the out-of-date error takes priority even for documents too large
-to parse. Replacing the whole text or closing and reopening the document clears
-that error.
+to parse. An accepted full-text change or a close and reopen clears the mark
+on the document.
 
 ## Semantic features need a project file
 
@@ -213,8 +213,8 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 ## Protocol numbers and synchronization
 
 - JSON numbers must be signed 32-bit integers. A fraction, exponent, or out-of-range integer anywhere in an admitted request to a supported method, including unused `initializationOptions`, gets `InvalidParams` (-32602) with the request's original ID. The dispatcher ignores notifications containing these numbers, except `exit`; document synchronization notifications admitted by the lifecycle also log a warning. Numeric request IDs outside that range instead get `InvalidRequest` (-32600) with a null ID. This is a `JsonValue` representation limit, including for otherwise valid free-form LSP data ([JSON rules](architecture.md#json-limitations-and-workarounds), [lifecycle admission](architecture.md#lifecycle)).
-- When the server rejects a change to an open document, for example over the 1 MiB open-document capacity or because it is incremental, its copy of that document no longer matches the editor. When it skips a message, such as one over the 4 MiB message limit, or can't decode one, such as malformed JSON, it can't tell which document the message changed, so this holds for every open document. Formatting, code actions, prepare rename, and rename then refuse, saying the server's copy is out of date, rather than compute edits that could land in the wrong place. Hover, definition, references, and the other features that don't edit keep answering from the server's copy, which can be out of date. A change that replaces the whole text, or closing and reopening the document, ends this; a change that only raises the version doesn't ([document store](architecture.md#document-store)).
-- The server negotiates full synchronization. A `didChange` containing a range or `rangeLength` is ignored and logged as “incremental changes are not supported,” with no notification reply. The overlay's text and version stay unchanged. An empty `contentChanges` with a newer version is accepted as a version-only update; subsequent versioned rename edits carry that version ([document synchronization](architecture.md#document-store)).
+- When the server rejects a change to an open document, its copy may differ from the editor's and it marks the document out of sync. If the server skips a frame, for example over the 4 MiB message limit, or cannot parse the payload as JSON, it marks every open document because it cannot identify a single affected file. Formatting, prepare rename, rename, and [code actions that pass their initial checks](#code-actions) can then refuse with a message that the server's copy is out of date. Hover, definition, references, and other read-only features keep answering from the server's copy. An accepted full-text change or a close and reopen clears the mark. A version-only update keeps it ([document store](architecture.md#document-store)).
+- The server negotiates full synchronization. A `didChange` containing a range or `rangeLength` is ignored and logged as “incremental changes are not supported,” with no notification reply. The overlay retains its text and version and is marked out of sync. An empty `contentChanges` with a newer version advances the overlay's version without changing its text. If the document is still synchronized after a version-only update, rename edits to it carry that version ([document synchronization](architecture.md#document-store)).
 
 ## What rename refuses
 

@@ -4,7 +4,7 @@
 // textDocument/prepareRename over LspRenameEligibility: the range and
 // placeholder of the name at a position, or RequestFailed with the reason it
 // cannot be renamed, including a document marked out of sync
-// (DocumentStore.editRefusal). See docs/architecture.md#prepare-rename.
+// (DocumentStore.canonicalEditRefusal). See docs/architecture.md#prepare-rename.
 class LspPrepareRename(store: DocumentStore, projects: WorkspaceProjects) {
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
 		dispatcher.onDeferredRequest("textDocument/prepareRename", receive(requests, _));
