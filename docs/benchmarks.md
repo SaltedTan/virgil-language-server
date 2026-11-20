@@ -4570,7 +4570,10 @@ scenario. The adoption column is the baseline's p50:
 
 The Aeneas error-analysis adoption value comes from the error-result capture.
 Its last four blocks ran under load, and the one-minute load average was 10.0
-when it ended. The other adoption values come from the full-scenario capture.
+when it ended. The other adoption values come from the full-scenario capture,
+which ran with memory sampling disabled. The adoption error-result capture and
+both A/B runs used `--error-result`, which enabled a memory sampler on CPU 12
+at 50 ms intervals in every session, including ordinary workloads.
 
 **Result: the drift is not a regression in alpha.8.** All 34 latency cells of
 both runs have overlapping p10–p90 intervals, and none is flagged by
@@ -4593,9 +4596,11 @@ collects during handling.
 analysis), 5.1% to 5.5% (rename), and 4.3% to 5.6% (completion miss) above
 its own adoption values for Aeneas. Its binaries were built at a different path
 from the adoption build, the kernel moved from `7.0.0-42-generic` to
-`7.0.0-43-generic`, and the host's background load differs, so the gap between
-these runs and the adoption capture is attributable to the measurement, not to
-the source changes between `139db845` and alpha.8. No change needs bisecting,
-and the baseline and targets are unchanged. Raw comparison JSON, the build
-logs, and the load log are retained outside the repository in
+`7.0.0-43-generic`, and the host's background load differs. The sampler may also
+account for part of the gap to the unsampled full-scenario capture. Both
+candidates used the same sampling mode in each A/B run, so the A/B comparison
+controls for that setting. The rebuild of the same revision shows that the
+gap to adoption can arise from measurement conditions alone. No change needs
+bisecting, and the baseline and targets are unchanged. Raw comparison JSON,
+the build logs, and the load log are retained outside the repository in
 `$HOME/.cache/overnight-scratch/bench-557/`.
