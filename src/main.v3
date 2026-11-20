@@ -210,6 +210,9 @@ component VirgilLsp {
 		}
 		// A closed pipe must fail a write, reported, rather than end this process.
 		HostOs.ignoreSigpipe();
+		// So must a write past an inherited file-size limit, which would
+		// otherwise end this process before the input is reported.
+		HostOs.ignoreSigxfsz();
 		var lang = options.extract(), status = 0;
 		for (i < paths.length) {
 			if (FormatHook.enabled) FormatHook.startFile();
@@ -224,6 +227,12 @@ component VirgilLsp {
 	// formatted text. Returns false if it would change under {check}, or
 	// can't be formatted or replaced, which is reported on standard error.
 	private def formatFile(path: string, options: Array<string>, check: bool, file: FileReplacement) -> bool {
+		// A trailing slash requires a directory. The JVM bridge's Paths.get
+		// drops it, so the path would name a regular file and be read.
+		if (Strings.endsWith(path, "/")) {
+			Log.error1("cannot format '%s': it is not a regular file", path);
+			return false;
+		}
 		var input = if(file != null, file.open(FORMAT_MAX_BYTES), readSource(path));
 		if (input == null) return false;
 		var r = AeneasAdapter.formatting(path, input, options, AnalysisFormatEnd.ONE);

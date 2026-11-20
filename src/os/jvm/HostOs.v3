@@ -103,6 +103,9 @@ component HostOs {
 	}
 	// The JVM already ignores SIGPIPE: a write to a closed pipe fails with EPIPE.
 	def ignoreSigpipe() { }
+	// The JVM ignores SIGXFSZ too: a write past an inherited file-size limit
+	// fails with an I/O error, which the runtime reports as EPIPE.
+	def ignoreSigxfsz() { }
 	// Two words from the runtime's SecureRandom, or, if that fails, from the time.
 	def randomWords() -> (u64, u64) {
 		var r = query(command("random"));
