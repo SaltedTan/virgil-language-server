@@ -29,9 +29,10 @@ from pathlib import Path
 import signal
 import sys
 import tempfile
+import time
 
 from fingerprints import worker_pid
-from formatting import FormatSession, OUT_OF_SYNC, REQUEST_FAILED, STORE_BYTES, large_frame, value_limit
+from formatting import FormatSession, MAX_PAYLOAD, OUT_OF_SYNC, REQUEST_FAILED, STORE_BYTES, large_frame, value_limit
 
 CAPS = {"workspace": {"workspaceEdit": {"documentChanges": True}},
         "textDocument": {"rename": {"prepareSupport": True},
@@ -181,17 +182,20 @@ def other_documents(exe, root):
         s.open("a.v3", A_TEXT)
         s.open("b.v3", B_TEXT)
         s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 1})
-        with paused_worker(s):
-            pending = s.send_rename("a.v3", A_USE)
-            s.refuses(s.rename("a.v3", A_USE), "another rename is being checked")
-            assert pending not in s.waiting, s.waiting
-            s.change("b.v3", TOO_LARGE)
-            s.result(s.send("virgil-lsp/snapshot"))
-        s.refuses(s.reply(pending, 60), TARGET % b_path)
-        s.refuses(s.rename("a.v3", A_USE), TARGET % b_path)
-        s.prepares("a.v3", A_USE)
-        s.change("b.v3", B_TEXT)
-        s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 3})
+        for replace_while_checking, recovered_version in ((False, 3), (True, 6)):
+            with paused_worker(s):
+                pending = s.send_rename("a.v3", A_USE)
+                s.refuses(s.rename("a.v3", A_USE), "another rename is being checked")
+                assert pending not in s.waiting, s.waiting
+                if replace_while_checking:
+                    s.change("b.v3", B_TEXT + "\n")
+                s.change("b.v3", TOO_LARGE)
+                s.result(s.send("virgil-lsp/snapshot"))
+            s.refuses(s.reply(pending, 60), TARGET % b_path)
+            s.refuses(s.rename("a.v3", A_USE), TARGET % b_path)
+            s.prepares("a.v3", A_USE)
+            s.change("b.v3", B_TEXT)
+            s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": recovered_version})
         # A rejected open of b.v3: the rename would edit it from disk.
         s.close_document("b.v3")
         s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": None})
@@ -285,21 +289,53 @@ def refusal_before_analysis(exe, root):
         s.open("a.v3", A_TEXT)
         s.prepares("a.v3", A_USE)
         broken = "component A {\n"
-        with paused_worker(s):
-            s.change("a.v3", broken)
-            prepare = s.send_prepare("a.v3", A_USE)
-            rename = s.send_rename("a.v3", A_USE)
-            s.result(s.send("virgil-lsp/snapshot"))
-            assert prepare not in s.waiting and rename not in s.waiting, s.waiting
-            s.change("a.v3", TOO_LARGE)
-            s.result(s.send("virgil-lsp/snapshot"))
-        s.refuses(s.reply(prepare, 60))
-        s.refuses(s.reply(rename, 60))
-        s.refuses(s.prepare("a.v3", A_USE))
-        s.refuses(s.rename("a.v3", A_USE))
+        for replace_while_waiting in (False, True):
+            with paused_worker(s):
+                s.change("a.v3", broken)
+                prepare = s.send_prepare("a.v3", A_USE)
+                rename = s.send_rename("a.v3", A_USE)
+                s.result(s.send("virgil-lsp/snapshot"))
+                assert prepare not in s.waiting and rename not in s.waiting, s.waiting
+                if replace_while_waiting:
+                    s.change("a.v3", broken + "\n")
+                s.change("a.v3", TOO_LARGE)
+                s.result(s.send("virgil-lsp/snapshot"))
+            s.refuses(s.reply(prepare, 60))
+            s.refuses(s.reply(rename, 60))
+            s.refuses(s.prepare("a.v3", A_USE))
+            s.refuses(s.rename("a.v3", A_USE))
         s.change("a.v3", broken)
         s.refuses(s.prepare("a.v3", A_USE), "the project's analysis has parse errors")
         s.refuses(s.rename("a.v3", A_USE), "the project's analysis has parse errors")
+        s.shutdown()
+    finally:
+        s.close()
+
+
+def incomplete_skip_during_preflight(exe, root):
+    s = EditSession(exe, root)
+    try:
+        s.begin()
+        s.open("a.v3", A_TEXT)
+        s.open("b.v3", B_TEXT)
+        s.renames("a.v3", A_USE, {"a.v3": 1, "b.v3": 1})
+        length = MAX_PAYLOAD + 1
+        with paused_worker(s):
+            pending = s.send_rename("a.v3", A_USE)
+            s.refuses(s.rename("a.v3", A_USE), "another rename is being checked")
+            assert pending not in s.waiting, s.waiting
+            s.raw(b"Content-Length: %d\r\n\r\n " % length)
+            warning = b"skipped a message: payload of %d bytes is longer than the limit" % length
+            deadline = time.monotonic() + 5
+            while warning not in os.pread(s.err.fileno(), 65536, 0):
+                assert time.monotonic() < deadline, "the server didn't report the skip at the header"
+                time.sleep(0.01)
+        s.refuses(s.reply(pending, 60))
+        s.raw(b" " * (length - 1))
+        s.refuses(s.prepare("b.v3", B_DECL))
+        s.change("a.v3", A_TEXT)
+        s.change("b.v3", B_TEXT)
+        s.renames("a.v3", A_USE, {"a.v3": 2, "b.v3": 2})
         s.shutdown()
     finally:
         s.close()
@@ -316,9 +352,10 @@ def main():
         rejected_change(exe, root)
         other_documents(exe, root)
         refusal_before_analysis(exe, root)
+        incomplete_skip_during_preflight(exe, root)
         lost_messages(exe, root)
         ignored_notification(exe, root)
-    print("out-of-sync edits: rejected changes, other documents, rejected opens, unopened changes, "
+    print("out-of-sync edits: rejected changes, rename preflight, rejected opens, unopened changes, "
           "lost messages, and ignored notifications: passed")
 
 

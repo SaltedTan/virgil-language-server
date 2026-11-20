@@ -309,8 +309,8 @@ class LspServer {
 		params["message"] = JsonValue.String(message);
 		documentWarning = JsonRpcMessage.Notification("window/showMessage", JsonRpcParams.ByName(params)).encode();
 	}
-	// Called for a message that the transport skipped, before the next one is
-	// handled. It may have changed any open document, so all are out of sync.
+	// Called when the transport starts skipping a message, or the decoder
+	// cannot parse one. It may have changed any open document.
 	def messageSkipped() {
 		documents.markAllOutOfSync();
 	}

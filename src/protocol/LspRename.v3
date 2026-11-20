@@ -55,6 +55,7 @@ class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: Lsp
 class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: LspSnapshotRequests,
 		send: Array<byte> -> void) {
 	def REQUIRES = "a valid textDocument.uri, position, and newName";
+	private def CHANGED = "the documents changed while the rename was checked";
 	// Bounds a reply as references' are bounded (LspReferences): a rename
 	// with more edits, or whose edits need more encoded JSON, gets
 	// RequestFailed rather than a partial edit. Tests lower them.
@@ -217,7 +218,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var p = r.plan;
 		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
 		if (r.answered || ctx != p.ctx || !p.ctx.config.current || p.at.snapshot.degraded()) {
-			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the documents changed while the rename was checked");
+			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, textRefusal(p, CHANGED));
 		}
 		var sources = p.sources;
 		p.sources = null;
@@ -246,18 +247,15 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var reason = LspRenameBindings.compare(s, edited, p.family, p.edits, where(s, _, _));
 		if (reason != null) return fail(reason);
 		checked++;
+		var refusal = textRefusal(p, null);
+		if (refusal != null) return fail(refusal);
 		// The preflight took time: every source must still be what was
 		// analyzed and edited, and the project the same, with the same files,
 		// as eligibility checks them.
 		var ctx = projects.forDocument(s.documentVersions[p.at.index].uri).active;
 		if (ctx != p.ctx || !requests.current(ctx, s)
 				|| LspRenameEligibility.check(p.at, projects, p.selection.decl, p.selection.token) != null) {
-			return fail("the documents changed while the rename was checked");
-		}
-		// A change rejected meanwhile leaves the snapshot current.
-		for (j in p.files) {
-			var refusal = targetRefusal(s, j);
-			if (refusal != null) return fail(refusal);
+			return fail(CHANGED);
 		}
 		var changes = Array<JsonValue>.new(p.files.length);
 		for (f < changes.length) {
@@ -302,7 +300,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	}
 	def configChanged() {
 		if (pending != null && pending.plan != null && !pending.plan.ctx.config.current) {
-			finish(pending, fail("the documents changed while the rename was checked"));
+			finish(pending, fail(textRefusal(pending.plan, CHANGED)));
 		}
 	}
 	private def drop(reason: string) {
@@ -330,6 +328,17 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// if it can (DocumentStore.editRefusal).
 	private def targetRefusal(s: AnalysisSnapshot, j: int) -> string {
 		return store.editRefusal(s.documentVersions[j].uri, s.paths[j]);
+	}
+	private def textRefusal(p: LspRenamePlan, fallback: string) -> string {
+		var s = p.at.snapshot;
+		var refusal = store.editRefusal(s.documentVersions[p.at.index].uri, null);
+		if (refusal != null) return refusal;
+		for (j in p.files) {
+			if (j == p.at.index) continue;
+			refusal = targetRefusal(s, j);
+			if (refusal != null) return refusal;
+		}
+		return fallback;
 	}
 	// The RequestFailed reply for a rename that cannot be made, with the reason.
 	def fail(reason: string) -> JsonRpcReply {

@@ -134,11 +134,22 @@ def test_skipped_message(t: Tester) {
 	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
 	var transport = LspTransport.new(echoDispatcher().handle, never, 64, w.write, r.warn);
 	var big = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"echo\",\"params\":[\"%s\"]}", "0123456789012345678901234567890123456789");
-	t.assertz(true, transport.receive(joined([framed(big), framed("[2]")])));
+	var frame = framed(big), header = frame.length - big.length, skipped = Vector<bool>.new();
+	transport.skipped = fun () { skipped.put(true); };
+	t.assertz(true, transport.receive(frame[0 ... header - 1]));
+	t.asserti(0, skipped.length);
+	t.assertz(true, transport.receive(frame[header - 1 ... header + 1]));
+	t.asserti(1, skipped.length);
+	var charset = "Content-Length: 3\r\nContent-Type: application/vscode-jsonrpc; charset=latin1\r\n\r\n[";
+	t.assertz(true, transport.receive(joined([Arrays.range(frame, header + 1, frame.length), framed("[2]"), charset])));
+	t.asserti(2, skipped.length);
+	t.assertz(true, transport.receive("3]"));
 	t.assertz(true, transport.close());
-	t.asserti(1, r.warnings.length);
-	if (r.warnings.length == 1) {
+	t.asserti(2, skipped.length);
+	t.asserti(2, r.warnings.length);
+	if (r.warnings.length == 2) {
 		t.assert_string(Strings.format1("skipped a message: payload of %d bytes is longer than the limit of 64 bytes", big.length), r.warnings[0]);
+		t.assert_string("skipped a message: payload charset \"latin1\" is not utf-8", r.warnings[1]);
 	}
 	// The skipped request gets no reply; the next message is still read.
 	var invalid = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"a message must be a JSON object\"}}";

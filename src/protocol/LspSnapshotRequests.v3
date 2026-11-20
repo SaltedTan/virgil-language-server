@@ -367,14 +367,14 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		for (i < requests.length) {
 			var r = requests[i];
 			if (r.answered) continue;
-			// The position refers to the text the request was made against.
 			var doc = store.overlay(r.uri);
-			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
-			var refusal = if(same && r.documentRefusal != null, r.documentRefusal(r.uri));
+			var refusal = if(doc != null && r.documentRefusal != null, r.documentRefusal(r.uri));
 			if (refusal != null) {
 				finish(r, reject(r.failure, refusal));
 				continue;
 			}
+			// The position refers to the text the request was made against.
+			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
 			if (!active.has(r.uri)) active[r.uri] = projects.forDocument(r.uri).active;
 			finish(r, if(same, locate(r.lookup, r.failure, active[r.uri], r.uri, r.line, r.character, r.anchor),
 				reject(r.failure, if(r.failure != null, "the document changed while the rename request waited", "the document changed"))));
