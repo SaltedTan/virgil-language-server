@@ -27,6 +27,29 @@ OLD, NEW = ("0.1.0-alpha.4", "0.1.3"), ("0.1.0-alpha.5", "0.1.4")
 REVISIONS = {OLD[0]: ("1" * 40, "a" * 40), NEW[0]: ("2" * 40, "b" * 40)}
 
 
+def git(directory, *args):
+    """Git in directory, with no user or system configuration."""
+    env = {"PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.com"}
+    return subprocess.run(["git", "-C", str(directory), *args], env=env, check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def history(directory):
+    """A repository whose second commit has the annotated tag v<OLD[0]>, and
+    whose HEAD follows the manifest commit: the commits by name."""
+    directory.mkdir()
+    git(directory, "init", "-q")
+    commits = {}
+    for name in ["root", "tagged", "manifest", "head"]:
+        git(directory, "commit", "-q", "--allow-empty", "-m", name)
+        commits[name] = git(directory, "rev-parse", "HEAD")
+        if name == "tagged":
+            git(directory, "tag", "-a", "-m", "release", f"v{OLD[0]}")
+    return commits
+
+
 def make_assets(root, server=OLD[0], extension=OLD[1], manifest=None, identity=None, target=None,
                 bundled=None, archive_name=None, vsix_name=None, sums=None, member=None,
                 archived=None, packaged=None, places=None):
@@ -102,17 +125,32 @@ class AssetTests(TemporaryTest):
     def test_accepts_an_untagged_build(self):
         # A release workflow dry run's package: no tag, so --version prints
         # git describe of its commit, which needs that commit in the checkout.
-        result = subprocess.CompletedProcess([], 0, stdout=f"v{OLD[0]}-3-g{'2' * 12}\n", stderr="")
-        directory = make_assets(self.root, *NEW, manifest={"tag": None})
-        with mock.patch.object(run.subprocess, "run", return_value=result) as describe:
+        commits = history(self.root / "repository")
+        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commits["manifest"]})
+        with mock.patch.object(run, "REPO", self.root / "repository"):
             assets = run.verify_assets(directory, allow_untagged=True)
-        self.assertEqual(describe.call_args.args[0][-4:], ["describe", "--always", "--abbrev=12", "2" * 40])
         self.assertIsNone(assets["tag"])
-        self.assertIn(f"  source revision: v{OLD[0]}-3-g{'2' * 12}\n", run.version_output(assets))
-        missing = subprocess.CompletedProcess([], 128, stdout="", stderr="fatal: Not a valid object name")
-        with mock.patch.object(run.subprocess, "run", return_value=missing):
+        output = run.version_output(assets)
+        self.assertIn(f"  source revision: v{OLD[0]}-1-g{commits['manifest'][:12]}\n", output)
+        self.assertNotIn(commits["head"][:12], output)
+        with mock.patch.object(run, "REPO", self.root / "missing"):
             with self.assertRaisesRegex(run.Failure, "can't describe; fetch that commit and its tags"):
                 run.verify_assets(directory, allow_untagged=True)
+
+    def test_ignores_replacement_refs(self):
+        # The release build sets GIT_NO_REPLACE_OBJECTS, so a replacement ref
+        # that hides the tag from the manifest commit must not change the
+        # description that the driver expects.
+        repository = self.root / "repository"
+        commits = history(repository)
+        tree = git(repository, "rev-parse", f"{commits['manifest']}^{{tree}}")
+        untagged = git(repository, "commit-tree", tree, "-p", commits["root"], "-m", "replacement")
+        git(repository, "replace", commits["manifest"], untagged)
+        self.assertNotIn(f"v{OLD[0]}", git(repository, "describe", "--always", commits["manifest"]))
+        directory = make_assets(self.root, *NEW, manifest={"tag": None, "sourceRevision": commits["manifest"]})
+        with mock.patch.object(run, "REPO", repository):
+            assets = run.verify_assets(directory, allow_untagged=True)
+        self.assertEqual(assets["versionRevision"], f"v{OLD[0]}-1-g{commits['manifest'][:12]}")
 
     def test_rejects_wrong_targets(self):
         self.rejected("must hold exactly", archive_name=f"virgil-lsp-{OLD[0]}-x86-64-darwin.tar.gz")

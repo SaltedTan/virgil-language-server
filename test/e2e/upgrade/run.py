@@ -210,8 +210,10 @@ def verify_assets(directory, *, allow_untagged=False):
 def described(path, revision):
     """The source revision that an untagged build's --version prints: git
     describe of its commit, as the build ran it, in this checkout, which must
-    have the commit and the tags that the build had."""
-    result = subprocess.run(["git", "-C", str(REPO), "describe", "--always", "--abbrev=12", revision],
+    have the commit and the tags that the build had. Like the release build,
+    it ignores replacement refs."""
+    result = subprocess.run(["git", "--no-replace-objects", "-C", str(REPO), "describe", "--always",
+                             "--abbrev=12", revision],
                             capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         raise Failure(f"{path.name}: an untagged build of {revision}, which this checkout can't describe; "
