@@ -84,14 +84,14 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 		}
 		if (!literalSupport || !documentChanges) return empty();
 		if (only != null && !acceptsOnly(only)) return empty();
-		var overlay = store.overlay(uri);
+		var overlay = store.canonicalOverlay(uri);
 		if (overlay == null) return empty();
 		// Cursor movement asks often. Without a ";" diagnostic from this server
 		// in the request, there is nothing to check and no parse to make.
 		if (hasDiagnostics && !hasSemicolonDiagnostic(clientDiagnostics)) return empty();
 		// An edit computed from an out-of-date copy could land in the wrong
 		// place in the client's text.
-		var refusal = store.editRefusal(overlay.uri, null);
+		var refusal = store.canonicalEditRefusal(overlay.uri, null);
 		if (refusal != null) return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, refusal));
 		// The parse keeps a syntax index, as an outline's does, so a document
 		// with too many conservatively counted tokens gets no action

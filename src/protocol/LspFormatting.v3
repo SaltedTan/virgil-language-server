@@ -77,8 +77,8 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 	private def formatting(request: JsonRpcMessage.Request) -> JsonRpcReply {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
 		var doc = objectMember(params, "textDocument");
-		if (doc == null || !JsonValue.String.?(doc["uri"]) || JsonValue.String.!(doc["uri"]).v == null ||
-			DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v) == null) {
+		var key = if(doc != null && JsonValue.String.?(doc["uri"]), DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v));
+		if (key == null) {
 			return invalid("formatting params require a valid textDocument.uri");
 		}
 		// LSP 3.17's FormattingOptions: tabSize is a uinteger.
@@ -89,9 +89,9 @@ class LspFormatting(store: DocumentStore, projects: WorkspaceProjects) {
 		}
 		var resultLimit = MAX_REPLY_BYTES - request.id.resultEnvelopeBytes();
 		if (resultLimit < 2) return replyTooLarge();
-		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
+		var overlay = store.canonicalOverlay(key);
 		if (overlay == null || !Strings.equal(overlay.languageId, "virgil")) return noEdits();
-		var refusal = store.editRefusal(overlay.uri, null);
+		var refusal = store.canonicalEditRefusal(overlay.uri, null);
 		if (refusal != null) return failed(refusal);
 		var owner = projects.forDocument(overlay.uri);
 		var r = AeneasAdapter.formatting(overlay.uri, overlay.text, owner.compilerArgs(), AnalysisFormatEnd.MIRROR);

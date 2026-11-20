@@ -262,7 +262,7 @@ The store also marks open documents whose text may differ from the client's (`ma
 
 The same rejections of a document that isn't open record that the client holds that file, since its editor may have text that differs from the file on disk: a `didOpen` the store rejected, for example over capacity, and a `didChange` for a URI the server doesn't have open. An identifiable `didSave` for such a URI records it too, even if the notification was rejected. A `didClose` of the URI, which ends the client's hold, or an accepted `didOpen`, clears the record. The ordered map is bounded by 8,192 local files (`DocumentLimits.MAX_HELD`) and 1 MiB of canonical URI bytes (`DocumentLimits.MAX_HELD_BYTES`). A file that would exceed either limit sets a flag that stands for every file that isn't open until the server restarts. A rename then refuses to edit any closed file because the client may hold it. A `didOpen` inside a skipped frame or an undecodable payload can't be identified, so nothing records its file. A rename can then edit that file from disk while the client holds other text, if the client opened it with unsaved text and has sent no change, save, or close for it since ([Known limitations](known-limitations.md#what-rename-refuses)).
 
-`DocumentStore.editRefusal` is the one check that [formatting](#the-formatting-request), [code actions](#code-actions), [prepare rename](#prepare-rename), and [rename](#rename) make before they compute edits. It returns the reason for a marked open document, or for a file that isn't open whose record or the overflow flag says the client may hold it, and `null` otherwise. Each request answers the reason with `RequestFailed`. Read-only requests, such as hover and definition, keep answering from the server's copy. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization and position-encoding negotiation are not advertised. See [Document symbols](#document-symbols) for outline support. Parser diagnostics are push notifications and need no capability advertisement. The [didChange version transcript](../test/diagnostics/didchange-version.jsonl) checks a version-only update's diagnostics and rename edits, with a full-text change of the same bytes as the control; the [stale dependency transcript](../test/diagnostics/didchange-version-stale-dependency.jsonl) checks that it does not restamp diagnostics from an analysis a disk change made stale.
+`DocumentStore.canonicalEditRefusal` supplies the shared check that [formatting](#the-formatting-request), [code actions](#code-actions), [prepare rename](#prepare-rename), and [rename](#rename) make before they compute edits. It returns the reason for a marked open document, or for a file that isn't open whose record or the overflow flag says the client may hold it, and `null` otherwise. It uses the canonical URI directly. `DocumentStore.editRefusal` accepts a raw URI and normalizes it first. A request that reaches the check and gets a reason returns `RequestFailed`. Code actions can return `[]` earlier based on client capabilities, the requested kinds, whether the document is open, or the supplied diagnostics. Their parse budget is checked after synchronization. Read-only requests, such as hover and definition, keep answering from the server's copy. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization and position-encoding negotiation are not advertised. See [Document symbols](#document-symbols) for outline support. Parser diagnostics are push notifications and need no capability advertisement. The [didChange version transcript](../test/diagnostics/didchange-version.jsonl) checks a version-only update's diagnostics and rename edits, with a full-text change of the same bytes as the control; the [stale dependency transcript](../test/diagnostics/didchange-version-stale-dependency.jsonl) checks that it does not restamp diagnostics from an analysis a disk change made stale.
 
 ### Parser diagnostics
 
@@ -294,13 +294,7 @@ For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file
 document's current overlay. The only action is **Insert missing ";"**, with
 `kind: "quickfix"`. It needs no worker, semantic analysis, or waiting. Closed
 and unknown documents return `[]`; malformed params get `InvalidParams`, and
-the ordinary [lifecycle](#lifecycle) gates apply. A document [marked out of
-sync](#document-store) gets `RequestFailed`, saying that the server's copy is
-out of date, before the parse, since the insertion point computed from that
-copy could be wrong in the client's text. A request that the checks below
-answer with `[]` before any parse, such as one whose `context.diagnostics`
-holds no semicolon diagnostic, still gets `[]`, so moving the cursor doesn't
-show errors.
+the ordinary [lifecycle](#lifecycle) gates apply.
 
 The handler first checks the client's capabilities and `context.only`. A kind
 of `quickfix` or its ancestor (the empty kind) accepts the fix; `refactor`, a
@@ -313,11 +307,17 @@ messages:
 - `',' or ';' expected`, for local declarations;
 - `',' or ';' expected after field declaration`, for fields.
 
-Otherwise it parses the current text with `AeneasAdapter.parseStatement`, the same
-driver and active project's [language options](configuration.md#compiler-flags)
-as [parser diagnostics](#parser-diagnostics). That parse keeps a syntax index,
-so a document over the outline's [parse budget](#document-symbols) gets no
-action, `[]`, without it. The parse reads the text as it is, where a carriage
+The capability, kind, open-document, and diagnostic checks can return `[]`
+before checking synchronization. A request that passes those checks for a
+document [marked out of sync](#document-store) gets `RequestFailed`, saying
+that the server's copy is out of date, even when the document is over the
+[parse budget](#document-symbols). The insertion point from the server's copy
+could be wrong in the client's text.
+
+A synchronized document over the parse budget gets `[]` without parsing.
+Within that budget, `AeneasAdapter.parseStatement` keeps a syntax index and
+uses the same driver and active project's [language options](configuration.md#compiler-flags)
+as [parser diagnostics](#parser-diagnostics). The parse reads the text as it is, where a carriage
 return doesn't end a line comment; the budget uses the same conservative count
 as the outline, regardless of line-ending normalization. Only the first error is eligible,
 with one of those exact messages and a range intersecting the requested range.

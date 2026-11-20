@@ -15,7 +15,7 @@ component LspRenameEligibility {
 	def OPEN_DOCUMENT = "open the document to rename from it";
 	def documentRefusal(store: DocumentStore, key: string) -> string {
 		if (store.canonicalOverlay(key) == null) return OPEN_DOCUMENT;
-		return store.editRefusal(key, null);
+		return store.canonicalEditRefusal(key, null);
 	}
 	// The renameable name at {offset} in {at}'s document: whether the offset
 	// selects something there, and either the selection or the reason it

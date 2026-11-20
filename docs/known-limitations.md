@@ -52,11 +52,14 @@ more code after it on its line, such as `i++ j++`, can lose a fix that would
 be right. A layout field or a layout's size gets no fix either. There is no
 fix-all or action on save ([Code actions](architecture.md#code-actions)).
 
-After the server rejects a change to a document, or skips a message it can't
-read, the document's code actions get an error saying the server's copy is out
-of date, until a change replaces the whole text or the document is closed and
-reopened. A request that names no semicolon diagnostic still gets an empty list,
-so moving the cursor shows no error.
+After the server rejects a document change or loses a message, a code action
+request can fail because the server no longer has the editor's current text.
+The server first returns an empty list if the client lacks literal actions or
+versioned edits, excludes quick fixes, asks about a closed document, or supplies
+diagnostics without a semicolon error from this server. For requests that pass
+those checks, the out-of-date error takes priority even for documents too large
+to parse. Replacing the whole text or closing and reopening the document clears
+that error.
 
 ## Semantic features need a project file
 
@@ -231,7 +234,7 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 - A rename has at most 10,000 edits and a reply of at most 4 MiB of encoded JSON. A larger one is refused whole, never sent in part ([edits](architecture.md#rename)).
 - The editor must accept versioned edits (`workspace.workspaceEdit.documentChanges`), so that an edit to a document that changed meanwhile is refused. VS Code does. Neovim 0.11.6 applies them but omits them from its capabilities, so the shipped [Neovim configurations](../editors/nvim/README.md#rename) declare them for it, and Neovim checks the version of only the first document of an edit ([client requirements](architecture.md#rename)).
 - It never edits comments, strings, `#packing` hints, or file names.
-- It refuses to edit a document whose last change the server rejected, or that was open when the server skipped or couldn't decode a message, until the document gets a change that replaces its whole text or is closed and reopened. That includes a rename started from another document. It also refuses to edit a file whose open the server rejected, for example over the open-document capacity, or that the editor sent a change or save for while the server didn't have it open: the editor may hold text that differs from the file on disk. A close of that file in the editor ends the refusal ([document store](architecture.md#document-store)).
+- It refuses to edit a document whose last change the server rejected, or that was open when the server skipped or couldn't decode a message, until the document gets a change that replaces its whole text or is closed and reopened. That includes a rename started from another document. It also refuses to edit a file whose open the server rejected, for example over the open-document capacity, or that the editor sent a change or save for while the server didn't have it open: the editor may hold text that differs from the file on disk. The server drops that file's record when the editor closes it or the server accepts a new open ([document store](architecture.md#document-store)).
 - The server tracks up to 8,192 such files and up to 1 MiB of their canonical URIs. A new record that would exceed either limit makes rename refuse to edit any closed file until the server restarts.
 - A file opened inside a message the server skipped or couldn't decode is unknown to the server. If the editor opened it with unsaved text and has sent no change, save, or close for it since, a rename can still compute that file's edits from its bytes on disk, and they can land in the wrong place in the editor's text. Saving or editing the file, or closing and reopening it, lets the server see it ([document store](architecture.md#document-store)).
 

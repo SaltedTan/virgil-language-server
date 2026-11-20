@@ -327,11 +327,11 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// Why the rename can't edit file {j} of {s}, named by its path, or null
 	// if it can (DocumentStore.editRefusal).
 	private def targetRefusal(s: AnalysisSnapshot, j: int) -> string {
-		return store.editRefusal(s.documentVersions[j].uri, s.paths[j]);
+		return store.canonicalEditRefusal(s.documentVersions[j].uri, s.paths[j]);
 	}
 	private def textRefusal(p: LspRenamePlan, fallback: string) -> string {
 		var s = p.at.snapshot;
-		var refusal = store.editRefusal(s.documentVersions[p.at.index].uri, null);
+		var refusal = store.canonicalEditRefusal(s.documentVersions[p.at.index].uri, null);
 		if (refusal != null) return refusal;
 		for (j in p.files) {
 			if (j == p.at.index) continue;
