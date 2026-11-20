@@ -345,14 +345,24 @@ class ResourceTest(unittest.TestCase):
         # /proc/<pid>/task. If it leaves while stop()'s final pass reads its
         # children, process_tree falls back to ps, and ps, a child of this
         # process, has no HWM (#579).
-        server = subprocess.Popen([sys.executable, "-c", "import subprocess, sys\n"
-                                   "worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-                                   "try:\n"
-                                   "    print(worker.pid, flush=True)\n"
-                                   "    sys.stdin.read(1)\n"
-                                   "finally:\n"
-                                   "    worker.kill()\n"
-                                   "    worker.wait()\n"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        server = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess, sys\n"
+                "worker = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(30)'])\n"
+                "try:\n"
+                "    print(worker.pid, flush=True)\n"
+                "    sys.stdin.read(1)\n"
+                "finally:\n"
+                "    worker.kill()\n"
+                "    worker.wait()\n",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
         self.addCleanup(server.communicate)
         child = int(server.stdout.readline())
         tree = bench.process_tree(server.pid)
