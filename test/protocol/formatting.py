@@ -10,10 +10,11 @@ edit above 10,000 edits, and the same text as `virgil-lsp format` for files
 that end with a line end. It also checks the refusals: no edits for a syntax
 error, a lone CR, a project file, or a document that isn't Virgil;
 InvalidParams for malformed options; RequestFailed for the parse budget,
-growth past the document store, a reply over 4 MiB, a merged edit around
-U+FFFD, which stands for an unpaired surrogate, and a document marked out
-of sync by a rejected change, a skipped frame, or an undecodable payload,
-until an accepted full-text change or a reopen. Each session shuts down and
+growth past the document store, alone or beside another open document, a
+reply over 4 MiB, a merged edit around U+FFFD, which stands for an unpaired
+surrogate, and a document marked out of sync by a rejected change, a skipped
+frame, or an undecodable payload, until an accepted full-text change or a
+reopen. Each session shuts down and
 exits with status 0, and every receive has a deadline.
 
 Run from the repository root:
@@ -263,6 +264,11 @@ def parse_budget(exe):
         s.start()
         s.open("untitled:dense.v3", "def f(){" + ";" * MAX_TOKENS + "}\n")
         s.refused("untitled:dense.v3", text="the document has more than %d tokens" % MAX_TOKENS)
+        # The lone-CR check runs before the parse budget is counted, so a
+        # document that is over the budget and has a bare CR gets no edits,
+        # not the budget's error.
+        s.open("untitled:dense-cr.v3", "def f(){" + ";" * MAX_TOKENS + "}\r")
+        assert s.edits("untitled:dense-cr.v3") == []
         s.open("untitled:small.v3", "def f() {}\n")
         assert s.edits("untitled:small.v3") == [edit(0, 9, 0, 9, " ")]
         s.ping()
@@ -352,6 +358,19 @@ def bounds(exe, work):
         assert len(text) < 101000
         s.open(uri, text)
         s.refused(uri, text="would not fit in the open-document capacity")
+        s.close_document(uri)
+        # The capacity covers every open document, not this one alone. A
+        # file of about 2 KB whose 1,000 statements 21 blocks deep gain
+        # about 21 KB of tabs fits on its own, but not beside a second
+        # overlay that leaves about 11 KB of the 1 MiB free. Closing that
+        # overlay admits the same request.
+        uri, other = "untitled:aggregate.v3", "untitled:aggregate-other.txt"
+        text = nested(20, ";\n" * 1000)
+        s.open(uri, text)
+        s.open(other, "x" * (STORE_BYTES - 12000 - len(text)), language="plaintext")
+        s.refused(uri, text="would not fit in the open-document capacity")
+        s.close_document(other)
+        assert apply(text, s.edits(uri)) == command(exe, work, text)
         s.close_document(uri)
         # A reply over 4 MiB: 10,001 lines 21 blocks deep gain 210,021 tabs,
         # two bytes each in JSON, and 650,000 vertical tabs in a comment in

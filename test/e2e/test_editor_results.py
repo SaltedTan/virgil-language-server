@@ -379,7 +379,7 @@ class ManualTest(ValidatorTest):
         # the manifest's display order. There is no complete-coverage rule.
         events = manual_stream()
         events[0]["expected"] = [{"feature": "completion"}, {"feature": "diagnostics"},
-                                  {"step": 2}, {"step": 10}, {"step": 17}]
+                                  {"step": 2}, {"step": 10}, {"step": 18}]
         events[1:-1] = [dict(events[1], target=target) for target in events[0]["expected"]]
         self.assertValid(rebuild(events))
         events[0]["expected"][-2:] = reversed(events[0]["expected"][-2:])
