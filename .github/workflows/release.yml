@@ -307,8 +307,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v7
@@ -333,6 +331,9 @@ jobs:
       - name: Choose the previous release
         id: previous
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           tag=$(gh api --paginate --slurp 'repos/{owner}/{repo}/releases?per_page=100' | jq -r '
             [.[][] | select(.draft == false and .published_at != null and .tag_name != "v" + env.VERSION)]
@@ -345,6 +346,8 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Download the previous release's Linux archive, linux-x64 VSIX, and SHA256SUMS
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.previous.outputs.tag }}
         run: |
           gh release download "$TAG" --dir "$RUNNER_TEMP/from" --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' \
