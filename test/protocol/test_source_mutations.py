@@ -912,12 +912,16 @@ class StandIn(unittest.TestCase):
         for request in (False, True):
             with self.subTest(request=request), tempfile.TemporaryDirectory() as directory:
                 now = time.monotonic()
-                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 0.4, now + 0.3, limits),
+                s = sm.MutationSession(fake_server(directory, "deaf"), sm.Deadlines(now + 30, now + 20, limits),
                                        VALIDATOR)
                 try:
                     with mock.patch.object(sm.select, "PIPE_BUF", 512), mock.patch.object(sm.os, "write", bounded_write):
                         s.request("textDocument/hover", {}, 2)
                         started = time.monotonic()
+                        # Take the case and run deadlines from here, after the
+                        # first request's deadline began, so that however slow
+                        # the start, neither expires first.
+                        s.deadlines = sm.Deadlines(started + 0.4, started + 0.3, limits)
                         with self.assertRaises(sm.CaseFailure) as caught:
                             params = {"text": "x" * (1024 * 1024)}
                             if request:
