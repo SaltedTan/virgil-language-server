@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Formatting now indents two rare layouts by [ADR-0019](docs/decisions/0019-formatter.md)'s rules, where it left the line or its body at the wrong indentation before ([#526](https://github.com/SaltedTan/virgil-language-server/issues/526)). A block comment that starts its line and closes on a line with code takes the indentation of that line, as other comment lines take the indentation of the code line after them; the lines inside the comment keep their bytes. After an inline `else`, as in `g(); else while (c)`, a control header on the same line, including the `else` body's own header, indents its unjoined `{` or braceless body from that line instead of from the `if` or `match`. The formatted text of the pinned Aeneas sources, libraries, and apps, and of Wizard engine, doesn't change.
+- Fixed indentation for multiline block comment openers and control headers after an inline `else`. The formatted text of the pinned Aeneas sources, libraries, and apps, and of Wizard engine, doesn't change. [Formatting rules](docs/architecture.md#formatting), [#526](https://github.com/SaltedTan/virgil-language-server/issues/526)
 
 ## [0.1.0-alpha.8] - 2026-11-20
 
