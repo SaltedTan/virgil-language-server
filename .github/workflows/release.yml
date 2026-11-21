@@ -116,22 +116,40 @@ jobs:
       REQUIRE_NVIM: '1'
       ARCHIVE: build/release/virgil-lsp-${{ needs.check.outputs.version }}-${{ matrix.target }}.tar.gz
     steps:
+      # Full history and tags, so --version reports a described revision, but
+      # blobless: only the checked-out commit's files are downloaded. The build
+      # and package read only the pinned Virgil commit, so its submodule is
+      # cloned at depth 1, as in ci.yml.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
-          fetch-depth: 0 # full history and tags so --version reports a described revision
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       # Only make test needs Neovim, and a pull request's dry run doesn't run it.
+      # The versions and digests are ci.yml's and editor-test-suites.yml's.
       - name: Install Neovim 0.11.6
         if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           curl --fail --location --retry 3 \
             https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
             -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "2fc90b962327f73a78afbfb8203fd19db8db9cdf4ee5e2bef84704339add89cc  $RUNNER_TEMP/nvim.tar.gz" |
+            sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Install Neovim (Homebrew)
+      - name: Install Neovim 0.12.6
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
-        run: brew install neovim
+        env:
+          NVIM_VERSION: 0.12.6
+          NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-macos-arm64/bin" >> "$GITHUB_PATH"
       - name: Install Rosetta 2
         if: runner.os == 'macOS'
         run: sudo softwareupdate --install-rosetta --agree-to-license
@@ -230,18 +248,31 @@ jobs:
       VIRGIL_V3C: ${{ github.workspace }}/vendor/virgil/bin/stable/jar/Aeneas
       ARCHIVE: virgil-lsp-${{ needs.check.outputs.version }}-jvm-arm64-darwin.tar.gz
     steps:
+      # Full history and tags, so the build's revision is the package's; as in
+      # the build job, blobless, with the pinned Virgil at depth 1.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
-          fetch-depth: 0 # full history and tags, so the build's revision is the package's
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       - name: Check untranslated Apple Silicon and report Rosetta availability
         run: |
           python3 test/jvm/test_native.py
           python3 test/jvm/native.py host
       # Only make test needs Neovim, and a pull request's dry run doesn't run it.
-      - name: Install Neovim (Homebrew)
+      - name: Install Neovim 0.12.6
         if: github.event_name != 'pull_request'
-        run: brew install neovim
+        env:
+          NVIM_VERSION: 0.12.6
+          NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-macos-arm64/bin" >> "$GITHUB_PATH"
       - name: Fetch the pinned JDK
         run: |
           java=$(python3 scripts/jvm-runtime.py prepare arm64-darwin "$RUNNER_TEMP/jdk")
