@@ -4,7 +4,7 @@
 
 | Server version | Pinned Virgil revision | Notes |
 | --- | --- | --- |
-| `main` (unreleased) | [`b86f43f1`](https://github.com/titzer/virgil/commit/b86f43f102406e94dc2ac4a85909c38ef414e214) (2026-11-03) | Required CI |
+| `main` (unreleased) | [`4aa91254`](https://github.com/titzer/virgil/commit/4aa91254616288250b79b5456073107848ad6f39) (2026-11-15) | Required CI |
 | `0.1.0-alpha.8` | [`b86f43f1`](https://github.com/titzer/virgil/commit/b86f43f102406e94dc2ac4a85909c38ef414e214) (2026-11-03) | Eighth prerelease |
 | `0.1.0-alpha.7` | [`b86f43f1`](https://github.com/titzer/virgil/commit/b86f43f102406e94dc2ac4a85909c38ef414e214) (2026-11-03) | Seventh prerelease |
 | `0.1.0-alpha.6` | [`b86f43f1`](https://github.com/titzer/virgil/commit/b86f43f102406e94dc2ac4a85909c38ef414e214) (2026-11-03) | Sixth prerelease |

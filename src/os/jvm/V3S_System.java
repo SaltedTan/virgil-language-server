@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Adapted from Virgil's rt/jvm/src/V3S_System.java at revision
-// b86f43f102406e94dc2ac4a85909c38ef414e214, under the Apache License 2.0 (see
+// 4aa91254616288250b79b5456073107848ad6f39, under the Apache License 2.0 (see
 // THIRD_PARTY_NOTICES.md). The methods after "Unchanged from upstream" are
 // copied verbatim, and test/jvm/V3SSystemTest.java compares their behavior with
 // the compiled pinned copy. The I/O methods and the host bridge before it are this

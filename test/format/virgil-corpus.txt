@@ -20,7 +20,7 @@
 # join touches the lines on both sides of the line end that it removes, even
 # when it replaces only that line end, and each blank line removed at the end
 # of a file is a line of its own.
-pin b86f43f102406e94dc2ac4a85909c38ef414e214
+pin 4aa91254616288250b79b5456073107848ad6f39
 total aeneas/src: 168 files, 168 formatted, 88 changed, 458 lines
 total lib: 67 files, 66 formatted, 26 changed, 259 lines
 total apps: 64 files, 64 formatted, 38 changed, 93 lines
@@ -28,10 +28,10 @@ aeneas/src/arm64/Arm64AddrPatcher.v3	42012621a465226b	12,31
 aeneas/src/arm64/Arm64Backend.v3	d8b98c6da8caf042	21
 aeneas/src/arm64/Arm64Linux.v3	fbb3314f777505b4	26,100
 aeneas/src/arm64/Arm64RegSet.v3	ee2849fe9e1d1a0d	unchanged
-aeneas/src/arm64/SsaArm64Gen.v3	679f9c6bf725bc70	153,1779
-aeneas/src/core/Eval.v3	2e6b9cabac7b68e4	99,480,482-483
+aeneas/src/arm64/SsaArm64Gen.v3	bc1c72e8e3d125b6	153,1781
+aeneas/src/core/Eval.v3	3892b21ce207cef7	99,480,482-483
 aeneas/src/core/Member.v3	35cc6e2f75a806a9	unchanged
-aeneas/src/core/Opcode.v3	cde158e2295ebf28	137,211,214
+aeneas/src/core/Opcode.v3	5c5be105949f3bb3	137,211,214
 aeneas/src/core/OpcodeVisitor.v3	138e4d139edfe0b1	unchanged
 aeneas/src/core/Operator.v3	1a0b704e2d2c6d10	669,687
 aeneas/src/core/Program.v3	fdadc5b9c7ce6672	48,121,134
@@ -68,14 +68,14 @@ aeneas/src/jvm/JvmType.v3	fe2f532e69005331	36,103
 aeneas/src/jvm/SsaJvmGen.v3	9bc06136f3678e2f	405,483,578,1083
 aeneas/src/mach/AnyRef.v3	b7e76596a56d8392	unchanged
 aeneas/src/mach/CiRuntime.v3	43616ba8553ab331	58,92,118,120,127,132,138
-aeneas/src/mach/GlobalRegAlloc.v3	2fe68d5afba660b5	242-243,327,339-340,353
+aeneas/src/mach/GlobalRegAlloc.v3	5abfae1a17842403	240-241,325,337-338,351
 aeneas/src/mach/LinearScanRegAlloc.v3	238e5f5fcba066ea	514-515
 aeneas/src/mach/Linking.v3	2db3b42f385154e2	unchanged
 aeneas/src/mach/LocalRegAlloc.v3	e393e2556c2f0c88	unchanged
-aeneas/src/mach/MachBackend.v3	6f98907531dc66fe	607,1067,1183
+aeneas/src/mach/MachBackend.v3	6b1a29140c4a6135	615,1075,1191
 aeneas/src/mach/MachDataWriter.v3	3d66420b718f4bc6	unchanged
 aeneas/src/mach/MachImportAdapterGen.v3	807b81865af5d137	unchanged
-aeneas/src/mach/MachLowering.v3	305f7a68327d9a9f	209
+aeneas/src/mach/MachLowering.v3	c2776f4685eb12e2	209
 aeneas/src/mach/MachModule.v3	a2891fc603ec4aa6	unchanged
 aeneas/src/mach/MachProgram.v3	456cfff8e4d89f08	410,415,426,431,451-452,459-460,577
 aeneas/src/mach/MachRtGcTables.v3	4ec82e9b2d01bd25	unchanged
@@ -97,19 +97,19 @@ aeneas/src/main/Compiler.v3	6c59f489b6831497	60-64,418
 aeneas/src/main/Debug.v3	e91ec1e13e868370	unchanged
 aeneas/src/main/Error.v3	227f0da4bb41722d	unchanged
 aeneas/src/main/Profiler.v3	dbfccb4becd008ab	199
-aeneas/src/main/Version.v3	f59afaded5d38d26	unchanged
+aeneas/src/main/Version.v3	ae789b9112db4ea7	unchanged
 aeneas/src/os/Darwin.v3	7dab9673f2b3b8e6	61
 aeneas/src/os/Kernel.v3	74e065b4cf32ea9c	unchanged
-aeneas/src/os/Linux.v3	98d67f11072b97b1	255
+aeneas/src/os/Linux.v3	dd66bd57453e8874	257
 aeneas/src/riscv64/RiscV64Backend.v3	8d15af5682253d5c	unchanged
 aeneas/src/riscv64/RiscV64Linux.v3	12bca45a33ed5122	unchanged
 aeneas/src/riscv64/RiscV64RegSet.v3	143a8e00071f88b5	unchanged
-aeneas/src/riscv64/SsaRiscV64Gen.v3	53a4e8cedae2a4ca	154
+aeneas/src/riscv64/SsaRiscV64Gen.v3	06a125982458ae6a	154
 aeneas/src/ssa/DbgLineEditor.v3	0e74bdc3b775057f	unchanged
 aeneas/src/ssa/Gvn.v3	daa8942670813133	unchanged
 aeneas/src/ssa/Ssa.v3	e0fd16350e4945f4	unchanged
 aeneas/src/ssa/SsaBlockOrder.v3	9f3ef2edb9b71efa	9-10,23,301
-aeneas/src/ssa/SsaBuilder.v3	9c87caf11ac051a1	225,717-718,754,911
+aeneas/src/ssa/SsaBuilder.v3	6011ccf2f7a75607	225,717-718,754,911
 aeneas/src/ssa/SsaContext.v3	54c96b7808096cbc	unchanged
 aeneas/src/ssa/SsaCoverage.v3	f243aa47490851fd	unchanged
 aeneas/src/ssa/SsaDebugger.v3	4a5814fbb848ac76	486,1087,1103,1126,1797
@@ -119,14 +119,14 @@ aeneas/src/ssa/SsaInliner.v3	db9c4ba0147e9e39	263,272
 aeneas/src/ssa/SsaInstrVisitor.v3	e9c580540adac38f	unchanged
 aeneas/src/ssa/SsaInterpreter.v3	3d66def48a25cf6e	39
 aeneas/src/ssa/SsaMap.v3	474d42946f7dd332	unchanged
-aeneas/src/ssa/SsaOptimizer.v3	8bb65d1e8c4d0dd1	56,58,95-96,919,2064,2088,2090-2091,2095,2103,2105,2111,2114-2116,2121,2124,2126,2135,2137,2139-2140,2142,2145,2149,2158,2167-2168,2170,2175,2185-2186,2190,2192,2293,2336,2369
+aeneas/src/ssa/SsaOptimizer.v3	0d91d2e81ef8066f	56,58,95-96,920,2066,2090,2092-2093,2097,2105,2107,2113,2116-2118,2123,2126,2128,2137,2139,2141-2142,2144,2147,2151,2160,2169-2170,2172,2177,2187-2188,2192,2194,2295,2338,2371
 aeneas/src/ssa/SsaPrinter.v3	68695d6959696b00	unchanged
 aeneas/src/ssa/SsaProfiler.v3	14bfa84b05384f80	76
-aeneas/src/ssa/SsaRebuilder.v3	1a3245e50f4f781f	356
+aeneas/src/ssa/SsaRebuilder.v3	6001d3244156bcd1	356
 aeneas/src/ssa/SsaTarget.v3	1544d69968e0d4a9	unchanged
 aeneas/src/ssa/SsaTracer.v3	8199b91de2e2c86b	70,80
 aeneas/src/ssa/SsaVerifier.v3	b2950080e0b40ec8	unchanged
-aeneas/src/ssa/VstSsaGen.v3	0ee20381d872917a	706,848,1006
+aeneas/src/ssa/VstSsaGen.v3	fd80f6b219e57f21	706,848,1006
 aeneas/src/test/Regression.v3	c11905ae742a1bba	44-45,214-215,285,288,293
 aeneas/src/types/Bool.v3	577e0c0a79e6351b	unchanged
 aeneas/src/types/Byte.v3	8f0800f5666a7a0c	unchanged
@@ -153,7 +153,7 @@ aeneas/src/v3/Mangle.v3	0fc28a28334de932	46-47,53-54
 aeneas/src/v3/Ref.v3	2d8040f4051ae4d8	unchanged
 aeneas/src/v3/SystemModule.v3	cde36d99a48fff8f	196
 aeneas/src/v3/TypeSystem.v3	4d238708432bc157	136,154,160,232,302,305,316,322,349,386,421,433,438,613
-aeneas/src/v3/V3.v3	f5419882391d8834	17,118
+aeneas/src/v3/V3.v3	34c017e9c3c2b525	17,118
 aeneas/src/v3/V3Array.v3	f718916add550585	unchanged
 aeneas/src/v3/V3Class.v3	da0711b0fd80ff9f	52
 aeneas/src/v3/V3Component.v3	74cca98baf5275c2	18
@@ -178,22 +178,22 @@ aeneas/src/wasm/WasmGcType.v3	46430aac24b3bf90	176,204
 aeneas/src/wasm/WasmOp.v3	4382762e347c677e	219-220
 aeneas/src/wasm/WasmTarget.v3	f2c9b01c04a76fd6	67-68,196,209,388-390,392,468,475,481
 aeneas/src/wasm/WasmType.v3	0d6bcb21b7402cc0	81,83,131,140,151,153,170,185,224,232,287
-aeneas/src/x86-64/SsaX86_64Gen.v3	c2e798ac13ab22b9	641-642,947,961,1618
-aeneas/src/x86-64/X86_64Backend.v3	eee62962c9dff6ae	unchanged
+aeneas/src/x86-64/SsaX86_64Gen.v3	4f550c20d62a75d6	641-642,947,961,1618
+aeneas/src/x86-64/X86_64Backend.v3	926326e532ec71e4	unchanged
 aeneas/src/x86-64/X86_64CallConv.v3	1bab4f8923ccdc7d	unchanged
 aeneas/src/x86-64/X86_64Darwin.v3	3450af6b2498a489	166-171
 aeneas/src/x86-64/X86_64Linux.v3	c5c14ef5e1684b8b	unchanged
 aeneas/src/x86-64/X86_64MacroAssembler.v3	182fe5eb302ab879	unchanged
-aeneas/src/x86-64/X86_64RegSet.v3	1b1f8dcf6a7eb3d2	unchanged
+aeneas/src/x86-64/X86_64RegSet.v3	91bc157297f1325f	unchanged
 aeneas/src/x86/DarwinModule.v3	7f29b717512363b0	11
 aeneas/src/x86/X86Backend.v3	bfe11598a995adc9	unchanged
-aeneas/src/x86/X86CodeGen.v3	5a7bc86960d2dee3	341,824,866-875,878-887
+aeneas/src/x86/X86CodeGen.v3	c0d945516b79b529	341,824,866-875,878-887
 aeneas/src/x86/X86Darwin.v3	5da37c8051fe1fc2	unchanged
 aeneas/src/x86/X86Linux.v3	274b3185885ff01f	unchanged
 aeneas/src/x86/X86MacroAssembler.v3	86986301602e86e1	193
 aeneas/src/x86/X86RegSet.v3	610740b5fc5a4273	unchanged
 lib/asm/arm/ArmAssembler.v3	a6c5bea8668d65f6	unchanged
-lib/asm/arm64/Arm64Assembler.v3	64e146e4f23a7d33	19,27,39,233,453,468,471,941,945
+lib/asm/arm64/Arm64Assembler.v3	263cda6292b1c0c4	19,27,39,233,453,468,471,941,945
 lib/asm/mips/MipsAssembler.v3	cd763c9dd14df084	unchanged
 lib/asm/riscv64/RiscV64Assembler.v3	45f671a400baf5e3	14,16
 lib/asm/x86-64/X86_64Assembler.v3	376efb14d51de156	448,451,648,662,681,695,708,722,1675,1679,1681-1682,1684-1685,1687-1688,1690,1692-1693,1695,1697,1980,2975,3664-3665,3676-3677
@@ -315,7 +315,7 @@ apps/VectorND/Vectors.v3	2e201ffa88f6ddf5	unchanged
 apps/WebMandelbrot/mandelbrot.v3	83013a19f077accf	82
 apps/ZiVm/ZiVm.v3	9fc89b7758f87fc2	15,20,38,43,279
 apps/ZiVm/ZiVmTest.v3	948d4669f3e42eb3	204
-apps/Zoomers/Zoomers.v3	d6f8a41c33c1ceb3	299-308,515-516
+apps/Zoomers/Zoomers.v3	0d5d926f21b515ce	299-308,516-517
 apps/dead/zfile01.v3	ff3ae68260de2f94	1
 apps/dead/zfile02.v3	49b55e4ba11eac7d	unchanged
 apps/private/A.v3	62c4c3cc95b20b2d	unchanged

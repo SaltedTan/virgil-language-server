@@ -13,7 +13,7 @@ build, heap, bench, target, *rest = sys.argv[1:]
 split = rest.index("--")
 v3c_flags, sources = rest[:split], rest[split + 1:]
 compiler = subprocess.check_output(["scripts/v3c.sh", "-print-compiler"], text=True).strip()
-flags = ["-redef-field=BenchProbe.enabled=true,RiGc.stats=true"] if bench == "1" else []
+flags = ["-redef-field=BenchProbe.enabled=true,GcStats.enabled=true"] if bench == "1" else []
 commands = {}
 for exe, entry, extra in (("virgil-lsp", "src/main.v3", []),
                            ("virgil-lsp-worker", "src/worker/WorkerMain.v3", ["-heap-size=" + heap])):
