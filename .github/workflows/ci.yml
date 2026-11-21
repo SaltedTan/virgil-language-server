@@ -140,7 +140,7 @@ jobs:
           path: ${{ runner.temp }}/shard-${{ matrix.index }}.json
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 30
 
   test:
     # The required check for Linux make test. It runs whatever its needs'
@@ -328,7 +328,7 @@ jobs:
     env:
       REQUIRE_NVIM: '1'
     steps:
-      # As in test: blobless full history, and the pinned Virgil at depth 1.
+      # As in test-linux-unit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
