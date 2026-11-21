@@ -19,6 +19,7 @@ The first installs a release archive as its README says: extracted into its one 
 - `--out DIR`: where the results go, a new or empty directory. By default, a new directory under `$TMPDIR` (or `/tmp`), printed at the start and the end.
 - `--keep-work`: keep the work directory, for debugging.
 - `--update-lock`: install the latest plugins and write the lock; see [Pins](#pins).
+- `--results FILE`: also write the run's [result stream](#result-stream) to `FILE`. `--release VERSION` and `--purpose PURPOSE` set the stream's `release` and `purpose`, which are otherwise none and `development`, and need `--results`.
 
 The exit status is 0 only when all three runs give the [expected results](#expected-results).
 
@@ -42,7 +43,7 @@ The exit status is 0 only when all three runs give the [expected results](#expec
 
 ## What it checks
 
-Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports its ID in [`coverage.json`](../coverage.json) and what it saw, such as `PASS lazyvim.hover.response: ...`. Statuses are `PASS` and `FAIL`, with `XFAIL` or `XPASS` for the [expected failure](#expected-results) in the stock `noroot` run. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs.
+Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--cmd`, before LazyVim, to record publications, requests, and exits, and `driver.lua` loaded with `-c` to drive it. Each step reports its ID in [`coverage.json`](../coverage.json) and what it saw, such as `PASS lazyvim.hover.response: ...`. Statuses are `PASS` and `FAIL`, with `XFAIL` or `XPASS` for the [expected failure](#expected-results) in the stock `noroot` run. The launcher's `lazyvim.infrastructure.*` checks in `run.sh` print only their failures, without their IDs; the [result stream](#result-stream) records each of them by ID.
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
@@ -84,6 +85,23 @@ The output directory gets:
 The XDG directories, plugins, extracted server (in archive mode), and a copy of the [Neovim test's fixture](../nvim/fixture/) with [CallPicker.v3](fixture/words/CallPicker.v3) added are in a work directory, which is removed at the end unless `--keep-work`. It is under `/tmp` on macOS, where tmux's socket path would be too long under `$TMPDIR`, as for the [Extension Host test](../../../clients/vscode/README.md#extension-host-test), and under `$TMPDIR` (or `/tmp`) elsewhere. A run writes nothing in the checkout, except with `--update-lock`.
 
 Installing the plugins and the parsers has a 600-second deadline, and each run 240 seconds; `VIRGIL_LAZYVIM_RUN_TIMEOUT` sets another, to test the timeout path. A run ends when Neovim has exited and the pane's script has written its exit status to a file, or when that script is gone without writing it. The script doesn't wait for tmux to find the pane dead: Ubuntu 24.04's tmux 3.4, built with utempter, can miss the exit of the pane's shell and then never finds it dead ([tmux/tmux#4559](https://github.com/tmux/tmux/issues/4559)). Each run's tmux pane stays open after Neovim exits, so that its screen can be saved, until the script stops its tmux server. After each run, the server and worker processes must have exited by themselves. What else Neovim left running, such as a plugin's download, is listed as left running and stopped, and doesn't fail the run. On a timeout, SIGINT, SIGTERM, or SIGHUP, the script saves the screen and the LSP log, then stops the tmux server and every process of the runs: the tmux server's process tree, the server and worker processes that `observer.lua` recorded, the processes in the process group of each Neovim that it recorded, which keeps what Neovim started also once Neovim has exited, any process whose command line names the work directory, and their descendants. It freezes them with SIGSTOP, the tmux server first, until it finds no new one, so that none starts another process or leaves an orphan while it reads their trees, then kills them with SIGKILL. A frozen Neovim couldn't act on SIGTERM, and on SIGTERM it runs on for seconds and starts processes, such as parser downloads and a new language server. A Neovim's process group counts only while its anchor runs in it: a `sleep` that `observer.lua` has Neovim start in the group, named after the work directory, which outlives Neovim. Once a process group is empty, its number can go to an unrelated new group, but not while the anchor runs. So the script kills each anchor last, once nothing else in its group is left; if a Neovim's anchor is gone, it doesn't go by that group's number, and fails. A signal that comes while it freezes and kills them takes effect once they are killed, and the script gives up a query to a tmux server that gets no answer within seconds, since a stopped server never answers. The script looks again every 0.2 seconds for five seconds and removes the work directory only once none is left; otherwise, or if it couldn't list the processes after a few tries or a Neovim's anchor was gone, it reports so, keeps the work directory, and exits with a nonzero status. It can't find a process that left its Neovim's process group, whose command line doesn't name the work directory, and that `observer.lua` didn't record, once its parent has exited.
+
+## Result stream
+
+To record the run as a stream of result events, give `run.sh` a file, then validate it:
+
+```sh
+test/e2e/lazyvim/run.sh --results build/lazyvim.jsonl build/virgil-lsp
+python3 scripts/editor-results.py validate build/lazyvim.jsonl
+```
+
+The checks, the deadlines, and the output are the same, with a last line that sums up the run. `run.sh` writes the stream once the runs and their teardown have finished, so the file stays empty until then, and it exits with 0 only if the stream's run passed. To inspect a failure, list the events that didn't pass, with their reasons, and the run-end, with its issues and cleanup:
+
+```sh
+grep -v '"status":"pass"' build/lazyvim.jsonl
+```
+
+In the stream, `lazyvim.configuration.warning` in `noroot` is an `xfail` by the [expected failure's rule](../RESULTS.md#expected-failures-and-workaround-profiles), which the writer applies from `coverage.json` and the run's pins. [The LazyVim writer](../RESULTS.md#the-lazyvim-writer) describes what the stream records. The CI jobs don't pass `--results` yet.
 
 ## Expected results
 

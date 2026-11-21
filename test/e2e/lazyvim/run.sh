@@ -7,11 +7,14 @@
 # starts Neovim in a detached tmux session, and driver.lua drives it through
 # LazyVim's own keys. See README.md for the checks, outputs, and pins.
 #
-#   run.sh [--out DIR] [--keep-work] [--update-lock] (--archive ARCHIVE | SERVER)
+#   run.sh [--out DIR] [--keep-work] [--update-lock]
+#     [--results FILE [--release VERSION] [--purpose PURPOSE]] (--archive ARCHIVE | SERVER)
 #
 # ARCHIVE is a release archive, virgil-lsp-<version>-x86-64-<os>.tar.gz or the
 # JVM build's virgil-lsp-<version>-jvm-arm64-darwin.tar.gz;
-# SERVER is a built virgil-lsp with virgil-lsp-worker beside it.
+# SERVER is a built virgil-lsp with virgil-lsp-worker beside it. With
+# --results, results.py also writes the run's result stream to FILE, as
+# test/e2e/RESULTS.md describes.
 set -euo pipefail
 
 # The LazyVim starter's commit. The plugins' commits, including lazy.nvim's,
@@ -25,19 +28,93 @@ install_timeout=${VIRGIL_LAZYVIM_INSTALL_TIMEOUT:-600}
 run_timeout=${VIRGIL_LAZYVIM_RUN_TIMEOUT:-240}
 
 usage() {
-  echo "usage: $0 [--out DIR] [--keep-work] [--update-lock] (--archive ARCHIVE | SERVER)" >&2
+  echo "usage: $0 [--out DIR] [--keep-work] [--update-lock]" \
+    "[--results FILE [--release VERSION] [--purpose PURPOSE]] (--archive ARCHIVE | SERVER)" >&2
+  stop_check "the arguments are not valid: $*" usage
   exit 2
 }
 
+# die MESSAGE: fails the check in progress with MESSAGE, and stops. Its
+# failure code is $failure_code, or error.
 die() {
   echo "run.sh: $*" >&2
+  stop_check "$*" "${failure_code:-error}"
   exit 1
 }
 
+# With --results, run.sh records each of its own checks, and driver.lua each
+# of its steps, in the observations file, from which results.py writes the
+# stream at the end. Without it, these do nothing.
+results='' release='' purpose='' observations='' interrupted=''
+check_id='' check_profile='' check_started=''
+clock() { echo "${EPOCHREALTIME:-$(date -u +%s)}"; }
+results_py() { python3 "$here/results.py" "$@"; }
+# begin_check ID [PROFILE]: the check in progress, in the wrapper profile by
+# default. A failure of the script belongs to it until it ends.
+begin_check() {
+  [[ -n $results ]] || return 0
+  check_id=$1 check_profile=${2:-wrapper} check_started=$(clock)
+}
+# end_check STATUS OBSERVATION [REASON CODE [stopped]]: ends the check in
+# progress.
+end_check() {
+  [[ -n $results && -n $check_id ]] || return 0
+  local extra=()
+  [[ -z ${3:-} ]] || extra=(--reason "$3" --failure-code "$4")
+  [[ -z ${5:-} ]] || extra+=(--stopped)
+  results_py check "$observations" --id "$check_id" --profile "$check_profile" --started "$check_started" \
+    --status "$1" --observation "$2" ${extra[@]+"${extra[@]}"} || true
+  check_id=''
+}
+pass_check() { end_check pass "$*"; }
+fail_check() { end_check fail "$1" "$1" "$2"; }
+# stop_check REASON CODE: fails the check in progress, at which run.sh stops.
+stop_check() { end_check fail "$1" "$1" "$2" stopped; }
+# record_digest NAME DIR: the tree digest of a profile's configuration or the
+# fixture.
+record_digest() {
+  [[ -n $results ]] || return 0
+  results_py digest "$observations" --name "$1" --tree "$2" || true
+}
+# results_end STATUS: writes the stream, and exits with results.py's status.
+# It runs from the directory that run.sh started in, whose relative paths the
+# command names; the work directory may be gone.
+results_end() {
+  local args=()
+  cd "$launch_dir" 2>/dev/null || cd /
+  [[ -z ${work:-} ]] || args+=(--work "$work")
+  [[ -z ${out:-} ]] || args+=(--out "$out")
+  (( ! keep_work )) || args+=(--keep-work)
+  [[ -z $interrupted ]] || args+=(--interrupted)
+  [[ -z $release ]] || args+=(--release "$release")
+  results_py end "$observations" --stream "$results" --purpose "$purpose" --exit-code "$1" \
+    --nvim-version "${nvim_version:-}" --starter-commit "$starter_commit" --launched-at "$launched_at" \
+    --runtime "bash=$BASH_VERSION" ${args[@]+"${args[@]}"} -- "${command[@]}"
+  exit $?
+}
+
+command=("$0" "$@")
+launched_at=$(clock) launch_dir=$PWD
+# An earlier run's stream must not outlive a run that stops at its
+# arguments, so --results FILE is emptied before they are checked.
+previous=''
+for argument in "$@"; do
+  [[ $previous != --results || -z $argument ]] || { : > "$argument"; } 2>/dev/null || true
+  previous=$argument
+done
 out='' keep_work=0 update_lock=0 archive='' server=''
 while (( $# > 0 )); do
   case $1 in
     --out) (( $# > 1 )) || usage; out=$2; shift 2 ;;
+    --results|--release|--purpose)
+      (( $# > 1 )) && [[ -n $2 ]] || usage
+      case $1 in
+        --results) results=$2 ;;
+        --release) release=$2 ;;
+        --purpose) purpose=$2 ;;
+      esac
+      shift 2
+      ;;
     --keep-work) keep_work=1; shift ;;
     --update-lock) update_lock=1; shift ;;
     --archive) (( $# > 1 )) || usage; archive=$2; shift 2 ;;
@@ -45,14 +122,30 @@ while (( $# > 0 )); do
     *) [[ -z $server ]] || usage; server=$1; shift ;;
   esac
 done
-[[ -n $archive$server && ( -z $archive || -z $server ) ]] || usage
+[[ -n $results || -z $release$purpose ]] || usage
+case ${purpose:=development} in
+  release|development|compatibility|canary|demo) ;;
+  *) usage ;;
+esac
+# Every input path is resolved before the script changes directory.
+here=$(cd "$(dirname "$0")" && pwd -P)
+repo=$(cd "$here/../../.." && pwd -P)
+# The stream is emptied before any other command, so that an earlier run's
+# stream can't outlive a run that stops early. Until the teardown's trap is
+# set, this one writes it.
+if [[ -n $results ]]; then
+  { : > "$results"; } 2>/dev/null || { echo "$0: cannot write $results" >&2; usage; }
+  results=$(cd "$(dirname "$results")" && pwd -P)/$(basename "$results")
+  observations=$(mktemp "${TMPDIR:-/tmp}/virgil-lazyvim-observations.XXXXXX") || { echo "$0: cannot create a temporary file" >&2; usage; }
+  trap 'rc=$?; stop_check "run.sh exited with status $rc" exit-status; results_end "$rc"' EXIT
+fi
+begin_check lazyvim.infrastructure.preflight
+
+[[ -n $archive$server && ( -z $archive || -z $server ) ]] || usage "give either --archive or a server"
 for value in "$install_timeout" "$run_timeout"; do
   [[ $value =~ ^[1-9][0-9]*$ ]] || die "deadlines must be whole seconds: $value"
 done
 
-# Every input path is resolved before the script changes directory.
-here=$(cd "$(dirname "$0")" && pwd -P)
-repo=$(cd "$here/../../.." && pwd -P)
 if [[ -n $archive ]]; then
   [[ -f $archive ]] || die "archive not found: $archive"
   archive=$(cd "$(dirname "$archive")" && pwd -P)/$(basename "$archive")
@@ -386,11 +479,20 @@ cleanup() {
     fi
     (( rc != 0 )) || rc=1
   fi
+  if [[ -n $interrupted ]]; then
+    stop_check "run.sh was interrupted by SIG$interrupted" interrupted
+  else
+    stop_check "run.sh exited with status $rc" exit-status
+  fi
   # The work directory is removed only once no process of the runs is left.
+  begin_check lazyvim.infrastructure.cleanup
   if stop_processes && (( ! lost )); then
     echo "-- no process of the runs left running"
+    pass_check "every process of the runs was stopped, and none was left running"
   else
     (( ! lost )) || echo "FAIL: an earlier teardown failed, so processes of the runs may be left running"
+    fail_check "processes of the runs may be left running: stopping them failed, or an earlier teardown did" \
+      processes
     (( rc != 0 )) || rc=1
     keep_work=1
   fi
@@ -400,11 +502,13 @@ cleanup() {
     rm -rf "$work"
   fi
   echo "results: $out"
+  [[ -z $results ]] || results_end "$rc"
   exit "$rc"
 }
 
 on_signal() {
   local rc
+  interrupted=$1
   echo "run.sh: interrupted by SIG$1" >&4
   case $1 in
     INT) rc=130 ;;
@@ -426,6 +530,8 @@ trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 work=$(cd "$work" && pwd -P)
 (( ${#work} <= 70 )) || die "the work directory's path is too long for tmux's socket: $work; set TMPDIR"
+if [[ -n $archive ]]; then given="the archive $(basename "$archive")"; else given="the server and its worker"; fi
+pass_check "$nvim_version; nvim, tmux, git, and python3 on PATH; $given; an empty output directory; the Virgil sources"
 
 echo "results: $out"
 echo "work directory: $work"
@@ -441,6 +547,7 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 
 # The server, installed as its archive's README says: extracted into one
 # directory, with a symlink to virgil-lsp on PATH; or a build's directory.
+begin_check lazyvim.infrastructure.artifact-start
 if [[ -n $archive ]]; then
   mkdir "$work/server"
   tar -xzf "$archive" -C "$work/server"
@@ -465,7 +572,16 @@ for jar in virgil-lsp.jar virgil-lsp-worker.jar; do
   if [[ -f $installed_dir/$jar ]]; then cp "$installed_dir/$jar" "$work/no-bundle/"; fi
 done
 if [[ -d $installed_dir/runtime ]]; then ln -s "$installed_dir/runtime" "$work/no-bundle/runtime"; fi
+if [[ -n $results ]]; then
+  if [[ -n $archive ]]; then
+    results_py server "$observations" --server "$(command -v virgil-lsp)" --archive "$archive" \
+      --archive-root "$work/server/$archive_dir" || true
+  else
+    results_py server "$observations" --server "$(command -v virgil-lsp)" || true
+  fi
+fi
 server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here: $server_version"
+pass_check "virgil-lsp --version: ${server_version%%$'\n'*}${archive:+; the archive holds just $archive_dir}"
 
 # The provenance header, printed and kept in the output directory.
 {
@@ -502,11 +618,13 @@ server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here
 cat "$out/provenance.txt"
 
 # The starter at its commit, with the repository's plugin spec.
+begin_check lazyvim.infrastructure.starter
 git clone -q "$starter_url" "$XDG_CONFIG_HOME/nvim"
 git -C "$XDG_CONFIG_HOME/nvim" checkout -q "$starter_commit"
 [[ $(git -C "$XDG_CONFIG_HOME/nvim" rev-parse HEAD) == "$starter_commit" ]] || die "starter checkout failed"
 rm -rf "$XDG_CONFIG_HOME/nvim/.git"
 cp "$repo/editors/nvim/lazyvim/virgil.lua" "$XDG_CONFIG_HOME/nvim/lua/plugins/virgil.lua"
+pass_check "the starter at $starter_commit, with editors/nvim/lazyvim/virgil.lua"
 
 # Prints "NAME COMMIT" for each plugin of a lazy-lock.json, sorted by name.
 lock_entries() {
@@ -529,6 +647,7 @@ preinstall() {
 # latest commits. Then :Lazy! restore checks out every plugin at the lock's
 # commit; --update-lock instead takes the latest of each.
 lazy_dir=$XDG_DATA_HOME/nvim/lazy
+begin_check lazyvim.infrastructure.plugins-install
 if (( update_lock )); then
   preinstall lazy.nvim "$lazy_url"
   action=sync
@@ -542,13 +661,16 @@ echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
 install_started=$SECONDS started=$SECONDS
 rc=0
 deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
-(( rc != 124 )) || die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
-(( rc == 0 )) || die "installing the plugins failed with status $rc; see $out/lazy-install.log"
+(( rc != 124 )) ||
+  failure_code=deadline die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
+(( rc == 0 )) || failure_code=exit-status die "installing the plugins failed with status $rc; see $out/lazy-install.log"
 echo "   done in $((SECONDS - started)) s"
 if (( update_lock )); then
   cp "$XDG_CONFIG_HOME/nvim/lazy-lock.json" "$here/lazy-lock.json"
   echo "-- wrote $here/lazy-lock.json; review it with git diff"
 fi
+pass_check ":Lazy! $action exited with status 0 after $((SECONDS - started)) s," \
+  "within the $install_timeout-second deadline"
 
 # Every plugin in the lock must be installed at its commit, and the lock that
 # lazy.nvim wrote back must list the same plugins and commits.
@@ -571,38 +693,45 @@ verify_plugins() {
   fi
   (( ok ))
 }
+begin_check lazyvim.infrastructure.pins-before
 if ! verify_plugins > "$work/plugins.txt"; then
   cat "$work/plugins.txt"
-  die "the plugins are not at the locked commits"
+  failure_code=pins die "the plugins are not at the locked commits"
 fi
 cat "$work/plugins.txt" >> "$out/provenance.txt"
 cat "$work/plugins.txt"
+pass_check "$(grep -c '^plugin ' "$work/plugins.txt") plugins at the commits of lazy-lock.json," \
+  "which lazy.nvim's lock matches"
 
 # nvim-treesitter's parsers, installed by parsers.lua as LazyVim installs them
 # at a first start, under what is left of the deadline for installing the
 # plugins. Otherwise LazyVim would download and build them in the background
 # during main. Meanwhile, a plugin spec leaves LazyVim's configuration of
 # nvim-treesitter only its setup, so that LazyVim starts no install of its own.
+begin_check lazyvim.infrastructure.parsers-ready
 cat > "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua" <<'LUA'
 return { { "nvim-treesitter/nvim-treesitter", config = function(_, opts) require("nvim-treesitter").setup(opts) end } }
 LUA
 echo "-- installing nvim-treesitter's parsers; log in $out/parsers-install.log"
 started=$SECONDS
 left=$((install_timeout - (SECONDS - install_started)))
-(( left > 0 )) || die "installing the plugins and parsers exceeded $install_timeout seconds"
+(( left > 0 )) || failure_code=deadline die "installing the plugins and parsers exceeded $install_timeout seconds"
 rc=0
 VIRGIL_PARSERS_OUT=$work/parsers.txt deadline "$left" nvim --headless \
   -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/parsers.lua")' > "$out/parsers-install.log" 2>&1 || rc=$?
-(( rc != 124 )) ||
+(( rc != 124 )) || failure_code=deadline \
   die "installing the plugins and parsers exceeded $install_timeout seconds; see $out/parsers-install.log"
-(( rc == 0 )) || die "installing the parsers failed with status $rc; see $out/parsers-install.log"
+(( rc == 0 )) ||
+  failure_code=exit-status die "installing the parsers failed with status $rc; see $out/parsers-install.log"
 rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua"
 echo "   done in $((SECONDS - started)) s"
 cat "$work/parsers.txt" >> "$out/provenance.txt"
 cat "$work/parsers.txt"
+pass_check "the parsers installed with status 0 after $((SECONDS - started)) s, within the install deadline"
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
 cp "$here/fixture/words/CallPicker.v3" "$work/project/words/"
+record_digest fixture "$work/project"
 # One run: Neovim with the observer and the driver, then its exit status,
 # which the pane also exits with. The status file appears whole, once.
 cat > "$work/pane.sh" <<'SH'
@@ -624,10 +753,12 @@ summary=''
 # new tmux server, driven by driver.lua.
 run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
-  local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
+  local driver_out=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
-  local tmux_pid='' pane_pid='' anchor_pid=''
+  local tmux_pid='' pane_pid='' anchor_pid='' processes_ok=1 lingering
   current=$name
+  record_digest "configuration:$name" "$XDG_CONFIG_HOME/nvim"
+  begin_check lazyvim.infrastructure.profile-complete "$name"
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
   (
@@ -636,8 +767,11 @@ run() {
     else
       export PATH="$work/no-bundle:$PATH"
     fi
+    if [[ -n $results ]]; then
+      export VIRGIL_DRIVER_OBSERVATIONS=$observations VIRGIL_DRIVER_PROFILE=$name
+    fi
     export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
-    export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
+    export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$driver_out
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
     export VIRGIL_DRIVER_ANCHOR=$work/$name.anchor VIRGIL_DRIVER_STATUS=$work/$name.status
     # The pane stays open when Neovim exits, for its screen, and keeps the
@@ -663,19 +797,34 @@ run() {
   # Complete results end with their only DONE line, whole, as driver.lua
   # writes it.
   re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure\(s\)$'
-  if [[ -f $results ]] && (( $(grep -c '^DONE' "$results" || true) == 1 )) &&
-    [[ -z $(tail -c 1 "$results") && $(tail -n 1 "$results") =~ $re ]]; then
+  if [[ -f $driver_out ]] && (( $(grep -c '^DONE' "$driver_out" || true) == 1 )) &&
+    [[ -z $(tail -c 1 "$driver_out") && $(tail -n 1 "$driver_out") =~ $re ]]; then
     complete=1 passed=${BASH_REMATCH[1]} failed=${BASH_REMATCH[2]} xfail=${BASH_REMATCH[3]}
   fi
   echo "-- Neovim exit status $exit_status, after $((SECONDS - started)) s"
-  if [[ -f $results ]] && (( ! complete )); then echo "-- $results does not end with one complete DONE line"; fi
+  if [[ -f $driver_out ]] && (( ! complete )); then echo "-- $driver_out does not end with one complete DONE line"; fi
   if (( rc != 124 )) && [[ $exit_status != 0 || $complete == 0 ]]; then
     echo "-- the screen after Neovim exited is in $out/$name.screen.txt"
     save_screen "$name" "after Neovim exited"
     verdict=FAIL
   fi
   current=''
-  cat "$results" 2>/dev/null || echo "FAIL: no results"
+  if (( rc == 124 )); then
+    fail_check "Neovim was still running at its $run_timeout-second deadline" deadline
+  elif [[ $exit_status != 0 ]]; then
+    fail_check "Neovim exited with status $exit_status" exit-status
+  elif (( ! complete )); then
+    fail_check "$name.results does not end with one complete DONE line" incomplete-results
+  elif [[ $failed != 0 ]]; then
+    fail_check "$failed check(s) failed" check-failed
+  elif [[ $xfail != "$expected_xfail" ]]; then
+    fail_check "$xfail expected failure(s), not $expected_xfail" xfail-count
+  else
+    pass_check "Neovim exited with status 0 after $((SECONDS - started)) s;" \
+      "$passed passed, 0 failed, $xfail expected failure(s), as expected"
+  fi
+  begin_check lazyvim.infrastructure.profile-processes "$name"
+  cat "$driver_out" 2>/dev/null || echo "FAIL: no results"
   local log=$XDG_STATE_HOME/nvim/lsp.log
   if [[ -f $log ]]; then
     echo "-- server stderr in the LSP log:"
@@ -693,10 +842,12 @@ run() {
     sleep 0.2
     tries=$((tries + 1))
   done
+  lingering=$left
   if [[ -n $left ]]; then
     echo "FAIL: processes left running after $name:"
     echo "$left" | sed 's/^/   /'
     verdict=FAIL
+    processes_ok=0
   fi
   # What else Neovim left running, such as a plugin's download, is named but
   # doesn't fail the run: it isn't the server's. Its anchor isn't listed.
@@ -707,13 +858,21 @@ run() {
     echo "-- left running after Neovim exited, and stopped:"
     echo "$left"
   fi
-  stop_processes || verdict=FAIL
+  stop_processes || { verdict=FAIL; processes_ok=0; }
+  if [[ -n $lingering ]]; then
+    fail_check "virgil-lsp processes left running 10 s after Neovim exited: $(printf "%s" "$lingering" | tr "\n" ";")" \
+      processes-left
+  elif (( ! processes_ok )); then
+    fail_check "stopping the run's processes failed" processes
+  else
+    pass_check "no virgil-lsp process was left after Neovim exited, and the run's other processes were stopped"
+  fi
   if [[ $complete == 0 || $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then
     verdict=FAIL
   fi
   [[ $verdict == PASS ]] || status=1
   summary="$summary$name: $passed passed, $failed failed, $xfail expected failure(s) (expected $expected_xfail); Neovim exit status $exit_status; $((SECONDS - started)) s: $verdict"$'\n'
-  summary="$summary$(grep '^XFAIL ' "$results" 2>/dev/null | sed 's/^/  /' || true)"
+  summary="$summary$(grep '^XFAIL ' "$driver_out" 2>/dev/null | sed 's/^/  /' || true)"
   [[ $summary == *$'\n' ]] || summary="$summary"$'\n'
 }
 
@@ -727,10 +886,14 @@ run noroot-noice-workaround noroot "$work/project/.virgil-lsp.json" 1 0
 rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-noice-showmessage.lua"
 
 # The runs must not have changed the plugins.
+begin_check lazyvim.infrastructure.pins-after
 if ! verify_plugins > "$work/plugins.txt"; then
   cat "$work/plugins.txt"
   echo "FAIL: the plugins changed during the runs"
   status=1
+  fail_check "the plugins changed during the runs" pins
+else
+  pass_check "the plugins are still at the commits of lazy-lock.json"
 fi
 
 if (( status == 0 )); then result=PASS; else result=FAIL; fi
