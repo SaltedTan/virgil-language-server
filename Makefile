@@ -325,8 +325,10 @@ jvm:
 	$(MAKE) --no-print-directory V3C_TARGET=jvm BUILD=$(JVM_BUILD) all
 endif
 
+# The smoke test expects the JVM default WORKER_HEAP unless one is given.
 test-jvm: test-jvm-runtime jvm
-	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp
+	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp \
+	  $(if $(filter-out file,$(origin WORKER_HEAP)),--worker-heap=$(WORKER_HEAP))
 	JAVA='$(JAVA)' JAVAC='$(JAVAC)' python3 test/jvm/deepstart.py $(JVM_BUILD)/virgil-lsp.jar
 
 # scripts/package-release.sh records the worker heap in its build manifest.
