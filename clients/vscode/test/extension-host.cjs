@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { attempt, keepLogs, retryable, windowError } = require('./e2e/run.cjs');
+const { attempt, escapeAnnotation, keepLogs, retryable, windowError } = require('./e2e/run.cjs');
 
 // A launch directory as VS Code leaves it, under a new directory that the
 // test removes, and keepLogs's messages, once it has run.
@@ -91,12 +91,90 @@ test('a launch that fails unresponsive before activation is retried once, and it
     calls.push(path.basename(dir));
     return calls.length === 1 ? unresponsive(dir) : { passed: true };
   };
-  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch }), { passed: true, retried: true });
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch, env: {} }), { passed: true, retried: true });
   assert.deepEqual(calls, ['single-file', 'single-file-retry']);
   assert.deepEqual(files(path.join(logs, 'single-file')), ['20261024T010203/main.log']);
   assert.equal(fs.existsSync(path.join(logs, 'single-file-retry')), false);
   assert.equal(messages.length, 2);
   assert.match(messages[1], /^RETRY: the single-file launch exited with 1 before the extension activated, and VS Code's main log records an unresponsive window; launching it once more, as single-file-retry\. Its logs are in /);
+});
+
+test('a retry emits a GitHub Actions warning annotation when GITHUB_ACTIONS=true, naming the launch and window error', async (t) => {
+  const { work, logs, messages } = attemptDir(t);
+  const logged = [];
+  const calls = [];
+  const launch = async (dir) => {
+    calls.push(path.basename(dir));
+    return calls.length === 1 ? unresponsive(dir) : { passed: true };
+  };
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch,
+    env: { GITHUB_ACTIONS: 'true' }, log: (message) => logged.push(message) }),
+    { passed: true, retried: true });
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /^::warning title=Extension Host relaunch \(#205\)::/);
+  assert.ok(logged[0].includes('the single-file launch exited with 1'), logged[0]);
+  assert.ok(logged[0].includes('an unresponsive window'), logged[0]);
+  assert.ok(logged[0].includes('launching it once more, as single-file-retry'), logged[0]);
+  assert.equal(messages.filter((m) => m.startsWith('RETRY:')).length, 1);
+});
+
+test('no warning annotation is emitted when GITHUB_ACTIONS is unset or not exactly "true"', async (t) => {
+  for (const env of [{}, { GITHUB_ACTIONS: 'false' }, { GITHUB_ACTIONS: '' }, { GITHUB_ACTIONS: 'True' }]) {
+    const { work, logs } = attemptDir(t);
+    const logged = [];
+    const calls = [];
+    const launch = async (dir) => {
+      calls.push(path.basename(dir));
+      return calls.length === 1 ? unresponsive(dir) : { passed: true };
+    };
+    assert.deepEqual(await attempt({ name: 'workspace', work, logs, launch,
+      env, log: (message) => logged.push(message) }),
+      { passed: true, retried: true });
+    assert.deepEqual(logged, [], `env=${JSON.stringify(env)}`);
+  }
+});
+
+test('no warning annotation is emitted when a launch passes on the first try', async (t) => {
+  const { work, logs } = attemptDir(t);
+  const logged = [];
+  const launch = async () => ({ passed: true });
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch,
+    env: { GITHUB_ACTIONS: 'true' }, log: (message) => logged.push(message) }),
+    { passed: true, retried: false });
+  assert.deepEqual(logged, []);
+});
+
+test('no warning annotation is emitted when a launch fails with a non-retryable error', async (t) => {
+  const { work, logs } = attemptDir(t);
+  const logged = [];
+  const launch = async (dir) => {
+    write(path.join(dir, 'user-data', 'logs', '20261024T010203', 'main.log'), '[error] something else\n');
+    return { passed: false, kind: 'launch', detail: 'exited with 1', exited: true, activated: false, windowError: undefined };
+  };
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch,
+    env: { GITHUB_ACTIONS: 'true' }, log: (message) => logged.push(message) }),
+    { passed: false });
+  assert.deepEqual(logged, []);
+});
+
+test('a second failure at the window error emits the warning annotation only for the first retry', async (t) => {
+  const { work, logs } = attemptDir(t);
+  const logged = [];
+  const launch = async (dir) => unresponsive(dir);
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch,
+    env: { GITHUB_ACTIONS: 'true' }, log: (message) => logged.push(message) }),
+    { passed: false });
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /^::warning title=Extension Host relaunch \(#205\)::/);
+});
+
+test('annotation messages escape %, \\r, and \\n so workflow commands cannot break', () => {
+  assert.equal(escapeAnnotation('plain text'), 'plain text');
+  assert.equal(escapeAnnotation('100% of the time'), '100%25 of the time');
+  assert.equal(escapeAnnotation('line one\r\nline two'), 'line one%0D%0Aline two');
+  assert.equal(escapeAnnotation('split\nhere'), 'split%0Ahere');
+  assert.equal(escapeAnnotation('carriage\rreturn'), 'carriage%0Dreturn');
+  assert.equal(escapeAnnotation('%mix\r\n%'), '%25mix%0D%0A%25');
 });
 
 test('a launch that fails unresponsive after activation is not retried', async (t) => {
@@ -106,7 +184,7 @@ test('a launch that fails unresponsive after activation is not retried', async (
     calls.push(path.basename(dir));
     return unresponsive(dir, { activated: true });
   };
-  assert.deepEqual(await attempt({ name: 'workspace', work, logs, launch }), { passed: false });
+  assert.deepEqual(await attempt({ name: 'workspace', work, logs, launch, env: {} }), { passed: false });
   assert.deepEqual(calls, ['workspace']);
   assert.deepEqual(files(path.join(logs, 'workspace')), ['20261024T010203/main.log']);
   assert.equal(fs.existsSync(path.join(logs, 'workspace-retry')), false);
@@ -121,7 +199,7 @@ test('a second failure at the window error fails the run, and keeps both attempt
     calls.push(path.basename(dir));
     return unresponsive(dir);
   };
-  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch }), { passed: false });
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch, env: {} }), { passed: false });
   assert.deepEqual(calls, ['single-file', 'single-file-retry']);
   assert.deepEqual(files(path.join(logs, 'single-file')), ['20261024T010203/main.log']);
   assert.deepEqual(files(path.join(logs, 'single-file-retry')), ['20261024T010203/main.log']);
@@ -137,7 +215,7 @@ test('a launch that exits non-zero without the window error is not retried, as i
     write(path.join(dir, 'user-data', 'logs', '20261024T010203', 'main.log'), '[error] something else\n');
     return { passed: false, kind: 'launch', detail: 'exited with 1', exited: true, activated: false, windowError: undefined };
   };
-  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch }), { passed: false });
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs, launch, env: {} }), { passed: false });
   assert.deepEqual(calls, ['single-file']);
   assert.equal(messages.length, 1);
 });
@@ -149,7 +227,7 @@ test('a retry without --logs keeps nothing and says where the logs would have go
     calls.push(path.basename(dir));
     return calls.length === 1 ? unresponsive(dir) : { passed: true };
   };
-  assert.deepEqual(await attempt({ name: 'single-file', work, logs: undefined, launch }), { passed: true, retried: true });
+  assert.deepEqual(await attempt({ name: 'single-file', work, logs: undefined, launch, env: {} }), { passed: true, retried: true });
   assert.equal(messages.length, 1);
   assert.match(messages[0], /^RETRY: .*Its logs were not kept because --logs was not given\.$/);
 });

@@ -15,6 +15,8 @@ async function launches(t, scenario) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const messages = [];
   t.mock.method(console, 'error', (message) => messages.push(message));
+  // Suppress GitHub Actions ::warning annotations when unit tests run under CI.
+  t.mock.method(console, 'log', () => {});
   const clock = fakeClock();
   const events = [];
   const notes = [];

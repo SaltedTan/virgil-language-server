@@ -149,6 +149,7 @@ SUITES = \
 	'python3 test/unit/test_run.py' \
 	'python3 test/test_suites.py' \
 	'python3 test/test_ci_budgets.py' \
+	'python3 test/test_vscode_relaunch_rate.py' \
 	'python3 test/test_git_hooks.py' \
 	'python3 test/diagnostics/run.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp' \
