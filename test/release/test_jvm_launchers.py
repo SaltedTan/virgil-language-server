@@ -21,7 +21,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 V3C = ROOT / 'scripts/v3c.sh'
-HEAP = '384m'
+# The JVM worker's default WORKER_HEAP, which test_worker_heap_default checks.
+HEAP = '256m'
+# The Java options of each launcher, adopted in #463: a capped server heap
+# with the Serial collector, the worker's heap with the default collector, and
+# the default thread stack for both.
+OPTIONS = {'virgil-lsp': ['-Xmx128m', '-XX:+UseSerialGC'], 'virgil-lsp-worker': ['-Xmx' + HEAP]}
 LOCALE = 'en_US.UTF-8'
 
 # A fake Aeneas: it must not be given -heap-size, which v3c.sh turns into the
@@ -121,8 +126,7 @@ class LauncherTest(unittest.TestCase):
         record = self.recorded()
         self.assertEqual(record['java'], str(self.package / 'runtime/bin/java'))
         self.assertEqual(record['LC_ALL'], LOCALE)
-        options = ['-Xss16m'] + (['-Xmx' + HEAP] if name == 'virgil-lsp-worker' else [])
-        self.assertEqual(record['args'], options + [
+        self.assertEqual(record['args'], OPTIONS[name] + [
             '-Dvirgil.lsp.executable=' + str(self.package / name),
             '-jar', str(self.package / (name + '.jar')), *forwarded])
         self.assertFalse(self.sentinel.exists(), 'a java on PATH ran')
@@ -134,7 +138,26 @@ class LauncherTest(unittest.TestCase):
             self.assertIn('exec "$dir/runtime/bin/java" ', text)
             self.assertNotIn(str(self.root), text)
             self.assertNotIn("'/", text)
-        self.assertNotIn('-Xmx', (self.package / 'virgil-lsp').read_text())
+
+    def test_launcher_options(self):
+        server = (self.package / 'virgil-lsp').read_text()
+        worker = (self.package / 'virgil-lsp-worker').read_text()
+        self.assertIn('exec "$dir/runtime/bin/java" -Xmx128m -XX:+UseSerialGC -Dvirgil.', server)
+        self.assertIn('exec "$dir/runtime/bin/java" -Xmx256m -Dvirgil.', worker)
+        self.assertNotIn('SerialGC', worker)
+        for text in (server, worker):
+            self.assertNotIn('-Xss', text)
+            self.assertEqual(text.count('-Xmx'), 1)
+
+    def test_worker_heap_default(self):
+        # The Makefile's WORKER_HEAP is the JVM worker's -heap-size, and so its
+        # -Xmx; native targets keep their own default.
+        def heap(*args):
+            return subprocess.run(['make', '-s', '--no-print-directory', *args, 'print-worker-heap'],
+                                  cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(heap('V3C_TARGET=jvm'), HEAP)
+        self.assertEqual(heap('V3C_TARGET=x86-64-linux'), '384m')
+        self.assertEqual(heap('V3C_TARGET=jvm', 'WORKER_HEAP=1g'), '1g')
 
     def test_moved_directory_with_spaces(self):
         self.expect(self.run_launcher(self.package / 'virgil-lsp', '--stdio'))
@@ -201,7 +224,7 @@ class LauncherTest(unittest.TestCase):
 
     def test_development_launcher_names_its_jdk_and_jar(self):
         text = development_launcher().decode()
-        self.assertRegex(text, r"exec '/[^']*/jdk/bin/java' -Xss16m ")
+        self.assertRegex(text, r"exec '/[^']*/jdk/bin/java' -Xmx128m -XX:\+UseSerialGC -Dvirgil\.")
         self.assertRegex(text, r"-jar '/[^']*/out/virgil-lsp.jar' ")
 
     def test_jar_holds_the_runtime_classes_with_a_fixed_date(self):

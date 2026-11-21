@@ -68,6 +68,9 @@ def main(exe, **popen):
             times["initialize_s"] = round(time.monotonic() - start, 3)
             server_args = processes()[s.proc.pid][1]
             assert "java" in server_args and "virgil-lsp.jar" in server_args, server_args
+            # The launch options adopted in #463.
+            assert "-Xmx128m -XX:+UseSerialGC" in server_args, server_args
+            assert "-Xss" not in server_args, server_args
 
             s.send("initialized", {}, request=False)
 
@@ -83,7 +86,8 @@ def main(exe, **popen):
             assert len(children) == 1, ("expected one JVM worker", processes())
             worker = children[0]
             worker_args = processes()[worker][1]
-            assert "java" in worker_args and "-Xmx" in worker_args, worker_args
+            assert "java" in worker_args and "-Xmx256m" in worker_args, worker_args
+            assert "SerialGC" not in worker_args and "-Xss" not in worker_args, worker_args
 
             again = time.monotonic()
             assert s.result(s.analyze([uri]), TIMEOUT) == {**result, "generation": 2}

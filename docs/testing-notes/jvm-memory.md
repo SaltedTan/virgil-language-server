@@ -10,7 +10,7 @@ This note records the measurements for [#463](https://github.com/SaltedTan/virgi
 - The worker restart after 100 analyses costs one cold worker: the next Aeneas analysis took 923 ms against 266 ms warm, and analyses stayed slower for at least four more. Averaged over 100 analyses that is about 12 ms (5%) per Aeneas analysis. The live-heap restart never fired: an idle worker holds about 10 MiB, against limits of 31 or 48 MiB.
 - `-Xss16m` is no longer needed: on the default thread stack the protocol, CLI, diagnostics, and deep-start suites pass on Linux (1 MiB), and the deep-nesting cases and deep-start test pass on macOS arm64 (2 MiB).
 - The M4 run could not expand project-file globs on any macOS JDK tried, because the runtime then required `SecureDirectoryStream`. That blocked the editor scenarios of `scripts/bench-lsp.py` on the M4. See [Limits of this run](#limits-of-this-run).
-- **Proposed, for the maintainer's decision:** server `-Xmx128m -XX:+UseSerialGC`, worker `-Xmx256m` (G1), no `-Xss`, and an empirical 1 GiB combined envelope (384 MiB server, 640 MiB worker), about 1.6× the largest combined peak measured with those flags, 625.2 MiB. See [Proposal](#proposal-awaiting-the-maintainers-decision).
+- **Adopted by the maintainer on 2026-11-21:** server `-Xmx128m -XX:+UseSerialGC`, worker `-Xmx256m` (G1), no `-Xss`, and an empirical 1 GiB combined envelope (384 MiB server, 640 MiB worker), about 1.6× the largest combined peak measured with those flags, 625.2 MiB. See [Proposal](#proposal-adopted-on-2026-11-21).
 - On the GitHub-hosted `macos-15` runner on 2026-11-21, the packaged JVM build's combined restart-boundary RSS high-water figures were 529.9 MiB with the proposed flags and 842.6 MiB with the shipped flags. With project-file globs working on macOS, the editor scenarios also ran and sampled combined maxima of 532.8 MiB and 889.2 MiB, respectively. See [CI re-measurement](#ci-re-measurement-on-macos-15-2026-11-21).
 
 ## Host, runtimes, and builds
@@ -253,9 +253,9 @@ Peaks in MiB, as in the peak-memory table:
 
 With a G1 worker, warm Aeneas analyses took 264.7 ms against Serial's 304.2 ms, and first analyses and the analysis after a restart were about 100–200 ms faster, at 256m as at 384m. Its resident peak on Aeneas was 20–30 MiB higher than Serial's; at 256m its footprint was lower. Serial was faster on util's small warm analyses, but those take under 20 ms either way. The first util analysis of each configuration's first block (712–754 ms) was the run's first JVM start and is an outlier.
 
-## Proposal (awaiting the maintainer's decision)
+## Proposal (adopted on 2026-11-21)
 
-This is a proposal for the maintainer to adopt or revise, not an adopted setting; #463's last acceptance item stays open until then.
+The maintainer adopted this proposal on 2026-11-21 in [#463](https://github.com/SaltedTan/virgil-language-server/issues/463), and that issue's launcher change applied it, in `scripts/v3c.sh` and the JVM target's `WORKER_HEAP` default.
 
 **Flags** for the darwin-arm64 JVM launchers:
 

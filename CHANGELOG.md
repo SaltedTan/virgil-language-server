@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The JVM build's server now runs with a 128 MiB heap and the Serial collector, and its worker with a 256 MiB heap, and neither sets a larger thread stack. Before, the server's heap was uncapped and the worker's was 384 MiB. The server and worker are documented to stay within 1 GiB of resident memory together, 384 MiB and 640 MiB ([The JVM build for Apple Silicon](docs/releasing.md#the-jvm-build-for-apple-silicon), [#463](https://github.com/SaltedTan/virgil-language-server/issues/463)).
+
 ## [0.1.0-alpha.9] - 2026-11-21
 
 ### Changed

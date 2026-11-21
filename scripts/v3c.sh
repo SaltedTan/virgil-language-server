@@ -45,12 +45,13 @@ if [ ! -x "$VIRGIL/bin/dev/sense_host" ]; then
     exit 1
 fi
 
-# The JVM stack size for both programs, and the worker's heap from the
-# Makefile's WORKER_HEAP, are provisional; see docs/testing-notes/jvm-memory.md
-# for the measurements and proposal awaiting the maintainer's decision. The
-# development launchers and the packaged ones (JVM_BUNDLED_RUNTIME) both take
-# their options from here.
-JVM_STACK=16m
+# The JVM options adopted in #463 (docs/testing-notes/jvm-memory.md): the
+# server gets JVM_SERVER_OPTIONS, and the worker the -Xmx of its -heap-size,
+# from the Makefile's WORKER_HEAP (256m for the JVM target), with the default
+# collector. Neither passes -Xss: the parser's stack guard (ADR-0017) holds on
+# the JVM's default thread stack. The development launchers and the packaged
+# ones (JVM_BUNDLED_RUNTIME) both take their options from here.
+JVM_SERVER_OPTIONS="-Xmx128m -XX:+UseSerialGC"
 
 # Compiles a jar and writes its launcher; see the header.
 jvm_compile() {
@@ -107,8 +108,9 @@ with zipfile.ZipFile(jar, 'a') as z:
             with open(os.path.join(rt, f), 'rb') as data:
                 z.writestr(info, data.read())
 PY
-    local options="-Xss$JVM_STACK"
-    if [ -n "$heap" ]; then options="$options -Xmx$heap"; fi
+    local options=""
+    if [ "$name" = virgil-lsp ]; then options=$JVM_SERVER_OPTIONS; fi
+    if [ -n "$heap" ]; then options="${options:+$options }-Xmx$heap"; fi
     # Java decodes native paths using the locale before opening the jar.
     # Workers have no inherited locale; use a UTF-8 locale on each host.
     local jvm_locale=C.UTF-8
@@ -137,7 +139,7 @@ while [ -h "\$self" ]; do
     case \$link in /*) self=\$link ;; *) self=\${self%/*}/\$link ;; esac
 done
 dir=\$(cd -P "\${self%/*}" && pwd -P) || exit 1
-exec $java $options -Dvirgil.lsp.executable="\$dir/\${self##*/}" -jar $jar_path "\$@"
+exec $java ${options:+$options }-Dvirgil.lsp.executable="\$dir/\${self##*/}" -jar $jar_path "\$@"
 EOF
     chmod +x "$output/$name"
 }

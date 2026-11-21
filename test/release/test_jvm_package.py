@@ -236,7 +236,7 @@ class JvmArchiveTest(unittest.TestCase):
         self.rejects('virgil-lsp-worker')
 
     def test_development_launcher(self):
-        self.files['virgil-lsp'] = (b"#!/bin/sh\nexec '/usr/lib/jvm/bin/java' -Xss16m "
+        self.files['virgil-lsp'] = (b"#!/bin/sh\nexec '/usr/lib/jvm/bin/java' -Xmx128m "
                                     b"-jar '/build/virgil-lsp.jar' \"$@\"\n")
         self.rejects('not a relocatable launcher')
 
