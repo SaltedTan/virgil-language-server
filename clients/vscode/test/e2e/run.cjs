@@ -8,7 +8,8 @@
 // from a server that the suite killed.
 // Usage, from clients/vscode after `npm run compile`:
 //
-//   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [--logs DIR] [path/to/virgil-lsp]
+//   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [--logs DIR]
+//     [--results FILE [--release VERSION] [--purpose PURPOSE]] [path/to/virgil-lsp]
 //
 // Without --vsix the default is build/virgil-lsp at the repository root.
 // With --vsix and no server argument, test the bundled server with no server
@@ -22,7 +23,9 @@
 // Chromium logs there (see keepLogs). A launch that fails before the extension
 // activated, at an event at which VS Code's command-line extension test exits,
 // is retried once (see attempt). Without a display, run it under xvfb-run on
-// Linux.
+// Linux. With --results, results.cjs also writes the run's result stream to
+// FILE, as test/e2e/RESULTS.md describes, and the exit status is 0 exactly
+// when that run passed.
 
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -32,6 +35,7 @@ const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
+const { Results, commandOf } = require('./results.cjs');
 const { fromShutdown } = require('./shutdown.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
@@ -59,93 +63,188 @@ const repo = path.resolve(extension, '../..');
 
 async function main() {
   const { values, positionals } = parseArgs({
-    options: { vsix: { type: 'string' }, logs: { type: 'string' } },
+    options: {
+      vsix: { type: 'string' },
+      logs: { type: 'string' },
+      results: { type: 'string' },
+      release: { type: 'string' },
+      purpose: { type: 'string' },
+    },
     allowPositionals: true,
   });
   // npm runs scripts in clients/vscode; relative arguments are relative to
   // where npm was started.
   const cwd = process.env.INIT_CWD ?? process.cwd();
+  if (values.results === undefined && (values.release !== undefined || values.purpose !== undefined)) {
+    throw new Error('--release and --purpose describe the result stream, so they need --results');
+  }
   const argument = path.resolve(cwd, positionals[0] ?? path.join(repo, 'build/virgil-lsp'));
   const vsix = values.vsix === undefined ? undefined : path.resolve(cwd, values.vsix);
-  if (vsix !== undefined && !fs.existsSync(vsix)) {
-    throw new Error(`package the extension before running the test: ${vsix} is missing`);
-  }
-  // New or empty, so that a run's logs never mix with another's; created only
-  // when a launch fails.
-  const logs = values.logs === undefined ? undefined : path.resolve(cwd, values.logs);
-  if (logs !== undefined && fs.existsSync(logs) && !(fs.statSync(logs).isDirectory() && fs.readdirSync(logs).length === 0)) {
-    throw new Error(`--logs takes a new or empty directory, and ${logs} is not one`);
-  }
-  // The server starts the worker beside its own resolved path.
-  const bundled = vsix !== undefined && positionals.length === 0;
-  const server = bundled ? undefined : fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
-  for (const file of server === undefined ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')]) {
-    try {
-      fs.accessSync(file, fs.constants.X_OK);
-    } catch {
-      throw new Error(`build virgil-lsp and virgil-lsp-worker before running the test: ${file} is missing`);
-    }
-  }
-  // Install handlers before the download, which can start an extractor.
-  const controller = new AbortController();
-  const interrupt = (name) => {
-    process.exitCode = name === 'SIGINT' ? 130 : 143;
-    controller.abort(new Error(`interrupted by ${name}`));
+  // Emptied before the test does anything else, so that an earlier run's
+  // stream can't outlive a run that stops early.
+  const results = values.results === undefined ? undefined : new Results({
+    file: path.resolve(cwd, values.results),
+    vsix,
+    release: values.release ?? null,
+    purpose: values.purpose,
+    command: commandOf(process.argv.slice(2), cwd, process.env),
+    editorVersion: VSCODE_VERSION,
+  });
+  // Whether the stream gets a run-end: not after a usage error, nor after an
+  // interrupt.
+  let finish = false;
+  const preflightFailure = (message) => {
+    results?.preflight({ failure: message });
+    finish = true;
+    const error = new Error(message);
+    error.preflight = true;
+    return error;
   };
-  const sigint = () => interrupt('SIGINT');
-  const sigterm = () => interrupt('SIGTERM');
-  process.on('SIGINT', sigint).on('SIGTERM', sigterm);
+  let controller;
   let work;
+  let thrown;
   try {
-    // Reuse Remote-SSH's download script, process group, and ten-minute
-    // deadline. Load here: that runner imports this module's shared settings.
-    const executable = cachedVSCode(path.join(extension, '.vscode-test')) ?? await require('./remote-ssh/run.cjs').downloadVSCode({
-      env: process.env,
-      signal: controller.signal,
-      checkpoint: () => controller.signal.throwIfAborted(),
-    });
-    // Keep edits and VS Code state out of the checkout's fixture and the user's
-    // home. Physical paths match the URIs that the server reports. VS Code's IPC
-    // socket goes in --user-data-dir, and a Unix socket path has at most 103
-    // characters on macOS, which its long os.tmpdir() under /var/folders exceeds.
-    const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
-    work = fs.mkdtempSync(path.join(fs.realpathSync(base), 'virgil-vscode-e2e-'));
-    const project = path.join(work, 'project');
-    fs.cpSync(path.join(repo, 'test/e2e/nvim/fixture'), project, { recursive: true });
-    const settings = {
-      ...(bundled ? {} : {
-        'virgil.server.path': server,
-        'virgil.virgilRoot': fs.realpathSync(path.join(repo, 'vendor/virgil')),
-      }),
-      'telemetry.telemetryLevel': 'off',
-      'chat.disableAIFeatures': true,
-      'update.mode': 'none',
-      'workbench.startupEditor': 'none',
-      'files.autoSave': 'off',
-      // Where the server offers no completion items, as in a comment, VS Code
-      // would offer the document's words instead.
-      'editor.wordBasedSuggestions': 'off',
+    // The server starts the worker beside its own resolved path.
+    const bundled = vsix !== undefined && positionals.length === 0;
+    const server = bundled ? undefined : fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
+    if (results !== undefined) {
+      results.info.server = server ?? {
+        reason: "the bundled server is read from the VSIX's installed copy, and no installation of the VSIX succeeded",
+      };
+    }
+    if (vsix !== undefined && !fs.existsSync(vsix)) {
+      throw preflightFailure(`package the extension before running the test: ${vsix} is missing`);
+    }
+    // New or empty, so that a run's logs never mix with another's; created only
+    // when a launch fails.
+    const logs = values.logs === undefined ? undefined : path.resolve(cwd, values.logs);
+    if (logs !== undefined && fs.existsSync(logs) && !(fs.statSync(logs).isDirectory() && fs.readdirSync(logs).length === 0)) {
+      throw new Error(`--logs takes a new or empty directory, and ${logs} is not one`);
+    }
+    finish = true;
+    for (const file of server === undefined ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')]) {
+      try {
+        fs.accessSync(file, fs.constants.X_OK);
+      } catch {
+        throw preflightFailure(`build virgil-lsp and virgil-lsp-worker before running the test: ${file} is missing`);
+      }
+    }
+    // Install handlers before the download, which can start an extractor.
+    controller = new AbortController();
+    const interrupt = (name) => {
+      process.exitCode = name === 'SIGINT' ? 130 : 143;
+      controller.abort(new Error(`interrupted by ${name}`));
     };
-    console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
-      + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
-    const servers = bundled ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
-    const options = { executable, settings, project, vsix, servers, keep: logs !== undefined, signal: controller.signal };
-    // A launch that fails returns a failure (see failure), or throws; one that
-    // failed the way the unresponsive-window flake does before the extension
-    // activated is retried once (see attempt).
-    const run = (name, ...rest) => attempt({
-      name,
-      work,
-      logs,
-      launch: (dir) => launch(options, dir, ...rest),
-    });
-    let passed = (await run('single-file')).passed;
-    if (passed) passed = (await run('workspace', project)).passed;
-    if (passed) passed = (await run('recovery-close', project, true)).passed;
-    if (!passed && !controller.signal.aborted) process.exitCode = 1;
+    const sigint = () => interrupt('SIGINT');
+    const sigterm = () => interrupt('SIGTERM');
+    process.on('SIGINT', sigint).on('SIGTERM', sigterm);
+    try {
+      // Reuse Remote-SSH's download script, process group, and ten-minute
+      // deadline. Load here: that runner imports this module's shared settings.
+      let executable;
+      try {
+        executable = cachedVSCode(path.join(extension, '.vscode-test')) ?? await require('./remote-ssh/run.cjs').downloadVSCode({
+          env: process.env,
+          signal: controller.signal,
+          checkpoint: () => controller.signal.throwIfAborted(),
+        });
+      } catch (error) {
+        if (results === undefined || controller.signal.aborted) throw error;
+        throw preflightFailure(error.message);
+      }
+      results?.preflight({
+        observation: `VS Code ${VSCODE_VERSION} is available`
+          + (vsix === undefined ? '' : ', the VSIX exists')
+          + (server === undefined ? '' : ', and virgil-lsp and virgil-lsp-worker are executable'),
+      });
+      // Keep edits and VS Code state out of the checkout's fixture and the user's
+      // home. Physical paths match the URIs that the server reports. VS Code's IPC
+      // socket goes in --user-data-dir, and a Unix socket path has at most 103
+      // characters on macOS, which its long os.tmpdir() under /var/folders exceeds.
+      const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+      work = fs.mkdtempSync(path.join(fs.realpathSync(base), 'virgil-vscode-e2e-'));
+      const project = path.join(work, 'project');
+      fs.cpSync(path.join(repo, 'test/e2e/nvim/fixture'), project, { recursive: true });
+      const settings = {
+        ...(bundled ? {} : {
+          'virgil.server.path': server,
+          'virgil.virgilRoot': fs.realpathSync(path.join(repo, 'vendor/virgil')),
+        }),
+        'telemetry.telemetryLevel': 'off',
+        'chat.disableAIFeatures': true,
+        'update.mode': 'none',
+        'workbench.startupEditor': 'none',
+        'files.autoSave': 'off',
+        // Where the server offers no completion items, as in a comment, VS Code
+        // would offer the document's words instead.
+        'editor.wordBasedSuggestions': 'off',
+      };
+      if (results !== undefined) {
+        results.work = work;
+        Object.assign(results.info, { fixture: project, settings: JSON.stringify(settings, null, 2) });
+        if (!bundled) {
+          results.info.virgilRoot = path.join(settings['virgil.virgilRoot'], 'lib');
+          results.start();
+        }
+      }
+      console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
+        + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
+      const servers = bundled ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
+      const options = { executable, settings, project, vsix, servers, keep: logs !== undefined, signal: controller.signal };
+      // A launch that fails returns a failure (see failure), or throws; one that
+      // failed the way the unresponsive-window flake does before the extension
+      // activated is retried once (see attempt). With --results, the last
+      // attempt's observations go into the stream.
+      const run = async (name, ...rest) => {
+        let result;
+        try {
+          result = await attempt({
+            name,
+            work,
+            logs,
+            launch: (dir) => launch({ ...options, observed: results?.attempt(name, dir) }, dir, ...rest),
+          });
+        } catch (error) {
+          results?.launch(name, error);
+          throw error;
+        }
+        results?.launch(name);
+        return result;
+      };
+      let passed = (await run('single-file')).passed;
+      // The run-start names a bundled server, which the installation found.
+      results?.start();
+      if (passed) passed = (await run('workspace', project)).passed;
+      if (passed) passed = (await run('recovery-close', project, true)).passed;
+      if (!passed && !controller.signal.aborted) process.exitCode = 1;
+    } finally {
+      process.off('SIGINT', sigint).off('SIGTERM', sigterm);
+      try {
+        if (work !== undefined && !controller.signal.aborted) results?.start();
+      } finally {
+        if (work !== undefined) fs.rmSync(work, { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    thrown = error;
+    throw error;
   } finally {
-    process.off('SIGINT', sigint).off('SIGTERM', sigterm);
-    if (work !== undefined) fs.rmSync(work, { recursive: true, force: true });
+    if (results !== undefined && controller?.signal.aborted) {
+      console.error(`results.cjs: the run was interrupted, so ${results.file} has no run-end`);
+    } else if (results !== undefined && finish) {
+      const workLeft = work !== undefined && fs.existsSync(work);
+      const abandoned = Object.values(results.attempts).some((observed) => observed.abandoned);
+      const issues = [
+        ...(workLeft ? ['the temporary directory remains after its removal'] : []),
+        ...(abandoned ? ['a process group that the test stopped had not ended after SIGKILL'] : []),
+      ];
+      process.exitCode = results.end({
+        exitCode: thrown === undefined ? process.exitCode ?? 0 : 1,
+        cleanup: workLeft || abandoned ? 'failed' : 'verified',
+        issues,
+        error: thrown?.preflight ? undefined : thrown,
+      });
+    }
   }
 }
 
@@ -184,8 +283,10 @@ function isolatedEnv(variables) {
 // a folder only if it is given one. With recovery, the suite closes the
 // window during a recovery, with a virgil.server.path in dir/recovery, whose
 // records are checked after the window has closed. With keep, Chromium's own
-// log goes among VS Code's logs, for keepLogs.
-async function launch({ executable, settings, project, vsix, servers, keep, signal }, dir, folder, recovery = false) {
+// log goes among VS Code's logs, for keepLogs. With observed, from
+// results.cjs, the launch records there what it observed, and the suite its
+// own observations in observed.observations.
+async function launch({ executable, settings, project, vsix, servers, keep, signal, observed }, dir, folder, recovery = false) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
   const records = recovery ? path.join(dir, 'recovery') : undefined;
@@ -226,6 +327,7 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     // The suite checks that VS Code loaded the installed copy.
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
     ...(records === undefined ? {} : { VIRGIL_E2E_RECOVERY: records }),
+    ...(observed === undefined ? {} : { VIRGIL_E2E_OBSERVATIONS: observed.observations }),
   });
   if (vsix !== undefined && settings['virgil.server.path'] === undefined) {
     env.PATH = (env.PATH ?? '').split(path.delimiter).filter((entry) =>
@@ -234,6 +336,7 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   }
   const name = path.basename(dir);
   if (vsix !== undefined) {
+    const installing = Date.now();
     const installation = await runGroup(resolveCliPathFromVSCodeExecutablePath(executable), [
       `--user-data-dir=${userData}`,
       `--extensions-dir=${extensions}`,
@@ -246,6 +349,7 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
       stdin: 'ignore',
       signal,
     });
+    observe(observed, 'installation', installing, installation);
     if (!succeeded(installation)) {
       console.error(`FAIL: ${name} installation of ${vsix} ${outcome(installation)}`);
       return failure(userData, 'installation', outcome(installation));
@@ -256,8 +360,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     if (installed === undefined) throw new Error('installed extension is missing');
     servers = ['virgil-lsp', 'virgil-lsp-worker'].map((name) => path.join(extensions, installed, 'server', name));
     for (const file of servers) fs.accessSync(file, fs.constants.X_OK);
+    if (observed !== undefined) observed.server = servers[0];
   }
+  const starting = Date.now();
   const result = await runGroup(executable, args, { env, stdin: 'inherit', signal, servers });
+  observe(observed, 'launch', starting, result);
   const closeId = records === undefined ? 'vscode.shutdown.window-close' : 'vscode.recovery.window-close';
   const closeLabel = `${closeId} (${name} launch)`;
   if (!succeeded(result)) {
@@ -267,9 +374,29 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     printChannelLogs(userData);
     return failure(userData, 'launch', detail, result.error === undefined && result.stopped === undefined);
   }
+  // The evidence after the window closed: an exception while reading it
+  // fails the check by its ID, as a problem that it shows does.
+  const closing = Date.now();
+  const closed = (fields) => {
+    if (observed !== undefined) observed.close = { startedAt: closing, endedAt: Date.now(), ...fields };
+  };
+  const unreadable = (what, error) => {
+    const problem = `could not read ${what} after the window closed: ${error.message}`;
+    closed({ problem, unreadable: true });
+    console.error(`FAIL: ${closeLabel}: ${problem}`);
+    // Not retried: the extension activated, and the launch passed.
+    return { passed: false, kind: records === undefined ? 'server' : 'recovery', detail: problem, exited: false,
+      activated: true, windowError: undefined };
+  };
   if (records !== undefined) {
     const document = pathToFileURL(path.join(project, 'bad.v3')).href;
-    const problem = recoveryProblem(records, userData, document);
+    let problem;
+    try {
+      problem = recoveryProblem(records, userData, document);
+    } catch (error) {
+      return unreadable("the recovery script's records and the output channel's log", error);
+    }
+    closed({ problem });
     if (problem !== undefined) {
       console.error(`FAIL: ${closeLabel}: ${problem}`);
       printChannelLogs(userData);
@@ -279,15 +406,40 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     // Closing the window deactivates the extension, which sends shutdown and
     // exit. The channel may close before the server exits, so its log need not
     // record the exit.
-    const exit = lastServerExit(userData);
+    let exit;
+    try {
+      exit = lastServerExit(userData);
+    } catch (error) {
+      return unreadable("the output channel's log", error);
+    }
     if (exit !== undefined && !exit.includes('Server process exited successfully')) {
+      closed({ problem: `the server did not exit cleanly: ${exit}`, exit });
       console.error(`FAIL: ${closeLabel}: the server did not exit cleanly: ${exit}`);
       printChannelLogs(userData);
       return failure(userData, 'server', exit);
     }
+    closed({ exit });
   }
   console.log(`PASS: ${closeLabel}`);
   return { passed: true };
+}
+
+// Records in observed, if given, how the process group that runGroup ran for
+// key, from startedAt, ended.
+function observe(observed, key, startedAt, result) {
+  if (observed === undefined) return;
+  const abandoned = result.stopped?.includes("hadn't ended") === true;
+  observed[key] = {
+    startedAt,
+    endedAt: Date.now(),
+    passed: succeeded(result),
+    detail: outcome(result),
+    error: result.error !== undefined,
+    timedOut: result.stopped?.startsWith('exceeded') === true,
+    stopped: result.stopped !== undefined,
+    serverExitFailed: result.serverExitFailed === true,
+  };
+  if (abandoned) observed.abandoned = true;
 }
 
 // Runs command in a process group of its own, so that a timeout or an

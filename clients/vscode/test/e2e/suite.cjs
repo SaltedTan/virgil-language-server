@@ -9,7 +9,12 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
+const { reporter } = require('./observations.cjs');
 const { fromShutdown } = require('./shutdown.cjs');
+
+// Each check begins with checks.begin(id) and ends with checks.passed(), and a
+// failure belongs to the check that began last (see observations.cjs).
+const checks = reporter();
 
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
 const CHANNEL_LOG = 'Virgil Language Server.log';
@@ -282,8 +287,10 @@ function expectNoServerError(log) {
 // Runs a scenario that changes a setting or a file on disk. restore undoes
 // what is still changed and waits until a server serves the project as before,
 // so that a scenario that fails is reported and the next one still runs. If
-// restoring fails, the suite stops.
+// restoring fails, the scenario fails, with its own failure if it had one,
+// and the suite stops.
 async function scenario(failures, name, check, restore) {
+  checks.begin(name);
   let failure;
   try {
     await check();
@@ -293,14 +300,16 @@ async function scenario(failures, name, check, restore) {
   try {
     await restore();
   } catch (error) {
-    if (failure !== undefined) console.error(`FAIL: ${name}: ${failure.stack}`);
-    throw new Error(`restoring the state after "${name}" failed: ${error.message}`);
+    const restoring = new Error(`restoring the state after "${name}" failed: ${error.message}`);
+    if (failure !== undefined) checks.failed(failure);
+    else checks.failed(restoring, 'restore-failed');
+    throw checks.failed(restoring);
   }
   if (failure === undefined) {
-    console.log(`PASS: ${name}`);
+    checks.passed();
   } else {
     failures.push(name);
-    console.error(`FAIL: ${name}: ${failure.stack}`);
+    checks.failed(failure);
   }
 }
 
@@ -336,21 +345,27 @@ async function checkBundledSelection(extension) {
 }
 
 async function singleFile(extension) {
+  checks.begin('vscode.startup.activation');
   assert.equal(extension.isActive, false, 'the extension was active before a Virgil document opened');
   const bad = await open('bad.v3');
   assert.equal(bad.document.languageId, 'virgil');
   await waitFor('activation by a .v3 document', () => extension.isActive);
+  checks.begin('vscode.diagnostics.single-file-parser');
   await expectParserDiagnostic(bad);
-  console.log('PASS: vscode.diagnostics.single-file-parser');
+  checks.passed();
+  checks.begin('vscode.startup.activation');
   const server = selectedServer();
   await checkBundledSelection(extension);
   // The channel writes its log file asynchronously.
   await waitFor('the server to start from virgil.server.path', () => channelLog().includes(`Starting ${server} --stdio`));
-  console.log('PASS: vscode.startup.activation');
+  checks.passed();
+  // The channel's log exists, so a failure from here on is never retried.
+  checks.flush();
 }
 
 async function workspace(extension) {
   const failures = [];
+  checks.begin('vscode.startup.workspace-activation');
   // The project file activates the extension before any document opens.
   await waitFor('activation by the workspace project file', () => extension.isActive);
   assert.deepEqual(vscode.workspace.textDocuments.filter((d) => d.languageId === 'virgil'), []);
@@ -360,15 +375,18 @@ async function workspace(extension) {
   const root = configuredRoot || path.join(path.dirname(selectedServer()), 'virgil');
   if (configuredRoot) assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),
     'the Virgil root was not taken from virgil.virgilRoot');
-  console.log('PASS: vscode.startup.workspace-activation');
+  checks.passed();
+  checks.flush();
 
+  checks.begin('vscode.folding-ranges.response');
   const folding = await open('folding.v3');
   const folds = await vscode.commands.executeCommand('vscode.executeFoldingRangeProvider', folding.document.uri);
   assert.deepEqual(folds.map((r) => [r.start, r.end, r.kind]), [
     [0, 1, vscode.FoldingRangeKind.Comment], [3, 14, undefined], [4, 9, undefined],
     [5, 6, undefined], [7, 8, undefined], [11, 12, vscode.FoldingRangeKind.Comment], [13, 14, vscode.FoldingRangeKind.Comment],
   ]);
-  console.log('PASS: vscode.folding-ranges.response');
+  checks.passed();
+  checks.begin('vscode.selection-ranges.response');
   const selections = await vscode.commands.executeCommand('vscode.executeSelectionRangeProvider',
     folding.document.uri, [new vscode.Position(6, 8)]);
   assert.equal(selections.length, 1);
@@ -383,32 +401,38 @@ async function workspace(extension) {
     [4, 12, 10, 3], [4, 2, 10, 3], [4, 2, 14, 11], [4, 0, 14, 11],
     [3, 16, 15, 1], [3, 0, 15, 1], [0, 0, 16, 0],
   ], JSON.stringify(chain));
-  console.log('PASS: vscode.selection-ranges.response');
+  checks.passed();
 
+  checks.begin('vscode.diagnostics.parser');
   const bad = await open('bad.v3');
   const original = bad.document.getText();
   await expectParserDiagnostic(bad);
-  console.log('PASS: vscode.diagnostics.parser');
+  checks.passed();
+  checks.begin('vscode.symbols.broken-empty');
   assert.deepEqual(await symbols(bad), [], 'broken source should have no document symbols');
-  console.log('PASS: vscode.symbols.broken-empty');
+  checks.passed();
 
+  checks.begin('vscode.diagnostics.unsaved-cycle');
   // An unsaved edit must reach the server through the client's didChange,
   // clear the diagnostic, and update the outline. Undo brings both back.
   await edit(bad, (builder) => builder.replace(
     new vscode.Range(0, 0, bad.document.lineCount, 0), 'component C { def value = 1; }\ntype V { case A(x: int); }',
   ));
   await waitFor('cleared diagnostics after an unsaved edit', () => diagnostics(bad).length === 0);
+  checks.begin('vscode.symbols.hierarchy');
   assert.deepEqual(await symbols(bad), [
     { name: 'C', kind: vscode.SymbolKind.Namespace },
     { name: 'V', kind: vscode.SymbolKind.Class },
   ]);
   // A variant's case is its child, and selects its own name.
   assert.deepEqual(await children(bad, 'V'), [{ name: 'A', kind: vscode.SymbolKind.EnumMember, selection: [1, 14, 1, 15] }]);
-  console.log('PASS: vscode.symbols.hierarchy');
+  checks.passed();
+  checks.begin('vscode.diagnostics.unsaved-cycle');
   await undo(bad, original);
   await expectParserDiagnostic(bad);
-  console.log('PASS: vscode.diagnostics.unsaved-cycle');
+  checks.passed();
 
+  checks.begin('vscode.diagnostics.semicolon-fix');
   // vscode.diagnostics.semicolon-fix: use the real provider and editor edit.
   const semicolon = await open('semicolon.v3');
   const [semicolonDiagnostic] = await waitForDiagnostics('missing semicolon', semicolon);
@@ -432,8 +456,9 @@ async function workspace(extension) {
   assert.equal(await vscode.workspace.applyEdit(fix.edit), true);
   await waitFor('cleared semicolon diagnostic', () => diagnostics(semicolon).length === 0);
   assert.equal(semicolon.document.lineAt(2).text, '\t\treturn 1; // insert before this comment');
-  console.log('PASS: vscode.diagnostics.semicolon-fix');
+  checks.passed();
 
+  checks.begin('vscode.diagnostics.semantic');
   // Only a program that resolves StringBuilder from lib/util, through the
   // project's virgilDependencies and virgil.virgilRoot, has this single error.
   let words = await open('words', 'Words.v3');
@@ -441,8 +466,9 @@ async function workspace(extension) {
   assert.deepEqual(semantic.map((d) => [code(d), d.source, d.message, d.range.start.line]), [
     ['TypeError', 'aeneas', 'expected int in var initialization, got Array<byte>', 6],
   ]);
-  console.log('PASS: vscode.diagnostics.semantic');
+  checks.passed();
 
+  checks.begin('vscode.definition.response');
   // Go to definition from that analysis: StringBuilder resolves to its class in
   // the closed lib/util file, which the server reads again to convert the range.
   const use = 6;
@@ -453,13 +479,15 @@ async function workspace(extension) {
   assert.deepEqual(await definitions(words, use, column), [
     [library, declaration, 6, declaration, 19],
   ]);
-  console.log('PASS: vscode.definition.response');
+  checks.passed();
+  checks.begin('vscode.type-definition.response');
   const typeCall = words.document.lineAt(use).text.indexOf('.puts(') + 1;
   assert.deepEqual(await typeDefinitions(words, use, typeCall), [
     [library, declaration, 6, declaration, 19],
   ]);
   assert.deepEqual(await typeDefinitions(words, use, words.document.lineAt(use).text.indexOf('line:')), []);
-  console.log('PASS: vscode.type-definition.response');
+  checks.passed();
+  checks.begin('vscode.inlay-hints.response');
   await vscode.window.showTextDocument(words.document, { preview: false });
   const inlay = await open('words', 'Inlay.v3');
   const hints = await vscode.commands.executeCommand('vscode.executeInlayHintProvider',
@@ -469,11 +497,13 @@ async function workspace(extension) {
     [4, 33, vscode.InlayHintKind.Type, ': int'],
     [4, 41, vscode.InlayHintKind.Parameter, 'count:'],
   ]);
-  console.log('PASS: vscode.inlay-hints.response');
+  checks.passed();
+  checks.begin('vscode.semantic-tokens.response');
   // The same file's semantic tokens, with UTF-16 columns after the comment's
   // non-ASCII text. int, a built-in type, has none.
   assert.deepEqual(await semanticTokens(inlay.document.uri), INLAY_TOKENS);
-  console.log('PASS: vscode.semantic-tokens.response');
+  checks.passed();
+  checks.begin('vscode.hover.response');
   words = await vscode.window.showTextDocument(words.document);
   // Hover over the same use shows the class's signature in a Virgil code block,
   // then the comment above the class in the closed library file, as Markdown
@@ -481,7 +511,8 @@ async function workspace(extension) {
   assert.deepEqual(await hovers(words, use, column), [
     [[`\`\`\`virgil\nclass StringBuilder\n\`\`\`\n\n${STRING_BUILDER_DOC}`], [use, column, use, column + 'StringBuilder'.length]],
   ]);
-  console.log('PASS: vscode.hover.response');
+  checks.passed();
+  checks.begin('vscode.signature.complete');
   // Signature help just after the ( of .puts(a) on the same line shows the
   // method's label with its one parameter as label offsets, which the client
   // supports. The fixture's type error leaves the program parsed and analyzed.
@@ -489,14 +520,16 @@ async function workspace(extension) {
   assert.deepEqual(await signatureHelp(words, use, puts), {
     activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
   });
-  console.log('PASS: vscode.signature.complete');
+  checks.passed();
+  checks.begin('vscode.workspace-symbols.join');
   // Workspace symbols come from the same analysis: join, which nothing uses,
   // is a method in the project's own words/Words.v3.
   assert.deepEqual((await workspaceSymbols('join')).slice(0, 1), [
     ['join', vscode.SymbolKind.Method, words.document.uri.fsPath, 5, 5, 5, 9],
   ]);
-  console.log('PASS: vscode.workspace-symbols.join');
+  checks.passed();
 
+  checks.begin('vscode.references.library');
   // The references of the same class include the use, the class's name, and
   // uses in other closed lib/util files, which the server reads again; each
   // spells the name.
@@ -510,8 +543,9 @@ async function workspace(extension) {
   assert.deepEqual(uses.filter((u) => u.text !== 'StringBuilder'
     || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
   assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
-  console.log('PASS: vscode.references.library');
+  checks.passed();
 
+  checks.begin('vscode.document-highlight.response');
   // vscode.document-highlight.response: only this document's StringBuilder use.
   assert.deepEqual(await documentHighlights(words, use, column), [
     [use, column, use, column + 'StringBuilder'.length, vscode.DocumentHighlightKind.Read],
@@ -526,8 +560,9 @@ async function workspace(extension) {
     [6, 2, 6, 7, vscode.DocumentHighlightKind.Write],
     [7, 9, 7, 14, vscode.DocumentHighlightKind.Read],
   ]);
-  console.log('PASS: vscode.document-highlight.response');
+  checks.passed();
 
+  checks.begin('vscode.implementation.response');
   // vscode.implementation.response: Shape's subclasses, directly and
   // transitively, and the methods that override its area, by offset; the
   // unextended Circle has none.
@@ -540,8 +575,9 @@ async function workspace(extension) {
     [shapes, 8, 5, 8, 9], [shapes, 12, 5, 12, 9],
   ]);
   assert.deepEqual(await implementations({ document: shapesDocument }, 11, 6), []);
-  console.log('PASS: vscode.implementation.response');
+  checks.passed();
 
+  checks.begin('vscode.type-hierarchy.response');
   // vscode.type-hierarchy.response: Polygon's item, as Show Type Hierarchy
   // prepares it, and one level up and down from it, through the items the
   // server gave; Shape's subtypes are Polygon and Circle.
@@ -562,8 +598,9 @@ async function workspace(extension) {
     polygonItem,
     ['Circle', vscode.SymbolKind.Class, 'class Circle extends Shape', shapes, [11, 0, 13, 1], [11, 6, 11, 12]],
   ]);
-  console.log('PASS: vscode.type-hierarchy.response');
+  checks.passed();
 
+  checks.begin('vscode.call-hierarchy.response');
   // vscode.call-hierarchy.response: square's item, as Show Call Hierarchy
   // prepares it from a call, its two callers, one of which calls it twice,
   // and the calls out of that caller, through the items the server gave.
@@ -587,8 +624,9 @@ async function workspace(extension) {
     [squareItem, [[6, 48, 6, 54], [6, 60, 6, 66]]],
   ]);
   assert.deepEqual(await vscode.commands.executeCommand('vscode.provideOutgoingCalls', square), []);
-  console.log('PASS: vscode.call-hierarchy.response');
+  checks.passed();
 
+  checks.begin('vscode.rename.refusal');
   // While the type error stands, the server refuses to rename the local line,
   // with its reason, both when VS Code prepares the rename, as F2 does, and
   // when it asks for the edit. F2 shows the reason beside the cursor.
@@ -599,8 +637,9 @@ async function workspace(extension) {
   await assert.rejects(vscode.commands.executeCommand(
     'vscode.executeDocumentRenameProvider', words.document.uri, new vscode.Position(use, 6), 'text',
   ), refusal);
-  console.log('PASS: vscode.rename.refusal');
+  checks.passed();
 
+  checks.begin('vscode.rename.apply-undo');
   // Rename needs a program that verifies, so an unsaved edit fixes the type
   // error first. The server's versioned edit renames both uses of the local
   // line, VS Code applies it, and one undo restores them; a second restores
@@ -622,8 +661,9 @@ async function workspace(extension) {
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the rename', () => words.document.getText() === fixed);
   await undo(words, unedited);
-  console.log('PASS: vscode.rename.apply-undo');
+  checks.passed();
 
+  checks.begin('vscode.completion.keyword');
   // Completion takes its keywords from the unsaved text alone, which no
   // longer parses: "whi" starts a statement, so the keywords of a statement
   // are offered. In the middle of the word the item inserts what was typed and
@@ -658,8 +698,9 @@ async function workspace(extension) {
   await waitFor('the undo of the completion', () => words.document.getText() === typed);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the prefix', () => words.document.getText() === unedited && !words.document.isDirty);
-  console.log('PASS: vscode.completion.keyword');
+  checks.passed();
 
+  checks.begin('vscode.completion.local');
   // It also offers the declarations in scope, from an analysis of the
   // project with the unsaved text, repaired at the cursor: the local "line"
   // is nearest, so it is ranked first, then the parameters, "this", and the
@@ -683,6 +724,7 @@ async function workspace(extension) {
   assert.deepEqual(range({ range: localRange }), [use + 1, 2, use + 1, 4]);
   const localText = typeof local.insertText === 'string' ? local.insertText : local.insertText.value;
   assert.equal(localText, 'line');
+  checks.begin('vscode.completion.resolve');
   // VS Code resolves an item before it shows its details, which adds its
   // declaration's comment, as hover shows it: here StringBuilder's, from the
   // closed library file. The edited Words.v3, repaired at the cursor,
@@ -698,7 +740,8 @@ async function workspace(extension) {
   assert.equal(builderItem.documentation.value, STRING_BUILDER_DOC);
   assert.equal(builderItem.detail, 'class StringBuilder');
   assert.equal(resolved.items.find((i) => i.label === 'join').documentation, undefined);
-  console.log('PASS: vscode.completion.resolve');
+  checks.passed();
+  checks.begin('vscode.completion.local');
   await edit(words, (builder) => builder.replace(localRange, localText));
   assert.equal(words.document.lineAt(use + 1).text, '\t\tline');
   await vscode.window.showTextDocument(words.document);
@@ -706,8 +749,9 @@ async function workspace(extension) {
   await waitFor('the undo of the declaration completion', () => words.document.getText() === prefixed);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the declaration prefix', () => words.document.getText() === unedited && !words.document.isDirty);
-  console.log('PASS: vscode.completion.local');
+  checks.passed();
 
+  checks.begin('vscode.completion.member');
   // After ".", which triggers completion, the members of the receiver's type
   // alone, from an analysis of the project with the unsaved text, repaired
   // after the ".": the parameter "a" is a string, whose one member is its
@@ -733,8 +777,9 @@ async function workspace(extension) {
   await waitFor('the undo of the member completion', () => words.document.getText() === dotted);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the receiver', () => words.document.getText() === unedited && !words.document.isDirty);
-  console.log('PASS: vscode.completion.member');
+  checks.passed();
 
+  checks.begin('vscode.signature.unclosed-first');
   // Signature help in a call still being typed, with no ")", comes from the
   // unsaved text repaired at the cursor: just after the "(" of .puts( the
   // method's one parameter is active, and after "1, " in Ints.max( from
@@ -745,15 +790,17 @@ async function workspace(extension) {
     activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
   });
   await undo(words, unedited);
-  console.log('PASS: vscode.signature.unclosed-first');
+  checks.passed();
+  checks.begin('vscode.signature.unclosed-second');
   const second = '\t\tvar n = Ints.max(1, ';
   await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), `${second}\n`));
   assert.deepEqual(await signatureHelp(words, use + 1, second.length), {
     activeSignature: 0, activeParameter: 1, signatures: [['def max(a: int, b: int) -> int', [[8, 14], [16, 22]]]],
   });
   await undo(words, unedited);
-  console.log('PASS: vscode.signature.unclosed-second');
+  checks.passed();
 
+  checks.begin('vscode.completion.comment-invoked');
   // Inside the comment on line 3 the server offers nothing, either where
   // completion is invoked after the word StringBuilder or after a ".", which
   // triggers it. run.cjs turns off VS Code's word-based suggestions, so the
@@ -764,17 +811,19 @@ async function workspace(extension) {
     'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word),
   );
   assert.deepEqual(invoked.items.map((i) => i.label), [], 'completion in a comment offered items');
-  console.log('PASS: vscode.completion.comment-invoked');
+  checks.passed();
+  checks.begin('vscode.completion.comment-dot');
   await edit(words, (builder) => builder.insert(new vscode.Position(comment, word), '.'));
   const commented = await vscode.commands.executeCommand(
     'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word + 1), '.',
   );
   assert.deepEqual(commented.items.map((i) => i.label), [], 'completion after a "." in a comment offered items');
   await undo(words, unedited);
-  console.log('PASS: vscode.completion.comment-dot');
+  checks.passed();
 
   await projectFileOnDisk(failures, bad, words);
 
+  checks.begin('vscode.configuration.unsaved');
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -785,8 +834,9 @@ async function workspace(extension) {
   assert.deepEqual(unknown.map((d) => [code(d), d.source, d.range.start.line]), [['UnknownField', 'virgil-lsp', 1]]);
   await undo(config, configText);
   await waitFor('cleared configuration diagnostics after undoing the edit', () => diagnostics(config).length === 0);
-  console.log('PASS: vscode.configuration.unsaved');
+  checks.passed();
 
+  checks.begin('vscode.restart.clean');
   // The restart sends shutdown and exit, so the server exits with status 0
   // before its replacement starts and serves the open documents.
   assert.equal(count(channelLog(), 'Server process exited'), 0);
@@ -800,7 +850,7 @@ async function workspace(extension) {
   // replacement's, from its copy of words/Words.v3.
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
-  console.log('PASS: vscode.restart.clean');
+  checks.passed();
 
   // The scenarios that restart the server, or could disturb it, come last.
   await trace(failures, words);
@@ -825,6 +875,7 @@ async function workspace(extension) {
 async function formatting(bad) {
   const misindented = 'component Formatting {\n  def f() {\n      return;\n  }\n}\n';
   const formatted = 'component Formatting {\n\tdef f() {\n\t\treturn;\n\t}\n}\n';
+  checks.begin('vscode.formatting.document');
   fs.writeFileSync(path.join(project, 'formatting.v3'), misindented);
   const editor = await open('formatting.v3');
   // VS Code applies a language-specific default only when the scope names the
@@ -842,8 +893,9 @@ async function formatting(bad) {
   // Format Document formats the misindented text, as the command does.
   await vscode.commands.executeCommand('editor.action.formatDocument');
   await waitFor('Format Document to format formatting.v3', () => editor.document.getText() === formatted);
-  console.log('PASS: vscode.formatting.document');
+  checks.passed();
 
+  checks.begin('vscode.formatting.save');
   // An explicit save formats the file, and the formatted bytes reach the disk.
   await undo(editor, misindented);
   await edit(editor, (builder) => builder.replace(new vscode.Range(1, 6, 1, 7), 'saved'));
@@ -852,8 +904,9 @@ async function formatting(bad) {
   await waitFor('the formatted save of formatting.v3', () => !editor.document.isDirty
     && editor.document.getText() === formattedOnSave
     && fs.readFileSync(editor.document.uri.fsPath, 'utf8') === formattedOnSave);
-  console.log('PASS: vscode.formatting.save');
+  checks.passed();
 
+  checks.begin('vscode.formatting.final-newline');
   // A save adds the final line end that the formatting request leaves out. The
   // buffer is dirty, so the file is written: the empty body gains its space,
   // then one LF is added.
@@ -866,8 +919,9 @@ async function formatting(bad) {
   await waitFor('the final line end of no-final-newline.v3', () => !noFinal.document.isDirty
     && noFinal.document.getText() === withNewline
     && fs.readFileSync(noFinal.document.uri.fsPath, 'utf8') === withNewline);
-  console.log('PASS: vscode.formatting.final-newline');
+  checks.passed();
 
+  checks.begin('vscode.formatting.syntax-error');
   const traceSetting = 'virgil.trace.server';
   const jsonFormatter = 'json.format.enable';
   const userSettings = vscode.workspace.getConfiguration();
@@ -908,7 +962,8 @@ async function formatting(bad) {
     });
     assert.ok(!saveTrace().includes('Request textDocument/formatting failed.'),
       'saving bad.v3 reported a formatting error');
-    console.log('PASS: vscode.formatting.syntax-error');
+    checks.passed();
+    checks.begin('vscode.formatting.project-file');
     fs.writeFileSync(bad.document.uri.fsPath, saved);
     await vscode.window.showTextDocument(bad.document);
     await vscode.commands.executeCommand('workbench.action.files.revert');
@@ -931,7 +986,7 @@ async function formatting(bad) {
       'Format Document on .virgil-lsp.json sent a textDocument/formatting request');
     assert.equal(formattingRequestIds(log, formatEditor.document.uri).length, 1,
       'Format Document on formatting.v3 must send exactly one textDocument/formatting request');
-    console.log('PASS: vscode.formatting.project-file');
+    checks.passed();
   } finally {
     await level(vscode.LogLevel.Info);
     await setSetting(jsonFormatter, originalJsonFormatter);
@@ -950,6 +1005,7 @@ function formattingRequestIds(log, uri) {
 // scenario closes every editor, and reopens bad.v3 and words/Words.v3 in tabs
 // of their own, as they were, so that the restart serves them as open editors.
 async function projectFileOnDisk(failures, bad, words) {
+  checks.begin('vscode.configuration.disk-watch');
   const file = path.join(project, '.virgil-lsp.json');
   const uri = vscode.Uri.file(file);
   const original = fs.readFileSync(file, 'utf8');
@@ -1011,6 +1067,7 @@ async function trace(failures, words) {
 // no semantic tokens, so VS Code has no provider for them. Its default, auto,
 // turns them on here, where titzer.virgil isn't installed.
 async function semanticTokensOff(failures, words) {
+  checks.begin('vscode.semantic-tokens.off');
   const name = 'virgil.semanticTokens';
   const userValue = () => vscode.workspace.getConfiguration().inspect(name).globalValue;
   const original = userValue();
@@ -1040,6 +1097,7 @@ async function semanticTokensOff(failures, words) {
 // can't be resolved. The output channel and the diagnostic are checked by
 // separate scenarios, each from its own restart.
 async function noVirgilRoot(failures, words) {
+  checks.begin('vscode.configuration.rootless-log');
   const originalRoot = setting('virgil.virgilRoot');
   const root = originalRoot || path.join(path.dirname(selectedServer()), 'virgil');
   if (!originalRoot) await setSetting('virgil.virgilRoot', root);
@@ -1105,15 +1163,19 @@ async function noVirgilRoot(failures, words) {
     });
     assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
     expectNoServerError(log);
-  }, restore);
-  await restoreServer(server, words);
-  if (!originalRoot) {
-    const log = logFromHere();
-    await setSetting('virgil.virgilRoot', originalRoot);
-    await waitFor('the bundled root restart to finish', () =>
-      log().includes('No Virgil root:') && log().includes('Started virgil-lsp '));
-    await waitFor('the restored bundled library diagnostics', () => hasTypeError(words), 40000);
-  }
+  }, async () => {
+    // The last scenario's restore also puts back the server and, for a
+    // bundled server, the empty root, so that a failure there is its own.
+    await restore();
+    await restoreServer(server, words);
+    if (!originalRoot) {
+      const log = logFromHere();
+      await setSetting('virgil.virgilRoot', originalRoot);
+      await waitFor('the bundled root restart to finish', () =>
+        log().includes('No Virgil root:') && log().includes('Started virgil-lsp '));
+      await waitFor('the restored bundled library diagnostics', () => hasTypeError(words), 40000);
+    }
+  });
   fs.rmSync(directory, { recursive: true, force: true });
 }
 
@@ -1866,19 +1928,30 @@ async function closeDuringRecovery(extension, directory) {
 }
 
 async function run() {
-  const extension = vscode.extensions.getExtension(EXTENSION_ID);
-  assert.ok(extension, `${EXTENSION_ID} is not loaded`);
-  const recovery = process.env.VIRGIL_E2E_RECOVERY;
-  // run.cjs sets this when it installed the extension from a VSIX.
-  const installed = process.env.VIRGIL_E2E_EXTENSIONS_DIR;
-  if (installed !== undefined) {
-    assert.equal(path.dirname(extension.extensionPath), installed,
-      `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
-    if (recovery === undefined) console.log('PASS: vscode.startup.installed-copy');
+  try {
+    const recovery = process.env.VIRGIL_E2E_RECOVERY;
+    // run.cjs sets this when it installed the extension from a VSIX.
+    const installed = process.env.VIRGIL_E2E_EXTENSIONS_DIR;
+    // The recovery-close launch has no checks of the suite's own: run.cjs
+    // checks it once the window has closed.
+    if (installed !== undefined && recovery === undefined) checks.begin('vscode.startup.installed-copy');
+    const extension = vscode.extensions.getExtension(EXTENSION_ID);
+    assert.ok(extension, `${EXTENSION_ID} is not loaded`);
+    if (installed !== undefined) {
+      assert.equal(path.dirname(extension.extensionPath), installed,
+        `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
+      // Reported once the output channel's startup checks have passed: a
+      // launch that fails before the extension activates can be retried, and
+      // would report it again.
+      if (recovery === undefined) checks.passLater();
+    }
+    if (recovery !== undefined) await closeDuringRecovery(extension, recovery);
+    else if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
+    else await workspace(extension);
+  } catch (error) {
+    // An inline assertion fails the check that began last, if it hasn't ended.
+    throw checks.failed(error);
   }
-  if (recovery !== undefined) await closeDuringRecovery(extension, recovery);
-  else if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
-  else await workspace(extension);
 }
 
 module.exports = { run };
