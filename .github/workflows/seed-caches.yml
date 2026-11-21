@@ -1,0 +1,176 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+name: Seed caches
+
+# Saves the dependency caches that pull request CI (ci.yml) restores: the VS
+# Code client's node_modules and the Extension Host test's pinned VS Code, on
+# Linux and macOS, and the LazyVim test's starter, plugins, and parsers
+# (test/e2e/lazyvim/run.sh --seed-cache) on Linux. Pull requests never save a
+# cache, so none can hold what a pull request installed. Each key comes from
+# scripts/ci-cache-keys.sh, as in ci.yml, and names every input that decides
+# what its cache holds; a job installs and saves only the caches whose keys
+# have none yet. A cache that nothing restores for 7 days is evicted, so the
+# daily run seeds again what a quiet week let go. The weekly editor tests and
+# the release workflow use none of these caches.
+#
+# It runs after each push to main, daily, and by hand.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '19 15 * * *' # daily, 15:19 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs never cancel each other; under load only the newest waits.
+concurrency:
+  group: seed-caches-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  seed-linux:
+    name: Seed the Linux caches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # The Node and Neovim versions of the jobs in ci.yml that restore these
+      # caches, which their keys name.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install Neovim 0.11.6
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "2fc90b962327f73a78afbfb8203fd19db8db9cdf4ee5e2bef84704339add89cc  $RUNNER_TEMP/nvim.tar.gz" |
+            sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Compute the cache keys
+        id: keys
+        run: scripts/ci-cache-keys.sh node-modules vscode lazyvim | tee -a "$GITHUB_OUTPUT"
+      # The paths are ci.yml's.
+      - name: Look up node_modules
+        id: node-modules
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+          lookup-only: true
+      - name: Look up the pinned VS Code
+        id: vscode
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}
+          lookup-only: true
+      - name: Look up the LazyVim starter, plugins, and parsers
+        id: lazyvim
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/lazyvim-cache
+          key: ${{ steps.keys.outputs.lazyvim }}
+          lookup-only: true
+      # The VS Code download needs node_modules too.
+      - name: Install client dependencies from the lockfile
+        if: steps.node-modules.outputs.cache-hit != 'true' || steps.vscode.outputs.cache-hit != 'true'
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Save node_modules
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+      # Then checks that the Extension Host test would use it: run.cjs uses
+      # only a completed download.
+      - name: Download the pinned VS Code
+        if: steps.vscode.outputs.cache-hit != 'true'
+        working-directory: clients/vscode
+        env:
+          VSCODE_VERSION: ${{ steps.keys.outputs.vscode-version }}
+        run: |
+          node test/e2e/download.cjs "$VSCODE_VERSION" "$PWD/.vscode-test"
+          node -e 'const e = require("./test/e2e/run.cjs").cachedVSCode(require("path").resolve(".vscode-test"));
+            if (e === undefined) throw new Error("no completed VS Code download"); console.log(e)'
+      - name: Save the pinned VS Code
+        if: steps.vscode.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}
+      - name: Install the LazyVim starter, plugins, and parsers
+        if: steps.lazyvim.outputs.cache-hit != 'true'
+        run: test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim-seed" --seed-cache "$RUNNER_TEMP/lazyvim-cache"
+      - name: Save the LazyVim starter, plugins, and parsers
+        if: steps.lazyvim.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/lazyvim-cache
+          key: ${{ steps.keys.outputs.lazyvim }}
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: seed-lazyvim
+          path: ${{ runner.temp }}/lazyvim-seed
+          if-no-files-found: ignore
+          retention-days: 14
+
+  seed-macos:
+    # As seed-linux, for the macOS Extension Host test, which needs no
+    # LazyVim cache.
+    name: Seed the macOS caches
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Compute the cache keys
+        id: keys
+        run: scripts/ci-cache-keys.sh node-modules vscode | tee -a "$GITHUB_OUTPUT"
+      - name: Look up node_modules
+        id: node-modules
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+          lookup-only: true
+      - name: Look up the pinned VS Code
+        id: vscode
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}
+          lookup-only: true
+      - name: Install client dependencies from the lockfile
+        if: steps.node-modules.outputs.cache-hit != 'true' || steps.vscode.outputs.cache-hit != 'true'
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Save node_modules
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+      - name: Download the pinned VS Code
+        if: steps.vscode.outputs.cache-hit != 'true'
+        working-directory: clients/vscode
+        env:
+          VSCODE_VERSION: ${{ steps.keys.outputs.vscode-version }}
+        run: |
+          node test/e2e/download.cjs "$VSCODE_VERSION" "$PWD/.vscode-test"
+          node -e 'const e = require("./test/e2e/run.cjs").cachedVSCode(require("path").resolve(".vscode-test"));
+            if (e === undefined) throw new Error("no completed VS Code download"); console.log(e)'
+      - name: Save the pinned VS Code
+        if: steps.vscode.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}

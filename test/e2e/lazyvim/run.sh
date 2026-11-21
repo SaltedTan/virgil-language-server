@@ -7,14 +7,20 @@
 # starts Neovim in a detached tmux session, and driver.lua drives it through
 # LazyVim's own keys. See README.md for the checks, outputs, and pins.
 #
-#   run.sh [--out DIR] [--keep-work] [--update-lock]
+#   run.sh [--out DIR] [--keep-work] [--update-lock | --cache CACHE]
 #     [--results FILE [--release VERSION] [--purpose PURPOSE]] (--archive ARCHIVE | SERVER)
+#   run.sh [--out DIR] [--keep-work] --seed-cache CACHE
 #
 # ARCHIVE is a release archive, virgil-lsp-<version>-x86-64-<os>.tar.gz or the
 # JVM build's virgil-lsp-<version>-jvm-arm64-darwin.tar.gz;
 # SERVER is a built virgil-lsp with virgil-lsp-worker beside it. With
 # --results, results.py also writes the run's result stream to FILE, as
-# test/e2e/RESULTS.md describes.
+# test/e2e/RESULTS.md describes. --seed-cache installs the starter, plugins,
+# and parsers into CACHE, a new or empty directory, and runs nothing else;
+# --cache restores them from CACHE instead of installing them, if CACHE holds
+# a finished seed for the same starter, Neovim, system, lock, parsers.lua, and
+# virgil.lua; stops if CACHE holds a seed for anything else; and otherwise
+# installs them as without it, leaving CACHE alone.
 set -euo pipefail
 
 # The LazyVim starter's commit. The plugins' commits, including lazy.nvim's,
@@ -28,8 +34,9 @@ install_timeout=${VIRGIL_LAZYVIM_INSTALL_TIMEOUT:-600}
 run_timeout=${VIRGIL_LAZYVIM_RUN_TIMEOUT:-240}
 
 usage() {
-  echo "usage: $0 [--out DIR] [--keep-work] [--update-lock]" \
+  echo "usage: $0 [--out DIR] [--keep-work] [--update-lock | --cache CACHE]" \
     "[--results FILE [--release VERSION] [--purpose PURPOSE]] (--archive ARCHIVE | SERVER)" >&2
+  echo "       $0 [--out DIR] [--keep-work] --seed-cache CACHE" >&2
   stop_check "the arguments are not valid: $*" usage
   exit 2
 }
@@ -102,16 +109,18 @@ for argument in "$@"; do
   [[ $previous != --results || -z $argument ]] || { : > "$argument"; } 2>/dev/null || true
   previous=$argument
 done
-out='' keep_work=0 update_lock=0 archive='' server=''
+out='' keep_work=0 update_lock=0 archive='' server='' cache='' seed=''
 while (( $# > 0 )); do
   case $1 in
     --out) (( $# > 1 )) || usage; out=$2; shift 2 ;;
-    --results|--release|--purpose)
+    --results|--release|--purpose|--cache|--seed-cache)
       (( $# > 1 )) && [[ -n $2 ]] || usage
       case $1 in
         --results) results=$2 ;;
         --release) release=$2 ;;
         --purpose) purpose=$2 ;;
+        --cache) cache=$2 ;;
+        --seed-cache) seed=$2 ;;
       esac
       shift 2
       ;;
@@ -123,6 +132,10 @@ while (( $# > 0 )); do
   esac
 done
 [[ -n $results || -z $release$purpose ]] || usage
+# A seed installs and runs nothing else, so it takes no server and writes no
+# stream; a restored install has no lock to update.
+[[ -z $seed || ( -z $archive$server$results$cache && $update_lock == 0 ) ]] || usage
+[[ -z $cache || $update_lock == 0 ]] || usage
 case ${purpose:=development} in
   release|development|compatibility|canary|demo) ;;
   *) usage ;;
@@ -141,12 +154,16 @@ if [[ -n $results ]]; then
 fi
 begin_check lazyvim.infrastructure.preflight
 
-[[ -n $archive$server && ( -z $archive || -z $server ) ]] || usage "give either --archive or a server"
+[[ -n $seed || ( -n $archive$server && ( -z $archive || -z $server ) ) ]] || usage "give either --archive or a server"
 for value in "$install_timeout" "$run_timeout"; do
   [[ $value =~ ^[1-9][0-9]*$ ]] || die "deadlines must be whole seconds: $value"
 done
 
-if [[ -n $archive ]]; then
+if [[ -n $seed ]]; then
+  mkdir -p "$seed" || die "cannot create $seed"
+  seed=$(cd "$seed" && pwd -P)
+  [[ -z $(ls -A "$seed") ]] || die "the cache directory is not empty: $seed"
+elif [[ -n $archive ]]; then
   [[ -f $archive ]] || die "archive not found: $archive"
   archive=$(cd "$(dirname "$archive")" && pwd -P)/$(basename "$archive")
   archive_dir=$(basename "$archive" .tar.gz)
@@ -163,7 +180,10 @@ if [[ -n $out ]]; then
   [[ -z $(ls -A "$out") ]] || die "the output directory is not empty: $out"
 fi
 
-for tool in nvim tmux git python3; do
+# A seed runs no profile, so it needs no tmux.
+tools=(nvim git python3)
+[[ -n $seed ]] || tools+=(tmux)
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null 2>&1 ||
     die "$tool not found on PATH; the LazyVim test needs Neovim 0.11 or later, tmux, git, and python3"
 done
@@ -174,8 +194,50 @@ re='^NVIM v([0-9]+)\.([0-9]+)'
 (( BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 11 )) || die "requires Neovim 0.11 or later, not $nvim_version"
 # The fixture project's virgilDependencies resolve against the pinned checkout.
 virgil_loc=$repo/vendor/virgil
-[[ -f $virgil_loc/lib/util/StringBuilder.v3 ]] ||
+[[ -n $seed || -f $virgil_loc/lib/util/StringBuilder.v3 ]] ||
   die "Virgil sources not found at $virgil_loc; run: git submodule update --init vendor/virgil"
+
+# A seeded cache holds the starter, the plugins with what mason.nvim installed
+# for LazyVim, and the parsers, as a run without one has them once its parsers
+# are installed. Its ready file, written last, names what they were installed
+# for, which a restore must match line for line, and when.
+sha256() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }
+cache_identity() {
+  echo "starter $starter_commit"
+  echo "neovim $nvim_version"
+  echo "system $(uname -sm)"
+  echo "lazy-lock.json $(sha256 "$here/lazy-lock.json")"
+  echo "parsers.lua $(sha256 "$here/parsers.lua")"
+  echo "virgil.lua $(sha256 "$repo/editors/nvim/lazyvim/virgil.lua")"
+}
+# relink DIR FROM TO: points each symbolic link under DIR whose target starts
+# with FROM to the same place under TO instead. nvim-treesitter links its
+# queries into the data directory by absolute paths, which a seed keeps under
+# @DATA@ and a restore points into its own data directory.
+relink() {
+  local link target
+  while IFS= read -r -d '' link; do
+    target=$(readlink "$link")
+    [[ $target == "$2"* ]] || continue
+    ln -sfn "$3${target#"$2"}" "$link"
+  done < <(find "$1" -type l -print0)
+}
+cache_hit=0
+if [[ -n $cache ]]; then
+  if [[ -f $cache/ready ]]; then
+    cache=$(cd "$cache" && pwd -P)
+    [[ -d $cache/config/nvim && -d $cache/data/nvim && -f $cache/parsers.txt ]] ||
+      die "the cache $cache is ready but lacks config/nvim, data/nvim, or parsers.txt"
+    identity=$(cache_identity) || die "cannot compute the cache's identity"
+    if [[ $(grep -v '^seeded ' "$cache/ready") != "$identity" ]]; then
+      echo "run.sh: the cache's ready file and this run differ:" >&2
+      diff <(grep -v '^seeded ' "$cache/ready") <(printf '%s\n' "$identity") | sed 's/^/   /' >&2 || true
+      die "the cache $cache was seeded for another installation; seed it again with --seed-cache"
+    fi
+    cache_hit=1
+    seeded=$(sed -n 's/^seeded //p' "$cache/ready")
+  fi
+fi
 
 if [[ -z $out ]]; then
   out=$(mktemp -d "${TMPDIR:-/tmp}/virgil-lazyvim-results.XXXXXX")
@@ -531,10 +593,18 @@ trap 'on_signal HUP' HUP
 work=$(cd "$work" && pwd -P)
 (( ${#work} <= 70 )) || die "the work directory's path is too long for tmux's socket: $work; set TMPDIR"
 if [[ -n $archive ]]; then given="the archive $(basename "$archive")"; else given="the server and its worker"; fi
+if (( cache_hit )); then given="$given; the matching cache $cache"; fi
 pass_check "$nvim_version; nvim, tmux, git, and python3 on PATH; $given; an empty output directory; the Virgil sources"
 
 echo "results: $out"
 echo "work directory: $work"
+if [[ -n $seed ]]; then
+  echo "seeding the cache: $seed"
+elif (( cache_hit )); then
+  echo "cache: $cache, seeded $seeded"
+elif [[ -n $cache ]]; then
+  echo "cache: none ready in $cache; installing from GitHub"
+fi
 cd "$work"
 
 # Neovim's state stays in the work directory: XDG directories, plugins, and
@@ -546,42 +616,45 @@ unset VIMINIT MYVIMRC NVIM NVIM_LOG_FILE NVIM_LISTEN_ADDRESS TMUX TMUX_PANE VIRG
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$work/bin"
 
 # The server, installed as its archive's README says: extracted into one
-# directory, with a symlink to virgil-lsp on PATH; or a build's directory.
-begin_check lazyvim.infrastructure.artifact-start
-if [[ -n $archive ]]; then
-  mkdir "$work/server"
-  tar -xzf "$archive" -C "$work/server"
-  [[ $(ls -A "$work/server") == "$archive_dir" && -d $work/server/$archive_dir ]] ||
-    die "the archive does not hold just the directory $archive_dir"
-  ln -s "$work/server/$archive_dir/virgil-lsp" "$work/bin/virgil-lsp"
-  export PATH="$work/bin:$PATH"
-else
-  export PATH="$server_dir:$PATH"
-fi
-# The rootless profiles deliberately model an incomplete installation. Keep
-# their MissingVirgilRoot and noice warning checks meaningful for archives
-# that now carry a default library. The main profile uses the real install.
-# The JVM build's launchers also need their jars and Java runtime beside them;
-# the runtime can be a symlink, since the server finds its library from the
-# launcher's own directory, which has no virgil/.
-mkdir "$work/no-bundle"
-installed_server=$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("virgil-lsp")))')
-installed_dir=$(dirname "$installed_server")
-cp "$installed_server" "$installed_dir/virgil-lsp-worker" "$work/no-bundle/"
-for jar in virgil-lsp.jar virgil-lsp-worker.jar; do
-  if [[ -f $installed_dir/$jar ]]; then cp "$installed_dir/$jar" "$work/no-bundle/"; fi
-done
-if [[ -d $installed_dir/runtime ]]; then ln -s "$installed_dir/runtime" "$work/no-bundle/runtime"; fi
-if [[ -n $results ]]; then
+# directory, with a symlink to virgil-lsp on PATH; or a build's directory. A
+# seed has none.
+if [[ -z $seed ]]; then
+  begin_check lazyvim.infrastructure.artifact-start
   if [[ -n $archive ]]; then
-    results_py server "$observations" --server "$(command -v virgil-lsp)" --archive "$archive" \
-      --archive-root "$work/server/$archive_dir" || true
+    mkdir "$work/server"
+    tar -xzf "$archive" -C "$work/server"
+    [[ $(ls -A "$work/server") == "$archive_dir" && -d $work/server/$archive_dir ]] ||
+      die "the archive does not hold just the directory $archive_dir"
+    ln -s "$work/server/$archive_dir/virgil-lsp" "$work/bin/virgil-lsp"
+    export PATH="$work/bin:$PATH"
   else
-    results_py server "$observations" --server "$(command -v virgil-lsp)" || true
+    export PATH="$server_dir:$PATH"
   fi
+  # The rootless profiles deliberately model an incomplete installation. Keep
+  # their MissingVirgilRoot and noice warning checks meaningful for archives
+  # that now carry a default library. The main profile uses the real install.
+  # The JVM build's launchers also need their jars and Java runtime beside them;
+  # the runtime can be a symlink, since the server finds its library from the
+  # launcher's own directory, which has no virgil/.
+  mkdir "$work/no-bundle"
+  installed_server=$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("virgil-lsp")))')
+  installed_dir=$(dirname "$installed_server")
+  cp "$installed_server" "$installed_dir/virgil-lsp-worker" "$work/no-bundle/"
+  for jar in virgil-lsp.jar virgil-lsp-worker.jar; do
+    if [[ -f $installed_dir/$jar ]]; then cp "$installed_dir/$jar" "$work/no-bundle/"; fi
+  done
+  if [[ -d $installed_dir/runtime ]]; then ln -s "$installed_dir/runtime" "$work/no-bundle/runtime"; fi
+  if [[ -n $results ]]; then
+    if [[ -n $archive ]]; then
+      results_py server "$observations" --server "$(command -v virgil-lsp)" --archive "$archive" \
+        --archive-root "$work/server/$archive_dir" || true
+    else
+      results_py server "$observations" --server "$(command -v virgil-lsp)" || true
+    fi
+  fi
+  server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here: $server_version"
+  pass_check "virgil-lsp --version: ${server_version%%$'\n'*}${archive:+; the archive holds just $archive_dir}"
 fi
-server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here: $server_version"
-pass_check "virgil-lsp --version: ${server_version%%$'\n'*}${archive:+; the archive holds just $archive_dir}"
 
 # The provenance header, printed and kept in the output directory.
 {
@@ -592,7 +665,9 @@ pass_check "virgil-lsp --version: ${server_version%%$'\n'*}${archive:+; the arch
   else
     echo "repository: $repo (not a Git checkout)"
   fi
-  if git -C "$virgil_loc" rev-parse --git-dir >/dev/null 2>&1; then
+  if [[ -n $seed ]]; then
+    :
+  elif git -C "$virgil_loc" rev-parse --git-dir >/dev/null 2>&1; then
     echo "Virgil root: $virgil_loc at $(git -C "$virgil_loc" rev-parse HEAD)"
   else
     echo "Virgil root: $virgil_loc (not a Git checkout)"
@@ -611,20 +686,33 @@ pass_check "virgil-lsp --version: ${server_version%%$'\n'*}${archive:+; the arch
     echo "archive: $archive"
     echo "archive SHA-256: $(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$archive")"
   fi
-  echo "virgil-lsp on PATH: $(command -v virgil-lsp) ($(file -bL "$(command -v virgil-lsp)" 2>/dev/null))"
-  echo "$server_version" | sed 's/^/  /'
+  if [[ -z $seed ]]; then
+    echo "virgil-lsp on PATH: $(command -v virgil-lsp) ($(file -bL "$(command -v virgil-lsp)" 2>/dev/null))"
+    echo "$server_version" | sed 's/^/  /'
+  fi
   echo "LazyVim starter: $starter_url at $starter_commit"
+  if (( cache_hit )); then
+    echo "cache: $cache, seeded $seeded; the starter, plugins, and parsers restored from it"
+  fi
 } > "$out/provenance.txt"
 cat "$out/provenance.txt"
 
-# The starter at its commit, with the repository's plugin spec.
+# The starter at its commit, with the repository's plugin spec. A cache's
+# starter was checked out at the commit that its ready file names, which
+# matches.
 begin_check lazyvim.infrastructure.starter
-git clone -q "$starter_url" "$XDG_CONFIG_HOME/nvim"
-git -C "$XDG_CONFIG_HOME/nvim" checkout -q "$starter_commit"
-[[ $(git -C "$XDG_CONFIG_HOME/nvim" rev-parse HEAD) == "$starter_commit" ]] || die "starter checkout failed"
-rm -rf "$XDG_CONFIG_HOME/nvim/.git"
+if (( cache_hit )); then
+  cp -R "$cache/config/nvim" "$XDG_CONFIG_HOME/nvim"
+  from=", restored from the cache"
+else
+  git clone -q "$starter_url" "$XDG_CONFIG_HOME/nvim"
+  git -C "$XDG_CONFIG_HOME/nvim" checkout -q "$starter_commit"
+  [[ $(git -C "$XDG_CONFIG_HOME/nvim" rev-parse HEAD) == "$starter_commit" ]] || die "starter checkout failed"
+  rm -rf "$XDG_CONFIG_HOME/nvim/.git"
+  from=''
+fi
 cp "$repo/editors/nvim/lazyvim/virgil.lua" "$XDG_CONFIG_HOME/nvim/lua/plugins/virgil.lua"
-pass_check "the starter at $starter_commit, with editors/nvim/lazyvim/virgil.lua"
+pass_check "the starter at $starter_commit$from, with editors/nvim/lazyvim/virgil.lua"
 
 # Prints "NAME COMMIT" for each plugin of a lazy-lock.json, sorted by name.
 lock_entries() {
@@ -645,32 +733,52 @@ preinstall() {
 # too: lazy.nvim would otherwise install it alone to import its plugin specs,
 # then rewrite the lock from what is installed, and install the rest at their
 # latest commits. Then :Lazy! restore checks out every plugin at the lock's
-# commit; --update-lock instead takes the latest of each.
+# commit; --update-lock instead takes the latest of each. With a cache, the
+# plugins, and what mason.nvim installed, are copied from it instead: the seed
+# installed them so, and pins-before checks their commits as without one.
+# mason.nvim downloads its registry again during the runs once its update
+# file, in Neovim's cache directory, is a day old or missing; a run without a
+# cache has just downloaded it. So a restore keeps the seed's update file with the
+# time of the restore, and mason.nvim uses the registry it installed from.
 lazy_dir=$XDG_DATA_HOME/nvim/lazy
 begin_check lazyvim.infrastructure.plugins-install
-if (( update_lock )); then
-  preinstall lazy.nvim "$lazy_url"
-  action=sync
-else
-  preinstall lazy.nvim "$lazy_url" "$(lock_entries "$here/lazy-lock.json" | awk '$1 == "lazy.nvim" { print $2 }')"
-  preinstall LazyVim "$lazyvim_url" "$(lock_entries "$here/lazy-lock.json" | awk '$1 == "LazyVim" { print $2 }')"
-  cp "$here/lazy-lock.json" "$XDG_CONFIG_HOME/nvim/lazy-lock.json"
-  action=restore
-fi
-echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
 install_started=$SECONDS started=$SECONDS
-rc=0
-deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
-(( rc != 124 )) ||
-  failure_code=deadline die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
-(( rc == 0 )) || failure_code=exit-status die "installing the plugins failed with status $rc; see $out/lazy-install.log"
-echo "   done in $((SECONDS - started)) s"
-if (( update_lock )); then
-  cp "$XDG_CONFIG_HOME/nvim/lazy-lock.json" "$here/lazy-lock.json"
-  echo "-- wrote $here/lazy-lock.json; review it with git diff"
+if (( cache_hit )); then
+  cp -R "$cache/data/nvim" "$XDG_DATA_HOME/nvim"
+  relink "$XDG_DATA_HOME/nvim" @DATA@ "$XDG_DATA_HOME"
+  if [[ -f $cache/cache/nvim/mason-registry-update ]]; then
+    mkdir -p "$XDG_CACHE_HOME/nvim"
+    printf '%s\n%s' "$(head -n 1 "$cache/cache/nvim/mason-registry-update")" "$(date +%s)" \
+      > "$XDG_CACHE_HOME/nvim/mason-registry-update"
+  fi
+  cp "$here/lazy-lock.json" "$XDG_CONFIG_HOME/nvim/lazy-lock.json"
+  echo "-- restored the plugins from the cache in $((SECONDS - started)) s"
+  pass_check "restored from the cache that run.sh --seed-cache installed with :Lazy! restore, seeded $seeded," \
+    "in $((SECONDS - started)) s"
+else
+  if (( update_lock )); then
+    preinstall lazy.nvim "$lazy_url"
+    action=sync
+  else
+    preinstall lazy.nvim "$lazy_url" "$(lock_entries "$here/lazy-lock.json" | awk '$1 == "lazy.nvim" { print $2 }')"
+    preinstall LazyVim "$lazyvim_url" "$(lock_entries "$here/lazy-lock.json" | awk '$1 == "LazyVim" { print $2 }')"
+    cp "$here/lazy-lock.json" "$XDG_CONFIG_HOME/nvim/lazy-lock.json"
+    action=restore
+  fi
+  echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
+  rc=0
+  deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
+  (( rc != 124 )) ||
+    failure_code=deadline die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
+  (( rc == 0 )) || failure_code=exit-status die "installing the plugins failed with status $rc; see $out/lazy-install.log"
+  echo "   done in $((SECONDS - started)) s"
+  if (( update_lock )); then
+    cp "$XDG_CONFIG_HOME/nvim/lazy-lock.json" "$here/lazy-lock.json"
+    echo "-- wrote $here/lazy-lock.json; review it with git diff"
+  fi
+  pass_check ":Lazy! $action exited with status 0 after $((SECONDS - started)) s," \
+    "within the $install_timeout-second deadline"
 fi
-pass_check ":Lazy! $action exited with status 0 after $((SECONDS - started)) s," \
-  "within the $install_timeout-second deadline"
 
 # Every plugin in the lock must be installed at its commit, and the lock that
 # lazy.nvim wrote back must list the same plugins and commits.
@@ -708,26 +816,86 @@ pass_check "$(grep -c '^plugin ' "$work/plugins.txt") plugins at the commits of 
 # plugins. Otherwise LazyVim would download and build them in the background
 # during main. Meanwhile, a plugin spec leaves LazyVim's configuration of
 # nvim-treesitter only its setup, so that LazyVim starts no install of its own.
+#
+# A cache's parsers.txt is what parsers.lua wrote for the seed, with the data
+# directory as @DATA@. Each parser it lists must be installed at its
+# revision, and the tree-sitter CLI it names must be there, as parsers.lua
+# left them.
 begin_check lazyvim.infrastructure.parsers-ready
-cat > "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua" <<'LUA'
+if (( cache_hit )); then
+  sed "s|@DATA@|$XDG_DATA_HOME|g" "$cache/parsers.txt" > "$work/parsers.txt"
+  ok=1 count=0
+  parsers=$XDG_DATA_HOME/nvim/site
+  while read -r kind lang revision; do
+    case $kind in
+      tree-sitter)
+        cli=${revision##*(} cli=${cli%)}
+        [[ -x $cli ]] || { echo "FAIL: the tree-sitter CLI is not at $cli"; ok=0; }
+        ;;
+      parser)
+        count=$((count + 1))
+        if [[ ! -f $parsers/parser/$lang.so ]]; then
+          echo "FAIL: parser $lang is not installed"
+          ok=0
+        elif [[ $revision != '?' && $(head -n 1 "$parsers/parser-info/$lang.revision" 2>/dev/null) != "$revision" ]]; then
+          echo "FAIL: parser $lang is not at revision $revision"
+          ok=0
+        fi
+        ;;
+    esac
+  done < "$work/parsers.txt"
+  (( ok && count > 0 )) || die "the cache's parsers are not installed as its parsers.txt lists"
+  cat "$work/parsers.txt" >> "$out/provenance.txt"
+  cat "$work/parsers.txt"
+  pass_check "the $count parsers of the cache's parsers.txt are installed at their revisions"
+else
+  cat > "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua" <<'LUA'
 return { { "nvim-treesitter/nvim-treesitter", config = function(_, opts) require("nvim-treesitter").setup(opts) end } }
 LUA
-echo "-- installing nvim-treesitter's parsers; log in $out/parsers-install.log"
-started=$SECONDS
-left=$((install_timeout - (SECONDS - install_started)))
-(( left > 0 )) || failure_code=deadline die "installing the plugins and parsers exceeded $install_timeout seconds"
-rc=0
-VIRGIL_PARSERS_OUT=$work/parsers.txt deadline "$left" nvim --headless \
-  -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/parsers.lua")' > "$out/parsers-install.log" 2>&1 || rc=$?
-(( rc != 124 )) || failure_code=deadline \
-  die "installing the plugins and parsers exceeded $install_timeout seconds; see $out/parsers-install.log"
-(( rc == 0 )) ||
-  failure_code=exit-status die "installing the parsers failed with status $rc; see $out/parsers-install.log"
-rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua"
-echo "   done in $((SECONDS - started)) s"
-cat "$work/parsers.txt" >> "$out/provenance.txt"
-cat "$work/parsers.txt"
-pass_check "the parsers installed with status 0 after $((SECONDS - started)) s, within the install deadline"
+  echo "-- installing nvim-treesitter's parsers; log in $out/parsers-install.log"
+  started=$SECONDS
+  left=$((install_timeout - (SECONDS - install_started)))
+  (( left > 0 )) || failure_code=deadline die "installing the plugins and parsers exceeded $install_timeout seconds"
+  rc=0
+  VIRGIL_PARSERS_OUT=$work/parsers.txt deadline "$left" nvim --headless \
+    -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/parsers.lua")' > "$out/parsers-install.log" 2>&1 || rc=$?
+  (( rc != 124 )) || failure_code=deadline \
+    die "installing the plugins and parsers exceeded $install_timeout seconds; see $out/parsers-install.log"
+  (( rc == 0 )) ||
+    failure_code=exit-status die "installing the parsers failed with status $rc; see $out/parsers-install.log"
+  rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua"
+  echo "   done in $((SECONDS - started)) s"
+  cat "$work/parsers.txt" >> "$out/provenance.txt"
+  cat "$work/parsers.txt"
+  pass_check "the parsers installed with status 0 after $((SECONDS - started)) s, within the install deadline"
+fi
+
+# A seed keeps what is installed and stops: the starter without virgil.lua,
+# which a restore copies from the checkout, the data directory, mason.nvim's
+# registry update file, and parsers.txt, then the ready file, last, so that
+# an interrupted seed leaves no cache that a restore would use.
+if [[ -n $seed ]]; then
+  echo "-- writing the cache to $seed"
+  mkdir "$seed/config" "$seed/data" "$seed/cache"
+  if [[ -f $XDG_CACHE_HOME/nvim/mason-registry-update ]]; then
+    mkdir "$seed/cache/nvim"
+    cp "$XDG_CACHE_HOME/nvim/mason-registry-update" "$seed/cache/nvim/"
+  fi
+  cp -R "$XDG_CONFIG_HOME/nvim" "$seed/config/nvim"
+  rm "$seed/config/nvim/lua/plugins/virgil.lua"
+  cp -R "$XDG_DATA_HOME/nvim" "$seed/data/nvim"
+  relink "$seed/data/nvim" "$XDG_DATA_HOME" @DATA@
+  # Any other link into the work directory would dangle once it is gone.
+  while IFS= read -r -d '' link; do
+    [[ $(readlink "$link") != "$work"* ]] || die "the cache would hold a link into the work directory: $link"
+  done < <(find "$seed" -type l -print0)
+  sed "s|$XDG_DATA_HOME|@DATA@|g" "$work/parsers.txt" > "$seed/parsers.txt"
+  { cache_identity; echo "seeded $(date -u '+%Y-%m-%dT%H:%M:%SZ')"; } > "$seed/ready.tmp"
+  mv "$seed/ready.tmp" "$seed/ready"
+  cat "$seed/ready"
+  echo "LazyVim cache: seeded" > "$out/summary.txt"
+  exit 0
+fi
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
 cp "$here/fixture/words/CallPicker.v3" "$work/project/words/"

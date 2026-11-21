@@ -7,12 +7,16 @@ lazyvim/results.py writes streams from synthetic observations, as run.sh and
 driver.lua record them, for passing, failing, stopped, and interrupted runs,
 and scripts/editor-results.py validates each one. run.sh itself runs up to
 the point where it would clone the starter, with stand-ins for nvim, tmux,
-git, and the server. make test runs this file from its own SUITES entry."""
+git, and the server, and with --cache, from a stand-in cache until it would
+start the first profile. make test runs this file from its own SUITES
+entry."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -408,9 +412,8 @@ class WriterTest(unittest.TestCase):
                                       VALIDATOR_MANIFEST, VALIDATOR_SCHEMA)
 
 
-class RunTest(unittest.TestCase):
-    """run.sh --results, with stand-ins that let it run until it clones the
-    starter."""
+class StandIns(unittest.TestCase):
+    """Stand-ins that let run.sh run until it clones the starter."""
 
     def setUp(self):
         # tmux's socket path limits the work directory's, so it is short.
@@ -421,10 +424,17 @@ class RunTest(unittest.TestCase):
         self.server = self.dir / "server"
         self.server.mkdir()
         git = shutil.which("git")
+        # A stand-in cache's plugins are directories whose .head file holds
+        # the commit that git reports for them. tmux starts no session, so a
+        # run from a cache stops at its first profile.
         stand_ins = {
             self.bin / "nvim": 'if [ "$1" = --version ]; then echo "NVIM v0.11.6"; fi',
-            self.bin / "tmux": 'echo "tmux 0.0-test"',
-            self.bin / "git": f'if [ "$1" = clone ]; then echo "clone refused" >&2; exit 128; fi; exec {git} "$@"',
+            self.bin / "tmux": 'case "$*" in *new-session*) exit 3 ;; esac; echo "tmux 0.0-test"',
+            self.bin / "git": f'''if [ "$1" = clone ]; then echo "clone refused" >&2; exit 128; fi
+if [ "$1" = -C ] && [ -f "$2/.head" ]; then
+  case $3 in rev-parse) cat "$2/.head"; exit 0 ;; describe) echo v0-test; exit 0 ;; esac
+fi
+exec {git} "$@"''',
             self.server / "virgil-lsp": 'echo "virgil-lsp 0.1.0-test"',
             self.server / "virgil-lsp-worker": "exit 0",
         }
@@ -445,6 +455,16 @@ class RunTest(unittest.TestCase):
         return subprocess.run(["bash", str(RUN.relative_to(REPO)), *args], env=self.env, cwd=REPO,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
 
+    def validate(self):
+        try:
+            return validator.validate_stream(self.stream.read_bytes(), VALIDATOR_MANIFEST, VALIDATOR_SCHEMA)
+        except validator.Invalid as error:
+            self.fail(f"invalid stream: {error}\n{self.stream.read_text()}")
+
+
+class RunTest(StandIns):
+    """run.sh --results, with the stand-ins."""
+
     def test_usage_error_empties_an_earlier_stream(self):
         # A stale stream left in FILE must not outlive a run that stops at its
         # arguments, wherever the bad argument is.
@@ -456,12 +476,6 @@ class RunTest(unittest.TestCase):
                 result = self.run_sh(*args)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(self.stream.read_bytes(), b"")
-
-    def validate(self):
-        try:
-            return validator.validate_stream(self.stream.read_bytes(), VALIDATOR_MANIFEST, VALIDATOR_SCHEMA)
-        except validator.Invalid as error:
-            self.fail(f"invalid stream: {error}\n{self.stream.read_text()}")
 
     def test_stops_at_the_starter(self):
         result = self.run_sh("--out", str(self.dir / "out"), "--results", str(self.stream), "--release",
@@ -507,6 +521,197 @@ class RunTest(unittest.TestCase):
             result = self.run_sh(*args, str(self.server / "virgil-lsp"))
             self.assertEqual(result.returncode, 2, args)
             self.assertIn("usage:", result.stderr)
+
+
+class CacheTest(StandIns):
+    """run.sh --cache and --seed-cache, with the stand-ins."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = self.dir / "cache"
+
+    def identity(self, **changes):
+        """The ready file's lines that run.sh compares, as it writes them."""
+        def sha256(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        lines = {"starter": STARTER_COMMIT, "neovim": "NVIM v0.11.6",
+                 "system": f"{platform.system()} {platform.machine()}",
+                 "lazy-lock.json": sha256(HERE / "lazyvim" / "lazy-lock.json"),
+                 "parsers.lua": sha256(HERE / "lazyvim" / "parsers.lua"),
+                 "virgil.lua": sha256(REPO / "editors" / "nvim" / "lazyvim" / "virgil.lua")}
+        lines.update(changes)
+        return "".join(f"{key} {value}\n" for key, value in lines.items())
+
+    def seed(self, **changes):
+        """A stand-in for what --seed-cache writes: the plugins at the locked
+        commits, a parser and its query link, the tree-sitter CLI, and
+        mason.nvim's registry update file."""
+        config = self.cache / "config" / "nvim"
+        (config / "lua" / "plugins").mkdir(parents=True)
+        (config / "init.lua").write_text("-- the starter\n")
+        data = self.cache / "data" / "nvim"
+        lock = json.loads((HERE / "lazyvim" / "lazy-lock.json").read_text())
+        for name, entry in lock.items():
+            (data / "lazy" / name).mkdir(parents=True)
+            (data / "lazy" / name / ".head").write_text(entry["commit"] + "\n")
+        (data / "lazy" / "nvim-treesitter" / "runtime" / "queries" / "lua").mkdir(parents=True)
+        (data / "site" / "parser").mkdir(parents=True)
+        (data / "site" / "parser" / "lua.so").write_bytes(b"")
+        (data / "site" / "parser-info").mkdir()
+        (data / "site" / "parser-info" / "lua.revision").write_text("abc123")
+        (data / "site" / "queries").mkdir()
+        (data / "site" / "queries" / "lua").symlink_to("@DATA@/nvim/lazy/nvim-treesitter/runtime/queries/lua")
+        (data / "mason" / "bin").mkdir(parents=True)
+        (data / "mason" / "bin" / "tree-sitter").write_text("#!/bin/sh\n")
+        (data / "mason" / "bin" / "tree-sitter").chmod(0o755)
+        (self.cache / "cache" / "nvim").mkdir(parents=True)
+        (self.cache / "cache" / "nvim" / "mason-registry-update").write_text("c0ffee\n1")
+        (self.cache / "parsers.txt").write_text(
+            "tree-sitter CLI: tree-sitter 0.0-test (@DATA@/nvim/mason/bin/tree-sitter)\nparser lua abc123\n")
+        (self.cache / "ready").write_text(self.identity(**changes) + "seeded 2026-11-22T00:00:00Z\n")
+
+    def snapshot(self):
+        """The cache's tree, with each file's bytes and each link's target."""
+        tree = {}
+        for path in sorted(self.cache.rglob("*")):
+            key = str(path.relative_to(self.cache))
+            if path.is_symlink():
+                tree[key] = ("link", os.readlink(path))
+            elif path.is_file():
+                tree[key] = ("file", path.read_bytes())
+            else:
+                tree[key] = ("dir",)
+        return tree
+
+    def test_usage(self):
+        server = str(self.server / "virgil-lsp")
+        seed = ["--seed-cache", str(self.cache)]
+        for args in ([*seed, server], [*seed, "--archive", server], [*seed, "--results", str(self.stream)],
+                     [*seed, "--cache", str(self.cache)], [*seed, "--update-lock"],
+                     ["--cache", str(self.cache), "--update-lock", server], ["--cache", "", server],
+                     ["--cache"], ["--seed-cache"], ["--seed-cache", ""]):
+            with self.subTest(args=args):
+                result = self.run_sh(*args)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("--seed-cache CACHE", result.stderr)
+        self.assertFalse(self.cache.exists())
+
+    def test_seed_needs_an_empty_directory(self):
+        self.cache.mkdir()
+        (self.cache / "other").write_text("kept\n")
+        result = self.run_sh("--seed-cache", str(self.cache))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the cache directory is not empty", result.stderr)
+        self.assertEqual([path.name for path in self.cache.iterdir()], ["other"])
+
+    def test_seed_that_stops_is_not_ready(self):
+        # A seed needs no server or Virgil sources, and leaves no ready file
+        # when it stops, here at the starter's clone.
+        result = self.run_sh("--out", str(self.dir / "out"), "--seed-cache", str(self.cache))
+        self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+        self.assertIn(f"seeding the cache: {self.cache}", result.stdout)
+        self.assertEqual(list(self.cache.iterdir()), [])
+        self.assertEqual(list(self.tmp.iterdir()), [], "run.sh left its work directory")
+
+    def test_miss_installs_and_leaves_the_cache_alone(self):
+        for exists in (False, True):
+            with self.subTest(exists=exists):
+                if exists:
+                    self.cache.mkdir()
+                    (self.cache / "data").mkdir()
+                    (self.cache / "parsers.txt").write_text("partial\n")
+                before = self.snapshot() if exists else None
+                result = self.run_sh("--cache", str(self.cache), "--results", str(self.stream),
+                                     str(self.server / "virgil-lsp"))
+                # It clones the starter, as without --cache.
+                self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+                self.assertIn(f"cache: none ready in {self.cache}; installing from GitHub", result.stdout)
+                self.assertIn("clone refused", result.stderr)
+                if exists:
+                    self.assertEqual(self.snapshot(), before)
+                else:
+                    self.assertFalse(self.cache.exists())
+                run = self.validate()
+                starter = next(event for event in run.checks if event["id"] == "lazyvim.infrastructure.starter")
+                self.assertEqual(starter["failureCode"], "exit-status")
+
+    def test_mismatched_cache_is_refused(self):
+        for key, value in (("starter", "0" * 40), ("neovim", "NVIM v0.11.5"), ("lazy-lock.json", "0" * 64),
+                           ("parsers.lua", "0" * 64), ("virgil.lua", "0" * 64), ("system", "Plan9 mips")):
+            with self.subTest(key=key):
+                shutil.rmtree(self.cache, True)
+                self.seed(**{key: value})
+                before = self.snapshot()
+                # One stream is enough to show a preflight failure.
+                results = ["--results", str(self.stream)] if key == "starter" else []
+                result = self.run_sh("--cache", str(self.cache), *results, str(self.server / "virgil-lsp"))
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("was seeded for another installation", result.stderr)
+                self.assertIn(f"{key} {value}", result.stderr)
+                self.assertEqual(self.snapshot(), before)
+                if results:
+                    self.assertEqual(self.validate().end["status"], "unavailable")
+                self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_incomplete_ready_cache_is_refused(self):
+        self.seed()
+        shutil.rmtree(self.cache / "data")
+        result = self.run_sh("--cache", str(self.cache), str(self.server / "virgil-lsp"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("lacks config/nvim, data/nvim, or parsers.txt", result.stderr)
+
+    def test_missing_parser_fails_parsers_ready(self):
+        self.seed()
+        (self.cache / "data" / "nvim" / "site" / "parser-info" / "lua.revision").write_text("other")
+        result = self.run_sh("--cache", str(self.cache), "--results", str(self.stream),
+                             str(self.server / "virgil-lsp"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL: parser lua is not at revision abc123", result.stdout)
+        run = self.validate()
+        checks = {event["id"]: event for event in run.checks if event["profile"] == "wrapper"}
+        self.assertEqual(checks["lazyvim.infrastructure.pins-before"]["status"], "pass")
+        self.assertEqual(checks["lazyvim.infrastructure.parsers-ready"]["status"], "fail")
+
+    def test_hit_restores_and_checks(self):
+        self.seed()
+        before = self.snapshot()
+        out = self.dir / "out"
+        result = self.run_sh("--keep-work", "--out", str(out), "--cache", str(self.cache), "--results",
+                             str(self.stream), str(self.server / "virgil-lsp"))
+        # The stand-in tmux starts no session, so it stops at main.
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.snapshot(), before, "run.sh changed the cache")
+        self.assertIn(f"cache: {self.cache}, seeded 2026-11-22T00:00:00Z", result.stdout)
+        run = self.validate()
+        checks = {event["id"]: event for event in run.checks if event["profile"] == "wrapper"}
+        for check_id in WRAPPER_BEFORE:
+            self.assertEqual(checks[check_id]["status"], "pass", check_id)
+        self.assertIn("restored from the cache", checks["lazyvim.infrastructure.starter"]["observation"])
+        self.assertIn("restored from the cache", checks["lazyvim.infrastructure.plugins-install"]["observation"])
+        # The plugins' commits and the parsers, in the provenance as without a cache.
+        provenance = (out / "provenance.txt").read_text()
+        self.assertIn("seeded 2026-11-22T00:00:00Z; the starter, plugins, and parsers restored from it", provenance)
+        self.assertIn("plugin LazyVim ", provenance)
+        self.assertIn("parser lua abc123", provenance)
+        work = Path(next(line for line in result.stdout.splitlines()
+                         if line.startswith("work directory kept: "))[len("work directory kept: "):])
+        self.addCleanup(shutil.rmtree, work, True)
+        data = work / "data" / "nvim"
+        # The query link points into this run's data directory, the CLI's path
+        # in the provenance too, and mason.nvim's registry is as fresh as a
+        # cold install leaves it.
+        self.assertEqual(os.readlink(data / "site" / "queries" / "lua"),
+                         f"{data.parent}/nvim/lazy/nvim-treesitter/runtime/queries/lua")
+        self.assertTrue((data / "site" / "queries" / "lua").is_dir())
+        self.assertIn(f"({data}/mason/bin/tree-sitter)", provenance)
+        checksum, stamp = (work / "cache" / "nvim" / "mason-registry-update").read_text().split("\n")
+        self.assertEqual(checksum, "c0ffee")
+        self.assertLess(abs(int(stamp) - time.time()), 600)
+        # The checkout's plugin spec and lock, not the cache's.
+        config = work / "config" / "nvim"
+        self.assertEqual((config / "lua" / "plugins" / "virgil.lua").read_bytes(),
+                         (REPO / "editors" / "nvim" / "lazyvim" / "virgil.lua").read_bytes())
+        self.assertEqual((config / "lazy-lock.json").read_bytes(), (HERE / "lazyvim" / "lazy-lock.json").read_bytes())
 
 
 if __name__ == "__main__":

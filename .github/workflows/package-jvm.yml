@@ -70,8 +70,6 @@ jobs:
         if: inputs.vsix
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
       - name: Install client dependencies
         if: inputs.vsix
         working-directory: clients/vscode
