@@ -9,13 +9,12 @@
 # uploads. Queue wait and setup don't count. See
 # docs/development.md#ci-running-time-budgets.
 #
-#   check-ci-budgets.py check --job KEY (--seconds N | --started EPOCH)
-#                       [--budgets FILE] [--summary FILE]
-#     Compares a job's running time with its budget and prints the result.
-#     Over budget, an advisory budget prints a GitHub Actions warning and
-#     exits 0, and an enforcing one prints an error and exits 1. It appends a
-#     line to FILE, or to $GITHUB_STEP_SUMMARY when that is set. Exits 2 for
-#     an unknown key, a malformed budgets file, or a bad time.
+#   check-ci-budgets.py check --job KEY --started EPOCH [--budgets FILE]
+#     Compares a job's running time, from the Unix time EPOCH to now, with its
+#     budget and prints the result. Over budget, an advisory budget prints a
+#     GitHub Actions warning and exits 0, and an enforcing one prints an error
+#     and exits 1. It appends a line to $GITHUB_STEP_SUMMARY when that is set.
+#     Exits 2 for an unknown key, a malformed budgets file, or a bad time.
 #
 #   check-ci-budgets.py validate [--budgets FILE] [--workflow FILE]
 #     Checks the budgets file and that it matches the workflow, ci.yml by
@@ -25,14 +24,13 @@
 #     problem and exits 1 if there is one.
 #
 #   check-ci-budgets.py summarize --runs-json FILE [--budgets FILE]
-#                       [--workflow-name NAME] [--json]
-#     Reads GitHub Actions job objects, as the API's runs/RUN/jobs pages
-#     return them, from FILE or - for standard input: one or more JSON values,
-#     each a page, a list of pages, or a list of jobs, each job counted once.
-#     For each budget, it reports the running time's p50, p95, and maximum
-#     over the successful jobs, how many ran over, and how many of the latest
-#     runs in a row passed on their first attempt within budget, toward
-#     promoteAfterGreenRuns.
+#     Reads the API's runs/RUN/jobs pages of GitHub Actions job objects, one
+#     after another, from FILE or - for standard input, each job counted once.
+#     For each budget, it prints a Markdown table row of the running time's
+#     p50, p95, and maximum over the successful jobs, how many ran over, and
+#     how many of the latest runs in a row passed on their first attempt
+#     within budget, toward promoteAfterGreenRuns. A budget with "inJob":
+#     false is never ready to enforce, since no step checks it.
 #
 # Only the Python 3 standard library is used.
 import argparse
@@ -123,6 +121,9 @@ def schema_problems(budgets):
             problems.append(f'{where}: "mode" is not "advisory" or "enforcing"')
         if "inJob" in entry and not isinstance(entry["inJob"], bool):
             problems.append(f'{where}: "inJob" is not true or false')
+        elif entry.get("inJob") is False and entry.get("mode") == "enforcing":
+            problems.append(f'{where}: a budget with "inJob": false is not checked by a step, so it can\'t be '
+                            '"enforcing"')
     return problems
 
 
@@ -169,18 +170,14 @@ def escape_data(text):
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def elapsed_seconds(seconds, started, now):
-    """The running time in whole seconds, from --seconds or --started."""
-    text = seconds if seconds is not None else started
-    option = "--seconds" if seconds is not None else "--started"
+def elapsed_seconds(started, now):
+    """The running time in whole seconds from --started to now."""
     try:
-        value = float(text)
+        value = float(started)
     except ValueError:
-        raise Usage(f"{option} {text!r} is not a number")
+        raise Usage(f"--started {started!r} is not a number")
     if not math.isfinite(value) or value < 0:
-        raise Usage(f"{option} {text!r} is not a non-negative number")
-    if seconds is not None:
-        return int(value)
+        raise Usage(f"--started {started!r} is not a non-negative number")
     return max(0, int(now) - int(value))
 
 
@@ -189,7 +186,7 @@ def check(arguments, environment, out):
     entry = budgets["jobs"].get(arguments.job)
     if entry is None:
         raise Usage(f'{shown(arguments.budgets)}: no budget "{arguments.job}"')
-    elapsed = elapsed_seconds(arguments.seconds, arguments.started, time.time())
+    elapsed = elapsed_seconds(arguments.started, time.time())
     budget, mode, key = entry["budgetSeconds"], entry["mode"], arguments.job
     over = elapsed > budget
     if over:
@@ -202,7 +199,7 @@ def check(arguments, environment, out):
             print(f"::{command} title={title}::{message}", file=out)
     else:
         print(f"budget PASS: {key} ran {elapsed} s (budget {budget} s, {mode})", file=out)
-    summary = arguments.summary or environment.get("GITHUB_STEP_SUMMARY")
+    summary = environment.get("GITHUB_STEP_SUMMARY")
     if summary:
         result = "over budget" if over else "within budget"
         try:
@@ -492,21 +489,8 @@ def running_seconds(job):
 
 
 def read_jobs(text):
-    """The job objects in one or more concatenated JSON values."""
+    """The job objects in pages of the API's runs/RUN/jobs, one after another."""
     decoder, index, jobs = json.JSONDecoder(), 0, []
-
-    def add(value):
-        if isinstance(value, dict) and isinstance(value.get("jobs"), list):
-            for job in value["jobs"]:
-                add(job)
-        elif isinstance(value, dict) and "name" in value:
-            jobs.append(value)
-        elif isinstance(value, list):
-            for item in value:
-                add(item)
-        else:
-            raise Usage("the runs JSON holds something other than job objects and pages of them")
-
     while True:
         while index < len(text) and text[index].isspace():
             index += 1
@@ -516,7 +500,10 @@ def read_jobs(text):
             value, index = decoder.raw_decode(text, index)
         except ValueError as error:
             raise Usage(f"the runs JSON is not valid: {error}")
-        add(value)
+        if not (isinstance(value, dict) and isinstance(value.get("jobs"), list)
+                and all(isinstance(job, dict) and "name" in job for job in value["jobs"])):
+            raise Usage("the runs JSON holds something other than pages of job objects")
+        jobs += value["jobs"]
 
 
 def name_pattern(name):
@@ -544,7 +531,7 @@ def percentile(values, fraction):
     return values[low] + (values[high] - values[low]) * (position - low)
 
 
-def summarize_jobs(jobs, budgets, workflow_name="CI"):
+def summarize_jobs(jobs, budgets):
     """Returns one row per budget, in the file's order."""
     entries = budgets["jobs"]
     records = {key: [] for key in entries}
@@ -559,8 +546,6 @@ def summarize_jobs(jobs, budgets, workflow_name="CI"):
         if identities & seen:
             continue
         seen |= identities
-        if workflow_name and job.get("workflow_name") not in (None, workflow_name):
-            continue
         key = budget_for(job.get("name", ""), entries)
         if key is None or job.get("status") not in (None, "completed"):
             continue
@@ -591,12 +576,14 @@ def summarize_jobs(jobs, budgets, workflow_name="CI"):
             if not verdict:
                 break
             streak += 1
+        enforceable = entry["mode"] == "advisory" and in_job(entry)
         rows.append({"key": key, "mode": entry["mode"], "budgetSeconds": budget, "jobs": len(passed),
                      "p50": percentile(passed, 0.5), "p95": percentile(passed, 0.95),
                      "max": max(passed) if passed else None,
                      "over": sum(1 for seconds in passed if seconds > budget), "greenStreak": streak,
                      "promoteAfterGreenRuns": budgets["promoteAfterGreenRuns"],
-                     "readyToEnforce": entry["mode"] == "advisory" and streak >= budgets["promoteAfterGreenRuns"]})
+                     "enforceable": enforceable,
+                     "readyToEnforce": enforceable and streak >= budgets["promoteAfterGreenRuns"]})
     return rows
 
 
@@ -606,7 +593,7 @@ def markdown(rows):
     lines = ["| Budget | Mode | Budget s | Jobs | p50 | p95 | Max | Over | Green streak | Promote |",
              "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
     for row in rows:
-        promote = "ready" if row["readyToEnforce"] else ("-" if row["mode"] == "enforcing" else "not yet")
+        promote = "ready" if row["readyToEnforce"] else ("not yet" if row["enforceable"] else "-")
         lines.append(f"| `{row['key']}` | {row['mode']} | {row['budgetSeconds']} | {row['jobs']} | "
                      f"{seconds(row['p50'])} | {seconds(row['p95'])} | {seconds(row['max'])} | {row['over']} | "
                      f"{row['greenStreak']}/{row['promoteAfterGreenRuns']} | {promote} |")
@@ -619,8 +606,7 @@ def summarize(arguments, out):
         text = sys.stdin.read() if arguments.runs_json == "-" else Path(arguments.runs_json).read_text()
     except OSError as error:
         raise Usage(f"{arguments.runs_json}: {error}")
-    rows = summarize_jobs(read_jobs(text), budgets, arguments.workflow_name)
-    out.write(json.dumps(rows, indent=2) + "\n" if arguments.json else markdown(rows))
+    out.write(markdown(summarize_jobs(read_jobs(text), budgets)))
     return 0
 
 
@@ -631,20 +617,14 @@ def main(argv=None, environment=None, out=None):
     commands = parser.add_subparsers(dest="command", required=True)
     checker = commands.add_parser("check", help="check one job's running time")
     checker.add_argument("--job", required=True, help="the budget's key")
-    times = checker.add_mutually_exclusive_group(required=True)
-    times.add_argument("--seconds", help="the running time in seconds")
-    times.add_argument("--started", help="the Unix time when the running time began")
+    checker.add_argument("--started", required=True, help="the Unix time when the running time began")
     checker.add_argument("--budgets", default=str(BUDGETS))
-    checker.add_argument("--summary", help="a Markdown file to append the result to")
     validator = commands.add_parser("validate", help="check the budgets file against the workflow")
     validator.add_argument("--budgets", default=str(BUDGETS))
     validator.add_argument("--workflow", default=str(WORKFLOW))
     summarizer = commands.add_parser("summarize", help="summarize running times of fetched jobs")
     summarizer.add_argument("--runs-json", required=True, help="a file of job objects, or - for standard input")
     summarizer.add_argument("--budgets", default=str(BUDGETS))
-    summarizer.add_argument("--workflow-name", default="CI",
-                            help="count only jobs of this workflow, when a job names its workflow")
-    summarizer.add_argument("--json", action="store_true", help="print JSON instead of a Markdown table")
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "check":

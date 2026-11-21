@@ -8,7 +8,10 @@ small workflow and budgets file in a temporary directory, each broken in one
 way. The check and summarize tests use the small budgets file and job objects
 shaped like the GitHub Actions API's.
 """
+import contextlib
 import copy
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "check-ci-budgets.py"
@@ -120,87 +124,111 @@ class Fixture(unittest.TestCase):
                               stderr=subprocess.PIPE, text=True, env=env or environment(), timeout=60)
 
 
+NOW = 1_800_000_000
+
+
+def ago(seconds):
+    return str(NOW - seconds)
+
+
 class CheckTest(Fixture):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("check_ci_budgets", SCRIPT)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
     def check(self, *arguments, env=None):
-        return self.run_script("check", "--budgets", str(self.budgets_path), *arguments, env=env)
+        """Runs check in this process with the clock at NOW, so that --started
+        gives an exact running time."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.module.time, "time", return_value=NOW + 0.5), contextlib.redirect_stderr(err):
+            try:
+                code = self.module.main(["check", "--budgets", str(self.budgets_path), *arguments],
+                                        env or environment(), out)
+            except SystemExit as exit:
+                code = exit.code
+        return subprocess.CompletedProcess(arguments, code, out.getvalue(), err.getvalue())
 
     def test_under_budget_passes_quietly(self):
-        result = self.check("--job", "build", "--seconds", "45", env=environment(GITHUB_ACTIONS="true"))
+        result = self.check("--job", "build", "--started", ago(45), env=environment(GITHUB_ACTIONS="true"))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("budget PASS: build ran 45 s (budget 60 s, advisory)\n", result.stdout)
 
     def test_the_budget_itself_passes(self):
-        result = self.check("--job", "build", "--seconds", "60.9")
+        result = self.check("--job", "build", "--started", ago(60))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("budget PASS: build ran 60 s", result.stdout)
 
     def test_over_an_advisory_budget_warns_and_passes(self):
-        result = self.check("--job", "build", "--seconds", "82", env=environment(GITHUB_ACTIONS="true"))
+        result = self.check("--job", "build", "--started", ago(82), env=environment(GITHUB_ACTIONS="true"))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(["budget OVER (advisory): build ran 82 s > budget 60 s",
                           "::warning title=CI budget exceeded (build)::build running time 82s exceeded its "
                           "60s budget (advisory)"], result.stdout.splitlines())
 
     def test_annotations_only_in_github_actions(self):
-        result = self.check("--job", "build", "--seconds", "82")
+        result = self.check("--job", "build", "--started", ago(82))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("budget OVER (advisory): build ran 82 s > budget 60 s\n", result.stdout)
 
     def test_over_an_enforcing_budget_fails(self):
-        result = self.check("--job", "legs-b", "--seconds", "101", env=environment(GITHUB_ACTIONS="true"))
+        result = self.check("--job", "legs-b", "--started", ago(101), env=environment(GITHUB_ACTIONS="true"))
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertEqual(["budget OVER (enforcing): legs-b ran 101 s > budget 100 s",
                           "::error title=CI budget exceeded (legs-b)::legs-b running time 101s exceeded its "
                           "100s budget"], result.stdout.splitlines())
 
     def test_under_an_enforcing_budget_passes(self):
-        result = self.check("--job", "legs-b", "--seconds", "100")
+        result = self.check("--job", "legs-b", "--started", ago(100))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("budget PASS: legs-b ran 100 s (budget 100 s, enforcing)", result.stdout)
 
-    def test_started_counts_from_a_unix_time(self):
-        result = self.check("--job", "build", "--started", str(int(time.time()) - 75))
+    def test_started_counts_from_the_real_clock(self):
+        result = self.run_script("check", "--budgets", str(self.budgets_path), "--job", "build",
+                                 "--started", str(int(time.time()) - 75))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertRegex(result.stdout, r"^budget OVER \(advisory\): build ran 7[56] s > budget 60 s\n$")
 
     def test_a_start_in_the_future_counts_as_zero(self):
-        result = self.check("--job", "build", "--started", str(int(time.time()) + 3600))
+        result = self.check("--job", "build", "--started", str(NOW + 3600))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("build ran 0 s", result.stdout)
 
     def test_summary_lines_are_appended(self):
         summary = self.directory / "summary.md"
         summary.write_text("# Earlier\n")
-        self.assertEqual(0, self.check("--job", "build", "--seconds", "45", "--summary", str(summary)).returncode)
         variable = environment(GITHUB_STEP_SUMMARY=str(summary))
-        self.assertEqual(0, self.check("--job", "build", "--seconds", "70", env=variable).returncode)
+        self.assertEqual(0, self.check("--job", "build", "--started", ago(45), env=variable).returncode)
+        self.assertEqual(0, self.check("--job", "build", "--started", ago(70), env=variable).returncode)
         self.assertEqual(["# Earlier",
                           "Running-time budget: `build` ran 45 s of its 60 s budget (advisory), within budget.",
                           "Running-time budget: `build` ran 70 s of its 60 s budget (advisory), over budget."],
                          summary.read_text().splitlines())
 
     def test_no_summary_without_a_file(self):
-        result = self.check("--job", "build", "--seconds", "45")
+        result = self.check("--job", "build", "--started", ago(45))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(["budgets.json", "ci.yml"], sorted(path.name for path in self.directory.iterdir()))
 
     def test_unwritable_summary_file_exits_2(self):
         missing_parent = self.directory / "no-such-dir" / "summary.md"
-        result = self.check("--job", "build", "--seconds", "45", "--summary", str(missing_parent))
+        result = self.check("--job", "build", "--started", ago(45),
+                            env=environment(GITHUB_STEP_SUMMARY=str(missing_parent)))
         self.assertEqual(2, result.returncode, result.stdout)
         self.assertIn("summary.md", result.stderr)
 
     def test_an_unknown_job_is_refused(self):
-        result = self.check("--job", "biuld", "--seconds", "1")
+        result = self.check("--job", "biuld", "--started", ago(1))
         self.assertEqual(2, result.returncode)
         self.assertIn('no budget "biuld"', result.stderr)
         self.assertEqual("", result.stdout)
 
     def test_bad_times_and_arguments_are_refused(self):
-        for arguments in (["--job", "build"], ["--seconds", "1"],
-                          ["--job", "build", "--seconds", "1", "--started", "1"],
-                          ["--job", "build", "--seconds", "-1"], ["--job", "build", "--seconds", "nan"],
-                          ["--job", "build", "--seconds", "abc"], ["--job", "build", "--started", ""],
+        for arguments in (["--job", "build"], ["--started", ago(1)],
+                          ["--job", "build", "--started", ago(1), "--seconds", "1"],
+                          ["--job", "build", "--started", "nan"], ["--job", "build", "--started", "inf"],
+                          ["--job", "build", "--started", "abc"], ["--job", "build", "--started", ""],
                           ["--job", "build", "--started", "-5"]):
             with self.subTest(arguments=arguments):
                 result = self.check(*arguments)
@@ -216,7 +244,7 @@ class CheckTest(Fixture):
             with self.subTest(text=text[:40]):
                 self.write(text)
                 # Even another job's budget isn't checked against a malformed file.
-                result = self.check("--job", "legs-a", "--seconds", "1")
+                result = self.check("--job", "legs-a", "--started", ago(1))
                 self.assertEqual(2, result.returncode, result.stdout)
                 self.assertIn(message, result.stderr)
                 self.assertEqual("", result.stdout)
@@ -301,6 +329,12 @@ class ValidateTest(Fixture):
                 self.assert_problem(message, budgets)
         self.assert_problem("duplicate keys build", '{"jobs": {"build": {}, "build": {}}}')
 
+    def test_a_budget_outside_its_job_cannot_be_enforcing(self):
+        budgets = copy.deepcopy(BUDGETS)
+        budgets["jobs"]["package"]["mode"] = "enforcing"
+        self.assert_problem('budget "package": a budget with "inJob": false is not checked by a step, so it '
+                            'can\'t be "enforcing"', budgets)
+
     def test_a_typo_in_a_check_job(self):
         self.assert_problem('--job "biuld" has no budget', workflow=WORKFLOW.replace("--job build", "--job biuld"))
 
@@ -343,9 +377,9 @@ class ValidateTest(Fixture):
                                                       "        run: true\n      - name: Build\n"))
         self.assert_problem("doesn't pass --started",
                             workflow=WORKFLOW.replace('--job build --started "${{ steps.budget.outputs.started }}"',
-                                                      "--job build --seconds 1"))
+                                                      "--job build --started 1"))
         twice = WORKFLOW.replace("      - uses: actions/upload-artifact@v7\n",
-                                 "      - run: python3 scripts/check-ci-budgets.py check --job build --seconds 1\n"
+                                 "      - run: python3 scripts/check-ci-budgets.py check --job build --started 1\n"
                                  "      - uses: actions/upload-artifact@v7\n")
         self.assert_problem('job "build" checks a budget more than once', workflow=twice)
 
@@ -370,10 +404,10 @@ def step(name, start, end, conclusion="success"):
             "completed_at": f"2026-11-22T00:{end // 60:02d}:{end % 60:02d}Z"}
 
 
-def job(name, run, seconds, conclusion="success", attempt=1, ident=None, workflow="CI"):
+def job(name, run, seconds, conclusion="success", attempt=1, ident=None):
     """A job object whose budget window, between its budget steps, is seconds long."""
     return {"id": ident if ident is not None else run * 100 + attempt * 10 + len(name) % 10,
-            "run_id": run, "run_attempt": attempt, "workflow_name": workflow, "name": name,
+            "run_id": run, "run_attempt": attempt, "workflow_name": "CI", "name": name,
             "status": "completed", "conclusion": conclusion,
             "started_at": f"2026-11-{run:02d}T00:{attempt:02d}:00Z", "completed_at": f"2026-11-{run:02d}T01:{attempt:02d}:00Z",
             "steps": [step("Set up job", 0, 2), step("Run actions/checkout@v7", 2, 10),
@@ -384,51 +418,54 @@ def job(name, run, seconds, conclusion="success", attempt=1, ident=None, workflo
                       step("Complete job", 30 + seconds, 31 + seconds)]}
 
 
+COLUMNS = ("Budget", "Mode", "Budget s", "Jobs", "p50", "p95", "Max", "Over", "Green streak", "Promote")
+
+
 class SummarizeTest(Fixture):
-    def summarize(self, jobs, *arguments):
+    def summarize(self, jobs):
+        """The table's rows by budget key, each a dict of its columns."""
         path = self.directory / "jobs.json"
-        path.write_text(json.dumps(jobs))
-        result = self.run_script("summarize", "--runs-json", str(path), "--budgets", str(self.budgets_path),
-                                 "--json", *arguments)
+        path.write_text(json.dumps({"total_count": len(jobs), "jobs": jobs}))
+        result = self.run_script("summarize", "--runs-json", str(path), "--budgets", str(self.budgets_path))
         self.assertEqual(0, result.returncode, result.stderr)
-        return {row["key"]: row for row in json.loads(result.stdout)}
+        lines = result.stdout.splitlines()
+        self.assertEqual(COLUMNS, tuple(cell.strip() for cell in lines[0].strip("|").split("|")))
+        rows = [dict(zip(COLUMNS, (cell.strip() for cell in line.strip("|").split("|")))) for line in lines[2:]]
+        return {row["Budget"].strip("`"): row for row in rows}
 
     def test_percentiles_overruns_and_streak(self):
         jobs = [job("Build (linux)", run, seconds) for run, seconds in
                 [(1, 30), (2, 70), (3, 40), (4, 50), (5, 45), (6, 55)]]
         row = self.summarize(jobs)["build"]
-        self.assertEqual(6, row["jobs"])
-        self.assertEqual(47.5, row["p50"])
-        self.assertAlmostEqual(66.25, row["p95"])
-        self.assertEqual(70, row["max"])
-        self.assertEqual(1, row["over"])
+        # The sorted times are 30, 40, 45, 50, 55, 70: p50 is 47.5 and p95,
+        # interpolated between the fifth and sixth, 66.25.
+        self.assertEqual(("6", "48 s", "66 s", "70 s", "1"),
+                         (row["Jobs"], row["p50"], row["p95"], row["Max"], row["Over"]))
         # Runs 3 to 6 are within budget, run 2 is over.
-        self.assertEqual(4, row["greenStreak"])
-        self.assertTrue(row["readyToEnforce"])
-        self.assertEqual(3, row["promoteAfterGreenRuns"])
+        self.assertEqual(("4/3", "ready"), (row["Green streak"], row["Promote"]))
 
     def test_failures_and_reruns_break_the_streak_and_cancellations_do_not(self):
         jobs = [job("Build (linux)", 1, 30), job("Build (linux)", 2, 30, "failure"),
                 job("Build (linux)", 2, 31, attempt=2), job("Build (linux)", 3, 30),
                 job("Build (linux)", 4, 5, "cancelled"), job("Build (linux)", 5, 30)]
         row = self.summarize(jobs)["build"]
-        self.assertEqual(2, row["greenStreak"])
-        self.assertEqual(4, row["jobs"])
-        self.assertFalse(row["readyToEnforce"])
+        self.assertEqual(("2/3", "4", "not yet"), (row["Green streak"], row["Jobs"], row["Promote"]))
         only_rerun = self.summarize([job("Build (linux)", 1, 30, attempt=2)])["build"]
-        self.assertEqual(0, only_rerun["greenStreak"])
+        self.assertEqual("0/3", only_rerun["Green streak"])
 
     def test_matrix_legs_and_reusable_jobs_find_their_budgets(self):
-        jobs = [job("Legs (first)", 1, 70), job("Legs (second)", 1, 120), job("Legs (first)", 2, 75),
-                job("Package / Package and check", 1, 0), job("Package / Package and check", 2, 0)]
+        jobs = [job("Legs (first)", 1, 70), job("Legs (second)", 1, 120), job("Legs (first)", 2, 75)]
+        jobs += [job("Package / Package and check", run, 0) for run in (1, 2, 3)]
         rows = self.summarize(jobs)
-        self.assertEqual((2, 0, 2), (rows["legs-a"]["jobs"], rows["legs-a"]["over"], rows["legs-a"]["greenStreak"]))
-        self.assertEqual((1, 1, 0), (rows["legs-b"]["jobs"], rows["legs-b"]["over"], rows["legs-b"]["greenStreak"]))
-        # The enforcing budget is never ready to promote.
-        self.assertFalse(rows["legs-b"]["readyToEnforce"])
-        self.assertEqual(2, rows["package"]["jobs"])
-        self.assertEqual(0, rows["build"]["jobs"])
-        self.assertIsNone(rows["build"]["p50"])
+        self.assertEqual(("2", "0", "2/3"), (rows["legs-a"]["Jobs"], rows["legs-a"]["Over"],
+                                             rows["legs-a"]["Green streak"]))
+        self.assertEqual(("1", "1", "0/3"), (rows["legs-b"]["Jobs"], rows["legs-b"]["Over"],
+                                             rows["legs-b"]["Green streak"]))
+        # Neither an enforcing budget nor one that no step checks is ever ready to promote.
+        self.assertEqual("-", rows["legs-b"]["Promote"])
+        self.assertEqual(("3", "3/3", "-"), (rows["package"]["Jobs"], rows["package"]["Green streak"],
+                                             rows["package"]["Promote"]))
+        self.assertEqual(("0", "-"), (rows["build"]["Jobs"], rows["build"]["p50"]))
 
     def test_jobs_without_budget_steps_count_their_running_steps(self):
         reusable = {"id": 7, "run_id": 1, "run_attempt": 1, "name": "Package / Package and check",
@@ -437,20 +474,17 @@ class SummarizeTest(Fixture):
                               step("Fetch the pinned JDK", 9, 20), step("Install client dependencies", 20, 30),
                               step("Package the archive", 30, 45), step("Check the archive", 45, 46),
                               step("Skipped", 46, 50, "skipped"), step("Post Run actions/checkout@v7", 50, 52)]}
-        self.assertEqual(16, self.summarize([reusable])["package"]["max"])
+        self.assertEqual("16 s", self.summarize([reusable])["package"]["Max"])
 
-    def test_other_workflows_and_repeated_jobs_count_once_or_not_at_all(self):
+    def test_repeated_jobs_count_once(self):
         original = job("Build (linux)", 1, 30)
         copied = dict(original, id=999, run_attempt=2)
-        other = job("Build (linux)", 2, 500, workflow="Release")
-        row = self.summarize([original, original, copied, other])["build"]
-        self.assertEqual((1, 30, 1), (row["jobs"], row["max"], row["greenStreak"]))
-        everything = self.summarize([original, other], "--workflow-name", "")["build"]
-        self.assertEqual(2, everything["jobs"])
+        row = self.summarize([original, original, copied])["build"]
+        self.assertEqual(("1", "30 s", "1/3"), (row["Jobs"], row["Max"], row["Green streak"]))
 
     def test_concatenated_pages_from_standard_input_print_a_table(self):
         pages = (json.dumps({"total_count": 1, "jobs": [job("Build (linux)", 1, 30)]})
-                 + json.dumps([{"jobs": [job("Legs (first)", 1, 70)]}]))
+                 + "\n" + json.dumps({"total_count": 1, "jobs": [job("Legs (first)", 1, 70)]}))
         result = self.run_script("summarize", "--runs-json", "-", "--budgets", str(self.budgets_path), stdin=pages)
         self.assertEqual(0, result.returncode, result.stderr)
         lines = result.stdout.splitlines()
@@ -459,7 +493,7 @@ class SummarizeTest(Fixture):
         self.assertIn("| `legs-b` | enforcing | 100 | 0 | - | - | - | 0 | 0/3 | - |", lines)
 
     def test_bad_input_is_refused(self):
-        for text in ("{", '[{"total_count": 1}]', "3"):
+        for text in ("{", '{"total_count": 1}', '[{"jobs": []}]', '{"jobs": [3]}', "3"):
             with self.subTest(text=text):
                 result = self.run_script("summarize", "--runs-json", "-", "--budgets", str(self.budgets_path),
                                          stdin=text)
