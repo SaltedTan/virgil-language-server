@@ -1,6 +1,6 @@
 # JVM memory and worker restarts on Apple Silicon (2026-11-05)
 
-This note records the measurements for [#463](https://github.com/SaltedTan/virgil-language-server/issues/463): the JVM build's startup, first and warm analyses, per-process peak memory, and the cost of the worker that replaces one after 100 analyses, on an Apple M4 without Rosetta. It ends with a **proposal** for the darwin-arm64 launch flags and memory envelope. The proposal awaits the maintainer's decision. Nothing here changes `scripts/v3c.sh`, `WORKER_HEAP`, the Linux budgets in [performance-budgets.md](../performance-budgets.md), or [ADR-0016](../decisions/0016-performance-budgets.md), and Linux figures below are not Apple Silicon measurements.
+This note records the measurements for [#463](https://github.com/SaltedTan/virgil-language-server/issues/463): the JVM build's startup, first and warm analyses, per-process peak memory, and the cost of the worker that replaces one after 100 analyses, on an Apple M4 without Rosetta. It ends with a **proposal** for the darwin-arm64 launch flags and memory envelope. The maintainer adopted the proposal on 2026-11-21, and the JVM launchers in `scripts/v3c.sh` and the JVM default of `WORKER_HEAP` now apply it. The measurements don't change the Linux budgets in [performance-budgets.md](../performance-budgets.md), or [ADR-0016](../decisions/0016-performance-budgets.md), and Linux figures below are not Apple Silicon measurements.
 
 **Summary.**
 
