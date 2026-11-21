@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The JVM build's server now runs with a 128 MiB heap and the Serial collector, and its worker with a 256 MiB heap, and neither sets a larger thread stack. Before, the server's heap was uncapped and the worker's was 384 MiB. The server and worker are documented to stay within 1 GiB of resident memory together, 384 MiB and 640 MiB ([The JVM build for Apple Silicon](docs/releasing.md#the-jvm-build-for-apple-silicon), [#463](https://github.com/SaltedTan/virgil-language-server/issues/463)).
 
+### Fixed
+
+- Formatting now indents three more rare layouts by [ADR-0019](docs/decisions/0019-formatter.md)'s rules ([#551](https://github.com/SaltedTan/virgil-language-server/issues/551)). After an inline `else` on a block comment's closing line, as in `close */ g(); else while (c)`, a control header's body and `}`, and a `{` kept on its own line, count from the tabs that the line keeps inside the comment, not from the indentation the formatter would give the line. A control header directly inside an inline `else`'s braced body on the same line, as in `g(); else { while (c)`, indents a `{` kept on its own line or a braceless body from that line instead of from the `if` or `match`. A `fun` outside parentheses and brackets whose `{` is on its header's line now indents its body and `}` from the line where the `fun`'s statement started, as it already did for a `{` on a line of its own: after a one-tab `g(` and a two-tab `1); var callback = fun () {`, the body got two tabs and the `}` one, and they now get three and two. The formatted text of the pinned Aeneas sources, libraries, and apps, and of Wizard engine, doesn't change.
+
 ## [0.1.0-alpha.9] - 2026-11-21
 
 ### Changed
