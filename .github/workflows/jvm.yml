@@ -29,11 +29,10 @@ permissions:
   contents: read
 
 # main's runs share one group and are never cancelled, so under load they
-# coalesce: one runs and only the newest waits. A pull request's newer run
-# cancels its older one, except for adding another label, which gets a group
-# of its own and changes nothing.
+# coalesce: one runs and only the newest waits. A pull request's newer run,
+# including one that adding a label starts, cancels its older one.
 concurrency:
-  group: jvm-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci/jvm' && format('-{0}', github.run_id) || '' }}
+  group: jvm-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -42,9 +41,9 @@ jobs:
     # when it carries the ci/jvm label or when any file it changes, under its
     # old or new name, is under src/os/jvm/ or test/jvm/, is
     # scripts/jvm-runtime.*, scripts/v3c.sh, or the Makefile, or is this
-    # workflow or package-jvm.yml. Adding any other label selects nothing.
+    # workflow or package-jvm.yml. Adding any label selects the same way, so
+    # the newest run's checks show the lanes' results, not skipped jobs.
     name: Select the JVM lanes
-    if: github.event.action != 'labeled' || github.event.label.name == 'ci/jvm'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -75,7 +74,7 @@ jobs:
             echo "The pull request changes $CHANGED_FILES files, too many to list."
             run=true
           else
-            files=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" \
+            files=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
               --jq '.[] | .filename, (.previous_filename // empty)')
             matched=$(printf '%s\n' "$files" | grep -E \
               '^(src/os/jvm/|test/jvm/|scripts/jvm-runtime\.|scripts/v3c\.sh$|Makefile$|\.github/workflows/(jvm|package-jvm)\.yml$)' || true)
