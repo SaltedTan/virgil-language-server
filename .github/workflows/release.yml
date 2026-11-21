@@ -144,7 +144,7 @@ jobs:
           NVIM_VERSION: 0.12.6
           NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
         run: |
-          curl --fail --location --retry 3 \
+          curl --fail --location \
             "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
             -o "$RUNNER_TEMP/nvim.tar.gz"
           echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
@@ -267,7 +267,7 @@ jobs:
           NVIM_VERSION: 0.12.6
           NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
         run: |
-          curl --fail --location --retry 3 \
+          curl --fail --location \
             "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
             -o "$RUNNER_TEMP/nvim.tar.gz"
           echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
