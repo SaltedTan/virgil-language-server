@@ -100,6 +100,12 @@ BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 UNIT_TESTS  = $(BUILD)/unit-tests
 # How many unit-test groups run at once; empty means one for each CPU, up to 8.
 UNIT_JOBS  ?=
+# UNIT_SHUFFLE=1 shuffles the unit-test groups with a random seed; UNIT_SEED=N
+# shuffles them with the given seed instead, and the two refuse to combine. Both
+# print the seed, so a failing log says how to rerun the same order. Both empty
+# (the default) runs the groups in deterministic sorted order.
+UNIT_SHUFFLE ?=
+UNIT_SEED    ?=
 # How many other suites `make test` runs at once; empty means one for each CPU,
 # up to 4.
 SUITE_JOBS ?=
@@ -268,7 +274,9 @@ $(BUILD)/format-corpus-probe: buildinfo test/format/FormatCorpusProbe.v3 $(SERVE
 # splitting still separates several of them. Pass a glob with ARGS, e.g.
 # `make test-unit ARGS='ProjectExpansion:*'`, to run the matches in one process.
 run-unit-tests:
-	set -f; python3 test/unit/run.py $(if $(UNIT_JOBS),--jobs=$(UNIT_JOBS)) $(BUILD) $(UNIT_TESTS) $(ARGS)
+	set -f; python3 test/unit/run.py $(if $(UNIT_JOBS),--jobs=$(UNIT_JOBS)) \
+	    $(if $(UNIT_SEED),--seed=$(UNIT_SEED)) $(if $(filter 1,$(UNIT_SHUFFLE)),--shuffle) \
+	    $(BUILD) $(UNIT_TESTS) $(ARGS)
 
 test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests

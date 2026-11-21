@@ -12,6 +12,7 @@ from contextlib import ExitStack
 import errno
 import os
 from pathlib import Path
+import re
 import runpy
 import shutil
 import signal
@@ -66,14 +67,18 @@ def meeting(group, other, header, tests):
             f"if [ -e {{log}}.{other} ]; then echo '##-ok'; else echo '##-fail (alone)'; fi; done")
 
 
-class RunTest(unittest.TestCase):
+class _Fixture(unittest.TestCase):
+    """Shared setup and helpers; holds no tests of its own."""
+
+    SOURCES = SOURCES
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="unit-run-")
         root = Path(self.temporary.name)
         unit = root / "test" / "unit"
         unit.mkdir(parents=True)
         shutil.copy(DIR / "run.py", unit / "run.py")
-        for name, text in SOURCES.items():
+        for name, text in self.SOURCES.items():
             (unit / name).write_text(text, encoding="utf-8")
         shutil.copytree(PROJECTS, root / "test" / "fixtures" / "projects")
         self.run_py = unit / "run.py"
@@ -102,12 +107,13 @@ class RunTest(unittest.TestCase):
         ), encoding="utf-8")
         self.executable.chmod(0o755)
 
-    def command(self, *patterns, jobs=1):
-        return [sys.executable, str(self.run_py), f"--jobs={jobs}", str(self.build), str(self.executable), *patterns]
+    def command(self, *patterns, jobs=1, options=()):
+        return [sys.executable, str(self.run_py), f"--jobs={jobs}", *options,
+                str(self.build), str(self.executable), *patterns]
 
-    def run_unit_tests(self, *patterns, jobs=1):
-        return subprocess.run(self.command(*patterns, jobs=jobs), capture_output=True, text=True, timeout=60,
-                              check=False)
+    def run_unit_tests(self, *patterns, jobs=1, options=()):
+        return subprocess.run(self.command(*patterns, jobs=jobs, options=options),
+                              capture_output=True, text=True, timeout=60, check=False)
 
     def logged(self):
         return [line.split() for line in self.log.read_text(encoding="utf-8").splitlines()]
@@ -117,6 +123,8 @@ class RunTest(unittest.TestCase):
             self.assertEqual(0o700, stat.S_IMODE(directory.stat().st_mode), directory)
         self.assertEqual(["project-fixtures", "unit-tests"], sorted(path.name for path in self.build.iterdir()))
 
+
+class RunTest(_Fixture):
     def test_each_group_runs_restricted_in_its_own_process(self):
         self.stand_in()
         result = self.run_unit_tests()
@@ -610,6 +618,140 @@ class RunTest(unittest.TestCase):
         finally:
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
+
+
+# Stands in for build/unit-tests with one test per group. Asked for a group, it
+# logs the group name (one line per group) and prints the standard pass pair.
+SHUFFLE_STAND_IN = """\
+#!/bin/sh
+if [ "$1" = '*' ]; then
+    printf '##>%s unit tests\\n' {total}
+    exec sleep 60
+fi
+group=${{1%:*}}
+echo "$group" >> {log}
+printf '##>1 unit tests\\n##+%s:one\\n##-ok\\n' "$group"
+"""
+
+
+class ShuffleTest(_Fixture):
+    """Replaces the Alpha/Beta fixture with eight single-test groups so that a
+    shuffled order can both differ from the sorted one and match itself under
+    the same seed."""
+
+    GROUPS = ("Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel")
+    SOURCES = {
+        f"{name}Test.v3": f'def y = UnitTests.register("{name}:one", one);\n' for name in GROUPS
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.install_stand_in()
+
+    def install_stand_in(self):
+        log = f"'{self.log}'"
+        self.executable.write_text(SHUFFLE_STAND_IN.format(total=len(self.GROUPS), log=log),
+                                   encoding="utf-8")
+        self.executable.chmod(0o755)
+
+    def order(self):
+        return self.log.read_text(encoding="utf-8").splitlines()
+
+    def test_default_run_preserves_sorted_order_and_prints_no_seed(self):
+        result = self.run_unit_tests()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(sorted(self.GROUPS), self.order())
+        self.assertNotIn("seed", result.stdout)
+        self.assertNotIn("shuffling", result.stdout)
+
+    def test_seed_shuffles_deterministically(self):
+        first = self.run_unit_tests(options=["--seed=42"])
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        first_order = self.order()
+        self.assertNotEqual(sorted(self.GROUPS), first_order, "seed 42 must not yield sorted order")
+        self.assertEqual(sorted(self.GROUPS), sorted(first_order), "every group ran once")
+        self.assertIn("shuffling 8 groups with seed 42", first.stdout)
+        self.assertRegex(first.stdout, r"unit tests: .+ seed 42\n")
+
+        # Clear the log; repeat with the same seed and confirm identical order.
+        self.log.write_text("", encoding="utf-8")
+        self.install_stand_in()
+        second = self.run_unit_tests(options=["--seed=42"])
+        self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+        self.assertEqual(first_order, self.order(), "seed 42 is deterministic")
+
+        # A different seed yields a different order.
+        self.log.write_text("", encoding="utf-8")
+        self.install_stand_in()
+        third = self.run_unit_tests(options=["--seed=99"])
+        self.assertEqual(0, third.returncode, third.stdout + third.stderr)
+        self.assertNotEqual(first_order, self.order(), "seed 99 orders differently from seed 42")
+
+    def test_shuffle_prints_seed_in_header_and_summary(self):
+        result = self.run_unit_tests(options=["--shuffle"])
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(sorted(self.GROUPS), sorted(self.order()))
+        header = re.search(r"unit tests: shuffling 8 groups with seed (\d+)", result.stdout)
+        self.assertIsNotNone(header, result.stdout)
+        seed = header.group(1)
+        self.assertTrue(0 <= int(seed) < 2**32)
+        summary = re.search(r"unit tests: 8 passed, 0 failed, in 8 groups, 1 at once, [\d.]+ s, seed (\d+)",
+                            result.stdout)
+        self.assertIsNotNone(summary, result.stdout)
+        self.assertEqual(seed, summary.group(1))
+
+    def test_shuffle_and_seed_together_fail_cleanly(self):
+        for options in (["--shuffle", "--seed=42"], ["--seed=42", "--shuffle"]):
+            with self.subTest(options=options):
+                result = self.run_unit_tests(options=options)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("--shuffle and --seed cannot be used together", result.stderr)
+                self.assertEqual([], self.order())
+
+    def test_invalid_seed_fails_cleanly(self):
+        for value in ("-1", "abc", ""):
+            with self.subTest(value=value):
+                result = self.run_unit_tests(options=[f"--seed={value}"])
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("non-negative decimal integer", result.stderr)
+                self.assertEqual([], self.order())
+
+    def test_seed_zero_shuffles_and_prints_seed(self):
+        result = self.run_unit_tests(options=["--seed=0"])
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(sorted(self.GROUPS), sorted(self.order()))
+        self.assertNotEqual(sorted(self.GROUPS), self.order())
+        self.assertIn("shuffling 8 groups with seed 0", result.stdout)
+        self.assertRegex(result.stdout, r"unit tests: .+ seed 0\n")
+
+    def test_unknown_option_fails_cleanly(self):
+        result = self.run_unit_tests(options=["--typo"])
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("unknown option '--typo'", result.stderr)
+        self.assertEqual([], self.order())
+
+    def test_shuffle_or_seed_with_patterns_fails_cleanly(self):
+        for option in ("--shuffle", "--seed=42"):
+            with self.subTest(option=option):
+                self.log.write_text("", encoding="utf-8")
+                self.install_stand_in()
+                result = self.run_unit_tests("Alpha:*", options=[option])
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("--shuffle and --seed cannot be used with patterns", result.stderr)
+
+    def test_jobs_and_seed_accept_either_option_order(self):
+        for options in (["--jobs=2", "--seed=42"], ["--seed=42", "--jobs=2"]):
+            with self.subTest(options=options):
+                self.log.write_text("", encoding="utf-8")
+                self.install_stand_in()
+                result = subprocess.run(
+                    [sys.executable, str(self.run_py), *options, str(self.build), str(self.executable)],
+                    capture_output=True, text=True, timeout=60, check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(sorted(self.GROUPS), sorted(self.order()))
+                self.assertIn("shuffling 8 groups with seed 42", result.stdout)
+                self.assertIn("2 at once", result.stdout)
 
 
 if __name__ == "__main__":
