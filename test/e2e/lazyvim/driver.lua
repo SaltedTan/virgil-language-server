@@ -17,6 +17,47 @@ local noice_workaround = vim.env.VIRGIL_DRIVER_NOICE_WORKAROUND == "1"
 local out = assert(io.open(assert(vim.env.VIRGIL_DRIVER_OUT), "w"))
 local passes, failures, expected_failures = 0, 0, 0
 
+-- run.sh --results sets VIRGIL_DRIVER_OBSERVATIONS, and each step then
+-- appends its outcome there as a JSON line, with the facts that decide the
+-- steps it runs, which results.py writes into the result stream
+-- (test/e2e/RESULTS.md). $VIRGIL_DRIVER_PROFILE is the run's profile.
+local observations = vim.env.VIRGIL_DRIVER_OBSERVATIONS
+  and assert(io.open(vim.env.VIRGIL_DRIVER_OBSERVATIONS, "a"))
+
+local function now_ms()
+  local seconds, microseconds = vim.uv.gettimeofday()
+  return seconds * 1000 + math.floor(microseconds / 1000)
+end
+
+local function record(entry)
+  if observations then
+    entry.by, entry.profile = "driver", vim.env.VIRGIL_DRIVER_PROFILE
+    observations:write(vim.json.encode(entry), "\n")
+    observations:flush()
+  end
+end
+
+-- A failed wait_for in these steps means that what they wait for wasn't
+-- observed, which the expected-failure rule names by its failure code.
+local timeout_codes = { ["lazyvim.configuration.warning"] = "warning-not-observed" }
+
+-- Records a step's outcome. A failure's first line is its reason.
+local function record_step(name, started, ok, result)
+  if not observations then return end
+  local entry = { kind = "check", id = name, startedAt = started, endedAt = now_ms() }
+  if ok then
+    entry.status = "pass"
+    entry.observation = type(result) == "string" and result ~= "" and result or "the step's assertions held"
+  else
+    local message = tostring(result):match("^[^\n]*")
+    if message == "" then message = "failed without a message" end
+    local timed_out = message:find("^timed out waiting for ") ~= nil
+    entry.status, entry.observation, entry.reason = "fail", message, message
+    entry.failureCode = timed_out and (timeout_codes[name] or "wait-timeout") or "error"
+  end
+  record(entry)
+end
+
 local function emit(line)
   out:write(line, "\n")
   out:flush()
@@ -49,6 +90,7 @@ local function sleep(ms)
     local ok, err = coroutine.resume(self)
     if not ok then
       emit("FAIL driver: " .. tostring(err))
+      record({ kind = "error", message = tostring(err):match("^[^\n]*") })
       vim.cmd("cquit 1")
     end
   end, ms)
@@ -69,7 +111,9 @@ local function wait_for(description, predicate, timeout)
 end
 
 local function step(name, fn)
+  local started = now_ms()
   local ok, err = xpcall(fn, debug.traceback)
+  record_step(name, started, ok, err)
   if ok then
     passes = passes + 1
     emit("PASS " .. name .. (type(err) == "string" and (": " .. err) or ""))
@@ -85,7 +129,10 @@ end
 -- is reported as XFAIL with the reason; if it passes, the limitation is gone,
 -- and XPASS fails the run so that the lock update gets reviewed.
 local function expected_failure(name, reason, fn)
+  local started = now_ms()
   local ok, err = xpcall(fn, debug.traceback)
+  -- Recorded as observed: results.py applies the expected-failure rule.
+  record_step(name, started, ok, err)
   if ok then
     failures = failures + 1
     emit("XPASS " .. name .. (type(err) == "string" and (": " .. err) or "")
@@ -1467,8 +1514,11 @@ local function main_checks()
   -- itself. Neovim declares it on macOS, not on Linux; without it, the server
   -- notices when a .v3 buffer next changes (editors/nvim/README.md, "Changes
   -- on disk").
-  local watched = vim.tbl_get(client.capabilities or {}, "workspace", "didChangeWatchedFiles",
-    "dynamicRegistration") == true
+  local declared = vim.tbl_get(client.capabilities or {}, "workspace", "didChangeWatchedFiles",
+    "dynamicRegistration")
+  local watched = declared == true
+  record({ kind = "fact", fact = "didChangeWatchedFilesDynamicRegistration",
+    value = declared == nil and vim.NIL or declared })
   local function unknown_field()
     return latest(config_uri) and codes(latest(config_uri)) == "UnknownField"
   end
@@ -1565,6 +1615,7 @@ local function main_checks()
   -- clients twice, so that Neovim ends the server with signal 15. Java handles
   -- that signal and exits with status 128 + 15 instead.
   local builtin_lsp = vim.fn.exists(":lsp") == 2
+  record({ kind = "fact", fact = "neovimBuiltinLspCommand", value = builtin_lsp })
   local restart_command = builtin_lsp and "lsp restart" or "LspRestart"
 
   -- Returns the new client on words/Words.v3. Neovim itself only warns when
@@ -1729,9 +1780,11 @@ co = coroutine.create(function()
   if not ok then
     failures = failures + 1
     emit("FAIL driver: " .. tostring(err))
+    record({ kind = "error", message = tostring(err):match("^[^\n]*") })
     capture_screen("FAIL driver")
   end
   emit(string.format("DONE %d passed, %d failed, %d expected failure(s)", passes, failures, expected_failures))
+  record({ kind = "done" })
   out:close()
   vim.cmd(failures == 0 and "qa!" or "cquit 1")
 end)
@@ -1740,6 +1793,7 @@ vim.schedule(function()
   local ok, err = coroutine.resume(co)
   if not ok then
     emit("FAIL driver: " .. tostring(err))
+    record({ kind = "error", message = tostring(err):match("^[^\n]*") })
     capture_screen("FAIL driver")
     vim.cmd("cquit 1")
   end
