@@ -339,9 +339,12 @@ class PayloadTests(unittest.TestCase):
 
     def test_payload_failure_fails_release_runner(self):
         shim = self.root / 'python3'
+        calls = self.root / 'python-calls'
+        payload = str(Path(__file__).resolve())
         shim.write_text(
             '#!/bin/sh\n'
-            f'if [ "$1" = {shlex.quote(str(Path(__file__).resolve()))} ]; then\n'
+            f'printf \'%s\\n\' "$1" >> {shlex.quote(str(calls))}\n'
+            f'if [ "$1" = {shlex.quote(payload)} ]; then\n'
             '  echo "injected payload failure" >&2\n'
             '  exit 1\n'
             'fi\n'
@@ -356,6 +359,9 @@ class PayloadTests(unittest.TestCase):
         self.assertIn('FAIL: VSIX payload integrity and provenance', result.stdout)
         self.assertIn('injected payload failure', result.stdout)
         self.assertRegex(result.stdout, r'\nrelease scripts: 0 passed, 1 failed\n$')
+        # The selected check must be the only Python invocation. In particular,
+        # unselected VSIX checks must skip their probes and fixture generation.
+        self.assertEqual(calls.read_text(), payload + '\n')
 
     def test_release_runner_rejects_an_unknown_check(self):
         result = subprocess.run(
