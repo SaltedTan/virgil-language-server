@@ -303,8 +303,9 @@ jobs:
             --report "$RUNNER_TEMP/processes/build.json" -- \
             make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
       # A pull request's dry run, or one after a merge to main, only builds:
-      # CI's test-macos-jvm runs the same tests on the same tree, with the
-      # same runner image.
+      # jvm.yml's test-macos-jvm runs the same tests with the same runner
+      # image, on the pull request when it changes the JVM build's paths, and
+      # otherwise after the merge or by hand on its branch.
       - name: Test, checking all observed descendants
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: |
