@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local pre-commit hook. Checks the staged index content, not the working tree.
+# Install with `make install-hooks`. Skip once with `git commit --no-verify`,
+# or disable with `git config --unset core.hooksPath`.
+
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+staged=()
+while IFS= read -r -d '' path; do
+    staged+=("$path")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ ${#staged[@]} -eq 0 ]; then
+    exit 0
+fi
+
+tmpdir=
+trap '[ -n "$tmpdir" ] && [ -d "$tmpdir" ] && rm -rf -- "$tmpdir"' EXIT
+
+make_tmpdir() {
+    if [ -z "$tmpdir" ]; then
+        tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/virgil-lsp-pre-commit.XXXXXX")
+    fi
+}
+
+raw_v3_files=()
+v3_files=()
+vscode_touched=0
+workflow_files=()
+
+for path in "${staged[@]}"; do
+    case "$path" in
+        *.v3) raw_v3_files+=("$path") ;;
+    esac
+    case "$path" in
+        clients/vscode/*) vscode_touched=1 ;;
+    esac
+    case "$path" in
+        .github/workflows/*.yml|.github/workflows/*.yaml)
+            workflow_files+=("$path")
+            ;;
+    esac
+done
+
+if [ ${#raw_v3_files[@]} -gt 0 ]; then
+    excluded=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && excluded+=("$line")
+    done < <(make -s --no-print-directory print-format-exclude)
+
+    is_excluded() {
+        local path=$1 prefix
+        if [ ${#excluded[@]} -eq 0 ]; then
+            return 1
+        fi
+        for prefix in "${excluded[@]}"; do
+            case "$path" in
+                "$prefix"*) return 0 ;;
+            esac
+        done
+        return 1
+    }
+
+    for path in "${raw_v3_files[@]}"; do
+        if ! is_excluded "$path"; then
+            v3_files+=("$path")
+        fi
+    done
+fi
+
+if [ ${#v3_files[@]} -gt 0 ]; then
+    if [ ! -f vendor/virgil/aeneas/DEPS ]; then
+        echo "error: Virgil sources not found at vendor/virgil" >&2
+        echo "       run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+    make -s build/virgil-lsp
+    make_tmpdir
+    args=()
+    for path in "${v3_files[@]}"; do
+        dir=$(dirname -- "$path")
+        mkdir -p -- "$tmpdir/$dir"
+        git show ":$path" > "$tmpdir/$path"
+        case "$path" in
+            -*) args+=("./$path") ;;
+            *) args+=("$path") ;;
+        esac
+    done
+    server="$root/build/virgil-lsp"
+    if ! (cd "$tmpdir" && "$server" format --check "${args[@]}"); then
+        {
+            echo "pre-commit: unformatted staged .v3 files."
+            echo "Run build/virgil-lsp format --write <file> and stage the result."
+        } >&2
+        exit 1
+    fi
+fi
+
+if [ "$vscode_touched" -eq 1 ]; then
+    if [ -d "$root/clients/vscode/node_modules" ]; then
+        ( cd "$root/clients/vscode" && npm run check )
+    else
+        echo "pre-commit: skipping VS Code type-check (clients/vscode/node_modules not installed; run npm ci in clients/vscode)" >&2
+    fi
+fi
+
+if [ ${#workflow_files[@]} -gt 0 ] && command -v actionlint >/dev/null 2>&1; then
+    make_tmpdir
+    mkdir -p -- "$tmpdir/.github/workflows"
+    while IFS= read -r -d '' path; do
+        mkdir -p -- "$tmpdir/$(dirname -- "$path")"
+        git show ":$path" > "$tmpdir/$path"
+    done < <(git ls-files --cached -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml')
+    ( cd "$tmpdir" && actionlint "${workflow_files[@]}" )
+fi
+
+exit 0
