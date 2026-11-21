@@ -9,6 +9,7 @@
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const { REPORTED, reporter } = require('./e2e/observations.cjs');
@@ -22,8 +23,20 @@ const LAUNCHER = new Set([
   'vscode.shutdown.window-close', 'vscode.recovery.window-close',
 ]);
 
+// suite.cjs names its checks by string literals, which only a real run
+// executes. Every vscode check of coverage.json that the launcher doesn't own
+// must be named there, and suite.cjs must name no other vscode ID.
+test('suite.cjs names exactly the suite checks of coverage.json', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO, 'test/e2e/coverage.json'), 'utf8'));
+  const planned = manifest.checks.filter((check) => check.suites.includes('vscode')).map((check) => check.id)
+    .filter((id) => !LAUNCHER.has(id)).sort();
+  const source = fs.readFileSync(path.join(__dirname, 'e2e/suite.cjs'), 'utf8');
+  const named = [...new Set([...source.matchAll(/'(vscode\.[a-z0-9.-]+)'/g)].map((match) => match[1]))].sort();
+  assert.deepEqual(named, planned);
+});
+
 function scratch(t) {
-  const root = fs.mkdtempSync(path.join(__dirname, '.extension-host-results-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-extension-host-results-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
