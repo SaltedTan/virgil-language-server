@@ -538,12 +538,12 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 ### v1.0 is ready when
 
-The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; it is not yet a release gate, and no candidate has met a clause yet.
+The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; the maintainer adopted it as the v1.0 release gate on 2026-11-21, and no candidate has met a clause yet.
 
 - The configuration schema and compatibility policy are stable.
-- References, safe rename, signature help, and useful completion are shipped. See the [draft everyday-use clause](docs/v1-readiness.md#2-everyday-use) for the formatter's scope.
+- References, safe rename, signature help, and useful completion are shipped. See the [everyday-use clause](docs/v1-readiness.md#2-everyday-use) for the formatter's scope.
 - Incomplete syntax does not routinely destroy all language intelligence, within the bounded open-body scope of [No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing), where rule 2 reads a missing `{` only where the file's indentation places it: phase 3a's [release scorecard](docs/benchmarks.md#release-scorecard) holds its floors in both modes with no wrong answers, while header and field-initializer errors and truncated files remain phase 3b.
-- Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs. The adopted performance budgets are in [docs/performance-budgets.md](docs/performance-budgets.md) ([ADR-0016](docs/decisions/0016-performance-budgets.md)); enforcement of their latency and memory targets is advisory, and the scheduled comparison enforces only the separately approved worker resource checks ([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)). The [draft performance clause](docs/v1-readiness.md#4-performance-budgets) requires a candidate to pass both.
+- Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs. The adopted performance budgets are in [docs/performance-budgets.md](docs/performance-budgets.md) ([ADR-0016](docs/decisions/0016-performance-budgets.md)); enforcement of their latency and memory targets is advisory, and the scheduled comparison enforces only the separately approved worker resource checks ([#347](https://github.com/SaltedTan/virgil-language-server/issues/347)). The [performance clause](docs/v1-readiness.md#4-performance-budgets) requires a candidate to pass both.
 - Release artifacts cover the documented platform matrix and clean-install tests.
 - At least one release cycle has tested upgrades, rollback, and compatibility with newer Virgil revisions.
 
