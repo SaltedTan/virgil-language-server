@@ -915,14 +915,5 @@ os.execv({shutil.which("dirname")!r}, ["dirname", *sys.argv[1:]])
         self.assertInvalid(edited(0, coverageSha256="0" * 64), "another coverage.json")
 
 
-def load_tests(loader, tests, pattern):
-    """make test runs this file, and with it test_lazyvim_results.py, the
-    LazyVim writer's tests, which have no suite of their own."""
-    sys.path.insert(0, str(HERE))
-    import test_lazyvim_results
-    tests.addTests(loader.loadTestsFromModule(test_lazyvim_results))
-    return tests
-
-
 if __name__ == "__main__":
     unittest.main()

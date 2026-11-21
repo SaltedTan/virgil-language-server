@@ -122,6 +122,7 @@ SUITES = \
 	'python3 test/e2e/test_coverage.py' \
 	'python3 test/e2e/test_editor_results.py' \
 	'python3 test/e2e/test_nvim_results.py $(BUILD)/virgil-lsp' \
+	'python3 test/e2e/test_lazyvim_results.py' \
 	'python3 scripts/bench-tolerance.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
 	'test/protocol/run.sh $(BUILD)/virgil-lsp' \
 	'python3 test/unit/test_run.py' \

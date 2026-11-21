@@ -246,7 +246,7 @@
       "id": "lazyvim",
       "label": "Scripted LazyVim test",
       "prefixes": ["lazyvim"],
-      "harness": ["test/e2e/lazyvim/run.sh", "test/e2e/lazyvim/driver.lua"],
+      "harness": ["test/e2e/lazyvim/run.sh", "test/e2e/lazyvim/driver.lua", "test/e2e/lazyvim/results.py"],
       "profiles": [
         {
           "id": "main",
