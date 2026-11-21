@@ -301,6 +301,21 @@ test('malformed or unplanned observations are issues that fail the run', { skip:
   assert.match(issues[2], /in the recovery-close launch/);
 });
 
+test('a planned check that the suite never reported is an issue that fails the run', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  const workspace = passes(results, 'workspace').filter((entry) => entry.id !== 'vscode.formatting.save');
+  launch(results, root, 'workspace', { observations: workspace });
+  results.launch('workspace');
+  launch(results, root, 'recovery-close');
+  results.launch('recovery-close');
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const end = events(file).at(-1);
+  assert.deepEqual([end.status, end.complete, end.issues], ['fail', false, ['vscode.formatting.save (workspace) have no check event']]);
+});
+
 test('post-close evidence that could not be read fails the window-close check by its ID', { skip: !python && 'needs Python 3.9+' }, (t) => {
   const { root, file, results } = begin(t);
   launch(results, root, 'single-file', {

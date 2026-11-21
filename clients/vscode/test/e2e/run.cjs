@@ -104,6 +104,14 @@ async function main() {
   let work;
   let thrown;
   try {
+    // The server starts the worker beside its own resolved path.
+    const bundled = vsix !== undefined && positionals.length === 0;
+    const server = bundled ? undefined : fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
+    if (results !== undefined) {
+      results.info.server = server ?? {
+        reason: "the bundled server is read from the VSIX's installed copy, and no installation of the VSIX succeeded",
+      };
+    }
     if (vsix !== undefined && !fs.existsSync(vsix)) {
       throw preflightFailure(`package the extension before running the test: ${vsix} is missing`);
     }
@@ -114,14 +122,6 @@ async function main() {
       throw new Error(`--logs takes a new or empty directory, and ${logs} is not one`);
     }
     finish = true;
-    // The server starts the worker beside its own resolved path.
-    const bundled = vsix !== undefined && positionals.length === 0;
-    const server = bundled ? undefined : fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
-    if (results !== undefined) {
-      results.info.server = server ?? {
-        reason: "the bundled server is read from the VSIX's installed copy, and no installation of the VSIX succeeded",
-      };
-    }
     for (const file of server === undefined ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')]) {
       try {
         fs.accessSync(file, fs.constants.X_OK);
