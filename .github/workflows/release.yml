@@ -16,10 +16,10 @@ name: Release
 # VSIX and the rollback, writes SHA256SUMS
 # over them and the JVM runtime's source archive,
 # and publishes them as a GitHub prerelease. Running the workflow by hand, on
-# a pull request that changes a file only the release path runs, or on a push
-# to main that changes another file it uses, is a dry run: the same jobs
-# without publishing, with the release files kept as a workflow artifact. See
-# docs/releasing.md.
+# a pull request that changes a file whose release use pull request CI doesn't
+# fully test, or on a push to main that changes another file it uses, is a dry
+# run: the same jobs without publishing, with the release files kept as a
+# workflow artifact. See docs/releasing.md.
 
 on:
   # Path filters don't apply to tag pushes.
@@ -47,8 +47,8 @@ on:
       - test/e2e/nvim/fixture/**
       - test/jvm/**
       - test/release/**
-  # Files that only the release path runs, which no pull request CI job
-  # tests, dry-run on the pull request before they are merged.
+  # Files whose release use pull request CI doesn't fully test dry-run on the
+  # pull request before they are merged.
   pull_request:
     paths:
       - .github/workflows/editor-test-suites.yml
