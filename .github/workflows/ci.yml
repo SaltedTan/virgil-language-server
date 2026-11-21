@@ -183,9 +183,10 @@ jobs:
   lazyvim-linux:
     # Builds the server and runs the LazyVim test against it, at the same time
     # as the other Linux jobs. It is a job of its own so that it reports as its
-    # own required check: it installs the pinned starter and plugins from
-    # GitHub. See docs/compatibility.md for CI policy and
-    # test/e2e/lazyvim/README.md#ci.
+    # own required check. It restores the pinned starter, plugins, and parsers
+    # from the cache that seed-caches.yml saves on main, and installs them from
+    # GitHub when there is none for this pull request's inputs. See
+    # docs/compatibility.md for CI policy and test/e2e/lazyvim/README.md#ci.
     name: LazyVim test (built server, linux)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
@@ -223,16 +224,28 @@ jobs:
           sed -n 's/^PRETTY_NAME=//p' /etc/os-release
           nvim --version | head -n 1
           tmux -V
+      # Pull requests only restore caches; seed-caches.yml saves them on main,
+      # with the same keys and paths.
+      - name: Compute the cache key
+        id: keys
+        run: scripts/ci-cache-keys.sh lazyvim >> "$GITHUB_OUTPUT"
+      - name: Restore the LazyVim starter, plugins, and parsers
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/lazyvim-cache
+          key: ${{ steps.keys.outputs.lazyvim }}
       - name: Build the server
         run: |
           make
           build/virgil-lsp --version
+      # Without a restored cache, run.sh installs from GitHub as it would
+      # without --cache, and leaves the directory alone.
       - name: LazyVim test
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/lazyvim"
-          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" build/virgil-lsp 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
+          test/e2e/lazyvim/run.sh --cache "$RUNNER_TEMP/lazyvim-cache" --out "$RUNNER_TEMP/lazyvim/results" \
+            build/virgil-lsp 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -485,12 +498,25 @@ jobs:
         working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v7
+      # The Node version, keys, and paths of the caches are those that
+      # seed-caches.yml saves on main. Pull requests only restore them.
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Compute the cache key
+        id: keys
+        working-directory: .
+        run: scripts/ci-cache-keys.sh node-modules >> "$GITHUB_OUTPUT"
+      # Only on an exact key: a change to package.json or package-lock.json
+      # misses and installs from the lockfile.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
       - name: Install dependencies from the lockfile
+        if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
       - name: Type-check
         run: npm run check
@@ -511,7 +537,8 @@ jobs:
     # a server built here, and vsix installs the linux-x64 platform VSIX,
     # packaged here from a release archive that package-release.sh builds,
     # and tests its bundled server. The runner image includes xvfb-run. The
-    # test downloads its pinned VS Code version; see
+    # test downloads its pinned VS Code version unless it is restored from the
+    # cache that seed-caches.yml saves on main, as node_modules is; see
     # clients/vscode/README.md#extension-host-test. If a launch fails, the leg
     # uploads that launch's VS Code logs, one artifact for each attempt of the
     # run.
@@ -537,15 +564,30 @@ jobs:
           filter: blob:none
       - name: Check out the pinned Virgil
         run: git submodule update --init --recursive --depth 1
+      # As in vscode-client.
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Compute the cache keys
+        id: keys
+        run: scripts/ci-cache-keys.sh node-modules vscode >> "$GITHUB_OUTPUT"
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+      # The test uses a restored VS Code only if its download completed.
+      - name: Restore the pinned VS Code
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}
       - name: Build the server
         if: matrix.mode == 'source'
         run: make
       - name: Install client dependencies from the lockfile
+        if: steps.node-modules.outputs.cache-hit != 'true'
         working-directory: clients/vscode
         run: npm ci
       - name: Extension Host test
@@ -576,7 +618,8 @@ jobs:
     # macOS test jobs, rather than waiting for them. It is a separate job, not
     # one of the jobs test-macos confirms, so that it is not yet a required check; see
     # docs/compatibility.md for CI policy. macOS needs no virtual display. It
-    # uploads a failed launch's VS Code logs as the Linux job does.
+    # restores node_modules and VS Code, and uploads a failed launch's VS Code
+    # logs, as the Linux job does.
     name: VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
@@ -598,12 +641,26 @@ jobs:
           make
           build/virgil-lsp --version
           file build/virgil-lsp
+      # As in vscode-extension-host.
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Compute the cache keys
+        id: keys
+        run: scripts/ci-cache-keys.sh node-modules vscode >> "$GITHUB_OUTPUT"
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/node_modules
+          key: ${{ steps.keys.outputs.node-modules }}
+      - name: Restore the pinned VS Code
+        uses: actions/cache/restore@v6
+        with:
+          path: clients/vscode/.vscode-test
+          key: ${{ steps.keys.outputs.vscode }}
       - name: Install client dependencies from the lockfile
+        if: steps.node-modules.outputs.cache-hit != 'true'
         working-directory: clients/vscode
         run: npm ci
       - name: Process runner tests (macOS libproc and both Darwin layouts)
