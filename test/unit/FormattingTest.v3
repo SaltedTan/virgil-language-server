@@ -31,11 +31,14 @@ def X = [
 	T("Formatting:unjoined_ungrouped_fun_brace", unjoined_ungrouped_fun_brace),
 	T("Formatting:unjoined_fun_inside_grouped_brace", unjoined_fun_inside_grouped_brace),
 	T("Formatting:unjoined_fun_after_block_comment", unjoined_fun_after_block_comment),
+	T("Formatting:joined_ungrouped_fun_brace", joined_ungrouped_fun_brace),
 	T("Formatting:code_after_comment", code_after_comment),
 	T("Formatting:block_comment_opener", block_comment_opener),
 	T("Formatting:else_line", else_line),
 	T("Formatting:inline_else", inline_else),
 	T("Formatting:headers_after_inline_else", headers_after_inline_else),
+	T("Formatting:header_after_else_on_comment_close", header_after_else_on_comment_close),
+	T("Formatting:header_in_inline_else_block", header_in_inline_else_block),
 	T("Formatting:fun_body_close", fun_body_close),
 	T("Formatting:case_arrow_anchor", case_arrow_anchor),
 	T("Formatting:foreach_initializer", foreach_initializer),
@@ -528,6 +531,23 @@ def unjoined_fun_after_block_comment(t: Tester) {
 	both(t, "def f() {\n\t/* note\n\t\t\t*/ var callback = fun () // keep\n{\nreturn;\n};\n}\n",
 		"def f() {\n\t/* note\n\t\t\t*/ var callback = fun () // keep\n\t\t\t{\n\t\t\t\treturn;\n\t\t\t};\n}\n");
 }
+// A fun's '{' on its header's line, outside parentheses and brackets, also
+// indents the body and '}' from the line where the fun's statement started.
+def joined_ungrouped_fun_brace(t: Tester) {
+	var expected = "def f() {\n\tg(\n\t\t1); var callback = fun () {\n\t\t\treturn;\n\t\t};\n}\n";
+	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun () {\nreturn;\n};\n}\n", expected);
+	// Also after the '{' joins its line.
+	both(t, "def f() {\n\tg(\n\t\t1); var callback = fun ()\n{\nreturn;\n};\n}\n", expected);
+	both(t, "def f() {\n\tif (\n\t\ttrue) { var callback = fun () {\nreturn;\n}; }\n}\n",
+		"def f() {\n\tif (\n\t\ttrue) { var callback = fun () {\n\t\t\treturn;\n\t\t}; }\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else x = fun () {\nreturn;\n};\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else x = fun () {\n\t\t\treturn;\n\t\t};\n}\n");
+	both(t, "def f() {\n\t/* note\n\t\t\t*/ var callback = fun () {\nreturn;\n};\n}\n",
+		"def f() {\n\t/* note\n\t\t\t*/ var callback = fun () {\n\t\t\t\treturn;\n\t\t\t};\n}\n");
+	// A statement over several lines counts from its first line.
+	var input = "def f() {\n\tvar callback =\n\t\tfun () {\n\t\treturn;\n\t};\n}\n";
+	both(t, input, input);
+}
 def code_after_comment(t: Tester) {
 	// A line that starts with a comment and then has code is a code line,
 	// also at column 0.
@@ -616,6 +636,43 @@ def headers_after_inline_else(t: Tester) {
 		"def f() {\n\tif (true)\n\t\tg(); else match (0) // keep\n\t\t{\n\t\t\t_ => ;\n\t\t}\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tg(); else while (true)\n\th();\n\tmatch (0) {\n\t\t_ => g(); } else for (i < 1)\n\th();\n}\n",
 		"def f() {\n\tif (true)\n\t\tg(); else while (true)\n\t\t\th();\n\tmatch (0) {\n\t\t_ => g(); } else for (i < 1)\n\t\t\th();\n}\n");
+}
+// On a block comment's closing line, whose leading tabs stay inside the
+// comment, a control header after an "else" counts from those tabs.
+def header_after_else_on_comment_close(t: Tester) {
+	var brace = "{\nh();\n}\n}\n", indented = "\t\t\t{\n\t\t\t\th();\n\t\t\t}\n}\n";
+	for (lines in [
+		("\tif (true)\n\t/* a\n\t\t\tclose */ g(); else while (true) // keep\n",
+			"\tif (true)\n\t\t/* a\n\t\t\tclose */ g(); else while (true) // keep\n"),
+		("\tmatch (0) {\n\t/* a\n\t\t\tclose */ _ => g(); } else while (true) // keep\n",
+			"\tmatch (0) {\n\t\t/* a\n\t\t\tclose */ _ => g(); } else while (true) // keep\n"),
+		("\tmatch (0) {\n\t\t_ => ;\n\t}\n\t/* a\n\t\t\tclose */ else while (true) // keep\n",
+			"\tmatch (0) {\n\t\t_ => ;\n\t}\n\t/* a\n\t\t\tclose */ else while (true) // keep\n")
+	]) {
+		both(t, Strings.format2("def f() {\n%s%s", lines.0, brace), Strings.format2("def f() {\n%s%s", lines.1, indented));
+	}
+	both(t, "def f() {\n\tif (true)\n\t/* a\n\t\t\tclose */ g(); else while (true)\nh();\n}\n",
+		"def f() {\n\tif (true)\n\t\t/* a\n\t\t\tclose */ g(); else while (true)\n\t\t\t\th();\n}\n");
+}
+// A control header in an inline "else"'s braced body, on the else's line,
+// takes that line's indentation too.
+def header_in_inline_else_block(t: Tester) {
+	var brace = "{\nh();\n}\n}\n}\n", indented = "\t\t{\n\t\t\th();\n\t\t}\n\t}\n}\n";
+	for (header in [
+		"\tif (true)\n\t\tg(); else { while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else { h(); while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else { if (true) h(); else while (true) // keep\n",
+		"\tif (true)\n\t\tg(); else { h(fun () { if (true) g(); }); while (true) // keep\n",
+		"\tmatch (0) {\n\t\t_ => g(); } else { while (true) // keep\n"
+	]) {
+		var prefix = Strings.format1("def f() {\n%s", header);
+		both(t, Strings.format2("%s%s", prefix, brace), Strings.format2("%s%s", prefix, indented));
+	}
+	// The else's '{' joins its line.
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else\n{ while (true) // keep\n{\nh();\n}\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else { while (true) // keep\n\t\t{\n\t\t\th();\n\t\t}\n\t}\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t\tg(); else { while (true)\nh();\n}\n\tmatch (0) {\n\t\t_ => g(); } else { for (i < 1)\nh();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\tg(); else { while (true)\n\t\t\th();\n\t}\n\tmatch (0) {\n\t\t_ => g(); } else { for (i < 1)\n\t\t\th();\n\t}\n}\n");
 }
 def fun_body_close(t: Tester) {
 	// The line after a fun expression's '}' continues its statement.
