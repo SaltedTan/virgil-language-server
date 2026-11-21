@@ -156,7 +156,7 @@ test('the suite reporter prints and records each check by the ID that began last
   assert.equal(recorded[1].startedAt, 1002, 'the activation check keeps its first start');
 });
 
-test('a failure before the deferred check is reported reports the deferred pass first', (t) => {
+test('a failure before the deferred check is reported reports the deferred pass first', () => {
   const out = { lines: [], log(line) { this.lines.push(line); }, error(line) { this.lines.push(line.split('\n')[0]); } };
   const checks = reporter({ file: undefined, out });
   checks.begin('vscode.startup.installed-copy');
