@@ -20,7 +20,9 @@ name: Editor test suites
 # runs the bundled runtime's arm64 java. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
-# results and logs, also when it fails. See test/e2e/lazyvim/README.md#ci,
+# results and logs, also when it fails. The LazyVim and Extension Host jobs
+# also write and validate a result stream (test/e2e/RESULTS.md), which is in
+# the same artifact. See test/e2e/lazyvim/README.md#ci,
 # clients/vscode/README.md#remote-ssh-test, and docs/manual-testing.md for
 # coverage.
 
@@ -40,6 +42,15 @@ on:
 
 permissions:
   contents: read
+
+# The result streams' purpose and release. The github context is the caller's,
+# and only the release workflow runs on a pushed tag, so that is the published
+# release's run. Every other run, a dry run or the weekly run, is development
+# and names no release: between releases, VERSION still names the last
+# published one.
+env:
+  RESULTS_PURPOSE: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || 'development' }}
+  RESULTS_RELEASE: ${{ github.event_name == 'push' && github.ref_type == 'tag' && inputs.version || '' }}
 
 # No concurrency group: these jobs run in the caller's run, under the caller's
 # group, so that a release run and a weekly run never wait for or cancel each
@@ -171,8 +182,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/lazyvim"
-          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
+          results=(--results "$RUNNER_TEMP/lazyvim/lazyvim.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
+          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
+            "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
+      - name: Validate the LazyVim result stream
+        # Prints the stream's verdict in the log. The test's exit status stays
+        # the job's: validate exits with 1 for a valid stream of a run that
+        # didn't pass, which the test has already failed, and with 2 for an
+        # invalid or missing stream, which marks only this step.
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -291,8 +312,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/lazyvim"
-          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
+          results=(--results "$RUNNER_TEMP/lazyvim/lazyvim.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
+          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
+            "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
+      - name: Validate the LazyVim result stream
+        # Prints the stream's verdict in the log. The test's exit status stays
+        # the job's: validate exits with 1 for a valid stream of a run that
+        # didn't pass, which the test has already failed, and with 2 for an
+        # invalid or missing stream, which marks only this step.
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -342,7 +373,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/vscode"
-          npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" 2>&1 | tee "$RUNNER_TEMP/vscode/test.log"
+          results=(--results "$RUNNER_TEMP/vscode/vscode.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
+          npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" "${results[@]}" 2>&1 |
+            tee "$RUNNER_TEMP/vscode/test.log"
+      - name: Validate the Extension Host result stream
+        # Prints the stream's verdict in the log. The test's exit status stays
+        # the job's: validate exits with 1 for a valid stream of a run that
+        # didn't pass, which the test has already failed, and with 2 for an
+        # invalid or missing stream, which marks only this step.
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/vscode/vscode.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -397,12 +439,22 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/lazyvim"
+          results=(--results "$RUNNER_TEMP/lazyvim/lazyvim.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
           # The tmux server that runs Neovim detaches from run.sh; --adopt
           # follows it and so the servers that Neovim starts.
           python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 --adopt tmux \
             --report "$RUNNER_TEMP/lazyvim/processes.json" -- \
-            test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
+            test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
+            "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
+      - name: Validate the LazyVim result stream
+        # Prints the stream's verdict in the log. The test's exit status stays
+        # the job's: validate exits with 1 for a valid stream of a run that
+        # didn't pass, which the test has already failed, and with 2 for an
+        # invalid or missing stream, which marks only this step.
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -454,10 +506,20 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/vscode"
+          results=(--results "$RUNNER_TEMP/vscode/vscode.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
           python3 ../../test/jvm/native.py run --java '*/server/runtime/bin/java' --min-java 2 \
             --report "$RUNNER_TEMP/vscode/processes.json" -- \
-            npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" 2>&1 |
+            npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" "${results[@]}" 2>&1 |
             tee "$RUNNER_TEMP/vscode/test.log"
+      - name: Validate the Extension Host result stream
+        # Prints the stream's verdict in the log. The test's exit status stays
+        # the job's: validate exits with 1 for a valid stream of a run that
+        # didn't pass, which the test has already failed, and with 2 for an
+        # invalid or missing stream, which marks only this step.
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/vscode/vscode.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
