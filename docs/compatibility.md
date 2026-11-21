@@ -86,7 +86,7 @@ Inlay hints use LSP 3.17 `textDocument/inlayHint` and optional `workspace/inlayH
 
 ## Host platforms
 
-The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.md).
+The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.md); those for the JVM preview are in [ADR-0020](decisions/0020-jvm-fallback-for-apple-silicon.md).
 
 | Platform | Status | Build | CI |
 | --- | --- | --- | --- |
@@ -103,7 +103,9 @@ The [repository setup script](../scripts/github-setup.sh) configures both pinned
 
 CI runs on every pull request, by hand, and for each push to `main`. The push trigger keeps the README's CI badge current. Because `main` requires pull requests to be up to date and merges squash them, a push usually carries exactly the tree that its pull request's CI passed on. A push-only check skips the build and test jobs only when a merged pull request associated with the pushed commit has the same tree at its head and a successful `pull_request` run of `ci.yml` on that head; the push run then reports success for that commit. Without that evidence, or if the check fails, the normal jobs remain eligible. Pull requests and manual runs skip the check and keep the normal jobs eligible too. Dependent editor jobs still require their build job to succeed, and cancellation prevents guarded jobs from starting. Required check names are unchanged.
 
-Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Until then, the default macOS assets need Rosetta 2, and the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) is the option for a Mac without it. Install Rosetta 2 with:
+[ADR-0020](decisions/0020-jvm-fallback-for-apple-silicon.md) records the maintainer's 2026-11-03 decision: the Intel build under Rosetta 2 stays the default for Apple Silicon, and the JVM build ships as the preview fallback. [#191](https://github.com/SaltedTan/virgil-language-server/issues/191) set 2027-01-31 as the latest decision date and 2027-05-31 as the local-release target.
+
+Switching the default is a later decision tied to Apple's Rosetta timeline. Only `darwin-arm64` has a JVM build; Linux x86-64 and Intel macOS stay native. Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Until then, the default macOS assets need Rosetta 2, and the [JVM build](releasing.md#the-jvm-build-for-apple-silicon) is the option for a Mac without it: it needs neither Rosetta 2 nor a separately installed Java runtime. Install Rosetta 2 with:
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
