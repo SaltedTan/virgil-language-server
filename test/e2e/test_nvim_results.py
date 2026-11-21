@@ -837,6 +837,8 @@ os.execv({shutil.which("dirname")!r}, ["dirname", *sys.argv[1:]])
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             with self.subTest(signal=signum.name):
                 self.scenario(lines=[passing(check_id) for check_id in ORDER[:2]], sleep=60)
+                # The previous subtest's stream would satisfy wait_for_events at once.
+                self.stream.unlink(missing_ok=True)
                 process = self.start_run_sh()
                 self.wait_for_events(4)
                 signalled = time.monotonic()
