@@ -693,7 +693,7 @@ notes "an extra VSIX file" 1 - "expected five VS Code extensions .*, found 6$" \
 write_fixture() {
     printf '%s' "$2" > "$1"
 }
-release_vsix=virgil-lsp-vscode-7.8.9.vsix
+release_vsix='virgil-lsp-vscode-7.8.9.vsix'
 notes "VSIX that isn't a zip file" 1 - "virgil-lsp-vscode-7\.8\.9\.vsix is not a zip file" \
     write_fixture "$release_vsix" $'not a zip file\n'
 notes "VSIX without extension/package.json" 1 - "has no extension/package\.json" \
@@ -743,7 +743,7 @@ notes "VSIX with a lone surrogate in publisher" 1 - \
     vsix "$release_vsix" '{"name": "virgil-lsp-vscode", "publisher": "\ud800", "version": "7.8.9"}'
 # A build manifest is read with the same parser, so an Infinity or NaN there
 # is reported rather than accepted.
-manifest=virgil-lsp-1.2.3-alpha.4-x86-64-linux.manifest.json
+manifest='virgil-lsp-1.2.3-alpha.4-x86-64-linux.manifest.json'
 notes "a build manifest with a non-JSON constant" 1 - \
     "manifest\.json is not valid JSON: it holds the non-JSON constant NaN$" \
     write_fixture "$manifest" '{"version": NaN, "tag": null, "target": "x86-64-linux",
