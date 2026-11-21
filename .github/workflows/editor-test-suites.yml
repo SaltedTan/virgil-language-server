@@ -22,7 +22,7 @@ name: Editor test suites
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
 # results and logs, also when it fails. The LazyVim and Extension Host jobs
 # also write and validate a result stream (test/e2e/RESULTS.md), which is in
-# the same artifact. See test/e2e/lazyvim/README.md#ci,
+# the same artifact; a missing or invalid stream fails the job. See test/e2e/lazyvim/README.md#ci,
 # clients/vscode/README.md#remote-ssh-test, and docs/manual-testing.md for
 # coverage.
 
@@ -187,12 +187,11 @@ jobs:
           test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
             "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
       - name: Validate the LazyVim result stream
-        # Prints the stream's verdict in the log. The test's exit status stays
-        # the job's: validate exits with 1 for a valid stream of a run that
-        # didn't pass, which the test has already failed, and with 2 for an
-        # invalid or missing stream, which marks only this step.
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
         if: always()
-        continue-on-error: true
         run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
@@ -317,12 +316,11 @@ jobs:
           test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
             "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
       - name: Validate the LazyVim result stream
-        # Prints the stream's verdict in the log. The test's exit status stays
-        # the job's: validate exits with 1 for a valid stream of a run that
-        # didn't pass, which the test has already failed, and with 2 for an
-        # invalid or missing stream, which marks only this step.
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
         if: always()
-        continue-on-error: true
         run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
@@ -378,12 +376,11 @@ jobs:
           npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" "${results[@]}" 2>&1 |
             tee "$RUNNER_TEMP/vscode/test.log"
       - name: Validate the Extension Host result stream
-        # Prints the stream's verdict in the log. The test's exit status stays
-        # the job's: validate exits with 1 for a valid stream of a run that
-        # didn't pass, which the test has already failed, and with 2 for an
-        # invalid or missing stream, which marks only this step.
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
         if: always()
-        continue-on-error: true
         run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/vscode/vscode.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
@@ -448,12 +445,11 @@ jobs:
             test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" --archive "$RUNNER_TEMP/archive/$ARCHIVE" \
             "${results[@]}" 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
       - name: Validate the LazyVim result stream
-        # Prints the stream's verdict in the log. The test's exit status stays
-        # the job's: validate exits with 1 for a valid stream of a run that
-        # didn't pass, which the test has already failed, and with 2 for an
-        # invalid or missing stream, which marks only this step.
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
         if: always()
-        continue-on-error: true
         run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/lazyvim/lazyvim.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
@@ -513,12 +509,11 @@ jobs:
             npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode/logs" "${results[@]}" 2>&1 |
             tee "$RUNNER_TEMP/vscode/test.log"
       - name: Validate the Extension Host result stream
-        # Prints the stream's verdict in the log. The test's exit status stays
-        # the job's: validate exits with 1 for a valid stream of a run that
-        # didn't pass, which the test has already failed, and with 2 for an
-        # invalid or missing stream, which marks only this step.
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
         if: always()
-        continue-on-error: true
         run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/vscode/vscode.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
