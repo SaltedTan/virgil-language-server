@@ -219,7 +219,11 @@ async function main() {
       if (!passed && !controller.signal.aborted) process.exitCode = 1;
     } finally {
       process.off('SIGINT', sigint).off('SIGTERM', sigterm);
-      if (work !== undefined) fs.rmSync(work, { recursive: true, force: true });
+      try {
+        if (work !== undefined && !controller.signal.aborted) results?.start();
+      } finally {
+        if (work !== undefined) fs.rmSync(work, { recursive: true, force: true });
+      }
     }
   } catch (error) {
     thrown = error;

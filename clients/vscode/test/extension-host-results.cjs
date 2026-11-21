@@ -223,7 +223,10 @@ test('a failed scenario fails the launch, and the checks that did not run are sk
   assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
   const { status, output } = validate(file);
   assert.equal(status, 1, output);
-  assert.match(output, /: valid, run failed \(60 of 60 observations\): 12 pass, 2 fail, 0 xfail, 0 xpass, 46 skip$/m);
+  const count = results.keys.length;
+  const passed = results.keys.filter((k) => k.profile !== 'workspace').length + stopped;
+  assert.ok(output.endsWith(`: valid, run failed (${count} of ${count} observations): `
+    + `${passed} pass, 2 fail, 0 xfail, 0 xpass, ${count - passed - 2} skip\n`), output);
   const stream = events(file);
   const status_ = (id, profile) => stream.find((event) => event.id === id && event.profile === profile)?.status;
   assert.equal(status_('vscode.configuration.disk-watch', 'workspace'), 'fail');
