@@ -108,6 +108,11 @@ SUITE_JOBS ?=
 # docs/development.md#build-and-test.
 SHARD ?=
 SUITE_TIMES = test/suite-times.txt
+# SUITE_REPORT=FILE writes a JSON report of the suites run, and SUITE_DIGESTS
+# lists executables whose SHA-256 digests it records, for CI's shard check
+# (test/suites.py --verify). Both are empty by default.
+SUITE_REPORT ?=
+SUITE_DIGESTS ?=
 
 # The suites `make test` runs after the unit tests, through test/suites.py,
 # each a quoted shell command. The longest on macOS CI come first, so that the
@@ -173,7 +178,8 @@ SUITES = \
 	'python3 test/e2e/clean-install/test_readme.py' \
 	'$(CHECK_FORMAT)'
 RUN_SUITES = python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) \
-  $(if $(SHARD),--shard=$(SHARD) --times=$(SUITE_TIMES)) $(SUITES)
+  $(if $(SHARD),--shard=$(SHARD) --times=$(SUITE_TIMES)) \
+  $(if $(SUITE_REPORT),--report=$(SUITE_REPORT)) $(foreach f,$(SUITE_DIGESTS),--record-digest=$(f)) $(SUITES)
 
 .PHONY: all test test-suites print-suites check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 

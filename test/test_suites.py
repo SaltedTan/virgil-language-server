@@ -6,6 +6,8 @@
 Each test runs the runner on commands that leave their traces in a temporary
 directory, and reads its stdout and stderr as one stream, as a CI log does.
 """
+import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
@@ -524,6 +526,221 @@ class ShardsTest(unittest.TestCase):
                          for command in commands if command.startswith(prefix)]
                 self.assertTrue(all(named), f"every {prefix.strip()} entry names its parts: {named}")
                 self.assertEqual(sorted(parts), sorted(sum(named, [])))
+
+
+class ReportsTest(unittest.TestCase):
+    """--report, --record-digest, and --verify."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="reports-")
+        self.directory = Path(self.temporary.name)
+        self.commands = [f"echo {name}" for name in ("a", "b", "c")]
+        self.expected = self.directory / "expected.txt"
+        self.expected.write_text("".join(f"{command}\n" for command in self.commands))
+        self.executable = self.directory / "server"
+        self.executable.write_bytes(b"server bytes\n")
+        self.sha256 = hashlib.sha256(b"server bytes\n").hexdigest()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def suites(self, *arguments):
+        return subprocess.run([sys.executable, str(SUITES), *arguments], cwd=self.directory,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60, check=False)
+
+    def report(self, name, shard, *commands, digests=("server",)):
+        """Runs the commands as a shard I/N, or unsharded, and returns its report."""
+        path = self.directory / name
+        options = [f"--record-digest={digest}" for digest in digests]
+        result = self.suites("--jobs=2", *([f"--shard={shard}"] if shard else []), f"--report={path}",
+                             *options, *commands)
+        return result, path
+
+    def write(self, name, report):
+        path = self.directory / name
+        path.write_text(json.dumps(report))
+        return path
+
+    def shard_reports(self):
+        """Two passing shard reports, as CI's shard jobs write them."""
+        paths = []
+        for index in (1, 2):
+            result, path = self.report(f"shard-{index}.json", f"{index}/2", *self.commands)
+            self.assertEqual(0, result.returncode, result.stdout)
+            paths.append(path)
+        return paths
+
+    def verify(self, *reports, count=2, digests=()):
+        return self.suites(f"--verify={count}", f"--expected={self.expected}",
+                           *[f"--digest={path}={value}" for path, value in digests], *map(str, reports))
+
+    def assert_refused(self, result, *messages):
+        self.assertEqual(1, result.returncode, result.stdout)
+        for message in messages:
+            self.assertIn(message, result.stdout)
+
+    def test_a_report_records_the_shard_each_suite_and_digests(self):
+        result, path = self.report("report.json", "1/2", "echo a", "exit 3", "echo c")
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn(f"report: {path}", result.stdout)
+        report = json.loads(path.read_text())
+        self.assertEqual("1/2", report["shard"])
+        self.assertEqual({"server": self.sha256}, report["digests"])
+        # Shard 1/2 of three commands without times holds the first and third.
+        self.assertEqual([("echo a", 0), ("echo c", 0)],
+                         [(suite["command"], suite["status"]) for suite in report["suites"]])
+        self.assertTrue(all(suite["seconds"] >= 0 for suite in report["suites"]))
+        # A failed suite's status is recorded.
+        result, path = self.report("failed.json", None, "echo a", "exit 3")
+        self.assertEqual(1, result.returncode, result.stdout)
+        report = json.loads(path.read_text())
+        self.assertIsNone(report["shard"])
+        self.assertEqual([("echo a", 0), ("exit 3", 3)],
+                         sorted((suite["command"], suite["status"]) for suite in report["suites"]))
+
+    def test_a_report_without_digests_and_make_options_alone_change_nothing(self):
+        result, path = self.report("plain.json", None, "echo a", digests=())
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual({}, json.loads(path.read_text())["digests"])
+        result = self.suites("--record-digest=server", "echo a")
+        self.assert_refused(result, "Usage:")
+        self.assertNotIn("\na\n", result.stdout)
+
+    def test_a_missing_executable_stops_the_run_before_any_suite(self):
+        marker = self.directory / "ran"
+        result, path = self.report("report.json", None, f"touch {marker}", digests=("server", "missing"))
+        self.assert_refused(result, "--record-digest=missing: cannot read it")
+        self.assertFalse(marker.exists())
+        self.assertFalse(path.exists())
+
+    def test_a_signal_leaves_no_report(self):
+        path = self.directory / "report.json"
+        process = subprocess.Popen([sys.executable, str(SUITES), "--jobs=1", f"--report={path}",
+                                    waiting_suite(self.directory, "exit 0")], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 30
+            while not any(self.directory.glob("ready-*")):
+                self.assertLess(time.monotonic(), deadline, "the suite did not start")
+                time.sleep(0.05)
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(128 + signal.SIGTERM, process.wait(timeout=30))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        self.assertFalse(path.exists())
+
+    def test_verify_accepts_complete_passing_shards_with_one_digest(self):
+        first, second = self.shard_reports()
+        result = self.verify(second, first, digests=[("server", self.sha256)])
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("2 shard(s) ran all 3 expected suites once each, and every one passed", result.stdout)
+        self.assertIn(f"{self.sha256}  server, the same in every shard (also --digest)", result.stdout)
+        self.assertEqual(0, self.verify(first, second).returncode)
+
+    def test_verify_refuses_missing_duplicate_and_out_of_range_shards(self):
+        first, second = self.shard_reports()
+        self.assert_refused(self.verify(first), "no report for shard 2/2")
+        self.assert_refused(self.verify(first, first, second), f"{first}: shard 1/2 is also in {first}")
+        report = json.loads(second.read_text())
+        for shard in ("3/2", "2/3", "0/2", None, "2"):
+            with self.subTest(shard=shard):
+                other = self.write("other.json", dict(report, shard=shard))
+                self.assert_refused(self.verify(first, other), f"{other}: shard {shard!r} is not one of 1/2 to 2/2",
+                                    "no report for shard 2/2")
+        self.assert_refused(self.verify(first, second, count=3), "is not one of 1/3 to 3/3")
+
+    def test_verify_refuses_malformed_reports(self):
+        first, second = self.shard_reports()
+        report = json.loads(second.read_text())
+        broken = self.directory / "broken.json"
+        broken.write_text("{")
+        self.assert_refused(self.verify(first, broken), f"{broken}: cannot read the report",
+                            "no report for shard 2/2")
+        self.assert_refused(self.verify(first, self.directory / "absent.json"), "cannot read the report")
+        for name, value, message in [
+                ("list", [], "not a JSON object"),
+                ("no-shard", {key: report[key] for key in ("suites", "digests")}, '"shard" is missing'),
+                ("status", dict(report, suites=[dict(report["suites"][0], status="0")]), '"suites" is not'),
+                ("seconds-bool", dict(report, suites=[dict(report["suites"][0], seconds=True)]), '"suites" is not'),
+                ("seconds-nan", dict(report, suites=[dict(report["suites"][0], seconds=float("nan"))]), '"suites" is not'),
+                ("suites", dict(report, suites={}), '"suites" is not'),
+                ("digests", dict(report, digests=[]), '"digests" is not')]:
+            with self.subTest(name=name):
+                self.assert_refused(self.verify(first, self.write(f"{name}.json", value)), message)
+
+    def test_verify_refuses_a_failed_suite(self):
+        first, second = self.shard_reports()
+        report = json.loads(second.read_text())
+        report["suites"][0]["status"] = 2
+        failed = self.write("failed.json", report)
+        self.assert_refused(self.verify(first, failed),
+                            f"{failed}: {report['suites'][0]['command']!r} failed with exit status 2")
+
+    def test_verify_refuses_missing_extra_and_duplicate_suites(self):
+        first, second = self.shard_reports()
+        report = json.loads(second.read_text())
+        missing = self.write("missing.json", dict(report, suites=[]))
+        self.assert_refused(self.verify(first, missing), "'echo b' is expected but no shard ran it")
+        extra = self.write("extra.json", dict(report, suites=report["suites"] + [
+            {"command": "echo z", "status": 0, "seconds": 0.0}]))
+        self.assert_refused(self.verify(first, extra), "'echo z' ran but is not expected")
+        again = json.loads(first.read_text())["suites"]
+        twice = self.write("twice.json", dict(report, suites=report["suites"] + again))
+        self.assert_refused(self.verify(first, twice), "'echo a' ran 2 times", "'echo c' ran 2 times")
+        within = self.write("within.json", dict(report, suites=report["suites"] * 2))
+        self.assert_refused(self.verify(first, within), "'echo b' ran 2 times")
+        self.expected.write_text("echo a\necho b\necho c\necho a\n")
+        self.assert_refused(self.verify(first, second), "lists 'echo a' more than once")
+        self.expected.write_text("\n")
+        self.assert_refused(self.verify(first, second), "lists no suites")
+        self.expected.unlink()
+        self.assert_refused(self.verify(first, second), "cannot read it")
+
+    def test_verify_refuses_digests_that_differ_between_shards(self):
+        first, second = self.shard_reports()
+        report = json.loads(second.read_text())
+        other = "0" * 64
+        changed = self.write("changed.json", dict(report, digests={"server": other}))
+        self.assert_refused(self.verify(first, changed),
+                            f"server: {changed} records {other}, but {first} records {self.sha256}")
+        absent = self.write("absent.json", dict(report, digests={}))
+        self.assert_refused(self.verify(first, absent), f"{absent}: records no digest of server, which {first} records")
+        added = self.write("added.json", dict(report, digests={"server": self.sha256, "worker": other}))
+        self.assert_refused(self.verify(first, added), f"{first}: records no digest of worker, which {added} records")
+        for value in ("A" * 64, "0" * 63, "g" * 64):
+            with self.subTest(value=value):
+                bad = self.write("bad.json", dict(report, digests={"server": value}))
+                self.assert_refused(self.verify(first, bad), f"{bad}: digest {value!r} of server is not lowercase hex")
+
+    def test_verify_refuses_given_digests_that_differ_or_are_not_recorded(self):
+        first, second = self.shard_reports()
+        other = "f" * 64
+        self.assert_refused(self.verify(first, second, digests=[("server", other)]),
+                            f"--digest=server: {other} differs from {self.sha256}")
+        self.assert_refused(self.verify(first, second, digests=[("worker", self.sha256)]),
+                            "--digest=worker: no report records a digest of worker")
+        for value in ("", self.sha256.upper(), self.sha256[:-1], "z" * 64):
+            with self.subTest(value=value):
+                self.assert_refused(self.verify(first, second, digests=[("server", value)]),
+                                    f"--digest=server={value}: not a lowercase hex SHA-256 digest")
+
+    def test_verify_usage_is_checked(self):
+        first, second = self.shard_reports()
+        for arguments, message in [
+                (["--verify=2", str(first)], "Usage:"),
+                ([f"--expected={self.expected}", str(first)], "Usage:"),
+                (["--verify=2", f"--expected={self.expected}"], "Usage:"),
+                (["--verify=0", f"--expected={self.expected}", str(first)], "expected a shard count"),
+                (["--verify=two", f"--expected={self.expected}", str(first)], "expected a shard count"),
+                (["--verify=2", f"--expected={self.expected}", "--digest=server", str(first)],
+                 "expected --digest=PATH=SHA256"),
+                (["--verify=2", f"--expected={self.expected}", f"--digest=server={self.sha256}",
+                  f"--digest=server={self.sha256}", str(first)], "has a --digest already"),
+                (["--verify=2", f"--expected={self.expected}", "--shard=1/2", str(first)], "Usage:")]:
+            with self.subTest(arguments=arguments):
+                self.assert_refused(self.suites(*arguments), message)
 
 if __name__ == "__main__":
     unittest.main()
