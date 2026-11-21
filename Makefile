@@ -143,6 +143,7 @@ SUITES = \
 	'python3 test/unit/test_run.py' \
 	'python3 test/test_suites.py' \
 	'python3 test/test_ci_budgets.py' \
+	'python3 test/test_git_hooks.py' \
 	'python3 test/diagnostics/run.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_report.py' \
@@ -182,7 +183,7 @@ RUN_SUITES = python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) \
   $(if $(SHARD),--shard=$(SHARD) --times=$(SUITE_TIMES)) \
   $(if $(SUITE_REPORT),--report=$(SUITE_REPORT)) $(foreach f,$(SUITE_DIGESTS),--record-digest=$(f)) $(SUITES)
 
-.PHONY: all test test-suites print-suites check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-suites print-suites print-format-exclude install-hooks check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -295,6 +296,19 @@ test-suites: $(SUITE_EXES)
 # Prints each suite's command on a line of its own, for test/test_suites.py.
 print-suites:
 	@printf '%s\n' $(SUITES)
+
+# Prints each FORMAT_EXCLUDE directory on a line of its own, so that
+# .githooks/pre-commit shares the exclusion list with make check-format.
+print-format-exclude:
+	@printf '%s\n' $(FORMAT_EXCLUDE)
+
+# Points git at the tracked hooks in .githooks/. Skip once with --no-verify,
+# or disable with `git config --unset core.hooksPath`.
+install-hooks:
+	@git config core.hooksPath .githooks
+	@echo "git hooks: core.hooksPath set to .githooks (pre-commit, pre-push)"
+	@echo "         skip one commit/push with --no-verify, or disable with"
+	@echo "         git config --unset core.hooksPath"
 
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker

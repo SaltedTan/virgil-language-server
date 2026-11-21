@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local pre-push hook. Runs `make check-format` and `make test-unit` on the
+# working tree, and `npm run check && npm test` under clients/vscode when the
+# pushed commits touch it. A push with no ref to update skips every check.
+# Install with `make install-hooks`. Skip once with
+# `git push --no-verify`, or disable with `git config --unset core.hooksPath`.
+
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+ZERO40=0000000000000000000000000000000000000000
+ZERO64=0000000000000000000000000000000000000000000000000000000000000000
+
+is_zero_oid() {
+    case "$1" in
+        "$ZERO40"|"$ZERO64") return 0 ;;
+    esac
+    return 1
+}
+
+local_oids=()
+remote_oids=()
+
+while IFS=' ' read -r local_ref local_oid _remote_ref remote_oid; do
+    [ -z "${local_ref:-}" ] && continue
+    if is_zero_oid "$local_oid"; then
+        continue
+    fi
+    local_oids+=("$local_oid")
+    remote_oids+=("$remote_oid")
+done
+
+if [ ${#local_oids[@]} -eq 0 ]; then
+    exit 0
+fi
+
+make check-format
+make test-unit
+
+base_ref=""
+for ref in refs/remotes/origin/main refs/heads/main; do
+    if git rev-parse --verify --quiet "$ref" >/dev/null; then
+        base_ref=$ref
+        break
+    fi
+done
+
+touches_vscode=0
+for i in "${!local_oids[@]}"; do
+    local_oid=${local_oids[$i]}
+    remote_oid=${remote_oids[$i]}
+    if is_zero_oid "$remote_oid"; then
+        base=$base_ref
+    else
+        base=$remote_oid
+    fi
+    if [ -z "$base" ]; then
+        continue
+    fi
+    if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+        continue
+    fi
+    if [ -n "$(git diff --name-only "$base" "$local_oid" -- clients/vscode/ 2>/dev/null)" ]; then
+        touches_vscode=1
+        break
+    fi
+done
+
+if [ "$touches_vscode" -eq 1 ] && [ -d "$root/clients/vscode/node_modules" ]; then
+    ( cd "$root/clients/vscode" && npm run check && npm test )
+fi
+
+exit 0

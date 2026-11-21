@@ -60,7 +60,7 @@ This is the short path from a clone to a reviewable pull request.
    git switch -c fix/short-name
    ```
 
-4. Make one focused change, with tests that exercise it, and the documentation and `CHANGELOG.md` updates that the [pull request rules](#pull-requests) ask for. Commit the change on your branch with a message that explains why (`git add <files>`, then `git commit`).
+4. Make one focused change, with tests that exercise it, and the documentation and `CHANGELOG.md` updates that the [pull request rules](#pull-requests) ask for. Commit the change on your branch with a message that explains why (`git add <files>`, then `git commit`). Optionally run `make install-hooks` first to check staged formatting on each commit and run `make check-format` and `make test-unit` on each push ([Git hooks](docs/development.md#git-hooks)).
 5. Run the checks that apply:
    - `make test` builds the server and runs the unit tests and the server suites, [including the headless Neovim smoke test](docs/development.md#tests), which skips locally without Neovim 0.11 or later.
    - `make check-format` checks that the tracked Virgil sources are formatted by the rules of [ADR-0019](docs/decisions/0019-formatter.md), except the directories in the Makefile's `FORMAT_EXCLUDE`, whose bytes and positions tests depend on. `make test` runs it too. It prints `path:line: not formatted` for each file that would change, with the first line that formatting changes. To fix a file, run `build/virgil-lsp format --write <file>`, then review the diff.
