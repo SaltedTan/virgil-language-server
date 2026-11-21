@@ -10,6 +10,8 @@
 # construct VSIX files, build manifests, and archives in a temporary directory.
 # It also checks the checkout's pin agreement; see check_pin.py.
 # Usage: test/release/run.sh [--archive <archive>]
+# RELEASE_CHECK=<name> runs only the checks with that exact name, such as
+# "VSIX payload integrity and provenance", and fails if no check has it.
 # Backticks in single-quoted patterns are Markdown, not command substitutions.
 # shellcheck disable=SC2016
 set -uo pipefail
@@ -23,12 +25,19 @@ trap 'rm -rf "$TMP"' EXIT
 
 pass=0
 fail=0
+only=${RELEASE_CHECK-}
+
+# selected <name>: whether RELEASE_CHECK, when set, selects the check <name>.
+selected() {
+    [ -z "$only" ] || [ "$1" = "$only" ]
+}
 
 # expect <name> <expected-exit> <stdout|-> <stderr-pattern|-> <version> <changelog-headings> <tag>
 # Standard output must equal <stdout> exactly, and standard error must be empty
 # when <stderr-pattern> is ""; "-" skips a check.
 expect() {
     local name=$1 code=$2 want_out=$3 err_pat=$4 version=$5 headings=$6 tag=$7
+    selected "$name" || return 0
     printf '%b' "$version" > "$TMP/VERSION"
     printf '# Changelog\n\n%b\n' "$headings" > "$TMP/CHANGELOG.md"
     "$CHECK" "$tag" "$TMP" > "$TMP/out" 2> "$TMP/err"
@@ -40,6 +49,7 @@ expect() {
 # <stdout-pattern> rather than equal a string.
 expect_run() {
     local name=$1 code=$2 out_pat=$3 err_pat=$4
+    selected "$name" || return 0
     shift 4
     "$@" > "$TMP/out" 2> "$TMP/err"
     report "$name" $? "$code" - "$out_pat" "$err_pat"
@@ -886,5 +896,9 @@ if [ "${1:-}" = --archive ]; then
         '0 failed$' - "$ROOT/scripts/smoke-test-release.sh" "${2:?missing archive}"
 fi
 
+if [ -n "$only" ] && [ $((pass + fail)) -eq 0 ]; then
+    echo "release scripts: no check is named '$only'" >&2
+    exit 1
+fi
 echo "release scripts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

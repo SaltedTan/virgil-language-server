@@ -349,12 +349,22 @@ class PayloadTests(unittest.TestCase):
         shim.chmod(0o755)
         result = subprocess.run(
             ['bash', str(ROOT / 'test/release/run.sh')],
-            env={**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
-            capture_output=True, text=True, timeout=120)
+            env={**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
+                 'RELEASE_CHECK': 'VSIX payload integrity and provenance'},
+            capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('FAIL: VSIX payload integrity and provenance', result.stdout)
         self.assertIn('injected payload failure', result.stdout)
-        self.assertRegex(result.stdout, r'release scripts: \d+ passed, 1 failed\n$')
+        self.assertRegex(result.stdout, r'\nrelease scripts: 0 passed, 1 failed\n$')
+
+    def test_release_runner_rejects_an_unknown_check(self):
+        result = subprocess.run(
+            ['bash', str(ROOT / 'test/release/run.sh')],
+            env={**os.environ, 'RELEASE_CHECK': 'no such check'},
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr, "release scripts: no check is named 'no such check'\n")
 
 
 if __name__ == '__main__':
