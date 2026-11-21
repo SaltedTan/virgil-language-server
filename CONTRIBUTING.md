@@ -78,6 +78,7 @@ This is the short path from a clone to a reviewable pull request.
 - Keep pull requests small and focused on one change. Include tests that exercise it.
 - `make test` and all required CI checks must pass before merge. See the [development guide](docs/development.md#tests) for the server suites and VS Code client checks.
 - Update documentation and `CHANGELOG.md` (under *Unreleased*) for user-visible changes.
+- A pull request dry-runs the release workflow only when it changes a file whose release use pull request CI doesn't fully test, such as `release.yml` or `scripts/release-assets.sh`. Changes to the other files the release uses, such as the VS Code client, the LazyVim test, the JVM tests, and the other release scripts, dry-run it after the merge, on the push to `main`. To dry-run such a change before it is merged, run `gh workflow run release.yml --ref <branch>` on a branch of this repository; see [Dry runs](docs/releasing.md#dry-runs).
 - Changes under `.github/workflows/`, dependencies (including the `vendor/virgil` pin and npm dependencies), and suite-wide test settings (timeouts, retries, which tests run, or test-runner behavior) need the maintainer's own merge. Other files under `.github/` don't.
 - Never advertise an LSP capability that isn't fully implemented and tested.
 - Keep standard output protocol-only. All logging goes to standard error through `Log`.
