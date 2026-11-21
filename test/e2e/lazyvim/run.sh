@@ -95,6 +95,13 @@ results_end() {
 
 command=("$0" "$@")
 launched_at=$(clock) launch_dir=$PWD
+# An earlier run's stream must not outlive a run that stops at its
+# arguments, so --results FILE is emptied before they are checked.
+previous=''
+for argument in "$@"; do
+  [[ $previous != --results || -z $argument ]] || { : > "$argument"; } 2>/dev/null || true
+  previous=$argument
+done
 out='' keep_work=0 update_lock=0 archive='' server=''
 while (( $# > 0 )); do
   case $1 in
@@ -127,9 +134,9 @@ repo=$(cd "$here/../../.." && pwd -P)
 # stream can't outlive a run that stops early. Until the teardown's trap is
 # set, this one writes it.
 if [[ -n $results ]]; then
-  { : > "$results"; } 2>/dev/null || usage "cannot write $results"
+  { : > "$results"; } 2>/dev/null || { echo "$0: cannot write $results" >&2; usage; }
   results=$(cd "$(dirname "$results")" && pwd -P)/$(basename "$results")
-  observations=$(mktemp "${TMPDIR:-/tmp}/virgil-lazyvim-observations.XXXXXX") || usage "cannot create a temporary file"
+  observations=$(mktemp "${TMPDIR:-/tmp}/virgil-lazyvim-observations.XXXXXX") || { echo "$0: cannot create a temporary file" >&2; usage; }
   trap 'rc=$?; stop_check "run.sh exited with status $rc" exit-status; results_end "$rc"' EXIT
 fi
 begin_check lazyvim.infrastructure.preflight

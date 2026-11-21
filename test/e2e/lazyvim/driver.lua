@@ -41,6 +41,10 @@ end
 -- observed, which the expected-failure rule names by its failure code.
 local timeout_codes = { ["lazyvim.configuration.warning"] = "warning-not-observed" }
 
+-- Whether the predicate of the wait_for that last timed out raised an error
+-- on its final poll, rather than returning false.
+local wait_threw = false
+
 -- Records a step's outcome. A failure's first line is its reason.
 local function record_step(name, started, ok, result)
   if not observations then return end
@@ -53,7 +57,13 @@ local function record_step(name, started, ok, result)
     if message == "" then message = "failed without a message" end
     local timed_out = message:find("^timed out waiting for ") ~= nil
     entry.status, entry.observation, entry.reason = "fail", message, message
-    entry.failureCode = timed_out and (timeout_codes[name] or "wait-timeout") or "error"
+    -- Only a wait whose predicate returned false didn't observe what it
+    -- waited for; a predicate that raised is an error in the check.
+    if timed_out and not wait_threw then
+      entry.failureCode = timeout_codes[name] or "wait-timeout"
+    else
+      entry.failureCode = "error"
+    end
   end
   record(entry)
 end
@@ -104,6 +114,7 @@ local function wait_for(description, predicate, timeout)
     local ok, value = pcall(predicate)
     if ok and value then return value end
     if vim.uv.now() > deadline then
+      wait_threw = not ok
       error("timed out waiting for " .. description .. (ok and "" or (": " .. tostring(value))), 0)
     end
     sleep(20)

@@ -445,6 +445,18 @@ class RunTest(unittest.TestCase):
         return subprocess.run(["bash", str(RUN.relative_to(REPO)), *args], env=self.env, cwd=REPO,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
 
+    def test_usage_error_empties_an_earlier_stream(self):
+        # A stale stream left in FILE must not outlive a run that stops at its
+        # arguments, wherever the bad argument is.
+        for args in (["--results", str(self.stream), "--bogus"],
+                     ["--results", str(self.stream), "--purpose", "bogus", str(self.server / "virgil-lsp")],
+                     ["--bogus", "--results", str(self.stream)]):
+            with self.subTest(args=args):
+                self.stream.write_text('{"stale": true}\n')
+                result = self.run_sh(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(self.stream.read_bytes(), b"")
+
     def validate(self):
         try:
             return validator.validate_stream(self.stream.read_bytes(), VALIDATOR_MANIFEST, VALIDATOR_SCHEMA)
