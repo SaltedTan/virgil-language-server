@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "promoteAfterGreenRuns": 20,
+  "unbudgeted": {
+    "tested": "Runs only on pushes to main and only queries the API, to decide whether the other jobs run; it builds and tests nothing."
+  },
+  "jobs": {
+    "test-linux-unit": {
+      "name": "Unit tests (pinned Virgil, linux x86-64)",
+      "budgetSeconds": 75,
+      "mode": "advisory",
+      "basis": "make test-unit took 37-48 s in the pull request runs of #606-#608."
+    },
+    "test-linux-suites": {
+      "name": "Suites ${{ matrix.shard }} (pinned Virgil, linux x86-64)",
+      "budgetSeconds": 90,
+      "mode": "advisory",
+      "basis": "Each shard's make test-suites took 44-67 s in the pull request runs of #606-#608; shard 1/2, with StreamTest, is the longer."
+    },
+    "test": {
+      "name": "Build and test (pinned Virgil, linux x86-64)",
+      "budgetSeconds": 15,
+      "mode": "advisory",
+      "basis": "The shard report check took 0-1 s in the pull request runs of #606-#608."
+    },
+    "lazyvim-linux": {
+      "name": "LazyVim test (built server, linux)",
+      "budgetSeconds": 90,
+      "mode": "advisory",
+      "basis": "Building the server and the LazyVim test took 62-65 s in the pull request runs of #606-#608, without a restored cache (caches were seeded after #608 merged). On a restored cache it runs faster; a pull request that changes the cache's inputs installs from GitHub and runs closer to the cold time."
+    },
+    "lspcheck-linux": {
+      "name": "Protocol conformance (lspcheck, built server, linux)",
+      "budgetSeconds": 20,
+      "mode": "advisory",
+      "basis": "Building the server and both lspcheck runs took 5-6 s in the pull request runs of #606-#608."
+    },
+    "test-macos-unit": {
+      "name": "Unit tests (pinned Virgil, macOS Apple Silicon via Rosetta 2)",
+      "budgetSeconds": 210,
+      "mode": "advisory",
+      "basis": "make test-unit took 123-160 s in the pull request runs of #607 and #608."
+    },
+    "test-macos-suites": {
+      "name": "Suites ${{ matrix.shard }} (pinned Virgil, macOS Apple Silicon via Rosetta 2)",
+      "budgetSeconds": 180,
+      "mode": "advisory",
+      "basis": "Each shard's make test-suites took 113-126 s in the pull request runs of #607 and #608."
+    },
+    "test-macos": {
+      "name": "Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)",
+      "budgetSeconds": 15,
+      "mode": "advisory",
+      "basis": "The shard report check took 0-1 s in the pull request runs of #607 and #608."
+    },
+    "jvm-package": {
+      "name": "JVM package",
+      "budgetSeconds": 50,
+      "mode": "advisory",
+      "inJob": false,
+      "basis": "Packaging and checking the archive and VSIX took 20-22 s in the pull request runs of #606-#608. package-jvm.yml is shared with release.yml and jvm.yml, so only summarize checks it, from the job's steps."
+    },
+    "vscode-client": {
+      "name": "VS Code client (type-check and test, linux)",
+      "budgetSeconds": 50,
+      "mode": "advisory",
+      "basis": "Type-checking, the lifecycle tests, and packaging the VSIX took 30-32 s in the pull request runs of #606-#608."
+    },
+    "vscode-extension-host-source": {
+      "name": "VS Code Extension Host test (built server, linux)",
+      "job": "vscode-extension-host",
+      "budgetSeconds": 80,
+      "mode": "advisory",
+      "basis": "Building the server and the Extension Host test took 38-52 s in the pull request runs of #606-#608."
+    },
+    "vscode-extension-host-vsix": {
+      "name": "VS Code Extension Host test (platform VSIX, linux)",
+      "job": "vscode-extension-host",
+      "budgetSeconds": 75,
+      "mode": "advisory",
+      "basis": "Packaging the archive and VSIX and the Extension Host test on it took 44-45 s in the pull request runs of #606-#608."
+    },
+    "vscode-extension-host-macos": {
+      "name": "VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)",
+      "budgetSeconds": 160,
+      "mode": "advisory",
+      "basis": "Building the server, the process runner tests, and the Extension Host test took 100-121 s in the pull request runs of #606-#608."
+    }
+  }
+}
