@@ -653,6 +653,11 @@ def header_after_else_on_comment_close(t: Tester) {
 	}
 	both(t, "def f() {\n\tif (true)\n\t/* a\n\t\t\tclose */ g(); else while (true)\nh();\n}\n",
 		"def f() {\n\tif (true)\n\t\t/* a\n\t\t\tclose */ g(); else while (true)\n\t\t\t\th();\n}\n");
+	// The header's own "else" aligns with those tabs too.
+	both(t, "def f() {\n\tif (true)\n\t/* a\n\t\t\tclose */ g(); else if (true)\nh();\nelse\nk();\n}\n",
+		"def f() {\n\tif (true)\n\t\t/* a\n\t\t\tclose */ g(); else if (true)\n\t\t\t\th();\n\t\t\telse\n\t\t\t\tk();\n}\n");
+	both(t, "def f() {\n\tif (true)\n\t/* a\n\t\t\tclose */ g(); else { if (true)\nh();\nelse k();\n}\n}\n",
+		"def f() {\n\tif (true)\n\t\t/* a\n\t\t\tclose */ g(); else { if (true)\n\t\t\t\th();\n\t\t\telse k();\n\t}\n}\n");
 }
 // A control header in an inline "else"'s braced body, on the else's line,
 // takes that line's indentation too.

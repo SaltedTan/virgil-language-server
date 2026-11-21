@@ -794,11 +794,13 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		// An "else" anchors only its own body on its if's or match's line; a
 		// control header after it on its line takes that line's tabs, the
 		// ones it keeps on a block comment's closing line.
+		var ifTabs = lineTabs;
 		if (afterElseLine == lineStart && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
-			chunk = (chunk.0, chunk.1, chunk.2, leadingTabs);
+			ifTabs = leadingTabs;
+			chunk = (chunk.0, chunk.1, chunk.2, ifTabs);
 			afterElseLine = -1;
 		}
-		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
+		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(ifTabs);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
 			afterElseLine = lineStart;
 			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
