@@ -15,44 +15,49 @@ name: Release
 # upgrade from the previous published release to this run's Linux archive and
 # VSIX and the rollback, writes SHA256SUMS
 # over them and the JVM runtime's source archive,
-# and publishes them as a GitHub prerelease. Running the workflow by hand, or
-# on a pull request that changes the release files or
-# the editor tests, is a dry run: the same jobs without publishing, with the
-# release files kept as a workflow artifact. See docs/releasing.md.
+# and publishes them as a GitHub prerelease. Running the workflow by hand, on
+# a pull request that changes a file only the release path runs, or on a push
+# to main that changes another file it uses, is a dry run: the same jobs
+# without publishing, with the release files kept as a workflow artifact. See
+# docs/releasing.md.
 
 on:
+  # Path filters don't apply to tag pushes.
   push:
     tags: ['v*']
-  # Only a workflow on the default branch can be run by hand, so pull requests
-  # that change the release path dry-run it before it is merged.
-  pull_request:
+    branches: [main]
+    # Files that the release path uses and pull request CI also tests: a dry
+    # run after the merge, not on the pull request.
     paths:
-      - .github/workflows/editor-test-suites.yml
-      - .github/workflows/editor-tests.yml
-      - .github/workflows/release.yml
-      - test/e2e/clean-install/**
       - clients/vscode/.vscodeignore
       - clients/vscode/package-lock.json
       - clients/vscode/package.json
+      - clients/vscode/src/**
       - clients/vscode/test/e2e/**
       - scripts/check-release.sh
-      - scripts/package-vsix.py
-      - scripts/vsix-payload.py
-      - .github/workflows/package-vsix.yml
-      - .github/workflows/package-jvm.yml
-      - clients/vscode/src/**
       - scripts/check-vsix.py
-      - scripts/package-release.sh
-      - scripts/release-assets.sh
-      - scripts/release-notes.py
-      - scripts/smoke-test-release.sh
-      - scripts/release-library.py
-      - scripts/jvm-runtime.py
       - scripts/jvm-runtime.json
-      - test/jvm/**
-      - test/release/**
+      - scripts/jvm-runtime.py
+      - scripts/package-release.sh
+      - scripts/package-vsix.py
+      - scripts/release-library.py
+      - scripts/release-notes.py
+      - scripts/vsix-payload.py
       - test/e2e/lazyvim/**
       - test/e2e/nvim/fixture/**
+      - test/jvm/**
+      - test/release/**
+  # Files that only the release path runs, which no pull request CI job
+  # tests, dry-run on the pull request before they are merged.
+  pull_request:
+    paths:
+      - .github/workflows/editor-test-suites.yml
+      - .github/workflows/package-jvm.yml
+      - .github/workflows/package-vsix.yml
+      - .github/workflows/release.yml
+      - scripts/release-assets.sh
+      - scripts/smoke-test-release.sh
+      - test/e2e/clean-install/**
       - test/e2e/upgrade/**
   workflow_dispatch:
 
@@ -62,9 +67,11 @@ permissions:
 # The editor tests' jobs run under this group too; the weekly editor tests
 # workflow has a group of its own. A new push to a pull request cancels its
 # dry run in progress, which tested a superseded commit; a tag push or a run
-# by hand is never cancelled.
+# by hand is never cancelled. Dry runs after a merge to main have a group of
+# their own, so a newer one never replaces a run by hand on main that is
+# waiting, the pre-tag dry run; a newer one replaces only a waiting older one.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'push' && github.ref_type == 'branch' && 'after-merge-' || '' }}${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -128,10 +135,10 @@ jobs:
           filter: blob:none
       - name: Check out the pinned Virgil
         run: git submodule update --init --recursive --depth 1
-      # Only make test needs Neovim, and a pull request's dry run doesn't run it.
+      # Only make test needs Neovim, which only a tag or a run by hand runs.
       # The versions and digests are ci.yml's and editor-test-suites.yml's.
       - name: Install Neovim 0.11.6
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
+        if: runner.os == 'Linux' && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
         run: |
           curl --fail --location --retry 3 \
             https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
@@ -141,7 +148,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Install Neovim 0.12.6
-        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        if: runner.os == 'macOS' && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
         env:
           NVIM_VERSION: 0.12.6
           NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
@@ -160,13 +167,14 @@ jobs:
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
-      # A pull request's dry run only builds: CI runs make test on the same
-      # tree, with the same runner images. A tag, or a run by hand, tests here.
+      # A pull request's dry run, or one after a merge to main, only builds:
+      # CI runs make test on the same tree, with the same runner images. A
+      # tag, or a run by hand, tests here.
       - name: Build and test
-        if: github.event_name != 'pull_request'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: make test
-      - name: Build (pull request; CI runs make test)
-        if: github.event_name == 'pull_request'
+      - name: Build (pull request or after merge; CI runs make test)
+        if: github.ref_type != 'tag' && github.event_name != 'workflow_dispatch'
         run: make
       - name: Package
         env:
@@ -183,7 +191,7 @@ jobs:
         run: test/release/run.sh --archive "$ARCHIVE"
       - name: Check that make test tested the packaged executables
         # The build is deterministic, so the package's fresh build must match.
-        # For pull-request test coverage, see docs/releasing.md#dry-runs.
+        # For a dry run that only builds, see docs/releasing.md#dry-runs.
         run: |
           mkdir "$RUNNER_TEMP/archive"
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/archive"
@@ -235,8 +243,8 @@ jobs:
     # The JVM archive on Apple Silicon with Rosetta 2 installed but no
     # translation; native.py host requires an untranslated arm64 runner. As the
     # build job does for its own archive, it runs the tests that the JVM build
-    # supports (docs/development.md#the-jvm-target), except in a pull
-    # request's dry run, then smoke-tests the archive, and checks that the
+    # supports (docs/development.md#the-jvm-target), only for a tag or a run
+    # by hand, then smoke-tests the archive, and checks that the
     # jars it tested are the packaged ones: the build is deterministic, and the
     # pinned jar Aeneas here writes the same jars as Linux's native Aeneas.
     # native.py run rejects translation in every observed descendant and
@@ -262,9 +270,9 @@ jobs:
         run: |
           python3 test/jvm/test_native.py
           python3 test/jvm/native.py host
-      # Only make test needs Neovim, and a pull request's dry run doesn't run it.
+      # Only make test needs Neovim, which only a tag or a run by hand runs.
       - name: Install Neovim 0.12.6
-        if: github.event_name != 'pull_request'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         env:
           NVIM_VERSION: 0.12.6
           NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
@@ -294,10 +302,11 @@ jobs:
           python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
             --report "$RUNNER_TEMP/processes/build.json" -- \
             make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
-      # A pull request's dry run only builds: CI's test-macos-jvm runs the
-      # same tests on the same tree, with the same runner image.
+      # A pull request's dry run, or one after a merge to main, only builds:
+      # CI's test-macos-jvm runs the same tests on the same tree, with the
+      # same runner image.
       - name: Test, checking all observed descendants
-        if: github.event_name != 'pull_request'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p "$RUNNER_TEMP/processes"
           python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 100 \
@@ -309,7 +318,7 @@ jobs:
           name: archive-jvm-arm64-darwin
           path: ${{ runner.temp }}/archive
       - name: Check that the tests tested the packaged jars
-        # For pull-request test coverage, see docs/releasing.md#dry-runs.
+        # For a dry run that only builds, see docs/releasing.md#dry-runs.
         run: |
           mkdir "$RUNNER_TEMP/extracted"
           tar -xzf "$RUNNER_TEMP/archive/$ARCHIVE" -C "$RUNNER_TEMP/extracted"
