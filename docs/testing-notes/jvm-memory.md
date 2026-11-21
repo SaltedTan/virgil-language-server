@@ -11,6 +11,7 @@ This note records the measurements for [#463](https://github.com/SaltedTan/virgi
 - `-Xss16m` is no longer needed: on the default thread stack the protocol, CLI, diagnostics, and deep-start suites pass on Linux (1 MiB), and the deep-nesting cases and deep-start test pass on macOS arm64 (2 MiB).
 - The JVM build cannot expand project-file globs on macOS on any JDK tried, because the runtime requires `SecureDirectoryStream`, which macOS JDKs don't provide. That blocked the editor scenarios of `scripts/bench-lsp.py` here; see [Limits of this run](#limits-of-this-run).
 - **Proposed, for the maintainer's decision:** server `-Xmx128m -XX:+UseSerialGC`, worker `-Xmx256m` (G1), no `-Xss`, and an empirical 1 GiB combined envelope (384 MiB server, 640 MiB worker), about 1.6× the largest combined peak measured with those flags, 625.2 MiB. See [Proposal](#proposal-awaiting-the-maintainers-decision).
+- A 2026-11-21 rerun on the GitHub-hosted `macos-15` runner, with the packaged archive and its bundled runtime, peaked at 529.9 MiB combined with the proposed flags and 842.6 MiB with the shipped ones. Project-file globs now expand on macOS. See [CI re-measurement](#ci-re-measurement-on-macos-15-2026-11-21).
 
 ## Host, runtimes, and builds
 
@@ -285,6 +286,70 @@ The server's residuals are its peaks minus 128 MiB across the five Serial-capped
 - The launchers would carry the approved flags; each process needs its own `-Xmx`, since the server's default is a quarter of the user's memory.
 - The directory-enumeration failure above blocks project files on every macOS JDK tried.
 - The JDK 21 `jcmd` attached to the jlinked runtime's processes, so native memory can be inspected in the field with a full JDK of the same version.
+
+## CI re-measurement on macos-15 (2026-11-21)
+
+The maintainer asked for the figures again on the CI runner before deciding. A temporary workflow on a branch, since deleted, ran them once ([run 44843189418](https://github.com/SaltedTan/virgil-language-server/actions/runs/44843189418), 27 minutes).
+
+**Host:** GitHub's `macos-15` arm64 runner. `sysctl` reported `VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, and 7.0 GiB (7,516,192,768 bytes). It ran macOS 15.8.2 (24H232) and Python 3.15.2. A fresh runner was indexing Spotlight, with a 1-minute load average of 88 one minute after boot, so the job turned indexing off (`sudo mdutil -a -i off`) and waited 4 minutes for the load to fall below 3. During the measurements the load was 2.4–3.3 on 3 CPUs, and `trustd` used a whole CPU when they started. That is noisier than the M4: warm Aeneas medians of the same flags differed by up to 1.9× between sessions. So no flag difference here is read as real unless it holds in every block.
+
+**Build:** commit `eae5b8a0`, which is `main` at `287d7377` plus the temporary workflow, with Virgil `b86f43f1`. `V3C_TARGET=jvm scripts/package-release.sh` packaged the arm64-darwin archive on the runner itself, with the pinned Temurin 21.0.13+9 runtime checked against `scripts/jvm-runtime.json`. The measurements ran the archive's jars on its bundled `runtime/bin/java`. `virgil-lsp.jar` (`6b3914a8…`) and `virgil-lsp-worker.jar` (`471c5a14…`) were byte-identical to those of `make V3C_TARGET=jvm`. `-XX:+PrintFlagsFinal` reported these values:
+
+- shipped server: 1,792 MiB maximum heap, 112 MiB initial heap, 16 MiB stack;
+- proposed server: 128 MiB maximum, 112 MiB initial, 2 MiB stack, Serial;
+- worker: G1 under both flag sets, at 384 or 256 MiB.
+
+**No Rosetta:** the archive's `java` is `Mach-O 64-bit executable arm64` with `os.arch` `aarch64`. `scripts/jvm-memory.py` read `P_TRANSLATED` for each of the 72 server and worker JVMs of the two restart-boundary runs, and none was translated. A smoke run under `test/jvm/native.py run` saw 15 Java processes, all the bundled runtime's arm64 `java` and none translated.
+
+The two flag sets are the launchers' `shipped` flags (server `-Xss16m`, worker `-Xss16m -Xmx384m`) and the `proposed` ones (server `-Xmx128m -XX:+UseSerialGC`, worker `-Xmx256m`), which are this note's `today` and `g1w256`. The M4 column comes from the tables above. Latency is in milliseconds as median (p10–p90), and peaks are in MiB as maximum resident set size with peak footprint in parentheses.
+
+| Figure | M4 `today` | CI `shipped` | M4 `g1w256` | CI `proposed` |
+| --- | ---: | ---: | ---: | ---: |
+| Startup, 20 runs | 168.1 | 258.6 (236.6–279.0) | | 257.5 (242.4–313.0) |
+| Aeneas first analysis, fresh pair, 20 | 999.6 | 1991.1 (1599.1–2464.8) | | 1952.7 (1595.6–2371.9) |
+| Aeneas second analysis, fresh pair, 20 | 592.3 | 998.4 (867.7–1550.8) | | 979.6 (874.7–1375.2) |
+| Aeneas warm 81–100, 3 blocks | 266.3 | 648.3 (497.6–836.6) | 264.7 | 502.8 (389.4–802.9) |
+| Aeneas analysis 101, fresh worker | 923, 896, 963 | 2050, 2586, 2517 | 878, 944, 853 | 2846, 2568, 1245 |
+| Analyses 101–105 over five warm ones | about 1.2 s | 2.9, 3.7, 3.9 s | | 5.0, 4.0, 1.3 s |
+| util warm 81–100 | 20.1 | 61.9 (48.7–81.6) | 19.1 | 55.0 (46.2–67.1) |
+| Aeneas server peak, 2 blocks | 371.7 (312.1) | 503.5 (439.7) | 241.0 (182.5) | 211.5 (165.8) |
+| Aeneas worker peak | 376.5 (285.3) | 339.1 (254.2) | 384.3 (275.2) | 318.4 (229.7) |
+| Aeneas combined peak | 748.2 | 842.6 | 625.2 | 529.9 |
+| util combined peak | 513.8 | 337.3 | 378.4 | 290.9 |
+| small combined peak | 150.2 | 123.9 | | 130.0 |
+
+The restart cost is the same as on the M4. Every replacement was `after 100 analyses (limit 100)`, and analysis 101 cost about as much as analysis 1, so spread over the worker's 100 analyses the restart costs 5–8% per Aeneas analysis, against 5% on the M4. On the CI runner the analyses take about twice as long as on the M4, and startup takes 90 ms longer. The bundled runtime has no CDS archive (see [For packaging](#for-packaging-464)).
+
+The two flag sets show no latency difference that holds. Cold, warm, and post-restart Aeneas figures are within 20% of each other, or reverse direction between blocks; for example, the per-session warm medians were 533, 693, and 704 ms shipped against 503, 752, and 396 ms proposed.
+
+The shipped server's peak was 273.3 MiB in one block and 503.5 MiB in the other. That is above the proposed 384 MiB server envelope, even though the uncapped heap is less than half the M4's here. With the proposed flags, the largest peaks were 211.5 MiB server, 318.4 MiB worker, and 529.9 MiB combined. Each is under half its envelope, which leaves a 1.93× margin under 1 GiB, wider than the M4's 1.64×. The idle worker at analysis 19 held about 10 MiB of live heap under G1 with both flag sets, against live-heap limits of 48 and 32 MiB.
+
+**Editor scenarios:** `scripts/bench-lsp.py` ran on macOS this time, 2 alternating blocks on Aeneas and util with `--cpu none`, and every semantic check passed. Project files now expand their globs on macOS, since #479, so that limitation is gone. In each block, the configuration that ran second was slower on fresh and reused analyses, rename, and prepareRename, whichever flags it had, so those differences come from the order, not the flags. Only the Aeneas completion miss was slower with the proposed flags in both blocks, by 72% and then 4%, which is tentative. With the proposed flags, the Aeneas sessions' resident sizes, sampled by `ps` at each session's end, peaked at 244.8 MiB server and 288.0 MiB worker. With the shipped ones they peaked at 548.5 and 340.7 MiB.
+
+**Rerun:** start from a commit whose checkout is clean. A workflow on `macos-15` that checks out with submodules and full history and turns indexing off can run these commands, with `VIRGIL_V3C` set to `vendor/virgil/bin/stable/jar/Aeneas`:
+
+```sh
+V3C_TARGET=jvm scripts/package-release.sh "$RUNNER_TEMP/release"
+tar -xzf "$RUNNER_TEMP"/release/virgil-lsp-*-jvm-arm64-darwin.tar.gz -C "$RUNNER_TEMP"
+J=$(echo "$RUNNER_TEMP"/virgil-lsp-*-jvm-arm64-darwin)/runtime/bin/java
+java=$(python3 scripts/jvm-runtime.py prepare arm64-darwin "$RUNNER_TEMP/jdk")
+make V3C_TARGET=jvm JAVA="$java" all build/jvm-target/benchmark-build.json
+C=(--java "$J" --config 'shipped|-Xss16m|-Xss16m -Xmx384m' --config 'proposed|-Xmx128m -XX:+UseSerialGC|-Xmx256m')
+python3 scripts/jvm-memory.py "${C[@]}" --startup-only --startup 20 --output startup.json
+python3 scripts/jvm-memory.py "${C[@]}" --no-boundary --cold 5 --blocks 4 \
+  --project small --project util --project aeneas --output cold.json
+python3 scripts/jvm-memory.py "${C[@]}" --no-wrap --blocks 3 --output boundary-plain.json
+python3 scripts/jvm-memory.py "${C[@]}" --blocks 2 --project small --project util --project aeneas \
+  --output boundary-hwm.json
+python3 scripts/jvm-memory.py "${C[@]}" --nmt --jcmd "$(dirname "$java")/jcmd" --project aeneas \
+  --max-analyses 20 --analyses 22 --output nmt.json
+python3 scripts/jvm-memory.py "${C[@]}" --prepare --work "$RUNNER_TEMP/l"
+python3 scripts/bench-lsp.py --exe "$RUNNER_TEMP/l/shipped/plain/virgil-lsp" \
+  --exe "$RUNNER_TEMP/l/proposed/plain/virgil-lsp" --project aeneas --project util --blocks 2 --cpu none \
+  --output bench.json
+```
+
+The development launchers are needed because `scripts/jvm-memory.py` reads the java and jar from a launcher with absolute paths. Before measuring, check that the archive's jars match the ones `make` built.
 
 ## Reproduce
 
