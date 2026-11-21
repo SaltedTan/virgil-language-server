@@ -278,7 +278,7 @@
       "id": "vscode",
       "label": "Extension Host test",
       "prefixes": ["vscode"],
-      "harness": ["clients/vscode/test/e2e/run.cjs", "clients/vscode/test/e2e/suite.cjs"],
+      "harness": ["clients/vscode/test/e2e/run.cjs", "clients/vscode/test/e2e/suite.cjs", "clients/vscode/test/e2e/observations.cjs", "clients/vscode/test/e2e/results.cjs"],
       "profiles": [
         {
           "id": "single-file",
@@ -304,7 +304,7 @@
       "id": "remote-ssh",
       "label": "Remote-SSH test",
       "prefixes": ["ssh", "vscode"],
-      "harness": ["clients/vscode/test/e2e/remote-ssh/run.cjs", "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs", "clients/vscode/test/e2e/suite.cjs"],
+      "harness": ["clients/vscode/test/e2e/remote-ssh/run.cjs", "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs", "clients/vscode/test/e2e/suite.cjs", "clients/vscode/test/e2e/observations.cjs"],
       "profiles": [
         {
           "id": "probe",
