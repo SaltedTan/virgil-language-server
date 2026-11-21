@@ -47,7 +47,6 @@ label "help wanted"       008672 "Extra attention is welcome"
 label "blocked/dependency" b60205 "Waiting on another issue or upstream"
 label "breaking"          b60205 "Breaking change to configuration or behaviour"
 label "performance"       f9d0c4 "Latency, memory, or throughput"
-label "ci/jvm"            5319e7 "Run the JVM lanes on Apple Silicon (jvm.yml) on this pull request"
 # Remove GitHub's defaults that duplicate the scheme above.
 for l in bug enhancement documentation duplicate invalid question wontfix; do
     gh label delete "$l" --repo "$REPO" --yes > /dev/null 2>&1 || true

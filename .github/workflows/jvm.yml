@@ -8,19 +8,21 @@ name: JVM lanes
 # workflow packages on Linux. Neither is a required check
 # (docs/compatibility.md#host-platforms). They run after each push to main, nightly,
 # by hand, and on a pull request only when it changes one of the paths in
-# the select job, or carries the ci/jvm label; ci.yml still packages the
-# JVM archive and VSIX on Linux on every pull request. A failure on main
+# the select job; run it by hand (gh workflow run jvm.yml --ref <branch>)
+# for any other branch. ci.yml still packages the JVM archive and VSIX on
+# Linux on every pull request. A failure on main
 # opens an issue, or comments on the open one, naming the commit.
 #
-# This is a workflow of its own, not part of ci.yml, so that adding a label
-# to a pull request doesn't rerun or cancel the required checks, and the
-# nightly run doesn't run them.
+# This is a workflow of its own, not part of ci.yml, so that the nightly
+# run doesn't run the required checks. It has no label trigger: a label
+# event's run would either show skipped checks over an earlier result or
+# rerun both macOS lanes for every label added.
 
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   schedule:
     - cron: '43 16 * * *' # nightly, 16:43 UTC
   workflow_dispatch:
@@ -29,8 +31,8 @@ permissions:
   contents: read
 
 # main's runs share one group and are never cancelled, so under load they
-# coalesce: one runs and only the newest waits. A pull request's newer run,
-# including one that adding a label starts, cancels its older one.
+# coalesce: one runs and only the newest waits. A pull request's newer run
+# cancels its older one.
 concurrency:
   group: jvm-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -38,11 +40,10 @@ concurrency:
 jobs:
   select:
     # Every event but a pull request runs the lanes. A pull request runs them
-    # when it carries the ci/jvm label or when any file it changes, under its
+    # when any file it changes, under its
     # old or new name, is under src/os/jvm/ or test/jvm/, is
     # scripts/jvm-runtime.*, scripts/v3c.sh, or the Makefile, or is this
-    # workflow or package-jvm.yml. Adding any label selects the same way, so
-    # the newest run's checks show the lanes' results, not skipped jobs.
+    # workflow or package-jvm.yml.
     name: Select the JVM lanes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -59,15 +60,11 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           NUMBER: ${{ github.event.pull_request.number }}
-          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'ci/jvm') }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         run: |
           run=false
           if [ "$EVENT" != pull_request ]; then
             echo "A $EVENT event runs the JVM lanes."
-            run=true
-          elif [ "$LABELED" = true ]; then
-            echo "The pull request carries the ci/jvm label."
             run=true
           elif [ "$CHANGED_FILES" -ge 3000 ]; then
             # The files endpoint lists at most 3,000 files.
@@ -83,8 +80,8 @@ jobs:
               printf '%s\n' "$matched"
               run=true
             else
-              echo "The pull request changes no JVM lane path and lacks the ci/jvm label;" \
-                "the lanes run after it merges."
+              echo "The pull request changes no JVM lane path; the lanes run after it" \
+                "merges, or by hand: gh workflow run jvm.yml --ref <branch>."
             fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
