@@ -334,9 +334,18 @@ On Aeneas, the configuration that ran second had higher medians for fresh and re
 
 The largest combined CI figures came from session-end RSS samples taken with `ps` during the Aeneas editor scenarios. With the proposed flags, the sampled maxima were 244.8 MiB server (64% of its envelope), 288.0 MiB worker (45%), and 532.8 MiB combined (52%). With the shipped flags, they were 548.5 MiB server, 340.7 MiB worker, and 889.2 MiB combined.
 
-**Rerun:** in Bash on `macos-15`, start at the root of a clean checkout with submodules and full history. Turn indexing off as above. Export the compiler's absolute path so both builds run Aeneas on the pinned JDK.
+**Rerun:** in Bash on `macos-15`, start at the root of a clean checkout of `287d7377`, the measured source base, with submodules and full history. Before packaging, turn off Spotlight indexing and check the one-minute load average every 10 seconds. The workflow proceeded once it fell below 3 or after five minutes of waiting. Export the compiler's absolute path so both builds run Aeneas on the pinned JDK.
+
+The original workflow checked that both packaged launchers used the historical `shipped` flags. If you rerun on a later checkout with different launcher defaults, keep passing the historical flags explicitly through `--config` as shown below. The probes generate their own launchers with those flags.
 
 ```sh
+sudo mdutil -a -i off || true
+for _ in $(seq 30); do
+  load=$(sysctl -n vm.loadavg | awk '{print $2}')
+  awk -v l="$load" 'BEGIN { exit !(l < 3) }' && break
+  sleep 10
+done
+
 export VIRGIL_V3C="$PWD/vendor/virgil/bin/stable/jar/Aeneas"
 V3C_TARGET=jvm scripts/package-release.sh "$RUNNER_TEMP/release"
 tar -xzf "$RUNNER_TEMP"/release/virgil-lsp-*-jvm-arm64-darwin.tar.gz -C "$RUNNER_TEMP"
