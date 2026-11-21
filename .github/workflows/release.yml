@@ -292,8 +292,10 @@ jobs:
           python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
             --report "$RUNNER_TEMP/processes/build.json" -- \
             make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
-      # A pull request's dry run only builds: CI's test-macos-jvm runs the
-      # same tests on the same tree, with the same runner image.
+      # A pull request's dry run only builds: jvm.yml's test-macos-jvm runs
+      # the same tests with the same runner image, on the pull request when it
+      # changes the JVM build's paths, and otherwise after the merge or by
+      # hand on its branch.
       - name: Test, checking all observed descendants
         if: github.event_name != 'pull_request'
         run: |
