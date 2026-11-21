@@ -1699,4 +1699,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, readVSIX, locateExtension, settle, stopHost, options, launch, main };
+module.exports = {
+  REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, readVSIX, readZipEntry, locateExtension, settle, stopHost, options,
+  launch, main, sha256, treeSha256,
+};
