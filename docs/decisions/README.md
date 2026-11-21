@@ -6,7 +6,7 @@ Short records of durable technical decisions. Each one states the context, the d
 | --- | --- | --- |
 | [0001](0001-virgil-native-server.md) | Implement the server in Virgil | Accepted; in-process whole-program analysis superseded by [0004](0004-analysis-worker-process.md) |
 | [0002](0002-pinned-virgil-adapter-boundary.md) | Pin Virgil and isolate it behind an adapter | Accepted |
-| [0003](0003-supported-platforms.md) | Supported platforms | Accepted |
+| [0003](0003-supported-platforms.md) | Supported platforms | Accepted; amended by [0020](0020-jvm-fallback-for-apple-silicon.md) |
 | [0004](0004-analysis-worker-process.md) | Run whole-program analysis in a replaceable worker process | Accepted |
 | [0005](0005-project-file-format.md) | Project file format, version 1 | Accepted |
 | [0006](0006-incomplete-code-repair.md) | Semantic context for completion in incomplete code | Accepted; amended by [0009](0009-current-text-repair.md) and [0013](0013-recover-other-files-in-query-analyses.md) |
@@ -23,5 +23,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0017](0017-jvm-parser-stack-guard.md) | Bound the parser's recursion on the JVM target by frame depth | Accepted |
 | [0018](0018-native-target-analysis.md) | Analyze a project for a native target | Accepted; amends [0007](0007-bundled-virgil-library.md) and [0014](0014-compatibility-and-support-policy.md) |
 | [0019](0019-formatter.md) | Format Virgil code in its author's style, keeping line breaks | Accepted; supersedes the roadmap's formatter non-goal |
+| [0020](0020-jvm-fallback-for-apple-silicon.md) | Ship a JVM fallback for Apple Silicon without Rosetta 2 | Accepted; amends [0003](0003-supported-platforms.md) |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
