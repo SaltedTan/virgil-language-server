@@ -59,15 +59,23 @@ jobs:
     env:
       REQUIRE_NVIM: '1'
     steps:
+      # Full history and tags, so --version reports a described revision, but
+      # blobless: only the checked-out commit's files are downloaded. The build
+      # reads only the pinned Virgil commit (git rev-parse HEAD), so its
+      # submodule is cloned at depth 1.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
-          fetch-depth: 0 # full history so --version reports a described revision
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       - name: Install Neovim 0.11.6
         run: |
           curl --fail --location --retry 3 \
             https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
             -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "2fc90b962327f73a78afbfb8203fd19db8db9cdf4ee5e2bef84704339add89cc  $RUNNER_TEMP/nvim.tar.gz" |
+            sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Show pinned Virgil revision
@@ -244,12 +252,25 @@ jobs:
     env:
       REQUIRE_NVIM: '1'
     steps:
+      # As in test: blobless full history, and the pinned Virgil at depth 1.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
           fetch-depth: 0
-      - name: Install Neovim (Homebrew)
-        run: brew install neovim
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
+      # The editor tests' pinned macOS Neovim (editor-test-suites.yml).
+      - name: Install Neovim 0.12.6
+        env:
+          NVIM_VERSION: 0.12.6
+          NVIM_SHA256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
+        run: |
+          curl --fail --location \
+            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-macos-arm64.tar.gz" \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-macos-arm64/bin" >> "$GITHUB_PATH"
       - name: Install Rosetta 2
         run: sudo softwareupdate --install-rosetta --agree-to-license
       - name: Show host and pinned Virgil revision
