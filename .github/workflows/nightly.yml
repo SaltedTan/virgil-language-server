@@ -358,8 +358,9 @@ jobs:
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
       # Counts #205 Extension Host relaunches across recent completed runs and
       # fails if the relaunch rate exceeds 2%. Only fetches annotations for
-      # Extension Host and "JVM archive and VSIX" jobs to stay well within the
-      # Check Runs API rate limit. See scripts/check-vscode-relaunch-rate.py.
+      # Extension Host, "JVM archive and VSIX", and Remote-SSH test jobs to
+      # stay well within the Check Runs API rate limit. A failed fetch fails
+      # the step. See scripts/check-vscode-relaunch-rate.py.
       - name: Count Extension Host relaunches (#205) and gate on the rate
         id: relaunch
         env:
@@ -372,7 +373,7 @@ jobs:
           records="$RUNNER_TEMP/relaunch-records.jsonl"
           : > "$jobs_file"
           total_runs=0
-          for workflow in ci.yml nightly.yml jvm.yml; do
+          for workflow in ci.yml nightly.yml jvm.yml editor-tests.yml release.yml; do
             case "$workflow" in
               ci.yml) limit=100 ;;
               *) limit=30 ;;
@@ -382,18 +383,18 @@ jobs:
             for run_id in $run_ids; do
               total_runs=$((total_runs + 1))
               gh api "repos/$REPO/actions/runs/$run_id/jobs?filter=all&per_page=100" --paginate \
-                --jq '.jobs[] | select((.name | contains("Extension Host") or contains("JVM archive and VSIX")) and .status == "completed" and .conclusion != "cancelled" and .conclusion != "skipped") | @json' \
+                --jq '.jobs[] | select((.name | contains("Extension Host") or contains("JVM archive and VSIX") or contains("Remote-SSH test")) and .status == "completed" and .conclusion != "cancelled" and .conclusion != "skipped") | @json' \
                 >> "$jobs_file"
             done
           done
           total_matched=$(wc -l < "$jobs_file")
-          echo "Scanned $total_runs completed runs; matched $total_matched Extension Host jobs."
+          echo "Scanned $total_runs completed runs; matched $total_matched Extension Host and Remote-SSH jobs."
           : > "$records"
           while IFS= read -r job_line; do
             [ -n "$job_line" ] || continue
             job_id=$(printf '%s' "$job_line" | python3 -c 'import json, sys; print(json.loads(sys.stdin.read()).get("id") or "")')
             [ -n "$job_id" ] || continue
-            annotations=$(gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" --paginate 2>/dev/null || echo '[]')
+            annotations=$(gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" --paginate)
             python3 - "$job_line" "$annotations" >> "$records" <<'PY'
           import json, sys
           job = json.loads(sys.argv[1])
@@ -418,6 +419,7 @@ jobs:
           } | tee "$summary"
           status=${PIPESTATUS[0]}
           set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       - name: Open or update the issue on main failure
@@ -433,6 +435,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
           RELAUNCH_RESULT: ${{ steps.relaunch.outcome }}
+          RELAUNCH_STATUS: ${{ steps.relaunch.outputs.status }}
           RESULTS: |-
             - test-linux: ${{ needs.test-linux.result }}
             - lazyvim-linux: ${{ needs.lazyvim-linux.result }}
@@ -441,16 +444,20 @@ jobs:
             - vscode-extension-host-linux: ${{ needs.vscode-extension-host-linux.result }}
             - test-macos: ${{ needs.test-macos.result }}
             - vscode-extension-host-macos: ${{ needs.vscode-extension-host-macos.result }}
-            - relaunch-rate (#205): ${{ steps.relaunch.outcome }}
+            - relaunch-rate (#205): ${{ steps.relaunch.outputs.status == '1' && 'over 2%' || steps.relaunch.outcome == 'failure' && 'error' || steps.relaunch.outcome }}
         run: |
           title="Nightly from-scratch run failed on main"
           body="The nightly from-scratch workflow failed on $SHA (event: $EVENT): $RUN_URL
 
           $RESULTS"
-          if [ "$RELAUNCH_RESULT" = "failure" ]; then
+          if [ "$RELAUNCH_STATUS" = "1" ]; then
             body="$body
 
           The Extension Host relaunch rate (#205) exceeded 2%; see the run's step summary for the count and per-job breakdown."
+          elif [ "$RELAUNCH_RESULT" = "failure" ]; then
+            body="$body
+
+          The Extension Host relaunch-rate step (#205) failed before it could evaluate the rate; see the run's log."
           fi
           number=$(gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
             --jq "map(select(.title == \"$title\")) | .[0].number // empty")

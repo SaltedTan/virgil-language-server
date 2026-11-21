@@ -8,7 +8,7 @@
 # docs/development.md#the-205-counted-exception and
 # clients/vscode/README.md#extension-host-test.
 #
-#   check-vscode-relaunch-rate.py --input FILE [--max-rate 0.02] [--json]
+#   check-vscode-relaunch-rate.py --input FILE [--max-rate 0.02]
 #
 # Reads FILE, or - for standard input, as a list (or concatenated JSON
 # objects / arrays, in the shape of check-ci-budgets.py's read_jobs) of
@@ -16,10 +16,9 @@
 #
 #   {"job": <job object>, "annotations": [<annotation object>, ...]}
 #
-# or a plain job object with an optional "annotations" key. Completed jobs
-# (conclusion success, failure, or timed_out; cancelled and skipped are
-# excluded) whose name contains "Extension Host" or "JVM archive and VSIX"
-# are counted. A #205 relaunch is any annotation whose annotation_level is
+# Completed jobs (conclusion success, failure, or timed_out; cancelled and
+# skipped are excluded) whose name contains "Extension Host", "JVM archive
+# and VSIX", or "Remote-SSH test" are counted. A #205 relaunch is any annotation whose annotation_level is
 # "warning" and whose title is exactly "Extension Host relaunch (#205)".
 # Jobs with the same id, or the same (run_id, name, started_at,
 # completed_at), are counted once; when a job appears more than once (the
@@ -40,7 +39,7 @@ from pathlib import Path
 
 RELAUNCH_TITLE = "Extension Host relaunch (#205)"
 COUNTED_CONCLUSIONS = {"success", "failure", "timed_out"}
-JOB_NAME_MARKERS = ("Extension Host", "JVM archive and VSIX")
+JOB_NAME_MARKERS = ("Extension Host", "JVM archive and VSIX", "Remote-SSH test")
 
 
 class Usage(Exception):
@@ -48,7 +47,7 @@ class Usage(Exception):
 
 
 def extension_host_job(job):
-    """Whether job is a completed Extension Host (or JVM archive) job."""
+    """Whether job is a completed Extension Host, JVM archive, or Remote-SSH job."""
     if not isinstance(job, dict):
         return False
     status = job.get("status")
@@ -88,19 +87,14 @@ def read_records(text):
 
 
 def normalize(record):
-    """Returns (job, annotations) for a record. A record may be either
-    {"job": ..., "annotations": [...]} or a plain job object with an
-    optional "annotations" key."""
+    """Returns (job, annotations) for a {"job": ..., "annotations": [...]}
+    record."""
     if not isinstance(record, dict):
         raise Usage("record is not a JSON object")
-    if "job" in record:
-        job = record.get("job")
-        if not isinstance(job, dict):
-            raise Usage('record "job" is not a JSON object')
-        annotations = record.get("annotations", [])
-    else:
-        job = record
-        annotations = record.get("annotations", [])
+    job = record.get("job")
+    if not isinstance(job, dict):
+        raise Usage('record "job" is not a JSON object')
+    annotations = record.get("annotations", [])
     if not isinstance(annotations, list):
         raise Usage('record "annotations" is not a JSON array')
     return job, annotations
@@ -215,8 +209,6 @@ def main(argv=None, environment=None, out=None):
                         help="a file of job records, or - for standard input")
     parser.add_argument("--max-rate", default="0.02",
                         help="relaunch rate ceiling, between 0 and 1 (default: 0.02, i.e. 2%%)")
-    parser.add_argument("--json", action="store_true",
-                        help="write the summary as JSON instead of Markdown")
     arguments = parser.parse_args(argv)
     try:
         max_rate = parse_rate(arguments.max_rate)
@@ -227,11 +219,7 @@ def main(argv=None, environment=None, out=None):
     except Usage as error:
         print(f"check-vscode-relaunch-rate.py: {error}", file=sys.stderr)
         return 2
-    if arguments.json:
-        json.dump(summary, out, indent=2, sort_keys=True)
-        out.write("\n")
-    else:
-        out.write(markdown(summary))
+    out.write(markdown(summary))
     if summary["exceeded"]:
         if environment.get("GITHUB_ACTIONS") == "true":
             message = (f"Extension Host relaunch rate {summary['rate'] * 100:.2f}% exceeded "

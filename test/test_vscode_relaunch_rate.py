@@ -42,6 +42,23 @@ def record(job_object, annotations=()):
     return {"job": job_object, "annotations": list(annotations)}
 
 
+def metrics(output):
+    """The Markdown report's metric table, as {metric: value}."""
+    rows = {}
+    for line in output.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 2 and cells[0] not in ("Metric", "---"):
+            rows[cells[0]] = cells[1]
+    return rows
+
+
+def events(output):
+    """The Markdown report's relaunch events, as (run, job, name, message) rows."""
+    _, _, table = output.partition("### Relaunch events")
+    return [tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+            for line in table.splitlines()[3:] if line.startswith("|") and "---" not in line]
+
+
 def run(records, *extra, out=None):
     """Runs main() on records serialized as a JSON list, returning (exit, stdout)."""
     out = io.StringIO() if out is None else out
@@ -110,13 +127,13 @@ class ComputationTest(unittest.TestCase):
     def test_multiple_relaunches_in_one_job_count_separately_and_share_jobs_with_relaunch(self):
         records = [record(job("Extension Host", id=1), [relaunch("a"), relaunch("b"), relaunch("c")])]
         records += [record(job("Extension Host", id=i + 2), []) for i in range(99)]
-        code, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 100)
-        self.assertEqual(summary["relaunches"], 3)
-        self.assertEqual(summary["jobsWithRelaunch"], 1)
-        self.assertEqual(summary["rate"], 0.03)
-        self.assertTrue(summary["exceeded"])
+        code, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "100")
+        self.assertEqual(table["Relaunch annotations"], "3")
+        self.assertEqual(table["Jobs with a relaunch"], "1")
+        self.assertEqual(table["Relaunch rate"], "3.00%")
+        self.assertIn("Status:** FAIL", output)
         self.assertEqual(code, 1)
 
     def test_non_extension_host_jobs_are_ignored(self):
@@ -132,10 +149,20 @@ class ComputationTest(unittest.TestCase):
 
     def test_jvm_archive_and_vsix_jobs_count(self):
         records = [record(job("JVM archive and VSIX (macOS Apple Silicon)"), [relaunch()])]
-        code, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 1)
-        self.assertEqual(summary["relaunches"], 1)
+        _, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "1")
+        self.assertEqual(table["Relaunch annotations"], "1")
+
+    def test_remote_ssh_jobs_count(self):
+        records = [record(job("Editor tests / VS Code Remote-SSH test (bundled VSIX, linux)"),
+                          [relaunch()]),
+                   record(job("Editor tests / VS Code Extension Host test (bundled VSIX, macOS)",
+                              id=2), [])]
+        _, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "2")
+        self.assertEqual(table["Relaunch annotations"], "1")
 
     def test_non_205_warnings_are_ignored(self):
         other = {"annotation_level": "warning", "title": "Some other warning",
@@ -153,11 +180,11 @@ class ComputationTest(unittest.TestCase):
             record(job("Extension Host", id=2, conclusion="skipped"), []),
             record(job("Extension Host", id=3, conclusion="success"), [relaunch()]),
         ]
-        code, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 1)
-        self.assertEqual(summary["relaunches"], 1)
-        self.assertEqual(summary["rate"], 1.0)
+        code, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "1")
+        self.assertEqual(table["Relaunch annotations"], "1")
+        self.assertEqual(table["Relaunch rate"], "100.00%")
         self.assertEqual(code, 1)
 
     def test_failed_and_timed_out_jobs_count_in_denominator(self):
@@ -166,20 +193,19 @@ class ComputationTest(unittest.TestCase):
             record(job("Extension Host", id=2, conclusion="timed_out"), []),
             record(job("Extension Host", id=3, conclusion="success"), []),
         ]
-        _, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 3)
+        _, output = run(records)
+        self.assertEqual(metrics(output)["Extension Host jobs"], "3")
 
     def test_duplicate_jobs_by_id_are_counted_once(self):
         records = [
             record(job("Extension Host", id=42, run_attempt=1), [relaunch("a")]),
             record(job("Extension Host", id=42, run_attempt=2), [relaunch("b"), relaunch("c")]),
         ]
-        _, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 1)
-        self.assertEqual(summary["relaunches"], 1)
-        self.assertEqual(summary["relaunchEvents"][0]["message"], "a")
+        _, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "1")
+        self.assertEqual(table["Relaunch annotations"], "1")
+        self.assertEqual([row[3] for row in events(output)], ["a"])
 
     def test_duplicate_jobs_by_times_without_id_are_counted_once(self):
         records = [
@@ -194,10 +220,11 @@ class ComputationTest(unittest.TestCase):
                     "completed_at": "2026-11-22T10:10:00Z"},
                    [relaunch("second")]),
         ]
-        _, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 1)
-        self.assertEqual(summary["relaunches"], 1)
+        _, output = run(records)
+        table = metrics(output)
+        self.assertEqual(table["Extension Host jobs"], "1")
+        self.assertEqual(table["Relaunch annotations"], "1")
+        self.assertEqual([row[3] for row in events(output)], ["first"])
 
 
 class IoAndFormatTest(unittest.TestCase):
@@ -208,34 +235,25 @@ class IoAndFormatTest(unittest.TestCase):
             record(job("Extension Host (macos)", id=6, run_id=99), []),
         ]
         _, output = run(records)
-        self.assertIn("### Relaunch events", output)
-        self.assertIn("| 99 | 5 | Extension Host (linux) | bad window |", output)
-
-    def test_json_output_contains_every_summary_field(self):
-        records = [record(job("Extension Host"), [relaunch("hi")])]
-        _, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(set(summary),
-                         {"jobs", "relaunches", "jobsWithRelaunch", "rate",
-                          "maxRate", "exceeded", "relaunchEvents"})
+        self.assertEqual(events(output), [("99", "5", "Extension Host (linux)", "bad window")])
 
     def test_input_accepts_concatenated_pages(self):
         pages = [[record(job("Extension Host", id=1), [])], [record(job("Extension Host", id=2), [])]]
         text = "\n".join(json.dumps(page) for page in pages)
-        result = subprocess.run([sys.executable, str(SCRIPT), "--input", "-", "--json"],
+        result = subprocess.run([sys.executable, str(SCRIPT), "--input", "-"],
                                 input=text, text=True, capture_output=True, check=True)
-        summary = json.loads(result.stdout)
-        self.assertEqual(summary["jobs"], 2)
-        self.assertEqual(summary["relaunches"], 0)
+        table = metrics(result.stdout)
+        self.assertEqual(table["Extension Host jobs"], "2")
+        self.assertEqual(table["Relaunch annotations"], "0")
 
-    def test_input_accepts_plain_job_object_with_optional_annotations_key(self):
-        job_with_annotations = dict(job("Extension Host"),
-                                    annotations=[relaunch("x")])
-        records = [job_with_annotations]
-        _, output = run(records, "--json")
-        summary = json.loads(output)
-        self.assertEqual(summary["jobs"], 1)
-        self.assertEqual(summary["relaunches"], 1)
+    def test_input_accepts_one_record_per_line(self):
+        text = "\n".join(json.dumps(record(job("Extension Host", id=i), [relaunch()] if i == 0 else []))
+                         for i in range(3))
+        result = subprocess.run([sys.executable, str(SCRIPT), "--input", "-", "--max-rate", "0.5"],
+                                input=text, text=True, capture_output=True, check=True)
+        table = metrics(result.stdout)
+        self.assertEqual(table["Extension Host jobs"], "3")
+        self.assertEqual(table["Relaunch annotations"], "1")
 
 
 class ErrorsTest(unittest.TestCase):
@@ -280,6 +298,10 @@ class ErrorsTest(unittest.TestCase):
             Path(path).unlink()
         self.assertEqual(code, 2)
 
+    def test_plain_job_object_without_job_key_exits_2(self):
+        code, _ = run([dict(job("Extension Host"), annotations=[relaunch()])])
+        self.assertEqual(code, 2)
+
 
 class CustomThresholdTest(unittest.TestCase):
     def test_passes_above_default_when_max_rate_is_raised(self):
@@ -287,17 +309,17 @@ class CustomThresholdTest(unittest.TestCase):
                           [relaunch()] if i < 5 else [])
                    for i in range(100)]
         # 5% > 2% default, but <= 10%
-        _, output = run(records, "--max-rate", "0.10", "--json")
-        summary = json.loads(output)
-        self.assertFalse(summary["exceeded"])
+        code, output = run(records, "--max-rate", "0.10")
+        self.assertEqual(code, 0)
+        self.assertIn("Status:** PASS", output)
 
     def test_fails_under_default_when_max_rate_is_lowered(self):
         records = [record(job("Extension Host", id=i),
                           [relaunch()] if i == 0 else [])
                    for i in range(100)]
-        _, output = run(records, "--max-rate", "0.005", "--json")
-        summary = json.loads(output)
-        self.assertTrue(summary["exceeded"])
+        code, output = run(records, "--max-rate", "0.005")
+        self.assertEqual(code, 1)
+        self.assertIn("Status:** FAIL", output)
 
 
 if __name__ == "__main__":
