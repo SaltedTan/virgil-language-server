@@ -357,7 +357,7 @@ jobs:
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
       - name: Open or update the issue on main failure
         if: >-
-          ${{ github.ref == 'refs/heads/main'
+          ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
         env:
           GH_TOKEN: ${{ github.token }}

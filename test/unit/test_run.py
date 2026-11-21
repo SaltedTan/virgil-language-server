@@ -700,12 +700,13 @@ class ShuffleTest(_Fixture):
         self.assertIsNotNone(summary, result.stdout)
         self.assertEqual(seed, summary.group(1))
 
-    def test_shuffle_and_seed_together_prefer_seed(self):
-        # Option order should not matter: --shuffle before --seed still picks N.
-        result = self.run_unit_tests(options=["--shuffle", "--seed=42"])
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn("shuffling 8 groups with seed 42", result.stdout)
-        self.assertRegex(result.stdout, r"seed 42\n")
+    def test_shuffle_and_seed_together_fail_cleanly(self):
+        for options in (["--shuffle", "--seed=42"], ["--seed=42", "--shuffle"]):
+            with self.subTest(options=options):
+                result = self.run_unit_tests(options=options)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("--shuffle and --seed cannot be used together", result.stderr)
+                self.assertEqual([], self.order())
 
     def test_invalid_seed_fails_cleanly(self):
         for value in ("-1", "abc", ""):

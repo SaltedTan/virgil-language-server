@@ -16,8 +16,9 @@ on their own.
 --shuffle picks a random non-negative 32-bit integer seed and shuffles the
 group order with it; --seed=N uses the given seed instead. Both print the
 seed before starting and in the summary line, so a failing log says how to
-reproduce the order with --seed=N. Patterns refuse --shuffle and --seed,
-because a pattern run is one filtered process rather than per-group slots.
+reproduce the order with --seed=N. The two refuse to combine. Patterns
+refuse --shuffle and --seed, because a pattern run is one filtered process
+rather than per-group slots.
 
 Up to N groups (default: one for each CPU this process may use, at most
 DEFAULT_JOBS) run at once,
@@ -279,11 +280,7 @@ def run(jobs, build, unit_tests, children, shuffle=False, seed=None):
     if children.signum:
         return 0
     names = groups()
-    active_seed = None
-    if seed is not None:
-        active_seed = seed
-    elif shuffle:
-        active_seed = secrets.randbits(32)
+    active_seed = secrets.randbits(32) if shuffle else seed
     if active_seed is not None:
         random.Random(active_seed).shuffle(names)
         print(f"unit tests: shuffling {len(names)} groups with seed {active_seed}", flush=True)
@@ -372,6 +369,8 @@ if __name__ == "__main__":
         else:
             break
         arguments.pop(0)
+    if shuffle and seed is not None:
+        sys.exit("error: --shuffle and --seed cannot be used together")
     if len(arguments) < 2:
         sys.exit(__doc__.split("\n\n")[1])
     sys.exit(main(jobs, arguments[0], arguments[1], arguments[2:], shuffle=shuffle, seed=seed))
