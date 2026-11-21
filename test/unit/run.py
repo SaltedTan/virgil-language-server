@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run the unit tests, each group in a process of its own, several at once.
 
-Usage: test/unit/run.py [--jobs=N] BUILD UNIT_TESTS [PATTERN ...]
+Usage: test/unit/run.py [--jobs=N] [--shuffle | --seed=N] BUILD UNIT_TESTS [PATTERN ...]
 
 UNIT_TESTS is the unit-test executable, and BUILD the directory whose
 project-fixtures it uses. With patterns, the executable runs once with them,
@@ -12,6 +12,12 @@ name before the colon, such as LspRename) runs in a process of its own.
 Analyses in one process leave compiler state behind that makes every later one
 slower, so in a single process the late groups ran several times slower than
 on their own.
+
+--shuffle picks a random non-negative 32-bit integer seed and shuffles the
+group order with it; --seed=N uses the given seed instead. Both print the
+seed before starting and in the summary line, so a failing log says how to
+reproduce the order with --seed=N. Patterns refuse --shuffle and --seed,
+because a pattern run is one filtered process rather than per-group slots.
 
 Up to N groups (default: one for each CPU this process may use, at most
 DEFAULT_JOBS) run at once,
@@ -33,7 +39,9 @@ it lists the slowest tests.
 from contextlib import nullcontext
 import os
 from pathlib import Path
+import random
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -247,14 +255,16 @@ def cpus():
     return os.cpu_count() or 1
 
 
-def main(jobs, build, unit_tests, patterns):
+def main(jobs, build, unit_tests, patterns, shuffle=False, seed=None):
     if patterns:
+        if shuffle or seed is not None:
+            sys.exit("error: --shuffle and --seed cannot be used with patterns")
         os.execv(sys.executable, [sys.executable, str(PREPARE), build, "--run", unit_tests, *patterns])
     children = Children()
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, children.stop)
     try:
-        status = run(jobs, build, unit_tests, children)
+        status = run(jobs, build, unit_tests, children, shuffle=shuffle, seed=seed)
     except BaseException:
         if not children.signum:
             raise
@@ -262,13 +272,21 @@ def main(jobs, build, unit_tests, patterns):
     return 128 + children.signum if children.signum else status
 
 
-def run(jobs, build, unit_tests, children):
+def run(jobs, build, unit_tests, children, shuffle=False, seed=None):
     remove_slots(build)
     unit_tests = os.path.abspath(unit_tests)
     expected = total(build, unit_tests, children)
     if children.signum:
         return 0
     names = groups()
+    active_seed = None
+    if seed is not None:
+        active_seed = seed
+    elif shuffle:
+        active_seed = secrets.randbits(32)
+    if active_seed is not None:
+        random.Random(active_seed).shuffle(names)
+        print(f"unit tests: shuffling {len(names)} groups with seed {active_seed}", flush=True)
     jobs = max(1, min(jobs or min(cpus(), DEFAULT_JOBS), len(names)))
     runner = Slots(names, children, jobs == 1)
     threads = []
@@ -320,8 +338,9 @@ def run(jobs, build, unit_tests, children):
         print(f"{seconds:8.2f} s  {test}")
     failed = [test for group in runner.ran for test in group.failed]
     passed = sum(len(group.durations) for group in runner.ran) - len(failed)
+    seed_note = f", seed {active_seed}" if active_seed is not None else ""
     print(f"unit tests: {passed} passed, {len(failed)} failed, in {len(runner.ran)} groups, "
-          f"{jobs} at once, {elapsed:.1f} s")
+          f"{jobs} at once, {elapsed:.1f} s{seed_note}")
     for test in failed:
         print(f"FAIL: {test}")
     for error in errors:
@@ -329,11 +348,30 @@ def run(jobs, build, unit_tests, children):
     return int(bool(failed or errors))
 
 
+def parse_seed(text):
+    if not text or not text.isdigit():
+        sys.exit(f"error: --seed expects a non-negative decimal integer, not {text!r}")
+    return int(text)
+
+
 if __name__ == "__main__":
     arguments = sys.argv[1:]
     jobs = 0
-    if arguments and arguments[0].startswith("--jobs="):
-        jobs = int(arguments.pop(0)[len("--jobs="):])
+    shuffle = False
+    seed = None
+    while arguments:
+        argument = arguments[0]
+        if argument.startswith("--jobs="):
+            jobs = int(argument[len("--jobs="):])
+        elif argument == "--shuffle":
+            shuffle = True
+        elif argument.startswith("--seed="):
+            seed = parse_seed(argument[len("--seed="):])
+        elif argument.startswith("--"):
+            sys.exit(f"error: unknown option {argument!r}")
+        else:
+            break
+        arguments.pop(0)
     if len(arguments) < 2:
         sys.exit(__doc__.split("\n\n")[1])
-    sys.exit(main(jobs, arguments[0], arguments[1], arguments[2:]))
+    sys.exit(main(jobs, arguments[0], arguments[1], arguments[2:], shuffle=shuffle, seed=seed))
