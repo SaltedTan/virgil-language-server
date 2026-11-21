@@ -50,19 +50,66 @@ jobs:
           done
           echo "tested=$tested" >> "$GITHUB_OUTPUT"
 
-  test:
-    name: Build and test (pinned Virgil, linux x86-64)
+  # Linux make test runs as test-linux-unit and two shards of test-linux-suites
+  # at once, each building what it needs, and the required check test confirms
+  # them. The build is deterministic, so every job builds the same executables,
+  # and test checks that the shards and the unit tests ran the same ones.
+  test-linux-unit:
+    name: Unit tests (pinned Virgil, linux x86-64)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      REQUIRE_NVIM: '1'
+    timeout-minutes: 15
+    outputs:
+      worker-sha256: ${{ steps.digests.outputs.worker }}
+      stall-worker-sha256: ${{ steps.digests.outputs.stall-worker }}
     steps:
       # Full history and tags, so --version reports a described revision, but
       # blobless: only the checked-out commit's files are downloaded. The build
       # reads only the pinned Virgil commit (git rev-parse HEAD), so its
-      # submodule is cloned at depth 1.
+      # submodule is cloned at depth 1. Every Linux job that builds the server
+      # checks out the same way, so that they build the same executables.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
+      - name: Show pinned Virgil revision
+        run: git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build and run the unit tests
+        run: make test-unit
+      # The workers the unit tests ran, for test to compare with the shards'.
+      - name: Record the workers' digests
+        id: digests
+        run: |
+          sha256sum build/virgil-lsp-worker build/stall/virgil-lsp-worker
+          echo "worker=$(sha256sum < build/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "stall-worker=$(sha256sum < build/stall/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+  test-linux-suites:
+    # The suites of make test after the unit tests, in two shards that
+    # test/suites.py balances by test/suite-times.txt. StreamTest alone takes
+    # most of a shard, so more shards would not finish sooner. Each shard
+    # writes a report of the suites it ran and its executables' digests, which
+    # test checks.
+    name: Suites ${{ matrix.shard }} (pinned Virgil, linux x86-64)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1/2
+            index: 1
+          - shard: 2/2
+            index: 2
+    env:
+      REQUIRE_NVIM: '1'
+    steps:
+      # As in test-linux-unit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -80,43 +127,82 @@ jobs:
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Show pinned Virgil revision
         run: git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build and test
-        run: make test
+      - name: Build and run the shard's suites
+        run: >-
+          make test-suites SHARD=${{ matrix.shard }}
+          SUITE_REPORT="$RUNNER_TEMP/shard-${{ matrix.index }}.json"
+          SUITE_DIGESTS="build/virgil-lsp build/virgil-lsp-worker build/stall/virgil-lsp-worker"
       - name: Version
         run: build/virgil-lsp --version
-      # Only lazyvim-linux and lspcheck-linux use this artifact, so a failed
-      # upload mustn't fail this required job; they fail at their downloads
-      # instead.
       - uses: actions/upload-artifact@v7
-        continue-on-error: true
         with:
-          name: server-linux
-          path: |
-            build/virgil-lsp
-            build/virgil-lsp-worker
+          name: linux-suites-shard-${{ matrix.index }}
+          path: ${{ runner.temp }}/shard-${{ matrix.index }}.json
           if-no-files-found: error
-          retention-days: 3
+          overwrite: true
+          retention-days: 30
+
+  test:
+    # The required check for Linux make test. It runs whatever its needs'
+    # results, since a skipped required check counts as passing, and passes
+    # only when the unit tests and both shards passed, the shards together ran
+    # every suite of make test exactly once, and every shard and the unit
+    # tests ran the same executables.
+    name: Build and test (pinned Virgil, linux x86-64)
+    needs: [tested, test-linux-unit, test-linux-suites]
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check that the unit tests and every shard passed
+        env:
+          UNIT: ${{ needs.test-linux-unit.result }}
+          SUITES: ${{ needs.test-linux-suites.result }}
+        run: |
+          echo "test-linux-unit: $UNIT"
+          echo "test-linux-suites: $SUITES"
+          [ "$UNIT" = success ] && [ "$SUITES" = success ]
+      # Only the Makefile and test/suites.py, which need no submodule.
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: linux-suites-shard-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/shards
+      - name: Check that the shards ran every suite once, on the unit tests' workers
+        env:
+          WORKER_SHA256: ${{ needs.test-linux-unit.outputs.worker-sha256 }}
+          STALL_WORKER_SHA256: ${{ needs.test-linux-unit.outputs.stall-worker-sha256 }}
+        run: |
+          make -s --no-print-directory V3C_TARGET=x86-64-linux print-suites > "$RUNNER_TEMP/suites.txt"
+          python3 test/suites.py --verify=2 --expected="$RUNNER_TEMP/suites.txt" \
+            --digest="build/virgil-lsp-worker=$WORKER_SHA256" \
+            --digest="build/stall/virgil-lsp-worker=$STALL_WORKER_SHA256" \
+            "$RUNNER_TEMP/shards/shard-1.json" "$RUNNER_TEMP/shards/shard-2.json"
 
   lazyvim-linux:
-    # Runs the LazyVim test against the server that test built and tested,
-    # rather than building Virgil again. It is a separate job, not a step of
-    # test, so that it reports as its own required check: it installs the
-    # pinned starter and plugins from GitHub. See docs/compatibility.md for CI
-    # policy and test/e2e/lazyvim/README.md#ci.
+    # Builds the server and runs the LazyVim test against it, at the same time
+    # as the other Linux jobs. It is a job of its own so that it reports as its
+    # own required check: it installs the pinned starter and plugins from
+    # GitHub. See docs/compatibility.md for CI policy and
+    # test/e2e/lazyvim/README.md#ci.
     name: LazyVim test (built server, linux)
-    needs: test
-    # Explicit, because the skipped tested job would otherwise skip this one.
-    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     # A run takes about a minute after setup; the test's own deadlines, 600
     # seconds to install the plugins and parsers and 240 for each run, end a
     # stuck one sooner.
     timeout-minutes: 20
     steps:
-      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      # As in test-linux-unit. The test's fixture project also uses the pinned
+      # Virgil checkout's libraries.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       - name: Install Neovim 0.11.6
         run: |
           curl --fail --location --retry 3 \
@@ -137,14 +223,9 @@ jobs:
           sed -n 's/^PRETTY_NAME=//p' /etc/os-release
           nvim --version | head -n 1
           tmux -V
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-linux
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
+      - name: Build the server
         run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          make
           build/virgil-lsp --version
       - name: LazyVim test
         run: |
@@ -161,20 +242,18 @@ jobs:
           retention-days: 14
 
   lspcheck-linux:
-    # Checks the server that test built and tested with lspcheck, an LSP 3.17
-    # and JSON-RPC 2.0 conformance checker: framing, replies, lifecycle,
-    # cancellation, positions, advertised requests, message types against
-    # the LSP meta-model and robustness to odd input, then, in a step of its
-    # own, survival of and recovery from seeded edits to real Virgil source.
-    # Both use the profile test/protocol/lspcheck.toml. --strict fails a step
-    # on any failed check, SHOULD and POLICY ones included, as well as on an
-    # ERROR verdict. The release and its archive's SHA-256 digest change
-    # together, and only on an upgrade; see
-    # docs/development.md#protocol-conformance.
+    # Builds the server and checks it with lspcheck, an LSP 3.17 and JSON-RPC
+    # 2.0 conformance checker: framing, replies, lifecycle, cancellation,
+    # positions, advertised requests, message types against the LSP
+    # meta-model and robustness to odd input, then, in a step of its own,
+    # survival of and recovery from seeded edits to real Virgil source. Both
+    # use the profile test/protocol/lspcheck.toml. --strict fails a step on any
+    # failed check, SHOULD and POLICY ones included, as well as on an ERROR
+    # verdict. The release and its archive's SHA-256 digest change together,
+    # and only on an upgrade; see docs/development.md#protocol-conformance.
     name: Protocol conformance (lspcheck, built server, linux)
-    needs: test
-    # Explicit, because the skipped tested job would otherwise skip this one.
-    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     # Both runs take a few seconds. lspcheck bounds each of its own waits, and
     # the profile's run_timeout bounds the mutation run at about 10 minutes
@@ -187,19 +266,16 @@ jobs:
       LSPCHECK_MUTATION_SEED: 20261115
       LSPCHECK_MUTATION_CASES: 100
     steps:
-      # Only the profile; the server is the one the test job built.
+      # As in test-linux-unit.
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: test/protocol/lspcheck.toml
-          sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-linux
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
+      - name: Build the server
         run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          make
           build/virgil-lsp --version
       - name: Install lspcheck
         id: install
@@ -252,7 +328,7 @@ jobs:
     env:
       REQUIRE_NVIM: '1'
     steps:
-      # As in test: blobless full history, and the pinned Virgil at depth 1.
+      # As in test-linux-unit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -338,37 +414,58 @@ jobs:
           if-no-files-found: error
 
   vscode-extension-host:
-    # The runner image includes xvfb-run. The test downloads its pinned VS Code
-    # version; see clients/vscode/README.md#extension-host-test. If a launch
-    # fails, the job uploads that launch's VS Code logs, one artifact for each
-    # attempt of the run.
-    name: VS Code Extension Host test (built server, linux)
+    # Two legs at once: source tests the extension from the checkout against
+    # a server built here, and vsix installs the linux-x64 platform VSIX,
+    # packaged here from a release archive that package-release.sh builds,
+    # and tests its bundled server. The runner image includes xvfb-run. The
+    # test downloads its pinned VS Code version; see
+    # clients/vscode/README.md#extension-host-test. If a launch fails, the leg
+    # uploads that launch's VS Code logs, one artifact for each attempt of the
+    # run.
+    name: VS Code Extension Host test (${{ matrix.label }}, linux)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: source
+            label: built server
+          - mode: vsix
+            label: platform VSIX
     steps:
+      # As in test-linux-unit. The test's fixture project uses the pinned
+      # Virgil checkout's libraries.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: clients/vscode/package-lock.json
       - name: Build the server
+        if: matrix.mode == 'source'
         run: make
       - name: Install client dependencies from the lockfile
         working-directory: clients/vscode
         run: npm ci
       - name: Extension Host test
+        if: matrix.mode == 'source'
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"
       - name: Package the Linux archive and platform VSIX
+        if: matrix.mode == 'vsix'
         run: |
           scripts/package-release.sh build/release
           scripts/package-vsix.py linux-x64 --archive build/release/*.tar.gz --out "$RUNNER_TEMP/vsix"
       - name: Extension Host test against the installed platform VSIX
+        if: matrix.mode == 'vsix'
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs/vsix"
       - uses: actions/upload-artifact@v7
@@ -376,7 +473,7 @@ jobs:
         # keeps the failed attempt's logs. Missing logs matter only on failure.
         if: ${{ !cancelled() }}
         with:
-          name: vscode-extension-host-logs-attempt-${{ github.run_attempt }}
+          name: vscode-extension-host-${{ matrix.mode }}-logs-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vscode-logs
           if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
           retention-days: 30
