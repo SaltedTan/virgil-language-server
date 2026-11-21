@@ -13,6 +13,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job but tested checks its running time against its budget in
+# scripts/ci-budgets.json: from the step "Start the running-time budget timer",
+# after checkout, installs, and cache restores, to the step "Check the running
+# time against its budget", before artifact uploads. A job whose steps failed
+# skips the check and reports their failure. jvm-package's reusable workflow
+# is shared with the release workflow, so it has no such steps, and
+# scripts/check-ci-budgets.py summarize checks it from the job's step times.
+# See docs/development.md#ci-running-time-budgets.
 jobs:
   tested:
     # main requires pull requests to be up to date before they merge, and
@@ -77,6 +85,9 @@ jobs:
         run: git submodule update --init --recursive --depth 1
       - name: Show pinned Virgil revision
         run: git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Build and run the unit tests
         run: make test-unit
       # The workers the unit tests ran, for test to compare with the shards'.
@@ -86,6 +97,8 @@ jobs:
           sha256sum build/virgil-lsp-worker build/stall/virgil-lsp-worker
           echo "worker=$(sha256sum < build/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           echo "stall-worker=$(sha256sum < build/stall/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test-linux-unit --started "${{ steps.budget.outputs.started }}"
 
   test-linux-suites:
     # The suites of make test after the unit tests, in two shards that
@@ -127,11 +140,16 @@ jobs:
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Show pinned Virgil revision
         run: git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Build and run the shard's suites
         run: >-
           make test-suites SHARD=${{ matrix.shard }}
           SUITE_REPORT="$RUNNER_TEMP/shard-${{ matrix.index }}.json"
           SUITE_DIGESTS="build/virgil-lsp build/virgil-lsp-worker build/stall/virgil-lsp-worker"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test-linux-suites --started "${{ steps.budget.outputs.started }}"
       - name: Version
         run: build/virgil-lsp --version
       - uses: actions/upload-artifact@v7
@@ -162,13 +180,17 @@ jobs:
           echo "test-linux-unit: $UNIT"
           echo "test-linux-suites: $SUITES"
           [ "$UNIT" = success ] && [ "$SUITES" = success ]
-      # Only the Makefile and test/suites.py, which need no submodule.
+      # Only the Makefile, test/suites.py, and the budget check, which need no
+      # submodule.
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: linux-suites-shard-*
           merge-multiple: true
           path: ${{ runner.temp }}/shards
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Check that the shards ran every suite once, on the unit tests' workers
         env:
           WORKER_SHA256: ${{ needs.test-linux-unit.outputs.worker-sha256 }}
@@ -179,6 +201,8 @@ jobs:
             --digest="build/virgil-lsp-worker=$WORKER_SHA256" \
             --digest="build/stall/virgil-lsp-worker=$STALL_WORKER_SHA256" \
             "$RUNNER_TEMP/shards/shard-1.json" "$RUNNER_TEMP/shards/shard-2.json"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test --started "${{ steps.budget.outputs.started }}"
 
   lazyvim-linux:
     # Builds the server and runs the LazyVim test against it, at the same time
@@ -234,6 +258,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/lazyvim-cache
           key: ${{ steps.keys.outputs.lazyvim }}
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Build the server
         run: |
           make
@@ -246,6 +273,8 @@ jobs:
           mkdir "$RUNNER_TEMP/lazyvim"
           test/e2e/lazyvim/run.sh --cache "$RUNNER_TEMP/lazyvim-cache" --out "$RUNNER_TEMP/lazyvim/results" \
             build/virgil-lsp 2>&1 | tee "$RUNNER_TEMP/lazyvim/run.log"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job lazyvim-linux --started "${{ steps.budget.outputs.started }}"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -286,10 +315,6 @@ jobs:
           filter: blob:none
       - name: Check out the pinned Virgil
         run: git submodule update --init --recursive --depth 1
-      - name: Build the server
-        run: |
-          make
-          build/virgil-lsp --version
       - name: Install lspcheck
         id: install
         run: |
@@ -300,6 +325,14 @@ jobs:
           echo "$LSPCHECK_SHA256  $RUNNER_TEMP/lspcheck.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/lspcheck.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Build the server
+        id: build
+        run: |
+          make
+          build/virgil-lsp --version
       - name: Check the server with lspcheck
         run: |
           lspcheck --version
@@ -313,7 +346,7 @@ jobs:
         # transcripts stay separate and the step can be dropped alone while
         # --mutate is experimental. It runs when the step above fails too.
         # --only keeps the checks the mutation scenario gives evidence for.
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.build.outcome == 'success' }}
         run: |
           mkdir -p "$RUNNER_TEMP/lspcheck"
           lspcheck --strict --profile test/protocol/lspcheck.toml --mutate \
@@ -322,6 +355,8 @@ jobs:
             --json "$RUNNER_TEMP/lspcheck/mutation-report.json" \
             --markdown "$GITHUB_STEP_SUMMARY" \
             --transcripts "$RUNNER_TEMP/lspcheck/mutation-transcripts" -- build/virgil-lsp --stdio
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job lspcheck-linux --started "${{ steps.budget.outputs.started }}"
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -360,6 +395,9 @@ jobs:
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Build and run the unit tests
         run: make test-unit
       # The workers the unit tests ran, for test-macos to compare with the
@@ -370,6 +408,8 @@ jobs:
           shasum -a 256 build/virgil-lsp-worker build/stall/virgil-lsp-worker
           echo "worker=$(shasum -a 256 < build/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           echo "stall-worker=$(shasum -a 256 < build/stall/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test-macos-unit --started "${{ steps.budget.outputs.started }}"
 
   test-macos-suites:
     # As test-linux-suites, on macOS. The shards come from the same
@@ -416,11 +456,16 @@ jobs:
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Build and run the shard's suites
         run: >-
           make test-suites SHARD=${{ matrix.shard }}
           SUITE_REPORT="$RUNNER_TEMP/shard-${{ matrix.index }}.json"
           SUITE_DIGESTS="build/virgil-lsp build/virgil-lsp-worker build/stall/virgil-lsp-worker"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test-macos-suites --started "${{ steps.budget.outputs.started }}"
       - name: Version
         run: |
           build/virgil-lsp --version
@@ -455,13 +500,17 @@ jobs:
           echo "test-macos-unit: $UNIT"
           echo "test-macos-suites: $SUITES"
           [ "$UNIT" = success ] && [ "$SUITES" = success ]
-      # Only the Makefile and test/suites.py, which need no submodule.
+      # Only the Makefile, test/suites.py, and the budget check, which need no
+      # submodule.
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: macos-suites-shard-*
           merge-multiple: true
           path: ${{ runner.temp }}/shards
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       # V3C_TARGET names the shards' target rather than this runner's, and
       # spares host detection, which needs the submodule.
       - name: Check that the shards ran every suite once, on the unit tests' workers
@@ -474,6 +523,8 @@ jobs:
             --digest="build/virgil-lsp-worker=$WORKER_SHA256" \
             --digest="build/stall/virgil-lsp-worker=$STALL_WORKER_SHA256" \
             "$RUNNER_TEMP/shards/shard-1.json" "$RUNNER_TEMP/shards/shard-2.json"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job test-macos --started "${{ steps.budget.outputs.started }}"
 
   jvm-package:
     # Packages the JVM archive, its darwin-arm64-jvm VSIX, and the runtime's
@@ -518,6 +569,9 @@ jobs:
       - name: Install dependencies from the lockfile
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Type-check
         run: npm run check
       - name: Lifecycle tests
@@ -526,6 +580,9 @@ jobs:
         run: npm run package
       - name: List the VSIX
         run: unzip -l virgil-lsp-vscode-*.vsix
+      - name: Check the running time against its budget
+        working-directory: .
+        run: python3 scripts/check-ci-budgets.py check --job vscode-client --started "${{ steps.budget.outputs.started }}"
       - uses: actions/upload-artifact@v7
         with:
           name: vsix
@@ -583,13 +640,16 @@ jobs:
         with:
           path: clients/vscode/.vscode-test
           key: ${{ steps.keys.outputs.vscode }}
-      - name: Build the server
-        if: matrix.mode == 'source'
-        run: make
       - name: Install client dependencies from the lockfile
         if: steps.node-modules.outputs.cache-hit != 'true'
         working-directory: clients/vscode
         run: npm ci
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Build the server
+        if: matrix.mode == 'source'
+        run: make
       - name: Extension Host test
         if: matrix.mode == 'source'
         working-directory: clients/vscode
@@ -603,6 +663,8 @@ jobs:
         if: matrix.mode == 'vsix'
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs/vsix"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job "vscode-extension-host-${{ matrix.mode }}" --started "${{ steps.budget.outputs.started }}"
       - uses: actions/upload-artifact@v7
         # Also after a pass: a launch retried after an unresponsive window
         # keeps the failed attempt's logs. Missing logs matter only on failure.
@@ -636,11 +698,6 @@ jobs:
         run: git submodule update --init --recursive --depth 1
       - name: Install Rosetta 2
         run: sudo softwareupdate --install-rosetta --agree-to-license
-      - name: Build the server
-        run: |
-          make
-          build/virgil-lsp --version
-          file build/virgil-lsp
       # As in vscode-extension-host.
       - uses: actions/setup-node@v7
         with:
@@ -663,12 +720,22 @@ jobs:
         if: steps.node-modules.outputs.cache-hit != 'true'
         working-directory: clients/vscode
         run: npm ci
+      - name: Start the running-time budget timer
+        id: budget
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Build the server
+        run: |
+          make
+          build/virgil-lsp --version
+          file build/virgil-lsp
       - name: Process runner tests (macOS libproc and both Darwin layouts)
         working-directory: clients/vscode
         run: node --test test/processes.cjs
       - name: Extension Host test
         working-directory: clients/vscode
         run: npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"
+      - name: Check the running time against its budget
+        run: python3 scripts/check-ci-budgets.py check --job vscode-extension-host-macos --started "${{ steps.budget.outputs.started }}"
       - uses: actions/upload-artifact@v7
         # Also after a pass: a launch retried after an unresponsive window
         # keeps the failed attempt's logs. Missing logs matter only on failure.

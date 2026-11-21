@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- For contributors, every CI job but `tested` and `jvm-package` now checks its running time against a budget in `scripts/ci-budgets.json`, and `jvm-package`, whose reusable workflow the release workflow shares, has a budget that only `summarize` reports on and that stays advisory. Running time starts after checkout, installs, and cache restores and ends before artifact uploads, so queue wait and setup don't count. Every budget starts advisory: over budget, the job prints a warning annotation and a line in its summary and still passes. A maintainer can make a budget enforcing, so that running over fails the job, after 20 pull request runs in a row that passed on their first attempt within budget. `scripts/check-ci-budgets.py check` checks a job, `validate`, which `make test` runs, checks that the budgets and `ci.yml`'s jobs and check steps match, and `summarize` reports recent runs' running times and counts toward enforcing. `lspcheck-linux` now installs lspcheck, and the Extension Host jobs the client's dependencies, before building the server, so that the timer starts after them ([CI running-time budgets](docs/development.md#ci-running-time-budgets)).
+
 ### Changed
 
 - For contributors, the macOS `make test` jobs of CI and the release workflow now run the headless Neovim test on Neovim 0.12.6, the pinned release download that the macOS LazyVim tests use, checked against its SHA-256 digest, instead of the newest Homebrew Neovim. The Linux `make test` jobs now check their Neovim 0.11.6 download's digest too. The jobs that need history for `--version` clone it without old file contents (`filter: blob:none`), and clone the pinned Virgil at depth 1, as the other jobs already did, instead of with its full history; the build reads only that commit.
