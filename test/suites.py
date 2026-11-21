@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run test suites, several at once, each printed whole once it finishes.
 
-Usage: test/suites.py [--jobs=N] COMMAND ...
+Usage: test/suites.py [--jobs=N] [--shard=I/N [--times=FILE] [--list]] COMMAND ...
+       test/suites.py --times-from LOG ...
 
 Each COMMAND is a shell command that runs one suite. They start in the order
 given, so the longest should come first, and up to N run at once (default:
@@ -17,9 +18,22 @@ suite's process group and stop new suites from starting. A second signal or
 ten seconds after the first signal kills the remaining groups. Suites own
 cleanup of processes they move into separate sessions. Afterwards it lists
 each suite's time, slowest first.
+
+--shard=I/N runs only the I-th of N shards, which together hold every
+COMMAND exactly once. The shards are balanced by the seconds that FILE
+records for each command, in the format of the "suite times:" list that a run
+prints; a command it doesn't name counts as the median of those it does, or
+as one second each without FILE. Each shard keeps the order of COMMAND. A
+sharded run first prints the shard's commands, one per line after "shard I/N:",
+and --list prints only those lines and exits.
+
+--times-from reads the "suite times:" lists of one or more runs' logs, such
+as CI job logs, and prints each command's mean time in FILE's format.
 """
 import os
+import re
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -142,6 +156,68 @@ class Suites:
             sys.stdout.buffer.flush()
 
 
+TIME_LINE = re.compile(r"\s*([0-9]+(?:\.[0-9]+)?) s  (.+)")
+# A GitHub Actions log line starts with its time, such as 2026-11-21T06:32:10.1234567Z.
+LOG_PREFIX = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ")
+
+
+def read_times(path):
+    """Reads a times file: lines of seconds and a command, as "suite times:"
+    lists them, and comments that start with #."""
+    seconds = {}
+    with open(path, encoding="utf-8") as file:
+        for number, line in enumerate(file, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            match = TIME_LINE.fullmatch(line)
+            if not match:
+                sys.exit(f"{path}:{number}: not a suite time: {line}")
+            seconds[match.group(2)] = float(match.group(1))
+    return seconds
+
+
+def times_from(logs):
+    """Prints each command's mean time over the "suite times:" lists in the logs."""
+    runs = {}
+    for path in logs:
+        listing = False
+        with open(path, encoding="utf-8", errors="replace") as file:
+            for line in file:
+                line = line.rstrip("\n")
+                prefix = LOG_PREFIX.match(line)
+                if prefix:
+                    line = line[prefix.end():]
+                match = TIME_LINE.fullmatch(line) if listing else None
+                if match:
+                    runs.setdefault(match.group(2), []).append(float(match.group(1)))
+                listing = line == "suite times:" or bool(match)
+    if not runs:
+        sys.exit("no suite times in " + ", ".join(logs))
+    print(f"# Mean suite times from {len(logs)} log(s), written by test/suites.py --times-from.")
+    for command, seconds in sorted(runs.items(), key=lambda item: (-statistics.mean(item[1]), item[0])):
+        print(f"{statistics.mean(seconds):8.1f} s  {command}")
+    return 0
+
+
+def shards(commands, count, seconds):
+    """Splits the commands into count shards of about equal recorded time,
+    each in the commands' order. Returns them, each shard's recorded time, the
+    time counted for a command without one, and how many had none."""
+    known = [seconds[command] for command in commands if command in seconds]
+    default = statistics.median(known) if known else 1.0
+    weights = [seconds.get(command, default) for command in commands]
+    totals = [0.0] * count
+    members = [[] for _ in range(count)]
+    # Longest first, each to the shard with the least time so far.
+    for index in sorted(range(len(commands)), key=lambda index: (-weights[index], index)):
+        shard = min(range(count), key=lambda shard: (totals[shard], shard))
+        totals[shard] += weights[index]
+        members[shard].append(index)
+    return ([[commands[index] for index in sorted(shard)] for shard in members], totals, default,
+            len(commands) - len(known))
+
+
 def cpus():
     if hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0))
@@ -200,11 +276,46 @@ def main(jobs, commands):
     return 128 + suites.signals[0] if suites.signals else int(bool(failed))
 
 
+def select(shard, times, listing, commands):
+    """Returns the commands of the shard I/N that shard names, after printing them."""
+    match = re.fullmatch(r"([1-9][0-9]*)/([1-9][0-9]*)", shard)
+    if not match or int(match.group(1)) > int(match.group(2)):
+        sys.exit(f"--shard={shard}: expected I/N with 1 <= I <= N")
+    index, count = int(match.group(1)), int(match.group(2))
+    groups, totals, default, missing = shards(commands, count, read_times(times) if times else {})
+    selected = groups[index - 1]
+    if not listing:
+        note = (f" ({missing} of the {len(commands)} have no recorded time and count as {default:.1f} s each)"
+                if missing else "")
+        print(f"shard {shard} runs {len(selected)} of {len(commands)} suites, "
+              f"{totals[index - 1]:.1f} s by recorded times{note}:")
+    for command in selected:
+        print(f"shard {shard}: {command}")
+    sys.stdout.flush()
+    return selected
+
+
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    jobs = 0
-    if arguments and arguments[0].startswith("--jobs="):
-        jobs = int(arguments.pop(0)[len("--jobs="):])
-    if not arguments:
+    if arguments[:1] == ["--times-from"] and arguments[1:]:
+        sys.exit(times_from(arguments[1:]))
+    jobs, shard, times, listing = 0, None, None, False
+    while arguments and arguments[0].startswith("--"):
+        option = arguments.pop(0)
+        if option.startswith("--jobs="):
+            jobs = int(option[len("--jobs="):])
+        elif option.startswith("--shard="):
+            shard = option[len("--shard="):]
+        elif option.startswith("--times="):
+            times = option[len("--times="):]
+        elif option == "--list":
+            listing = True
+        else:
+            sys.exit(f"unknown option {option}")
+    if not arguments or (shard is None and (times or listing)):
         sys.exit(__doc__.split("\n\n")[1])
+    if shard is not None:
+        arguments = select(shard, times, listing, arguments)
+        if listing:
+            sys.exit(0)
     sys.exit(main(jobs, arguments))

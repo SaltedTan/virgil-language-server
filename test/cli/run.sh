@@ -3,10 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Command-line smoke tests for the virgil-lsp executable.
-# Usage: test/cli/run.sh <path-to-virgil-lsp>
+# Usage: test/cli/run.sh <path-to-virgil-lsp> [section...]
+# With sections, it runs only theirs: basics (--version, --help, parse, and
+# the benchmark driver), format (format and format --write), analyze (analyze,
+# its worker, and repair), and stdio. Without any, it runs them all. `make
+# test` runs the sections as separate suites.
 set -uo pipefail
 
-EXE=${1:?usage: run.sh <path-to-virgil-lsp>}
+EXE=${1:?usage: run.sh <path-to-virgil-lsp> [section...]}
+shift
+SECTIONS=${*:-basics format analyze stdio}
+for wanted in $SECTIONS; do
+    case $wanted in
+        basics | format | analyze | stdio) ;;
+        *) echo "run.sh: unknown section '$wanted': expected basics, format, analyze, or stdio" >&2; exit 2 ;;
+    esac
+done
+# section <name>: whether the named section runs.
+section() {
+    case " $SECTIONS " in *" $1 "*) return 0 ;; esac
+    return 1
+}
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 FIXTURES=$ROOT/test/fixtures
 TMP=$(mktemp -d)
@@ -101,6 +118,7 @@ check_stream() {
     fi
 }
 
+if section basics; then
 expect "version" 0 '^virgil-lsp [0-9]+\.[0-9]+\.[0-9]+' "" -- --version
 expect "version reports virgil revision" 0 'virgil revision: [0-9a-f]{40}' "" -- --version
 expect "help" 0 'Usage: virgil-lsp' "" -- --help
@@ -110,6 +128,7 @@ expect "unknown argument keeps stdout clean" 2 "" "unknown argument" -- --bogus
 expect "parse clean file" 0 'ok, 2 top-level declarations' "" -- parse "$FIXTURES/syntax/clean.v3"
 expect "parse reports tab-expanded column" 1 'tab-error\.v3:3:17: ParseError' "" -- parse "$FIXTURES/syntax/tab-error.v3"
 expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
+fi
 
 # virgil-lsp format (ADR-0019 decision 6). Standard output holds only what
 # the mode prints: the formatted bytes, or one line for each file that would
@@ -226,6 +245,7 @@ check_trace() {
         finish "$name" 1
     fi
 }
+if section format; then
 [ "$JVM" -eq 1 ] || [ "$CAN_TRACE" -eq 1 ] || \
     echo "skip: format's system call checks: strace isn't available or doesn't accept the trace filter here"
 F=$TMP/format
@@ -1263,7 +1283,9 @@ if (after.st_mode, after.st_mtime_ns) != (before.st_mode, before.st_mtime_ns):
         same "format --write removes its new file with another owner" in.v3 "$(entries "$W/owner")"
     fi
 fi
+fi
 
+if section analyze; then
 A=$FIXTURES/analysis
 expect "analyze clean two-file program" 0 '^ok: 2 files parsed and verified$' "" -- \
     analyze "$A/two-file/shapes.v3" "$A/two-file/main.v3"
@@ -1535,7 +1557,9 @@ expect "repair needs the cursor within its file" 2 "" "the cursor must be an off
     repair "--cursor=$TMP/repair/cut.v3:9999" "$TMP/repair/cut.v3"
 expect "repair rejects a bad cursor" 2 "" "invalid option" -- repair "--cursor=$TMP/repair/cut.v3:x" "$TMP/repair/cut.v3"
 expect "repair rejects unknown options" 2 "" "unknown option" -- repair --cut=word "--cursor=$TMP/repair/cut.v3:1" "$TMP/repair/cut.v3"
+fi
 
+if section stdio; then
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {
     printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"
@@ -1616,8 +1640,11 @@ expect_stdio "stdio rejects a limit too large for the heap" 2 "$TMP/empty" \
     "invalid option '--max-message-bytes=999999999': the supported maximum is 4194304 bytes" -- \
     --max-message-bytes=999999999 < "$TMP/in"
 expect "stdio rejects unknown options" 2 "" "unknown option" -- --stdio --bogus
+fi
 
+if section basics; then
 bash "$ROOT/test/cli/bench-analysis.sh" || { fail=$((fail + 1)); echo "FAIL: benchmark driver regression tests"; }
+fi
 
 echo "cli: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
