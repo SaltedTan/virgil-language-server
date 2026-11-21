@@ -1,0 +1,54 @@
+# Mean suite times from 1 log(s), written by test/suites.py --times-from.
+    48.2 s  python3 test/e2e/test_nvim_results.py build/virgil-lsp StreamTest
+    22.7 s  python3 test/e2e/test_nvim_results.py build/virgil-lsp ReaderTest TargetTest CheckLuaTest
+    21.7 s  python3 test/protocol/worker.py build/virgil-lsp
+    21.2 s  test/cli/run.sh build/virgil-lsp analyze
+    15.1 s  test/release/run.sh
+    14.8 s  env VIRGIL_LSP_EXE=build/virgil-lsp python3 test/protocol/test_source_mutations.py
+    13.4 s  python3 test/e2e/test_editor_results_render.py
+    12.9 s  python3 test/test_suites.py
+    11.1 s  python3 test/protocol/outline_parse_budget.py build/virgil-lsp
+     8.5 s  build/type-depth-probe
+     7.5 s  test/cli/run.sh build/virgil-lsp format
+     6.8 s  python3 test/e2e/test_coverage.py
+     6.6 s  python3 test/unit/test_run.py
+     4.5 s  python3 test/format/corpus.py build/virgil-lsp
+     3.3 s  python3 test/e2e/test_editor_results.py
+     3.3 s  python3 test/fixtures/projects/test_cleanup.py
+     1.8 s  python3 test/diagnostics/run.py build/virgil-lsp
+     1.7 s  python3 test/protocol/fingerprints.py build/virgil-lsp
+     1.5 s  test/protocol/run.sh build/virgil-lsp
+     1.4 s  python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output /dev/null
+     1.4 s  python3 test/e2e/clean-install/test_install.py
+     1.3 s  python3 test/protocol/shapes.py build/virgil-lsp --seed 0 --cases 2000 --artifacts build/protocol-shapes
+     1.1 s  python3 test/benchmarks/test_report.py
+     1.0 s  python3 test/e2e/test_lazyvim_results.py
+     0.7 s  python3 test/protocol/document_symbol_budget.py build/virgil-lsp
+     0.7 s  python3 test/protocol/formatting.py build/virgil-lsp
+     0.7 s  test/e2e/nvim/run.sh build/virgil-lsp
+     0.5 s  python3 test/benchmarks/test_client.py
+     0.5 s  python3 test/benchmarks/test_tolerance.py
+     0.4 s  test/cli/run.sh build/virgil-lsp basics stdio
+     0.3 s  python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
+     0.3 s  python3 test/protocol/out_of_sync_edits.py build/virgil-lsp
+     0.3 s  python3 test/protocol/test_reply_shapes.py
+     0.2 s  python3 test/protocol/bundled_library.py build/virgil-lsp
+     0.2 s  python3 test/protocol/target_analysis.py build/virgil-lsp
+     0.2 s  scripts/check-format.sh "build" ":(exclude)vendor/" ":(exclude)test/fixtures/" ":(exclude)test/e2e/nvim/fixture/" ":(exclude)test/e2e/lazyvim/fixture/" ":(exclude)docs/examples/"
+     0.1 s  build/retain-probe
+     0.1 s  python3 test/e2e/clean-install/test_readme.py
+     0.1 s  python3 test/protocol/body_fallback.py build/virgil-lsp
+     0.1 s  python3 test/protocol/capacity_warning.py build/virgil-lsp
+     0.1 s  python3 test/protocol/coordinates.py build/virgil-lsp
+     0.1 s  python3 test/protocol/current_repair.py build/virgil-lsp
+     0.1 s  python3 test/protocol/inlay_hints.py build/virgil-lsp
+     0.1 s  python3 test/protocol/semantic_tokens.py build/virgil-lsp
+     0.0 s  python3 test/protocol/call_hierarchy.py build/virgil-lsp
+     0.0 s  python3 test/protocol/client_initialization.py build/virgil-lsp
+     0.0 s  python3 test/protocol/code_actions.py build/virgil-lsp
+     0.0 s  python3 test/protocol/first_project.py build/virgil-lsp
+     0.0 s  python3 test/protocol/folding_ranges.py build/virgil-lsp
+     0.0 s  python3 test/protocol/implementation.py build/virgil-lsp
+     0.0 s  python3 test/protocol/selection_ranges.py build/virgil-lsp
+     0.0 s  python3 test/protocol/type_definition.py build/virgil-lsp
+     0.0 s  python3 test/protocol/type_hierarchy.py build/virgil-lsp

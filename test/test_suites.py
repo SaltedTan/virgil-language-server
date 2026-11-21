@@ -17,6 +17,17 @@ import time
 import unittest
 
 SUITES = Path(__file__).resolve().parent / "suites.py"
+# Prints the name of each test class that unittest loads tests from in the module at argv[1].
+LIST_TEST_CLASSES = """
+import importlib.util, sys, unittest
+spec = importlib.util.spec_from_file_location("listed", sys.argv.pop(1))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def tests(suite):
+    for test in suite:
+        yield from tests(test) if isinstance(test, unittest.TestSuite) else [test]
+print("\\n".join(sorted({type(test).__name__ for test in tests(unittest.TestLoader().loadTestsFromModule(module))})))
+"""
 
 
 def meeting(name, other, directory):
@@ -406,6 +417,113 @@ def alive(pid):
         return False
     return True
 
+
+class ShardsTest(unittest.TestCase):
+    """--shard, --times, --list, and --times-from, and the Makefile's list."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="shards-")
+        self.directory = Path(self.temporary.name)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def suites(self, *arguments):
+        return subprocess.run([sys.executable, str(SUITES), *arguments], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=60, check=False)
+
+    def listed(self, shard, commands, *options):
+        result = self.suites(f"--shard={shard}", *options, "--list", *commands)
+        self.assertEqual(0, result.returncode, result.stdout)
+        prefix = f"shard {shard}: "
+        self.assertTrue(all(line.startswith(prefix) for line in result.stdout.splitlines()), result.stdout)
+        return [line[len(prefix):] for line in result.stdout.splitlines()]
+
+    def assert_partition(self, commands, count, *options):
+        shards = [self.listed(f"{index}/{count}", commands, *options) for index in range(1, count + 1)]
+        # Every command in exactly one shard, each shard in the commands' order.
+        self.assertEqual(sorted(commands), sorted(sum(shards, [])), shards)
+        for shard in shards:
+            self.assertEqual([command for command in commands if command in shard], shard)
+        return shards
+
+    def test_shards_balance_recorded_times(self):
+        times = self.directory / "times.txt"
+        times.write_text("# a comment\n    40.0 s  echo a\n    30.0 s  echo b\n    20.0 s  echo c\n"
+                         "    10.0 s  echo d\n    10.0 s  echo e\n\n")
+        commands = ["echo e", "echo d", "echo c", "echo b", "echo a", "echo new"]
+        # "echo new" has no time, so it counts as the median, 20 s: 40 + 10 | 30 + 10 | 20 + 20.
+        self.assertEqual([["echo d", "echo a"], ["echo e", "echo b"], ["echo c", "echo new"]],
+                         self.assert_partition(commands, 3, f"--times={times}"))
+
+    def test_shards_without_times_take_turns(self):
+        commands = [f"echo {index}" for index in range(7)]
+        self.assertEqual([["echo 0", "echo 3", "echo 6"], ["echo 1", "echo 4"], ["echo 2", "echo 5"]],
+                         self.assert_partition(commands, 3))
+        self.assertEqual(["echo 0"], self.listed("1/1", ["echo 0"]))
+        self.assertEqual([], self.listed("3/3", ["echo 0", "echo 1"]))
+
+    def test_a_sharded_run_prints_and_runs_only_its_shard(self):
+        commands = [f"touch {self.directory}/{name}" for name in ("a", "b", "c")]
+        result = self.suites("--jobs=2", "--shard=2/2", *commands)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["b"], sorted(path.name for path in self.directory.iterdir()))
+        lines = result.stdout.splitlines()
+        self.assertEqual(["shard 2/2 runs 1 of 3 suites, 1.0 s by recorded times "
+                          "(3 of the 3 have no recorded time and count as 1.0 s each):",
+                          f"shard 2/2: {commands[1]}"], lines[:2])
+        self.assertIn("suites: 1 passed, 0 failed, 1 at once", result.stdout)
+
+    def test_bad_shards_and_times_are_refused(self):
+        bad = self.directory / "bad.txt"
+        bad.write_text("    1.0 s  true\nnot a time\n")
+        for arguments, message in [(["--shard=0/2"], "expected I/N"), (["--shard=3/2"], "expected I/N"),
+                                   (["--shard=1"], "expected I/N"), (["--shard=1/2", f"--times={bad}"],
+                                                                     f"{bad}:2: not a suite time"),
+                                   (["--list"], "Usage:"), (["--bogus"], "unknown option --bogus")]:
+            with self.subTest(arguments=arguments):
+                result = self.suites(*arguments, "true")
+                self.assertEqual(1, result.returncode, result.stdout)
+                self.assertIn(message, result.stdout)
+
+    def test_times_from_logs_are_means(self):
+        first, second = self.directory / "first.log", self.directory / "second.log"
+        first.write_text("    9.0 s  not after the heading\nsuite times:\n    3.0 s  slow\n    1.0 s  fast\n"
+                         "suites: 2 passed, 0 failed, 2 at once, 3.0 s\n    7.0 s  not in the list\n")
+        # A GitHub Actions job log puts a time before each line.
+        second.write_text("2026-11-21T06:32:10.1234567Z suite times:\n"
+                          "2026-11-21T06:32:10.1234567Z     5.0 s  slow\n")
+        result = self.suites("--times-from", str(first), str(second))
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["     4.0 s  slow", "     1.0 s  fast"], result.stdout.splitlines()[1:])
+        times = self.directory / "times.txt"
+        times.write_text(result.stdout)
+        self.assertEqual(["slow"], self.listed("1/2", ["fast", "slow"], f"--times={times}"))
+
+    def test_make_suites_shard_into_a_partition_and_cover_the_split_suites(self):
+        repository = SUITES.parent.parent
+        listing = subprocess.run(["make", "-s", "--no-print-directory", "print-suites"], cwd=repository,
+                                 stdout=subprocess.PIPE, text=True, timeout=60, check=True)
+        commands = listing.stdout.splitlines()
+        self.assertEqual(len(commands), len(set(commands)), "each suite once")
+        for count in (2, 3, 4):
+            with self.subTest(shards=count):
+                self.assert_partition(commands, count, f"--times={repository / 'test' / 'suite-times.txt'}")
+        # The parts of the two split suites, with no part left out or run twice: the sections run.sh
+        # accepts, and the classes unittest loads tests from.
+        script = repository / "test" / "cli" / "run.sh"
+        sections = subprocess.run([str(script), "--sections"], stdout=subprocess.PIPE, text=True, timeout=60,
+                                  check=True).stdout.split()
+        nvim = repository / "test" / "e2e" / "test_nvim_results.py"
+        classes = subprocess.run([sys.executable, "-c", LIST_TEST_CLASSES, str(nvim)], cwd=repository,
+                                 stdout=subprocess.PIPE, text=True, timeout=60, check=True).stdout.split()
+        self.assertTrue(sections and classes, (sections, classes))
+        for prefix, parts in [("test/cli/run.sh ", sections), ("python3 test/e2e/test_nvim_results.py ", classes)]:
+            with self.subTest(suite=prefix.strip()):
+                named = [command.split()[len(prefix.split()) + 1:]
+                         for command in commands if command.startswith(prefix)]
+                self.assertTrue(all(named), f"every {prefix.strip()} entry names its parts: {named}")
+                self.assertEqual(sorted(parts), sorted(sum(named, [])))
 
 if __name__ == "__main__":
     unittest.main()

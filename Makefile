@@ -103,15 +103,24 @@ UNIT_JOBS  ?=
 # How many other suites `make test` runs at once; empty means one for each CPU,
 # up to 4.
 SUITE_JOBS ?=
+# Runs only shard I of N of the suites, e.g. `make test-suites SHARD=2/3`. The
+# shards hold every suite once, balanced by the times in SUITE_TIMES; see
+# docs/development.md#build-and-test.
+SHARD ?=
+SUITE_TIMES = test/suite-times.txt
 
 # The suites `make test` runs after the unit tests, through test/suites.py,
 # each a quoted shell command. The longest on macOS CI come first, so that the
-# short ones fill in at the end. `make V3C_TARGET=jvm test` runs only the
-# suites that the JVM build supports: native_only drops a suite there. See
-# "The JVM target" below.
+# short ones fill in at the end. Two long suites run in parts, so that no
+# single suite sets the run's length: test_nvim_results.py by test class and
+# test/cli/run.sh by section. test/test_suites.py checks that the parts cover
+# every class and section. `make V3C_TARGET=jvm test` runs only the suites
+# that the JVM build supports: native_only drops a suite there. See "The JVM
+# target" below.
 native_only = $(if $(filter jvm,$(V3C_TARGET)),,$(1))
 SUITES = \
-	'test/cli/run.sh $(BUILD)/virgil-lsp' \
+	'python3 test/e2e/test_nvim_results.py $(BUILD)/virgil-lsp StreamTest' \
+	'test/cli/run.sh $(BUILD)/virgil-lsp analyze' \
 	'python3 test/protocol/worker.py $(BUILD)/virgil-lsp' \
 	'python3 test/e2e/clean-install/test_install.py' \
 	'$(PROTOCOL_SHAPES)' \
@@ -121,7 +130,8 @@ SUITES = \
 	'$(BUILD)/type-depth-probe' \
 	'python3 test/e2e/test_coverage.py' \
 	'python3 test/e2e/test_editor_results.py' \
-	'python3 test/e2e/test_nvim_results.py $(BUILD)/virgil-lsp' \
+	'python3 test/e2e/test_nvim_results.py $(BUILD)/virgil-lsp ReaderTest TargetTest CheckLuaTest' \
+	'test/cli/run.sh $(BUILD)/virgil-lsp format' \
 	'python3 test/e2e/test_lazyvim_results.py' \
 	'python3 scripts/bench-tolerance.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
 	'test/protocol/run.sh $(BUILD)/virgil-lsp' \
@@ -159,10 +169,13 @@ SUITES = \
 	'python3 test/protocol/target_analysis.py $(BUILD)/virgil-lsp' \
 	$(call native_only,'python3 test/format/corpus.py $(BUILD)/virgil-lsp') \
 	$(call native_only,'$(BUILD)/retain-probe') \
+	'test/cli/run.sh $(BUILD)/virgil-lsp basics stdio' \
 	'python3 test/e2e/clean-install/test_readme.py' \
 	'$(CHECK_FORMAT)'
+RUN_SUITES = python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) \
+  $(if $(SHARD),--shard=$(SHARD) --times=$(SUITE_TIMES)) $(SUITES)
 
-.PHONY: all test check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-suites print-suites check-format test-protocol-shapes test-source-mutations test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -257,15 +270,24 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-
 # suites: the unit tests and retain-probe measure the native collector's heap
 # and allocation, so they don't build for it (docs/development.md). The
 # formatter corpus check doesn't depend on the target, so it runs natively only.
+# test-suites runs the suites without the unit tests, or one SHARD of them.
 ifeq ($(V3C_TARGET),jvm)
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/type-depth-probe
-	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
+SUITE_EXES = $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/type-depth-probe
+test: $(SUITE_EXES)
+	$(RUN_SUITES)
 else
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe \
+SUITE_EXES = $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/retain-probe $(BUILD)/type-depth-probe \
   $(BUILD)/format-corpus-probe $(BUILD)/format-hook/virgil-lsp
+test: $(SUITE_EXES) $(BUILD)/unit-tests
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
-	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
+	$(RUN_SUITES)
 endif
+test-suites: $(SUITE_EXES)
+	$(RUN_SUITES)
+
+# Prints each suite's command on a line of its own, for test/test_suites.py.
+print-suites:
+	@printf '%s\n' $(SUITES)
 
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
