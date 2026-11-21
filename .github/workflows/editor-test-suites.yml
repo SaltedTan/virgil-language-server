@@ -22,9 +22,9 @@ name: Editor test suites
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
 # results and logs, also when it fails. The LazyVim and Extension Host jobs
 # also write and validate a result stream (test/e2e/RESULTS.md), which is in
-# the same artifact; a missing or invalid stream fails the job. See test/e2e/lazyvim/README.md#ci,
-# clients/vscode/README.md#remote-ssh-test, and docs/manual-testing.md for
-# coverage.
+# the same artifact; a missing or invalid stream fails the job. See
+# test/e2e/lazyvim/README.md#ci, clients/vscode/README.md#remote-ssh-test, and
+# docs/manual-testing.md for coverage.
 
 on:
   workflow_call:
