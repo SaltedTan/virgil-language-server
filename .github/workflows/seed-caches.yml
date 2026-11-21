@@ -13,9 +13,7 @@ name: Seed caches
 # daily run seeds again what a quiet week let go. The weekly editor tests and
 # the release workflow use none of these caches.
 #
-# It runs after each push to main, daily, and by hand. seed-macos runs after a
-# push only when the push changes an input of its keys, so ordinary merges
-# take no macOS runner.
+# It runs after each push to main, daily, and by hand.
 
 on:
   push:
@@ -33,44 +31,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    # Every event but a push seeds macOS. A push does when any file it
-    # changes, under its old or new name, is an input of the macOS keys, or
-    # when the files can't be listed.
-    name: Decide whether to seed macOS
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      macos: ${{ steps.plan.outputs.macos }}
-    steps:
-      - name: Plan
-        id: plan
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-          SHA: ${{ github.sha }}
-        run: |
-          macos=true
-          # The compare API lists at most 300 files.
-          if [ "$EVENT" = push ] &&
-            files=$(gh api "repos/$REPO/compare/$BEFORE...$SHA" \
-              --jq 'if (.files | length) >= 300 then error("too many files") else .files[] | .filename, (.previous_filename // empty) end'); then
-            macos=false
-            while read -r file; do
-              case $file in
-                clients/vscode/package.json | clients/vscode/package-lock.json | \
-                  clients/vscode/test/e2e/run.cjs | scripts/ci-cache-keys.sh | .github/workflows/seed-caches.yml)
-                  echo "changed: $file"
-                  macos=true
-                  ;;
-              esac
-            done <<< "$files"
-          fi
-          echo "seed macOS: $macos"
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
-
   seed-linux:
     name: Seed the Linux caches
     runs-on: ubuntu-24.04
@@ -165,8 +125,6 @@ jobs:
     # As seed-linux, for the macOS Extension Host test, which needs no
     # LazyVim cache.
     name: Seed the macOS caches
-    needs: plan
-    if: needs.plan.outputs.macos == 'true'
     runs-on: macos-15
     timeout-minutes: 15
     steps:

@@ -240,8 +240,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
       - name: Show versions
         run: |
           sed -n 's/^PRETTY_NAME=//p' /etc/os-release
@@ -355,8 +353,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
       - name: Show versions
         run: |
           sw_vers
@@ -486,8 +482,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
       - name: Show versions
         run: |
           sw_vers

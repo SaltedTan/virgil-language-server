@@ -387,8 +387,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
       - name: Install client dependencies from the lockfile
         working-directory: clients/vscode
         run: npm ci
