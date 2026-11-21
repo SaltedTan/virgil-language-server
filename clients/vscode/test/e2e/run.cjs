@@ -39,6 +39,9 @@ const { Results, commandOf } = require('./results.cjs');
 const { fromShutdown } = require('./shutdown.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
+// When bumping VSCODE_VERSION, review whether the pre-activation launch retry
+// in attempt() is still needed (#205 counted exception; see the nightly 2 %
+// relaunch-rate gate in scripts/check-vscode-relaunch-rate.py).
 const VSCODE_VERSION = '1.142.0';
 // Each launch, including VS Code's own startup, must finish within this time,
 // and so must each installation of a VSIX.
@@ -628,8 +631,12 @@ function retryable({ kind, exited, activated, windowError }) {
 // temporary directory is removed (see keepLogs). Returns whether a launch
 // passed, and whether that was the retry. Remote-SSH supplies its log keeper,
 // remote teardown before a retry, and the description of its start evidence.
+// With env.GITHUB_ACTIONS === 'true', each retry also prints a GitHub Actions
+// warning annotation titled "Extension Host relaunch (#205)" through log, so
+// the nightly rate gate can count every relaunch from the run's Check Runs
+// annotations.
 async function attempt({ name, work, logs, launch, saveLogs = keepLogs, beforeRetry = async () => {},
-  started = 'the extension activated' }) {
+  started = 'the extension activated', env = process.env, log = (message) => console.log(message) }) {
   for (let tries = 1; ; tries++) {
     const attemptName = tries === 1 ? name : `${name}-retry`;
     const dir = path.join(work, attemptName);
@@ -648,9 +655,17 @@ async function attempt({ name, work, logs, launch, saveLogs = keepLogs, beforeRe
     const kept = target === undefined
       ? 'Its logs were not kept because --logs was not given'
       : `Its logs are in ${target}`;
-    console.error(`RETRY: the ${attemptName} launch ${result.detail} before ${started}, and VS Code's main log `
-      + `records ${result.windowError}; launching it once more, as ${name}-retry. ${kept}.`);
+    const message = `the ${attemptName} launch ${result.detail} before ${started}, and VS Code's main log `
+      + `records ${result.windowError}; launching it once more, as ${name}-retry. ${kept}.`;
+    console.error(`RETRY: ${message}`);
+    if (env.GITHUB_ACTIONS === 'true') log(`::warning title=Extension Host relaunch (#205)::${escapeAnnotation(message)}`);
   }
+}
+
+// Escape a GitHub Actions workflow-command message so that %, carriage
+// returns, and newlines don't terminate or split the command.
+function escapeAnnotation(text) {
+  return text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 }
 
 function channelLogs(userData) {
@@ -788,7 +803,7 @@ function openedBeforeExit(input, uri) {
 
 // The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and
 // isolation.
-module.exports = { VSCODE_VERSION, cachedVSCode, attempt, failure, isolatedEnv, keepLogs, retryable, runGroup, windowError };
+module.exports = { VSCODE_VERSION, cachedVSCode, attempt, escapeAnnotation, failure, isolatedEnv, keepLogs, retryable, runGroup, windowError };
 
 if (require.main === module) {
   main().catch((error) => {
