@@ -1,0 +1,302 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+name: JVM lanes
+
+# The advisory JVM build's lanes on Apple Silicon without Rosetta
+# translation: test-macos-jvm builds and tests the JVM target there, and
+# jvm-archive-macos tests the archive and darwin-arm64-jvm VSIX that this
+# workflow packages on Linux. Neither is a required check
+# (docs/compatibility.md#host-platforms). They run after each push to main, nightly,
+# by hand, and on a pull request only when it changes one of the paths in
+# the select job, or carries the ci/jvm label; ci.yml still packages the
+# JVM archive and VSIX on Linux on every pull request. A failure on main
+# opens an issue, or comments on the open one, naming the commit.
+#
+# This is a workflow of its own, not part of ci.yml, so that adding a label
+# to a pull request doesn't rerun or cancel the required checks, and the
+# nightly run doesn't run them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '43 16 * * *' # nightly, 16:43 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# main's runs share one group and are never cancelled, so under load they
+# coalesce: one runs and only the newest waits. A pull request's newer run
+# cancels its older one, except for adding another label, which gets a group
+# of its own and changes nothing.
+concurrency:
+  group: jvm-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci/jvm' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  select:
+    # Every event but a pull request runs the lanes. A pull request runs them
+    # when it carries the ci/jvm label or when any file it changes, under its
+    # old or new name, is under src/os/jvm/ or test/jvm/, is
+    # scripts/jvm-runtime.*, scripts/v3c.sh, or the Makefile, or is this
+    # workflow or package-jvm.yml. Adding any other label selects nothing.
+    name: Select the JVM lanes
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci/jvm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - name: Select
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'ci/jvm') }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          run=false
+          if [ "$EVENT" != pull_request ]; then
+            echo "A $EVENT event runs the JVM lanes."
+            run=true
+          elif [ "$LABELED" = true ]; then
+            echo "The pull request carries the ci/jvm label."
+            run=true
+          elif [ "$CHANGED_FILES" -ge 3000 ]; then
+            # The files endpoint lists at most 3,000 files.
+            echo "The pull request changes $CHANGED_FILES files, too many to list."
+            run=true
+          else
+            files=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)')
+            matched=$(printf '%s\n' "$files" | grep -E \
+              '^(src/os/jvm/|test/jvm/|scripts/jvm-runtime\.|scripts/v3c\.sh$|Makefile$|\.github/workflows/(jvm|package-jvm)\.yml$)' || true)
+            if [ -n "$matched" ]; then
+              echo "The pull request changes these JVM lane paths:"
+              printf '%s\n' "$matched"
+              run=true
+            else
+              echo "The pull request changes no JVM lane path and lacks the ci/jvm label;" \
+                "the lanes run after it merges."
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  jvm-package:
+    # Packages the JVM archive, its darwin-arm64-jvm VSIX, and the runtime's
+    # source archive on Linux, as the release does, and checks them, for
+    # jvm-archive-macos; see package-jvm.yml. ci.yml's jvm-package does the
+    # same on every pull request.
+    name: JVM package
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    uses: ./.github/workflows/package-jvm.yml
+    with:
+      vsix: true
+
+  test-macos-jvm:
+    # The JVM build on Apple Silicon, apart from test-macos, which runs the
+    # x86-64-darwin build under Rosetta 2. The runner has Rosetta 2 installed;
+    # native.py host requires an untranslated arm64 runner. Force the pinned
+    # jar Aeneas on the pinned Temurin JDK. native.py run rejects translation
+    # in every observed descendant and checks Java's runtime and arm64 binary.
+    # Not a required check, by the maintainer's decision; see
+    # docs/compatibility.md for CI policy.
+    name: Build and test (pinned Virgil, JVM, macOS Apple Silicon without Rosetta translation)
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: macos-15
+    # The build takes seconds and the suites about ten minutes.
+    timeout-minutes: 30
+    env:
+      REQUIRE_NVIM: '1'
+      VIRGIL_V3C: ${{ github.workspace }}/vendor/virgil/bin/stable/jar/Aeneas
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
+      - name: Install Neovim (Homebrew)
+        run: brew install neovim
+      - name: Fetch the pinned JDK
+        # prepare also links the bundled runtime, which must be the pinned one.
+        run: |
+          java=$(python3 scripts/jvm-runtime.py prepare arm64-darwin "$RUNNER_TEMP/jdk")
+          "$java" -version
+          echo "JAVA=$java" >> "$GITHUB_ENV"
+      - name: Show host, compiler, and pinned Virgil revision
+        run: |
+          uname -sm
+          vendor/virgil/bin/dev/sense_host
+          compiler=$(V3C_TARGET=jvm scripts/v3c.sh -print-compiler)
+          echo "$compiler"
+          test "$compiler" = "$GITHUB_WORKSPACE/vendor/virgil/bin/stable/jar/Aeneas"
+          git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build, checking all observed descendants
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 1 \
+            --report "$RUNNER_TEMP/processes/build.json" -- \
+            make V3C_TARGET=jvm JAVA="$JAVA" all build/jvm-target/stall/virgil-lsp-worker build/jvm-target/type-depth-probe
+      - name: Test, checking all observed descendants
+        # The suites of make test that the JVM build supports; see
+        # docs/development.md#the-jvm-target.
+        run: |
+          mkdir -p "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 100 \
+            --report "$RUNNER_TEMP/processes/make-test.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test
+      - name: JVM runtime tests, smoke test, and deep-start regression, checking all observed descendants
+        run: |
+          python3 test/jvm/native.py run --java "$RUNNER_TEMP/jdk/*" --min-java 2 \
+            --report "$RUNNER_TEMP/processes/test-jvm.json" -- make V3C_TARGET=jvm JAVA="$JAVA" test-jvm
+      - name: Version
+        run: build/jvm-target/virgil-lsp --version
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: jvm-macos-processes
+          path: ${{ runner.temp }}/processes
+          if-no-files-found: warn
+          retention-days: 14
+
+  jvm-archive-macos:
+    # The archive and VSIX that jvm-package packaged, on Apple Silicon with
+    # Rosetta 2 installed but no translation: the archive's smoke
+    # tests, then the VS Code client's tests and the Extension Host test on
+    # the installed VSIX and its bundled server. native.py run checks that
+    # every observed descendant is untranslated and every Java process runs
+    # the bundled runtime's arm64 java.
+    # Not a required check (docs/compatibility.md). It uploads the processes
+    # it saw and VS Code's logs as the other Extension Host jobs do.
+    name: JVM archive and VSIX (macOS Apple Silicon without Rosetta translation)
+    # It waits for test-macos-jvm, whatever its result, so that the lanes hold
+    # one macOS runner at a time.
+    needs: [jvm-package, test-macos-jvm]
+    if: ${{ !cancelled() && needs.jvm-package.result == 'success' }}
+    runs-on: macos-15
+    # A run takes about ten minutes; the Extension Host test bounds its waits.
+    timeout-minutes: 20
+    steps:
+      # The release scripts check the archive against the pinned Virgil, and
+      # the Extension Host test's fixture project uses its libraries.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Check untranslated Apple Silicon and report Rosetta availability
+        run: |
+          python3 test/jvm/test_native.py
+          python3 test/jvm/native.py host
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-jvm-arm64-darwin
+          path: ${{ runner.temp }}/archive
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix-darwin-arm64-jvm
+          path: ${{ runner.temp }}/vsix
+      - name: Check the VSIX's producer digest
+        run: |
+          cd "$RUNNER_TEMP/vsix"
+          shasum -a 256 --check --strict darwin-arm64-jvm.sha256
+      - name: Smoke-test the archive, checking all observed descendants
+        # Moved, with spaces in its path, through a symlink, with a read-only
+        # library and an empty environment; see scripts/smoke-test-release.sh.
+        run: |
+          mkdir "$RUNNER_TEMP/processes"
+          python3 test/jvm/native.py run --java '*/runtime/bin/java' --min-java 2 \
+            --report "$RUNNER_TEMP/processes/smoke-test-release.json" -- \
+            scripts/smoke-test-release.sh "$RUNNER_TEMP"/archive/virgil-lsp-*-jvm-arm64-darwin.tar.gz
+      - name: JVM smoke test on the extracted archive, with no Java on PATH
+        run: |
+          mkdir "$RUNNER_TEMP/jvm archive"
+          tar -xzf "$RUNNER_TEMP"/archive/virgil-lsp-*-jvm-arm64-darwin.tar.gz -C "$RUNNER_TEMP/jvm archive"
+          server=$(echo "$RUNNER_TEMP/jvm archive"/virgil-lsp-*-jvm-arm64-darwin)
+          python3 test/jvm/native.py run --java "$server/runtime/bin/java" --min-java 2 \
+            --report "$RUNNER_TEMP/processes/jvm-smoke.json" -- \
+            env -i PATH=/usr/bin:/bin HOME="$HOME" /usr/bin/python3 test/jvm/smoke.py "$server/virgil-lsp"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install client dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Lifecycle tests
+        working-directory: clients/vscode
+        run: npm test
+      - name: Extension Host test against the installed JVM VSIX, checking all observed descendants
+        working-directory: clients/vscode
+        run: |
+          python3 ../../test/jvm/native.py run --java '*/server/runtime/bin/java' --min-java 2 \
+            --report "$RUNNER_TEMP/processes/extension-host.json" -- \
+            npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: jvm-archive-macos-processes
+          path: ${{ runner.temp }}/processes
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        # Also after a pass: a launch retried after an unresponsive window
+        # keeps the failed attempt's logs. Missing logs matter only on failure.
+        if: ${{ !cancelled() }}
+        with:
+          name: jvm-archive-macos-vscode-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vscode-logs
+          if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
+          retention-days: 30
+
+  report:
+    # A failure on main, after a push, nightly, or by hand, opens an issue
+    # titled "JVM lanes failed on main", or comments on the open one, with the
+    # commit, the run, and each job's result. A job that timed out reports
+    # cancelled although the run wasn't cancelled. Close the issue once the
+    # lanes pass again.
+    name: Report a failure on main
+    needs: [select, jvm-package, test-macos-jvm, jvm-archive-macos]
+    if: >-
+      ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          RESULTS: |-
+            - Select the JVM lanes: ${{ needs.select.result }}
+            - JVM package: ${{ needs.jvm-package.result }}
+            - test-macos-jvm: ${{ needs.test-macos-jvm.result }}
+            - jvm-archive-macos: ${{ needs.jvm-archive-macos.result }}
+        run: |
+          title="JVM lanes failed on main"
+          body="The advisory JVM lanes failed on $SHA (event: $EVENT): $RUN_URL
+
+          $RESULTS"
+          number=$(gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi
