@@ -4,23 +4,34 @@
 #
 # Command-line smoke tests for the virgil-lsp executable.
 # Usage: test/cli/run.sh <path-to-virgil-lsp> [section...]
+#        test/cli/run.sh --sections
 # With sections, it runs only theirs: basics (--version, --help, parse, and
 # the benchmark driver), format (format and format --write), analyze (analyze,
 # its worker, and repair), and stdio. Without any, it runs them all. `make
-# test` runs the sections as separate suites.
+# test` runs the sections as separate suites. --sections prints the section
+# names on one line, for test/test_suites.py.
 set -uo pipefail
 
+ALL_SECTIONS="basics format analyze stdio"
+if [ "${1:-}" = "--sections" ]; then
+    echo "$ALL_SECTIONS"
+    exit 0
+fi
 EXE=${1:?usage: run.sh <path-to-virgil-lsp> [section...]}
 shift
-SECTIONS=${*:-basics format analyze stdio}
+SECTIONS=${*:-$ALL_SECTIONS}
+# known <name>: exits unless the name is one of ALL_SECTIONS.
+known() {
+    case " $ALL_SECTIONS " in *" $1 "*) return 0 ;; esac
+    echo "run.sh: unknown section '$1': expected one of $ALL_SECTIONS" >&2
+    exit 2
+}
 for wanted in $SECTIONS; do
-    case $wanted in
-        basics | format | analyze | stdio) ;;
-        *) echo "run.sh: unknown section '$wanted': expected basics, format, analyze, or stdio" >&2; exit 2 ;;
-    esac
+    known "$wanted"
 done
 # section <name>: whether the named section runs.
 section() {
+    known "$1"
     case " $SECTIONS " in *" $1 "*) return 0 ;; esac
     return 1
 }

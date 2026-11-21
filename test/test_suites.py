@@ -6,10 +6,8 @@
 Each test runs the runner on commands that leave their traces in a temporary
 directory, and reads its stdout and stderr as one stream, as a CI log does.
 """
-import ast
 import os
 from pathlib import Path
-import re
 import shlex
 import signal
 import subprocess
@@ -19,6 +17,17 @@ import time
 import unittest
 
 SUITES = Path(__file__).resolve().parent / "suites.py"
+# Prints the name of each test class that unittest loads tests from in the module at argv[1].
+LIST_TEST_CLASSES = """
+import importlib.util, sys, unittest
+spec = importlib.util.spec_from_file_location("listed", sys.argv.pop(1))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def tests(suite):
+    for test in suite:
+        yield from tests(test) if isinstance(test, unittest.TestSuite) else [test]
+print("\\n".join(sorted({type(test).__name__ for test in tests(unittest.TestLoader().loadTestsFromModule(module))})))
+"""
 
 
 def meeting(name, other, directory):
@@ -500,21 +509,21 @@ class ShardsTest(unittest.TestCase):
         for count in (2, 3, 4):
             with self.subTest(shards=count):
                 self.assert_partition(commands, count, f"--times={repository / 'test' / 'suite-times.txt'}")
-        # The parts of the two split suites, with no part left out or run twice.
+        # The parts of the two split suites, with no part left out or run twice: the sections run.sh
+        # accepts, and the classes unittest loads tests from.
         script = repository / "test" / "cli" / "run.sh"
-        sections = re.findall(r"^if section (\w+); then$", script.read_text(), re.MULTILINE)
+        sections = subprocess.run([str(script), "--sections"], stdout=subprocess.PIPE, text=True, timeout=60,
+                                  check=True).stdout.split()
         nvim = repository / "test" / "e2e" / "test_nvim_results.py"
-        classes = [node.name for node in ast.parse(nvim.read_text()).body if isinstance(node, ast.ClassDef)
-                   and any(isinstance(item, ast.FunctionDef) and item.name.startswith("test")
-                           for item in node.body)]
-        for prefix, parts, arguments in [("test/cli/run.sh ", sorted(set(sections)), 1),
-                                         ("python3 test/e2e/test_nvim_results.py ", sorted(classes), 1)]:
+        classes = subprocess.run([sys.executable, "-c", LIST_TEST_CLASSES, str(nvim)], cwd=repository,
+                                 stdout=subprocess.PIPE, text=True, timeout=60, check=True).stdout.split()
+        self.assertTrue(sections and classes, (sections, classes))
+        for prefix, parts in [("test/cli/run.sh ", sections), ("python3 test/e2e/test_nvim_results.py ", classes)]:
             with self.subTest(suite=prefix.strip()):
-                named = [command.split()[len(prefix.split()) + arguments:]
+                named = [command.split()[len(prefix.split()) + 1:]
                          for command in commands if command.startswith(prefix)]
                 self.assertTrue(all(named), f"every {prefix.strip()} entry names its parts: {named}")
-                self.assertEqual(parts, sorted(sum(named, [])))
-
+                self.assertEqual(sorted(parts), sorted(sum(named, [])))
 
 if __name__ == "__main__":
     unittest.main()

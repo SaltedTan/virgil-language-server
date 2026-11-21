@@ -28,7 +28,7 @@ For native builds, `make test` runs the unit tests first, then the other suites 
 
 To refresh the times, take the logs of recent full `make test` runs on `main`'s Linux CI job (or local runs) and write their mean times with `python3 test/suites.py --times-from <log>... > test/suite-times.txt`. It reads each log's `suite times:` list and accepts GitHub Actions log lines, which start with a time. The file holds native commands with the default `BUILD`, so the JVM build's suites balance as if untimed. The checked-in file was recorded locally, on four pinned cores of an x86-64 Linux host.
 
-Two long suites run in parts, so that neither sets the length of a run: `test/e2e/test_nvim_results.py` by test class, which `unittest` selects from its arguments, and `test/cli/run.sh` by section. `test/test_suites.py` checks that the Makefile's parts name every class with tests and every section, each once.
+Two long suites run in parts, so that neither sets the length of a run: `test/e2e/test_nvim_results.py` by test class, which `unittest` selects from its arguments, and `test/cli/run.sh` by section. `test/test_suites.py` checks that the Makefile's parts name each class that `unittest` loads tests from and each section that `test/cli/run.sh --sections` lists, each once.
 
 On SIGTERM, SIGHUP, or SIGINT, the suite runner stops starting suites and forwards that signal to every running suite's process group so it can clean up. A second signal or a 10-second grace period sends SIGKILL to groups still running. The runner reaps its children and exits with 128 plus the first signal. Suites are responsible for cleaning up any processes they move into separate sessions.
 
