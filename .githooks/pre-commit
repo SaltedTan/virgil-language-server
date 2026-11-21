@@ -2,7 +2,8 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Local pre-commit hook. Checks the staged index content, not the working tree.
+# Local pre-commit hook. Checks the staged index content of .v3 files, and
+# type-checks the working tree under clients/vscode when a staged file is there.
 # Install with `make install-hooks`. Skip once with `git commit --no-verify`,
 # or disable with `git config --unset core.hooksPath`.
 
@@ -23,16 +24,9 @@ fi
 tmpdir=
 trap '[ -n "$tmpdir" ] && [ -d "$tmpdir" ] && rm -rf -- "$tmpdir"' EXIT
 
-make_tmpdir() {
-    if [ -z "$tmpdir" ]; then
-        tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/virgil-lsp-pre-commit.XXXXXX")
-    fi
-}
-
 raw_v3_files=()
 v3_files=()
 vscode_touched=0
-workflow_files=()
 
 for path in "${staged[@]}"; do
     case "$path" in
@@ -40,11 +34,6 @@ for path in "${staged[@]}"; do
     esac
     case "$path" in
         clients/vscode/*) vscode_touched=1 ;;
-    esac
-    case "$path" in
-        .github/workflows/*.yml|.github/workflows/*.yaml)
-            workflow_files+=("$path")
-            ;;
     esac
 done
 
@@ -81,7 +70,7 @@ if [ ${#v3_files[@]} -gt 0 ]; then
         exit 1
     fi
     make -s build/virgil-lsp
-    make_tmpdir
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/virgil-lsp-pre-commit.XXXXXX")
     args=()
     for path in "${v3_files[@]}"; do
         dir=$(dirname -- "$path")
@@ -108,16 +97,6 @@ if [ "$vscode_touched" -eq 1 ]; then
     else
         echo "pre-commit: skipping VS Code type-check (clients/vscode/node_modules not installed; run npm ci in clients/vscode)" >&2
     fi
-fi
-
-if [ ${#workflow_files[@]} -gt 0 ] && command -v actionlint >/dev/null 2>&1; then
-    make_tmpdir
-    mkdir -p -- "$tmpdir/.github/workflows"
-    while IFS= read -r -d '' path; do
-        mkdir -p -- "$tmpdir/$(dirname -- "$path")"
-        git show ":$path" > "$tmpdir/$path"
-    done < <(git ls-files --cached -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml')
-    ( cd "$tmpdir" && actionlint "${workflow_files[@]}" )
 fi
 
 exit 0

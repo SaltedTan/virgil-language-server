@@ -6,11 +6,12 @@
 Each pre-commit test uses a stand-in `build/virgil-lsp` and a stand-in `Makefile`
 with the real exclusion list, and the pre-push tests use a stand-in `make` on
 PATH that logs its invocations. The last tests check the real hooks' executable
-bit and that `make print-format-exclude` reports the real `FORMAT_EXCLUDE`.
+bit and that `make print-format-exclude` reports the directories that
+`make check-format` excludes.
 """
 import os
 from pathlib import Path
-import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -22,7 +23,6 @@ ROOT = Path(__file__).resolve().parent.parent
 HOOKS = ROOT / ".githooks"
 PRE_COMMIT = HOOKS / "pre-commit"
 PRE_PUSH = HOOKS / "pre-push"
-MAKEFILE = ROOT / "Makefile"
 
 FAKE_MAKEFILE = (
     "FORMAT_EXCLUDE = \\\n"
@@ -196,27 +196,6 @@ class PreCommitTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("skipping VS Code type-check", result.stderr)
 
-    def test_actionlint_runs_when_available(self):
-        bin_dir = self.repo / "fake-bin"
-        bin_dir.mkdir()
-        log = self.repo / "actionlint.log"
-        write_script(bin_dir / "actionlint",
-                     f"#!/usr/bin/env bash\necho \"[$PWD]\" >> {log}\nfor f in \"$@\"; do echo \"$f\" >> {log}; done\nexit 0\n")
-        self.stage(".github/workflows/ci.yml",
-                   "name: CI\non: push\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n")
-        env = os.environ.copy()
-        env["PATH"] = f"{bin_dir}:" + env.get("PATH", "")
-        result = self.run_hook(env=env)
-        self.assertEqual(0, result.returncode, result.stderr)
-        text = log.read_text()
-        self.assertIn(".github/workflows/ci.yml", text)
-
-    def test_actionlint_skipped_when_absent(self):
-        self.stage(".github/workflows/ci.yml", "name: CI\non: push\njobs: {}\n")
-        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
-        result = self.run_hook(env=env)
-        self.assertEqual(0, result.returncode, result.stderr)
-
 
 class PrePushTests(unittest.TestCase):
     ZERO = "0" * 40
@@ -290,6 +269,12 @@ class PrePushTests(unittest.TestCase):
         self.assertFalse(self.make_log.exists(),
                          self.make_log.read_text() if self.make_log.exists() else "")
 
+    def test_push_with_nothing_to_update_skips_everything(self):
+        result = self.run_hook("")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(self.make_log.exists(),
+                         self.make_log.read_text() if self.make_log.exists() else "")
+
     def test_mixed_deletion_and_push_still_runs_checks(self):
         sha = self.commit({"a.txt": "x"})
         stdin = (f"refs/heads/main {sha} refs/heads/main {self.ZERO}\n"
@@ -347,19 +332,20 @@ class RepositoryTests(unittest.TestCase):
             self.assertTrue(path.is_file(), f"{path} missing")
             self.assertTrue(path.stat().st_mode & 0o111, f"{path} not executable")
 
-    def test_print_format_exclude_matches_makefile(self):
-        result = subprocess.run(["make", "-s", "--no-print-directory", "print-format-exclude"],
-                                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, check=True)
-        printed = [line for line in result.stdout.splitlines() if line.strip()]
-        text = MAKEFILE.read_text()
-        match = re.search(r"^FORMAT_EXCLUDE\s*=\s*((?:[^\n]*\\\n)*[^\n]*)",
-                          text, re.MULTILINE)
-        self.assertIsNotNone(match, "FORMAT_EXCLUDE not found in Makefile")
-        expected = [token for token in match.group(1).replace("\\\n", " ").split()
-                    if token]
-        self.assertEqual(expected, printed)
-
+    def test_print_format_exclude_matches_check_format(self):
+        def make(*args):
+            return subprocess.run(["make", "--no-print-directory", *args], cwd=ROOT,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, check=True).stdout
+        printed = [line for line in make("-s", "print-format-exclude").splitlines()
+                   if line.strip()]
+        commands = [shlex.split(line) for line in make("-n", "check-format").splitlines()
+                    if line.startswith("scripts/check-format.sh")]
+        self.assertEqual(1, len(commands), commands)
+        excluded = [arg[len(":(exclude)"):] for arg in commands[0]
+                    if arg.startswith(":(exclude)")]
+        self.assertTrue(excluded, commands[0])
+        self.assertEqual(excluded, printed)
 
 if __name__ == "__main__":
     unittest.main()
