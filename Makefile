@@ -79,7 +79,13 @@ ENTRY_SRC   = src/main.v3 src/worker/WorkerMain.v3
 SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(sort $(shell find src -name '*.v3'))) $(OS_SRC)
 # The worker's heap, chosen from measurements in
 # docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
+# The JVM target's worker gets its own -Xmx, adopted in #463 from
+# docs/testing-notes/jvm-memory.md; scripts/v3c.sh sets the JVM server's.
+ifeq ($(V3C_TARGET),jvm)
+WORKER_HEAP ?= 256m
+else
 WORKER_HEAP ?= 384m
+endif
 # BENCH=1 is for a separate build directory only. Normal compilation removes
 # BenchProbe and all its calls. GcStats.enabled counts bytes without verbose output.
 BENCH ?= 0
@@ -319,8 +325,10 @@ jvm:
 	$(MAKE) --no-print-directory V3C_TARGET=jvm BUILD=$(JVM_BUILD) all
 endif
 
+# The smoke test expects the JVM default WORKER_HEAP unless one is given.
 test-jvm: test-jvm-runtime jvm
-	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp
+	python3 test/jvm/smoke.py $(JVM_BUILD)/virgil-lsp \
+	  $(if $(filter-out file,$(origin WORKER_HEAP)),--worker-heap=$(WORKER_HEAP))
 	JAVA='$(JAVA)' JAVAC='$(JAVAC)' python3 test/jvm/deepstart.py $(JVM_BUILD)/virgil-lsp.jar
 
 # scripts/package-release.sh records the worker heap in its build manifest.
