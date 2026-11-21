@@ -10,8 +10,10 @@
 # construct VSIX files, build manifests, and archives in a temporary directory.
 # It also checks the checkout's pin agreement; see check_pin.py.
 # Usage: test/release/run.sh [--archive <archive>]
-# RELEASE_CHECK=<name> runs only the checks with that exact name, such as
-# "VSIX payload integrity and provenance", and fails if no check has it.
+# RELEASE_CHECK=<name> selects which checks run and are counted by exact name,
+# such as "VSIX payload integrity and provenance", and fails if no check has
+# that name. Fixture setup still runs, including VSIX comparison probes, so a
+# filtered run can take a few seconds.
 # Backticks in single-quoted patterns are Markdown, not command substitutions.
 # shellcheck disable=SC2016
 set -uo pipefail
@@ -726,15 +728,17 @@ cp "$NOTES" "$REPO/scripts/"
 : > "$REPO/docs/a.md"
 : > "$REPO/docs/sub/b.png"
 base="https://example\.test/o/r/blob/$revision"
+link_notes() {
+    printf '# Changelog\n\n## [Unreleased]\n\n%s\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n' "$1" \
+        > "$REPO/CHANGELOG.md" || return 1
+    env GITHUB_SERVER_URL=https://example.test GITHUB_REPOSITORY=o/r \
+        "$REPO/scripts/release-notes.py" Unreleased "$ASSETS"
+}
 # links <name> <expected-exit> <stdout-pattern|-> <stderr-pattern|-|""> <section>
 # Prints the notes for an Unreleased section holding <section>, with the
 # repository URL set as the release workflow sets it.
 links() {
-    printf '# Changelog\n\n## [Unreleased]\n\n%s\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n' "$5" \
-        > "$REPO/CHANGELOG.md"
-    expect_run "release-notes.py: $1" "$2" "$3" "$4" \
-        env GITHUB_SERVER_URL=https://example.test GITHUB_REPOSITORY=o/r \
-        "$REPO/scripts/release-notes.py" Unreleased "$ASSETS"
+    expect_run "release-notes.py: $1" "$2" "$3" "$4" link_notes "$5"
 }
 assets
 notes "today's CHANGELOG.md Unreleased section" 0 '^## Downloads$' ""
@@ -867,18 +871,23 @@ links "an unclosed angle bracket doesn't take later prose for a tag" 0 \
     '^- Documented `List<T`\.$' "" \
     '- Documented `List<T`.
 - The src= directory is now supported.'
+check_absolute_link_targets() {
+    local notes targets
+    notes=$(link_notes "$1") || return 1
+    targets=$(grep -oE '\]\([^)]*' <<< "$notes") || return 1
+    grep -vE '^\]\([A-Za-z][A-Za-z0-9+.-]*:' <<< "$targets"
+    [ "$?" -eq 1 ]
+}
 # Every accepted form at once, after which no "](" in the notes may have a
 # target without a URI scheme.
-links "every accepted form" 0 '^## Downloads$' "" \
-    '- See [A](docs/a.md#x), ![B](./docs/sub/b.png), [Top](#unreleased), and [K](https://example.com).
+accepted_forms='- See [A](docs/a.md#x), ![B](./docs/sub/b.png), [Top](#unreleased), and [K](https://example.com).
 - `[a](docs/sub/../a.md)` and \[A](docs/a.md), escaped \` [A](docs/a.md) \`.
 - `example
   2. [a](docs/a.md)
   continuation` xs[i][j], the src= directory, Map<K, V>, <br>, and a < b.'
-cp "$TMP/out" "$TMP/notes.md"
-expect_run "release-notes.py: no relative link target remains" 1 - "" \
-    bash -c "grep -oE '\]\([^)]*' \"\$1\" | grep -vE '^\]\([A-Za-z][A-Za-z0-9+.-]*:'" - \
-    "$TMP/notes.md"
+links "every accepted form" 0 '^## Downloads$' "" "$accepted_forms"
+expect_run "release-notes.py: no relative link target remains" 0 - "" \
+    check_absolute_link_targets "$accepted_forms"
 assets '"v1.2.3-alpha.4"'
 links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
