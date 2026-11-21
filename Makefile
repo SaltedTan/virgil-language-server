@@ -81,10 +81,10 @@ SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(sort $(shell find src -name '
 # docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
 WORKER_HEAP ?= 384m
 # BENCH=1 is for a separate build directory only. Normal compilation removes
-# BenchProbe and all its calls. RiGc.stats counts bytes without verbose output.
+# BenchProbe and all its calls. GcStats.enabled counts bytes without verbose output.
 BENCH ?= 0
 ifeq ($(BENCH),1)
-BENCH_FLAGS = -redef-field=BenchProbe.enabled=true,RiGc.stats=true
+BENCH_FLAGS = -redef-field=BenchProbe.enabled=true,GcStats.enabled=true
 endif
 # test/unit/main.v3 holds the test entry point and must be passed first.
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(sort $(shell find test/unit -name '*.v3')))

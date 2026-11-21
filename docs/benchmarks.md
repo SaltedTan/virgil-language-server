@@ -276,7 +276,7 @@ a build from before that split can be the control.
 
 ## Phases, allocation, and output
 
-`BENCH=1` sets `BenchProbe.enabled` and `RiGc.stats` with one `-redef-field` option.
+`BENCH=1` sets `BenchProbe.enabled` and `GcStats.enabled` with one `-redef-field` option.
 Ordinary builds compile out the probe calls and marker strings. The fixed-buffer
 formatter writes only to stderr, performs no heap allocation, and does not turn
 on verbose GC. It changes neither LSP messages nor the worker wire format.
