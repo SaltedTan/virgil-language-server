@@ -746,7 +746,7 @@ summary=''
 # new tmux server, driven by driver.lua.
 run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
-  local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
+  local driver_out=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
   local tmux_pid='' pane_pid='' anchor_pid='' processes_ok=1 lingering
   current=$name
@@ -764,7 +764,7 @@ run() {
       export VIRGIL_DRIVER_OBSERVATIONS=$observations VIRGIL_DRIVER_PROFILE=$name
     fi
     export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
-    export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
+    export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$driver_out
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
     export VIRGIL_DRIVER_ANCHOR=$work/$name.anchor VIRGIL_DRIVER_STATUS=$work/$name.status
     # The pane stays open when Neovim exits, for its screen, and keeps the
@@ -790,12 +790,12 @@ run() {
   # Complete results end with their only DONE line, whole, as driver.lua
   # writes it.
   re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure\(s\)$'
-  if [[ -f $results ]] && (( $(grep -c '^DONE' "$results" || true) == 1 )) &&
-    [[ -z $(tail -c 1 "$results") && $(tail -n 1 "$results") =~ $re ]]; then
+  if [[ -f $driver_out ]] && (( $(grep -c '^DONE' "$driver_out" || true) == 1 )) &&
+    [[ -z $(tail -c 1 "$driver_out") && $(tail -n 1 "$driver_out") =~ $re ]]; then
     complete=1 passed=${BASH_REMATCH[1]} failed=${BASH_REMATCH[2]} xfail=${BASH_REMATCH[3]}
   fi
   echo "-- Neovim exit status $exit_status, after $((SECONDS - started)) s"
-  if [[ -f $results ]] && (( ! complete )); then echo "-- $results does not end with one complete DONE line"; fi
+  if [[ -f $driver_out ]] && (( ! complete )); then echo "-- $driver_out does not end with one complete DONE line"; fi
   if (( rc != 124 )) && [[ $exit_status != 0 || $complete == 0 ]]; then
     echo "-- the screen after Neovim exited is in $out/$name.screen.txt"
     save_screen "$name" "after Neovim exited"
@@ -817,7 +817,7 @@ run() {
       "$passed passed, 0 failed, $xfail expected failure(s), as expected"
   fi
   begin_check lazyvim.infrastructure.profile-processes "$name"
-  cat "$results" 2>/dev/null || echo "FAIL: no results"
+  cat "$driver_out" 2>/dev/null || echo "FAIL: no results"
   local log=$XDG_STATE_HOME/nvim/lsp.log
   if [[ -f $log ]]; then
     echo "-- server stderr in the LSP log:"
@@ -865,7 +865,7 @@ run() {
   fi
   [[ $verdict == PASS ]] || status=1
   summary="$summary$name: $passed passed, $failed failed, $xfail expected failure(s) (expected $expected_xfail); Neovim exit status $exit_status; $((SECONDS - started)) s: $verdict"$'\n'
-  summary="$summary$(grep '^XFAIL ' "$results" 2>/dev/null | sed 's/^/  /' || true)"
+  summary="$summary$(grep '^XFAIL ' "$driver_out" 2>/dev/null | sed 's/^/  /' || true)"
   [[ $summary == *$'\n' ]] || summary="$summary"$'\n'
 }
 

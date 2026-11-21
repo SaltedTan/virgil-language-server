@@ -7,8 +7,7 @@ lazyvim/results.py writes streams from synthetic observations, as run.sh and
 driver.lua record them, for passing, failing, stopped, and interrupted runs,
 and scripts/editor-results.py validates each one. run.sh itself runs up to
 the point where it would clone the starter, with stand-ins for nvim, tmux,
-git, and the server. test_nvim_results.py, which make test runs, also runs
-these tests."""
+git, and the server. make test runs this file from its own SUITES entry."""
 import contextlib
 import importlib.util
 import io
