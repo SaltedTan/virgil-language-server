@@ -20,7 +20,6 @@ of each alternative, which facts that driver.lua observes during the main
 profile decide. The LazyVim writer section of test/e2e/RESULTS.md describes
 the rules. Requires Python 3.9 or later and only the standard library."""
 import argparse
-import datetime
 import importlib.util
 import json
 import math
