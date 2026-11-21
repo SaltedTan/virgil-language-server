@@ -317,18 +317,67 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  test-macos:
-    # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
-    # supports arm64-darwin (ADR-0003). See docs/compatibility.md for CI policy.
-    name: Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)
+  # macOS make test fans out as Linux make test does: test-macos-unit and two
+  # shards of test-macos-suites run at once, and the required check
+  # test-macos confirms them. Apple Silicon runs the x86-64-darwin build under
+  # Rosetta 2 until Virgil supports arm64-darwin (ADR-0003). See
+  # docs/compatibility.md for CI policy.
+  test-macos-unit:
+    name: Unit tests (pinned Virgil, macOS Apple Silicon via Rosetta 2)
     needs: tested
     if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 15
+    outputs:
+      worker-sha256: ${{ steps.digests.outputs.worker }}
+      stall-worker-sha256: ${{ steps.digests.outputs.stall-worker }}
+    steps:
+      # As in test-linux-unit. Every macOS job that builds the server checks
+      # out the same way, so that they build the same executables.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
+      - name: Install Rosetta 2
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - name: Show host and pinned Virgil revision
+        run: |
+          uname -sm
+          vendor/virgil/bin/dev/sense_host
+          git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build and run the unit tests
+        run: make test-unit
+      # The workers the unit tests ran, for test-macos to compare with the
+      # shards'.
+      - name: Record the workers' digests
+        id: digests
+        run: |
+          shasum -a 256 build/virgil-lsp-worker build/stall/virgil-lsp-worker
+          echo "worker=$(shasum -a 256 < build/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "stall-worker=$(shasum -a 256 < build/stall/virgil-lsp-worker | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+  test-macos-suites:
+    # As test-linux-suites, on macOS. The shards come from the same
+    # test/suite-times.txt.
+    name: Suites ${{ matrix.shard }} (pinned Virgil, macOS Apple Silicon via Rosetta 2)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1/2
+            index: 1
+          - shard: 2/2
+            index: 2
     env:
       REQUIRE_NVIM: '1'
     steps:
-      # As in test-linux-unit.
+      # As in test-macos-unit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -354,20 +403,64 @@ jobs:
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build and test
-        run: make test
+      - name: Build and run the shard's suites
+        run: >-
+          make test-suites SHARD=${{ matrix.shard }}
+          SUITE_REPORT="$RUNNER_TEMP/shard-${{ matrix.index }}.json"
+          SUITE_DIGESTS="build/virgil-lsp build/virgil-lsp-worker build/stall/virgil-lsp-worker"
       - name: Version
         run: |
           build/virgil-lsp --version
           file build/virgil-lsp
       - uses: actions/upload-artifact@v7
         with:
-          name: server-macos
-          path: |
-            build/virgil-lsp
-            build/virgil-lsp-worker
+          name: macos-suites-shard-${{ matrix.index }}
+          path: ${{ runner.temp }}/shard-${{ matrix.index }}.json
           if-no-files-found: error
-          retention-days: 3
+          overwrite: true
+          retention-days: 30
+
+  test-macos:
+    # The required check for macOS make test, as test is for Linux: it runs
+    # whatever its needs' results and passes only when the unit tests and both
+    # shards passed, the shards together ran every suite of make test exactly
+    # once, and every shard and the unit tests ran the same executables. It
+    # only reads reports and digests, so it runs on Linux: it takes no macOS
+    # runner from the five that may run at once and never waits in the macOS
+    # queue.
+    name: Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)
+    needs: [tested, test-macos-unit, test-macos-suites]
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check that the unit tests and every shard passed
+        env:
+          UNIT: ${{ needs.test-macos-unit.result }}
+          SUITES: ${{ needs.test-macos-suites.result }}
+        run: |
+          echo "test-macos-unit: $UNIT"
+          echo "test-macos-suites: $SUITES"
+          [ "$UNIT" = success ] && [ "$SUITES" = success ]
+      # Only the Makefile and test/suites.py, which need no submodule.
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: macos-suites-shard-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/shards
+      # V3C_TARGET names the shards' target rather than this runner's, and
+      # spares host detection, which needs the submodule.
+      - name: Check that the shards ran every suite once, on the unit tests' workers
+        env:
+          WORKER_SHA256: ${{ needs.test-macos-unit.outputs.worker-sha256 }}
+          STALL_WORKER_SHA256: ${{ needs.test-macos-unit.outputs.stall-worker-sha256 }}
+        run: |
+          make -s --no-print-directory V3C_TARGET=x86-64-darwin print-suites > "$RUNNER_TEMP/suites.txt"
+          python3 test/suites.py --verify=2 --expected="$RUNNER_TEMP/suites.txt" \
+            --digest="build/virgil-lsp-worker=$WORKER_SHA256" \
+            --digest="build/stall/virgil-lsp-worker=$STALL_WORKER_SHA256" \
+            "$RUNNER_TEMP/shards/shard-1.json" "$RUNNER_TEMP/shards/shard-2.json"
 
   jvm-package:
     # Packages the JVM archive, its darwin-arm64-jvm VSIX, and the runtime's
@@ -479,32 +572,32 @@ jobs:
           retention-days: 30
 
   vscode-extension-host-macos:
-    # Runs the test against the server that test-macos built and tested, rather
-    # than building Virgil again. It is a separate job, not a step of
-    # test-macos, so that it is not yet a required check; see
+    # Builds the server and runs the test against it, at the same time as the
+    # macOS test jobs, rather than waiting for them. It is a separate job, not
+    # one of the jobs test-macos confirms, so that it is not yet a required check; see
     # docs/compatibility.md for CI policy. macOS needs no virtual display. It
     # uploads a failed launch's VS Code logs as the Linux job does.
     name: VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)
-    needs: test-macos
-    if: ${{ !cancelled() && needs.test-macos.result == 'success' }}
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: macos-15
     timeout-minutes: 15
     steps:
-      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      # As in test-macos-unit. The test's fixture project uses the pinned
+      # Virgil checkout's libraries.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check out the pinned Virgil
+        run: git submodule update --init --recursive --depth 1
       - name: Install Rosetta 2
         run: sudo softwareupdate --install-rosetta --agree-to-license
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-macos
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
+      - name: Build the server
         run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          make
           build/virgil-lsp --version
+          file build/virgil-lsp
       - uses: actions/setup-node@v7
         with:
           node-version: 24
