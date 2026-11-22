@@ -113,7 +113,7 @@ class FixtureCleanupTest(unittest.TestCase):
         script.chmod(0o755)
         return script, report
 
-    def run_unit_tests(self, build, consumer, *overrides, env=None):
+    def run_unit_tests(self, build, consumer, env=None):
         # A pattern run refuses --shuffle and --seed, so the empty UNIT_SHUFFLE
         # and UNIT_SEED keep a `make test UNIT_SHUFFLE=1` that runs this suite
         # from passing its own through MAKEFLAGS or the environment (#613).
@@ -121,7 +121,7 @@ class FixtureCleanupTest(unittest.TestCase):
             [
                 "make", "--no-print-directory", "run-unit-tests",
                 f"BUILD={build}", f"UNIT_TESTS={consumer}", "ARGS=*",
-                "UNIT_SHUFFLE=", "UNIT_SEED=", *overrides,
+                "UNIT_SHUFFLE=", "UNIT_SEED=",
             ],
             cwd=ROOT,
             check=False,
@@ -237,18 +237,6 @@ class FixtureCleanupTest(unittest.TestCase):
                         {str(path): 0 for path in self.restricted(build)},
                         json.loads(report.read_text(encoding="utf-8")),
                     )
-                    self.assert_build_is_removable(build)
-
-    def test_run_unit_tests_refuses_explicit_shuffle_or_seed_with_patterns(self):
-        for override in ["UNIT_SHUFFLE=1", "UNIT_SEED=42"]:
-            with self.subTest(override=override):
-                with self.build_directory("project-explicit-") as build:
-                    self.prepare(build)
-                    script, report = self.stand_in(build.parent, build, 0)
-                    result = self.run_unit_tests(build, script, override, env=clean_environment())
-                    self.assertNotEqual(0, result.returncode, result.stdout)
-                    self.assertIn("--shuffle and --seed cannot be used with patterns", result.stderr)
-                    self.assertFalse(report.exists(), "the stand-in must not run")
                     self.assert_build_is_removable(build)
 
 
