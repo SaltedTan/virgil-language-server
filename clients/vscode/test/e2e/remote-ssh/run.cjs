@@ -10,6 +10,7 @@
 //   node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH]
 //     [--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work]
 //     [--sshd PATH | --target FILE [--client-vsix PATH]]
+//     [--results FILE [--release VERSION] [--purpose PURPOSE]]
 //
 // localhost.cjs provisions the host: an SSH server of the test's own on
 // 127.0.0.1, under the same user, with its own keys, and a private X display.
@@ -33,6 +34,11 @@
 // even during the log collection or the teardown, which an interrupt waits
 // for. The last line of output, and manifest.json in the output directory,
 // say which.
+//
+// With --results, results.cjs also writes the run's result stream to FILE, as
+// test/e2e/RESULTS.md describes, and the exit status is 0 exactly when that
+// run passed: otherwise the status above, or 1 if that is 0. An interrupted
+// run's stream has no run-end.
 
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -43,11 +49,13 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, attempt, isolatedEnv, windowError } = require('../run.cjs');
+const { PURPOSES } = require('../results.cjs');
 const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, runOwned, startGroup } = require('../processes.cjs');
 const external = require('./external.cjs');
 const focus = require('./focus.cjs');
 const localhost = require('./localhost.cjs');
 const prefs = require('./prefs.cjs');
+const streams = require('./results.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
 // and the members of its extension pack, which VS Code's CLI would otherwise
@@ -91,8 +99,8 @@ const repo = path.resolve(extension, '../..');
 // A failure that ends the run: 'infra' for the environment, 'fail' for the
 // product, or 'interrupted'.
 class Failure extends Error {
-  constructor(kind, message) {
-    super(message);
+  constructor(kind, message, options) {
+    super(message, options);
     this.kind = kind;
   }
 }
@@ -110,7 +118,8 @@ function infrastructure(what, step) {
 class UsageError extends Error {}
 
 const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH] '
-  + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH | --target FILE [--client-vsix PATH]]';
+  + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH | --target FILE [--client-vsix PATH]] '
+  + '[--results FILE [--release VERSION] [--purpose PURPOSE]]';
 
 function options() {
   let parsed;
@@ -129,11 +138,23 @@ function options() {
         sshd: { type: 'string' },
         target: { type: 'string' },
         'client-vsix': { type: 'string' },
+        results: { type: 'string' },
+        release: { type: 'string' },
+        purpose: { type: 'string' },
       },
     }).values;
   } catch (error) {
     throw new UsageError(error.message);
   }
+  if (parsed.results === undefined && (parsed.release !== undefined || parsed.purpose !== undefined)) {
+    throw new UsageError('--release and --purpose describe the result stream, so they need --results');
+  }
+  if (parsed.results === '') throw new UsageError('--results takes a file, not an empty string');
+  if (parsed.release === '') throw new UsageError('--release takes a version, not an empty string');
+  if (parsed.purpose !== undefined && !PURPOSES.includes(parsed.purpose)) {
+    throw new UsageError(`--purpose takes one of ${PURPOSES.join(', ')}, not ${parsed.purpose}`);
+  }
+  const results = parsed.results === undefined ? undefined : path.resolve(process.env.INIT_CWD ?? process.cwd(), parsed.results);
   if (parsed.target === undefined && process.platform !== 'linux') throw new UsageError('the Remote-SSH test runs on Linux only, or on macOS with --target');
   if (parsed.target !== undefined && process.platform !== 'darwin') throw new UsageError('--target is a prototype for a macOS client, and runs on macOS only');
   if (parsed.target !== undefined && parsed.sshd !== undefined) throw new UsageError('give --sshd or --target, not both');
@@ -154,6 +175,9 @@ function options() {
     sshd: parsed.sshd ?? '/usr/sbin/sshd',
     target: resolve(parsed.target),
     clientVsix: resolve(parsed['client-vsix']),
+    results,
+    release: parsed.release,
+    purpose: parsed.purpose,
   };
   if (values.target !== undefined && !fs.existsSync(values.target)) throw new UsageError(`no target description at ${values.target}`);
   if (values.clientVsix !== undefined && !fs.existsSync(values.clientVsix)) throw new UsageError(`no VSIX at ${values.clientVsix}`);
@@ -181,18 +205,62 @@ function options() {
     throw new UsageError(`the work directory's path must have only letters, digits, and . _ / -: ${values.workDir}; use --work-dir`);
   }
   if (!path.isAbsolute(values.sshd)) throw new UsageError(`--sshd must be an absolute path: ${values.sshd}`);
+  // With --results, FILE is emptied once the arguments are checked, and
+  // before the output directory can fail to be made, so that an earlier run's
+  // stream can't outlive a run that stops early. It may be in the output
+  // directory, if that is empty or new: then it is emptied once that exists.
+  const emptyResults = () => {
+    if (results === undefined) return;
+    try {
+      fs.writeFileSync(results, '');
+    } catch (error) {
+      throw new UsageError(`--results can't write ${results}: ${error.message}`);
+    }
+  };
   if (values.out !== undefined) {
-    const entries = infrastructure('prepare the output directory', () => {
-      fs.mkdirSync(values.out, { recursive: true });
-      values.out = fs.realpathSync(values.out);
-      return fs.readdirSync(values.out);
-    });
-    if (entries.length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
-    // The work directory holds the run's keys and Microsoft's software.
-    if (`${values.workDir}/`.startsWith(`${values.out}/`)) {
-      throw new UsageError(`the work directory can't be in the output directory: ${values.workDir}`);
+    // FILE's directory as it really is, if it exists.
+    const real = (file) => {
+      try {
+        return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+      } catch {
+        return file;
+      }
+    };
+    const collides = (file) => ['manifest.json', 'summary.txt'].find((name) => file === path.join(values.out, name));
+    const collision = () => {
+      const name = results === undefined ? undefined : collides(results) ?? collides(real(results));
+      if (name !== undefined) throw new UsageError(`--results can't be the output directory's ${name}, which the run writes: ${results}`);
+    };
+    collision();
+    if (fs.existsSync(values.out)) {
+      let entries;
+      try {
+        fs.mkdirSync(values.out, { recursive: true });
+        values.out = fs.realpathSync(values.out);
+        entries = fs.readdirSync(values.out);
+      } catch (error) {
+        emptyResults();
+        throw infra(`could not prepare the output directory: ${error.message}`);
+      }
+      if (entries.length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
+      // The work directory holds the run's keys and Microsoft's software.
+      if (`${values.workDir}/`.startsWith(`${values.out}/`)) {
+        throw new UsageError(`the work directory can't be in the output directory: ${values.workDir}`);
+      }
+      collision();
+    } else {
+      // Nothing is in an output directory that doesn't exist yet, such as
+      // the work directory or an earlier stream.
+      const inside = results !== undefined && results.startsWith(`${values.out}/`);
+      if (!inside) emptyResults();
+      infrastructure('prepare the output directory', () => {
+        fs.mkdirSync(values.out, { recursive: true });
+        values.out = fs.realpathSync(values.out);
+      });
+      collision();
     }
   }
+  emptyResults();
   return values;
 }
 
@@ -225,13 +293,15 @@ function treeSha256(dir) {
   return crypto.createHash('sha256').update(lines.join('')).digest('hex');
 }
 
-// One file from a zip archive, such as a VSIX: its central directory gives
-// the entry's local header, whose data is stored or deflated.
-function readZipEntry(file, name, optional = false) {
+// The files of a zip archive, such as a VSIX, in its central directory's
+// order, each with its name and a read() of its data: the central directory
+// gives each entry's local header, whose data is stored or deflated.
+function zipEntries(file) {
   const zip = fs.readFileSync(file);
   let end = zip.length - 22;
   while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
   if (end < 0) throw new Error(`${file} is not a zip archive`);
+  const entries = [];
   let at = zip.readUInt32LE(end + 16);
   for (let i = zip.readUInt16LE(end + 10); i > 0; i--) {
     if (zip.readUInt32LE(at) !== 0x02014b50) throw new Error(`${file} has a damaged central directory`);
@@ -239,13 +309,23 @@ function readZipEntry(file, name, optional = false) {
     const size = zip.readUInt32LE(at + 20);
     const nameLength = zip.readUInt16LE(at + 28);
     const local = zip.readUInt32LE(at + 42);
-    if (zip.toString('utf8', at + 46, at + 46 + nameLength) === name) {
-      const data = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
-      const raw = zip.subarray(data, data + size);
-      return method === 0 ? raw : zlib.inflateRawSync(raw);
-    }
+    entries.push({
+      name: zip.toString('utf8', at + 46, at + 46 + nameLength),
+      read: () => {
+        const data = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+        const raw = zip.subarray(data, data + size);
+        return method === 0 ? raw : zlib.inflateRawSync(raw);
+      },
+    });
     at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
   }
+  return entries;
+}
+
+// One file from a zip archive (see zipEntries).
+function readZipEntry(file, name, optional = false) {
+  const entry = zipEntries(file).find((candidate) => candidate.name === name);
+  if (entry !== undefined) return entry.read();
   if (!optional) throw new Error(`${file} has no ${name}`);
 }
 
@@ -426,13 +506,14 @@ class Run {
   }
 
   // Records what ended the test or spoiled its evidence: a Failure as it is,
-  // anything else as the runner's own failure. The signal handler records
-  // interrupts.
+  // anything else as the runner's own failure, whose cause it is. The signal
+  // handler records interrupts. Returns the Failure.
   record(error) {
-    const failure = error instanceof Failure ? error : new Failure('fail', `the runner failed: ${error.stack}`);
-    if (failure.kind === 'interrupted' || this.errors.includes(failure)) return;
+    const failure = error instanceof Failure ? error : new Failure('fail', `the runner failed: ${error.stack}`, { cause: error });
+    if (failure.kind === 'interrupted' || this.errors.includes(failure)) return failure;
     this.errors.push(failure);
     console.log(`${failure.kind === 'infra' ? 'INFRA' : 'FAIL'}: ${failure.message}`);
+    return failure;
   }
 
   // Runs command over SSH on the target, in the user's login shell there.
@@ -629,6 +710,15 @@ function remoteLayout(root, commit, vsix) {
     results: path.posix.join(root, 'results'),
     inputs: path.posix.join(root, 'inputs'),
   };
+}
+
+// The remote's machine settings for the single-file and workspace launches:
+// the Virgil settings, which are machine settings (see clientSettings).
+function machineSettings(layout, bundled) {
+  return `${JSON.stringify(bundled ? {} : {
+    'virgil.server.path': path.posix.join(layout.server, 'virgil-lsp'),
+    'virgil.virgilRoot': layout.virgilRoot,
+  }, null, 2)}\n`;
 }
 
 function remoteUri(target, file) {
@@ -914,41 +1004,51 @@ function hostStopped(host) {
 async function launch(run, name, mode, options) {
   let record;
   let failed;
-  await attempt({
-    name, work: path.join(run.work, 'client'), logs: path.join(run.values.out, 'client'),
-    started: 'the tests started in the remote extension host',
-    // collectLogs keeps both attempts, including the remote logs, before
-    // publishLogs redacts their connection tokens. Never copy raw logs out.
-    saveLogs: async () => {},
-    beforeRetry: async () => {
-      await stopForRetry(run, options.layout);
-      const result = path.posix.join(options.layout.results, `${record.name}.json`);
-      const report = await readBootstrapReport(run, result);
-      if (report.code !== 44) {
-        run.note(`${record.name}: bootstrap started after the window exited or its result file is unreadable; not retrying`);
-        throw failed;
-      }
-      record.retriedAs = `${name}-retry`;
-    },
-    launch: async (dir) => {
-      failed = undefined;
-      record = {
-        name: path.basename(dir), mode,
-        ...(options.repetition === undefined ? {} : { repetition: options.repetition }),
-      };
-      run.manifest.launches.push(record);
-      try {
-        await launchSteps(run, record, options);
-        return { passed: record.result === 'PASS' };
-      } catch (error) {
-        record.result ??= { infra: 'INFRA', interrupted: 'INTERRUPTED' }[error.kind] ?? 'FAIL';
-        if (error.retryOutcome === undefined) throw error;
-        failed = error;
-        return error.retryOutcome;
-      }
-    },
-  });
-  if (failed !== undefined) throw failed;
+  let thrown;
+  try {
+    await attempt({
+      name, work: path.join(run.work, 'client'), logs: path.join(run.values.out, 'client'),
+      started: 'the tests started in the remote extension host',
+      // collectLogs keeps both attempts, including the remote logs, before
+      // publishLogs redacts their connection tokens. Never copy raw logs out.
+      saveLogs: async () => {},
+      beforeRetry: async () => {
+        await stopForRetry(run, options.layout);
+        const result = path.posix.join(options.layout.results, `${record.name}.json`);
+        const report = await readBootstrapReport(run, result);
+        if (report.code !== 44) {
+          run.note(`${record.name}: bootstrap started after the window exited or its result file is unreadable; not retrying`);
+          throw failed;
+        }
+        record.retriedAs = `${name}-retry`;
+      },
+      launch: async (dir) => {
+        failed = undefined;
+        record = {
+          name: path.basename(dir), mode,
+          ...(options.repetition === undefined ? {} : { repetition: options.repetition }),
+        };
+        run.manifest.launches.push(record);
+        // With --results, what this attempt observed (see results.cjs).
+        const observed = run.results?.attempt(name, mode, options.repetition ?? 1);
+        try {
+          await launchSteps(run, record, { ...options, observed });
+          return { passed: record.result === 'PASS' };
+        } catch (error) {
+          record.result ??= { infra: 'INFRA', interrupted: 'INTERRUPTED' }[error.kind] ?? 'FAIL';
+          if (error.retryOutcome === undefined) throw error;
+          failed = error;
+          return error.retryOutcome;
+        }
+      },
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  thrown ??= failed;
+  // The last attempt's checks, once the launch has ended.
+  run.results?.launch(name, thrown);
+  if (thrown !== undefined) throw thrown;
   return record;
 }
 
@@ -983,10 +1083,16 @@ function readBootstrapReport(run, result) {
   return run.remote(`if [ -e ${sh(result)} ]; then cat ${sh(result)}; else exit 44; fi`, { allowFailure: true });
 }
 
-async function launchSteps(run, record, { executable, layout, vsix }) {
+async function launchSteps(run, record, { executable, layout, vsix, observed }) {
   const { target } = run;
   const { name, mode } = record;
   const result = path.posix.join(layout.results, `${name}.json`);
+  // With --results, which step an exception ends (see results.cjs).
+  const stage = (step) => {
+    if (observed !== undefined) observed.stage = step;
+  };
+  // With --results, where bootstrap.cjs and suite.cjs record their checks.
+  const observations = path.posix.join(layout.results, `${name}.observations.jsonl`);
   const config = {
     launch: name,
     mode,
@@ -1001,16 +1107,14 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     // host sees them: suite.cjs runs its single-file tests without any, and
     // its workspace tests otherwise.
     folders: mode === 'workspace' ? [`file://${layout.project}`] : null,
+    ...(observed === undefined ? {} : { observations }),
   };
   // A fresh copy of the fixture, and the Virgil settings in the remote's
   // machine settings, which the suite changes and restores.
   if (mode !== 'probe') {
     await run.remote(`rm -rf ${sh(layout.project)} && cp -R ${sh(layout.fixture)} ${sh(layout.project)} `
       + `&& mkdir -p ${sh(path.posix.dirname(layout.machineSettings))} && cat > ${sh(layout.machineSettings)}`, {
-      input: `${JSON.stringify(run.values.bundled ? {} : {
-        'virgil.server.path': path.posix.join(layout.server, 'virgil-lsp'),
-        'virgil.virgilRoot': layout.virgilRoot,
-      }, null, 2)}\n`,
+      input: machineSettings(layout, run.values.bundled),
     });
   }
   await run.remote(`cat > ${sh(path.posix.join(layout.tests, 'run-config.json'))}`, { input: JSON.stringify(config, null, 2) });
@@ -1092,23 +1196,55 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     if (record.focus.cleanupOk === false) run.record(infra(`${name}: the focus guard cleanup failed`));
   }
   run.checkpoint();
-  if (firstSample?.error !== undefined) throw firstSample.error;
+  // With --results, the checks that bootstrap.cjs and suite.cjs recorded,
+  // whatever ends the launch after its window has gone.
+  if (observed !== undefined) {
+    observed.exitedAt = exit.at;
+    try {
+      observed.observations = (await run.remote(`if [ -e ${sh(observations)} ]; then cat ${sh(observations)}; fi`, { allowFailure: true })).stdout;
+    } catch (error) {
+      if (error.kind === 'interrupted') throw error;
+      observed.observationsError = error.message;
+    }
+  }
+  if (firstSample?.error !== undefined) {
+    // With --results, the launch's own check is still recorded when its
+    // report can be read; the failed sample fails the leak check.
+    if (observed !== undefined) {
+      try {
+        const launched = launchVerdict(await launchEvidence(run, result, exit), { exit, mode, config });
+        if (launched.notStarted) {
+          launched.problems.unshift(`VS Code ${outcome(exit)} before the tests started in the remote extension host`);
+          launched.codes.unshift('not-started');
+        }
+        observed.launch = {
+          problems: launched.problems, codes: launched.codes, startedAt: observed.startedAt, endedAt: exit.at, seconds: exit.seconds,
+          passLines: launched.passLines,
+        };
+      } catch (error) {
+        if (error.kind === 'interrupted') throw error;
+      }
+    }
+    stage('leak-check');
+    throw firstSample.error;
+  }
   if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
 
-  // Distinguish an absent report (44) from one that exists but can't be
-  // read, which must not make a started bootstrap eligible for a retry.
-  const report = await readBootstrapReport(run, result);
-  let evidence;
-  try {
-    if (report.code !== 44) evidence = JSON.parse(report.stdout);
-  } catch {
-    evidence = { outcome: 'unreadable', error: `${result} is not JSON` };
-  }
+  const launched = await launchEvidence(run, result, exit);
+  const { evidence } = launched;
   record.bootstrap = evidence ?? null;
-  const output = exit.stdout.toString() + exit.stderr;
-  record.passLines = (output.match(/^PASS: /gm) ?? []).length;
-  record.failLines = (output.match(/^FAIL: /gm) ?? []).length;
+  record.passLines = launched.passLines;
+  record.failLines = launched.failLines;
   record.suiteSeconds = evidence?.seconds ?? null;
+  const verdict = launchVerdict(launched, { exit, mode, config });
+  // Record the launch's own verdict before the leak check, so a failure
+  // during settle or stopHost still preserves ssh.infrastructure.launch.
+  if (observed !== undefined && !verdict.notStarted) {
+    observed.launch = {
+      problems: [...verdict.problems], codes: verdict.codes, startedAt: observed.startedAt, endedAt: exit.at, seconds: exit.seconds,
+      passLines: record.passLines,
+    };
+  }
 
   // Closing the window ends its remote extension host, whose extension stops
   // its language server: none may be left SERVER_EXIT_MS later. But VS Code
@@ -1119,6 +1255,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   // server must then exit by itself within SERVER_EXIT_MS, as when its client
   // has gone. Stopping it also keeps its client from restarting the server
   // during a later launch.
+  stage('leak-check');
   if (mode !== 'probe') {
     const host = extensionHost(evidence, layout);
     let processes = await settle(run, layout, exit.at, host, firstSample?.processes);
@@ -1135,43 +1272,33 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     record.vscodeServerProcesses = processes.vscodeServer;
     if (processes.left.length > 0) await remoteProcesses(run, layout, { kill: processes.left });
   }
-
-  const problems = [];
-  if (evidence === undefined) {
-    // The connection, or VS Code itself, failed before the tests started.
-    if (!succeeded(exit)) {
-      const error = infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
-      // Only the bootstrap creates this launch's result file, before it
-      // checks or runs anything. An incomplete or unreadable file still
-      // proves it started; only an absent file permits a retry.
-      error.retryOutcome = {
-        passed: false, kind: 'launch', detail: outcome(exit), activated: false,
-        exited: exit.error === undefined && exit.stopped === undefined && !exit.groupLeft
-          && !(record.leftRunning?.length > 0),
-        windowError: infrastructure(`read ${name}'s main log`, () => windowError(userData)),
-      };
-      throw error;
-    }
-    problems.push('no test ran: VS Code exited with 0, but bootstrap.cjs never started in the remote extension host');
-  } else if (JSON.stringify(evidence.folders) !== JSON.stringify(config.folders)) {
-    // bootstrap.cjs refuses to run the suite then.
-    problems.push(`scenario mismatch: the ${mode} launch had the workspace folders ${JSON.stringify(evidence.folders)}, `
-      + `not ${JSON.stringify(config.folders)}, so suite.cjs would have run the wrong tests`);
-  } else {
-    if (!succeeded(exit)) problems.push(`VS Code ${outcome(exit)}`);
-    if (evidence.outcome !== 'pass') {
-      problems.push(`the tests ${evidence.outcome === 'started' ? 'did not finish' : 'failed'}: ${evidence.error ?? ''}`.trim());
-    }
-    if (mode !== 'probe' && record.passLines === 0) problems.push('the suite printed no PASS line');
-    if (record.failLines > 0) problems.push(`the suite printed ${record.failLines} FAIL line(s)`);
-  }
-  if (exit.groupLeft) problems.push(`VS Code's processes outlived it by ${GROUP_EXIT_MS / 1000} seconds`);
   const lingered = record.remoteExtensionHost?.leftRunning === true;
-  if (record.leftRunning?.length > 0) {
-    problems.push(`left running ${SERVER_EXIT_MS / 1000} seconds after `
+  const leftProblem = record.leftRunning?.length > 0
+    ? `left running ${SERVER_EXIT_MS / 1000} seconds after `
       + `${lingered ? 'the test stopped the remote extension host that VS Code left running' : 'the window closed'}, then killed: `
-      + record.leftRunning.map((p) => `${p.exe ?? 'a process that hides its executable'} (pid ${p.pid})`).join(', '));
+      + record.leftRunning.map((p) => `${p.exe ?? 'a process that hides its executable'} (pid ${p.pid})`).join(', ')
+    : undefined;
+  if (observed !== undefined && mode !== 'probe') {
+    observed.hostExit = { problem: leftProblem, lingered, startedAt: exit.at, endedAt: Date.now() };
   }
+  stage('verdict');
+
+  const { problems, notStarted } = verdict;
+  if (notStarted) {
+    // The connection, or VS Code itself, failed before the tests started.
+    const error = infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
+    // Only the bootstrap creates this launch's result file, before it
+    // checks or runs anything. An incomplete or unreadable file still
+    // proves it started; only an absent file permits a retry.
+    error.retryOutcome = {
+      passed: false, kind: 'launch', detail: outcome(exit), activated: false,
+      exited: exit.error === undefined && exit.stopped === undefined && !exit.groupLeft
+        && !(record.leftRunning?.length > 0),
+      windowError: infrastructure(`read ${name}'s main log`, () => windowError(userData)),
+    };
+    throw error;
+  }
+  if (leftProblem !== undefined) problems.push(leftProblem);
   record.result = problems.length === 0 ? 'PASS' : 'FAIL';
   record.problems = problems;
   const suite = record.suiteSeconds === null || mode === 'probe' ? '' : `, suite ${record.suiteSeconds.toFixed(1)} s`;
@@ -1183,6 +1310,56 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   }
   for (const problem of problems) run.fail(`${name}: ${problem}`);
   return record;
+}
+
+// What a launch left once its window has gone: bootstrap.cjs's report, or
+// undefined if it never started, and the suite's PASS and FAIL lines. An
+// absent report (44) is told from one that exists but can't be read, which
+// must not make a started bootstrap eligible for a retry.
+async function launchEvidence(run, result, exit) {
+  const report = await readBootstrapReport(run, result);
+  let evidence;
+  try {
+    if (report.code !== 44) evidence = JSON.parse(report.stdout);
+  } catch {
+    evidence = { outcome: 'unreadable', error: `${result} is not JSON` };
+  }
+  const output = exit.stdout.toString() + exit.stderr;
+  return { evidence, passLines: (output.match(/^PASS: /gm) ?? []).length, failLines: (output.match(/^FAIL: /gm) ?? []).length };
+}
+
+// The launch's problems, without the leak check's, each with its failure code
+// for --results, from its evidence (see launchEvidence). notStarted: VS Code
+// failed before bootstrap.cjs started, which may be retried; problems then
+// has only processes that outlived VS Code.
+function launchVerdict({ evidence, passLines, failLines }, { exit, mode, config }) {
+  const problems = [];
+  const codes = [];
+  const problem = (text, code) => {
+    problems.push(text);
+    codes.push(code);
+  };
+  let notStarted = false;
+  if (evidence === undefined) {
+    if (!succeeded(exit)) notStarted = true;
+    else problem('no test ran: VS Code exited with 0, but bootstrap.cjs never started in the remote extension host', 'not-started');
+  } else if (JSON.stringify(evidence.folders) !== JSON.stringify(config.folders)) {
+    // bootstrap.cjs refuses to run the suite then.
+    problem(`scenario mismatch: the ${mode} launch had the workspace folders ${JSON.stringify(evidence.folders)}, `
+      + `not ${JSON.stringify(config.folders)}, so suite.cjs would have run the wrong tests`, 'scenario-mismatch');
+  } else {
+    if (!succeeded(exit)) {
+      problem(`VS Code ${outcome(exit)}`, exit.error !== undefined ? 'start-error'
+        : exit.stopped?.startsWith('exceeded') ? 'deadline' : exit.stopped !== undefined ? 'stopped' : 'exit-status');
+    }
+    if (evidence.outcome !== 'pass') {
+      problem(`the tests ${evidence.outcome === 'started' ? 'did not finish' : 'failed'}: ${evidence.error ?? ''}`.trim(), 'tests-failed');
+    }
+    if (mode !== 'probe' && passLines === 0) problem('the suite printed no PASS line', 'no-pass-line');
+    if (failLines > 0) problem(`the suite printed ${failLines} FAIL line(s)`, 'fail-lines');
+  }
+  if (exit.groupLeft) problem(`VS Code's processes outlived it by ${GROUP_EXIT_MS / 1000} seconds`, 'processes-left');
+  return { problems, codes, notStarted, passLines };
 }
 
 function readVSIX(run) {
@@ -1214,9 +1391,15 @@ async function locateExtension(run, layout, vsix) {
 }
 
 async function test(run) {
-  const { values } = run;
+  const { values, results } = run;
   const vsix = readVSIX(run);
   const server = values.bundled ? undefined : await serverFiles(run);
+  if (server !== undefined && results !== undefined) {
+    results.server({
+      file: path.join(server.dir, 'virgil-lsp'), worker: path.join(server.dir, 'virgil-lsp-worker'),
+      archiveRoot: values.archive === undefined ? undefined : server.dir,
+    });
+  }
   if (values.bundled) run.manifest.server = { bundled: true, vsixSha256: vsix.sha256 };
   if (!values.bundled) run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
   const suite = path.join(__dirname, '..', 'suite.cjs');
@@ -1250,6 +1433,7 @@ async function test(run) {
       log: (line) => console.log(line),
     });
   run.target = target;
+  results?.directories({ remote: target.root });
   // A macOS client's VS Code shares the user's preferences domain; the
   // teardown puts back what the run changed (see prefs.cjs).
   if (target.savePreferences !== undefined) {
@@ -1277,6 +1461,10 @@ async function test(run) {
     run.manifest.target.sshConnection = hop.stdout.trim();
     console.log(`-- SSH connection (client address, port, server address, port): ${run.manifest.target.sshConnection}`);
   }
+  results?.passed(streams.PREFLIGHT, `the tools that the run needs are on PATH, the VSIX holds ${vsix.id} ${vsix.version}, `
+    + `${values.bundled ? 'with its bundled server' : 'the server executables exist'}, VS Code ${VSCODE_VERSION} is available, `
+    + `the host started, and the SSH session to it has the run's home and marker: ${name}, ${kernel}`);
+  results?.begin(streams.CLIENT_PINS);
 
   // Remote-SSH on the client, from the Marketplace, with VS Code's own CLI.
   run.clientExtensions = path.join(run.work, 'client', 'extensions');
@@ -1316,14 +1504,20 @@ async function test(run) {
   run.settings = clientSettings(target, sshPath);
   run.manifest.client.settings = run.settings;
   console.log(`-- installed ${REMOTE_SSH.map(({ id, version }) => `${id} ${version}`).join(', ')}, each with its pinned SHA-256`);
+  results?.passed(streams.CLIENT_PINS, `VS Code's CLI installed ${REMOTE_SSH.map(({ id, version }) => `${id} ${version}`).join(', ')}, `
+    + 'each VSIX with its pinned SHA-256, and no other extension'
+    + (values.clientVsix === undefined ? '' : `, and ${path.basename(values.clientVsix)} on the client too`));
 
   // The files that the tests need on the target.
+  results?.begin(streams.ARTIFACT_START);
   const layout = remoteLayout(target.root, product.commit, vsix);
+  results?.configure(JSON.stringify(run.settings, null, 2), machineSettings(layout, values.bundled));
   if (!values.bundled) {
     await run.upload(server.dir, server.names, layout.server);
     await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
   }
   await run.upload(path.join(repo, 'test/e2e/nvim/fixture'), ['.'], layout.fixture);
+  if (results !== undefined) results.fixtureSha256 = treeSha256(path.join(repo, 'test/e2e/nvim/fixture'));
   await run.upload(path.dirname(suite), ['suite.cjs', 'shutdown.cjs', 'observations.cjs'], layout.tests);
   await run.upload(__dirname, ['bootstrap.cjs'], layout.tests);
   await run.upload(path.dirname(values.vsix), [path.basename(values.vsix)], layout.inputs);
@@ -1333,10 +1527,12 @@ async function test(run) {
     run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
     console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
     if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+    serverStarted(results, target, version);
   }
 
   // The first connection installs the VS Code Server that matches the
   // client's commit, which the VSIX installation needs.
+  results?.begin(streams.PROBE);
   const probe = await launch(run, 'probe', 'probe', { executable, layout, vsix });
   run.manifest.probe = { seconds: probe.seconds };
   const serverProduct = JSON.parse((await run.remote(`cat ${sh(layout.product)}`)).stdout);
@@ -1344,6 +1540,9 @@ async function test(run) {
     version: serverProduct.version, commit: serverProduct.commit, quality: serverProduct.quality, path: path.posix.dirname(layout.product),
   };
   if (serverProduct.commit !== product.commit) throw infra(`the VS Code Server's commit is ${serverProduct.commit}, not the client's ${product.commit}`);
+  results?.passed(streams.PROBE, `the first connection ran the probe in the remote extension host, and the VS Code Server `
+    + `${serverProduct.version} that it installed has the client's commit ${product.commit}`);
+  results?.begin(streams.REMOTE_INSTALL);
 
   // The VSIX, installed on the target with the VS Code Server's CLI, as in a
   // remote terminal.
@@ -1369,11 +1568,37 @@ async function test(run) {
       + `at ${layout.extensionPath}: ${JSON.stringify(checks)}`);
   }
   console.log(`-- installed ${vsix.id} ${vsix.version} on ${target.alias} at ${layout.extensionPath}, extensionKind ["workspace"]`);
+  results?.passed(streams.REMOTE_INSTALL, `the VS Code Server's CLI installed ${vsix.id} ${vsix.version} on the host, and lists it `
+    + 'at its version, at the expected path, with extensionKind ["workspace"]');
+  if (results !== undefined && values.bundled) {
+    // The bundled server starts on the host, from the installed copy: only
+    // with --results, which records its --version.
+    results.begin(streams.ARTIFACT_START);
+    const bundled = path.posix.join(layout.extensionPath, 'server', 'virgil-lsp');
+    const version = await run.remote(`${sh(bundled)} --version`, { allowFailure: true });
+    if (version.code !== 0) run.fail(`the bundled virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+    serverStarted(results, target, version);
+  }
+  results?.start();
 
   for (let repetition = 1; repetition <= values.repeat; repetition++) {
     for (const mode of ['single-file', 'workspace']) {
       await launch(run, `${repetition}-${mode}`, mode, { executable, layout, vsix, repetition });
     }
+  }
+}
+
+// Records, with --results, whether virgil-lsp --version ran on the host, and
+// its output, the server's version text.
+function serverStarted(results, target, version) {
+  if (results === undefined) return;
+  const text = version.stdout.trim();
+  if (version.code === 0 && text !== '') {
+    results.versionText = text;
+    results.passed(streams.ARTIFACT_START, `virgil-lsp --version ran on ${target.alias}: ${text.split('\n')[0]}`);
+  } else {
+    results.versionReason = `virgil-lsp --version on the host exited with ${version.code}${text === '' ? ', without output' : ''}`;
+    results.failed(streams.ARTIFACT_START, `${results.versionReason}: ${version.stderr.trim()}`.replace(/: $/, ''), 'exit-status');
   }
 }
 
@@ -1447,7 +1672,7 @@ function publishLogs(run) {
   const { out } = run.values;
   const names = fs.readdirSync(run.evidence, { recursive: true })
     .filter((name) => fs.lstatSync(path.join(run.evidence, name)).isFile());
-  const named = /(?:connection_?token|tkn)\W{1,6}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+  const named = /(?:connection[-_]?token|tkn)\W{1,6}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
   for (const name of names) {
     for (const match of fs.readFileSync(path.join(run.evidence, name), 'latin1').matchAll(named)) run.tokens.add(match[1]);
   }
@@ -1485,7 +1710,9 @@ function prepare(run) {
   // with short names: a Unix socket path there has at most 103 bytes, and
   // VS Code's main socket is in each launch's user data.
   run.work = fs.mkdtempSync(path.join(values.workDir, externalTarget ? 'vrs-' : 'virgil-remote-ssh-'));
+  run.results?.directories({ work: run.work });
   run.sockets = fs.mkdtempSync(externalTarget ? path.join(values.workDir, 's-') : '/tmp/vrs-');
+  run.results?.directories({ sockets: run.sockets });
   console.log(`work directory: ${run.work}`);
   run.evidence = path.join(run.work, 'evidence');
   fs.mkdirSync(run.evidence);
@@ -1549,11 +1776,31 @@ async function main() {
     process.exitCode = STATUS.USAGE;
     return;
   }
+  // With --results, the stream's writer, which empties the file again.
+  const results = values.results === undefined ? undefined : new streams.Results({
+    file: values.results,
+    repeat: values.repeat,
+    release: values.release ?? null,
+    purpose: values.purpose,
+    command: streams.commandOf(process.argv.slice(2), process.env.INIT_CWD ?? process.cwd(), process.env),
+    editorVersion: VSCODE_VERSION,
+    pins: REMOTE_SSH,
+  });
   infrastructure('prepare the output directory', () => {
     if (values.out === undefined) values.out = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-remote-ssh-results-'));
     values.out = fs.realpathSync(values.out);
   });
+  // The stream names the output directory and the inputs by placeholders,
+  // and the work directories once prepare makes them.
+  results?.directories({
+    out: values.out, vsix: values.vsix, server: values.server, archive: values.archive, virgilRoot: values.virgilRoot,
+    target: values.target, clientVsix: values.clientVsix,
+  });
   const run = new Run(values);
+  if (results !== undefined) {
+    run.results = results;
+    results.run = run;
+  }
   // A signal stops the test's current step. During the log collection and
   // the teardown, it waits for them; either way the run's processes are
   // stopped before the runner exits, and the signal decides its exit status.
@@ -1576,22 +1823,35 @@ async function main() {
   console.log(`results: ${values.out}`);
 
   let teardown;
+  // For --results: when the evidence and the teardown started and ended, and
+  // the errors before the evidence.
+  let evidenceStarted;
+  let evidenceErrors = 0;
+  let teardownStarted;
+  let teardownEnded;
   try {
     try {
       infrastructure('prepare isolated directories', () => prepare(run));
       await test(run);
     } catch (error) {
-      run.record(error);
+      // Recorded with or without --results: ?. would skip its argument.
+      const recorded = run.record(error);
+      results?.directories({ work: run.work, sockets: run.sockets });
+      results?.fail(recorded);
     }
     if (run.signal.aborted) run.record(run.signal.reason);
     // The evidence first, while the target is still up.
     run.phase = 'log collection';
+    evidenceStarted = Date.now();
+    evidenceErrors = run.errors.length;
     await collectLogs(run);
   } catch (error) {
     run.record(infra(`could not collect the logs: ${error.message}`));
   } finally {
     run.phase = 'teardown';
+    teardownStarted = Date.now();
     teardown = await stopTarget(run);
+    teardownEnded = Date.now();
   }
   run.phase = 'report';
   run.manifest.teardown = teardown ?? null;
@@ -1624,6 +1884,8 @@ async function main() {
   } catch (error) {
     run.record(infra(`could not copy the logs into ${values.out}: ${error.message}`));
   }
+  const evidenceFailures = run.errors.slice(evidenceErrors);
+  let removed = true;
   try {
     if (run.work !== undefined) {
       if (keep) console.log(`work directory kept: ${run.work}`);
@@ -1631,6 +1893,7 @@ async function main() {
     }
     if (run.sockets !== undefined && !keep) fs.rmSync(run.sockets, { recursive: true, force: true });
   } catch (error) {
+    removed = false;
     run.record(infra(`could not remove the work directory: ${error.message}`));
   }
 
@@ -1664,6 +1927,7 @@ async function main() {
   // and is removed, so that no part of it says otherwise. The summary goes
   // first, so that the manifest, last, has the result that its failure makes;
   // if the manifest fails, the summary is written again, with that result.
+  const unwritten = [];
   const write = (name, text) => {
     const file = path.join(values.out, name);
     try {
@@ -1671,6 +1935,7 @@ async function main() {
       return true;
     } catch (error) {
       reasons.push(`could not write ${name} into ${values.out}: ${error.message}`);
+      unwritten.push(`could not write ${name}: ${error.message}`);
       if (status === STATUS.PASS) [result, status] = ['INFRA', STATUS.INFRA];
       try {
         fs.rmSync(file, { force: true });
@@ -1686,6 +1951,41 @@ async function main() {
   });
   if (!write('manifest.json', `${JSON.stringify(run.manifest, null, 2)}\n`) && summaryWritten) write('summary.txt', `${summary()}\n`);
   console.log(`== summary\n${summary()}\nresults: ${values.out}\nRESULT: ${result}`);
+  if (results !== undefined && run.interrupted !== undefined) {
+    results.abandon();
+  } else if (results !== undefined) {
+    // The evidence and the teardown, which ran after any earlier failure.
+    for (const error of evidenceFailures) results.attributed.add(error);
+    const evidence = [...evidenceFailures.map((error) => error.message), ...unwritten];
+    const evidenceAt = { startedAt: evidenceStarted ?? teardownStarted, endedAt: Date.now() };
+    if (evidence.length === 0) {
+      // Without an evidence directory, prepare stopped before any log existed.
+      const logs = run.evidence === undefined ? 'the run stopped before it created any client or host log, so there were none to collect'
+        : `${run.connected ? "the client's and the host's" : "the client's"} logs were collected before the teardown and copied `
+          + `into the output directory with every occurrence of the ${run.tokens.size} connection token(s) found redacted`;
+      results.passed(streams.EVIDENCE, `${logs}, and summary.txt and manifest.json were written`, evidenceAt);
+    } else {
+      results.failed(streams.EVIDENCE, evidence.join('; '), 'evidence', evidenceAt);
+    }
+    const teardownAt = { startedAt: teardownStarted, endedAt: teardownEnded };
+    if (teardown === undefined) {
+      results.passed(streams.TEARDOWN, 'the run provisioned no host, so it left no process of its own to stop', teardownAt);
+    } else if (teardown.ok) {
+      const port = run.target.details.port === undefined || teardown.portClosed === null ? '' : ', and the SSH server\'s port is closed';
+      results.passed(streams.TEARDOWN, `the teardown stopped ${teardown.stopped.length} processes of the run${teardown.side === 'client' ? ' on the client' : ''}, `
+        + `and confirmed that none is left${port}`, teardownAt);
+    } else {
+      results.failed(streams.TEARDOWN, `the teardown could not confirm that nothing of the run is left${teardown.error ? `: ${teardown.error}` : ''}`
+        + teardown.left.map((p) => `; pid ${p.pid}${p.unidentified ? ' could not be identified' : ` (${p.command})`}`).join('')
+        + (teardown.portClosed === false ? `; port ${run.target.details.port} is still open` : ''), 'processes-left', teardownAt);
+    }
+    const workLeft = !removed || (keep && !values.keepWork);
+    status = results.end({
+      exitCode: status,
+      cleanup: (teardown === undefined || teardown.ok) && !workLeft && preferenceReason === undefined ? 'verified' : 'failed',
+      issues: [...results.unattributed(run.errors), ...(preferenceReason === undefined ? [] : [preferenceReason])],
+    });
+  }
   process.exit(status);
 }
 
@@ -1700,6 +2000,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, readVSIX, readZipEntry, locateExtension, settle, stopHost, options,
-  launch, main, sha256, treeSha256,
+  REMOTE_PROCESSES, Run, SERVER_EXIT_MS, downloadVSCode, runGroup, serverFiles, readVSIX, readZipEntry, locateExtension, settle, stopHost,
+  options, launch, main, publishLogs, sha256, treeSha256, zipEntries,
 };
