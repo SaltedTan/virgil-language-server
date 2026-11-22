@@ -113,16 +113,21 @@ class FixtureCleanupTest(unittest.TestCase):
         script.chmod(0o755)
         return script, report
 
-    def run_unit_tests(self, build, consumer):
+    def run_unit_tests(self, build, consumer, env=None):
+        # A pattern run refuses --shuffle and --seed, so the empty UNIT_SHUFFLE
+        # and UNIT_SEED keep a `make test UNIT_SHUFFLE=1` that runs this suite
+        # from passing its own through MAKEFLAGS or the environment (#613).
         return subprocess.run(
             [
                 "make", "--no-print-directory", "run-unit-tests",
                 f"BUILD={build}", f"UNIT_TESTS={consumer}", "ARGS=*",
+                "UNIT_SHUFFLE=", "UNIT_SEED=",
             ],
             cwd=ROOT,
             check=False,
             capture_output=True,
             text=True,
+            env=env,
         )
 
     @contextmanager
@@ -202,6 +207,58 @@ class FixtureCleanupTest(unittest.TestCase):
                         output,
                     )
                     self.assert_build_is_removable(build)
+
+    def test_run_unit_tests_wrapper_ignores_inherited_shuffle_and_seed(self):
+        # `make test UNIT_SHUFFLE=1` runs this suite with the override in
+        # MAKEFLAGS, and `UNIT_SHUFFLE=1 make test` with it in the environment.
+        # Neither may turn the pattern run below into a refused shuffled one.
+        cases = {
+            "MAKEFLAGS UNIT_SHUFFLE=1": {"MAKEFLAGS": makeflags("UNIT_SHUFFLE=1")},
+            "MAKEFLAGS UNIT_SEED=42": {"MAKEFLAGS": makeflags("UNIT_SEED=42")},
+            "environment UNIT_SHUFFLE=1": {"UNIT_SHUFFLE": "1"},
+            "environment UNIT_SEED=42": {"UNIT_SEED": "42"},
+        }
+        for name, ambient in cases.items():
+            with self.subTest(ambient=name):
+                env = {**clean_environment(), **ambient}
+                # The ambient setting reaches a make that doesn't override it,
+                # so the check below would fail without the overrides.
+                dry = subprocess.run(
+                    ["make", "--no-print-directory", "-n", "run-unit-tests", "ARGS=*"],
+                    cwd=ROOT, check=True, capture_output=True, text=True, env=env,
+                )
+                self.assertRegex(dry.stdout, r"--shuffle|--seed=42", dry.stdout)
+                with self.build_directory("project-ambient-") as build:
+                    self.prepare(build)
+                    script, report = self.stand_in(build.parent, build, 0)
+                    result = self.run_unit_tests(build, script, env=env)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertEqual(
+                        {str(path): 0 for path in self.restricted(build)},
+                        json.loads(report.read_text(encoding="utf-8")),
+                    )
+                    self.assert_build_is_removable(build)
+
+
+# The variables through which a make running this suite passes its options and
+# command-line overrides to the makes this suite runs.
+MAKE_VARIABLES = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
+
+
+def clean_environment():
+    return {k: v for k, v in os.environ.items()
+            if k not in MAKE_VARIABLES + ("UNIT_SHUFFLE", "UNIT_SEED")}
+
+
+def makeflags(*overrides):
+    """The MAKEFLAGS that this host's make gives a recipe when run with
+    {overrides} on its command line, since its format differs between make
+    versions."""
+    return subprocess.run(
+        ["make", "-s", "--no-print-directory", "-f", "-", *overrides],
+        input="all:\n\t@printf '%s' \"$$MAKEFLAGS\"\n",
+        check=True, capture_output=True, text=True, env=clean_environment(),
+    ).stdout
 
 
 if __name__ == "__main__":
