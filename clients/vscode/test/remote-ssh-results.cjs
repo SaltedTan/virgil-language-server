@@ -88,6 +88,8 @@ function events(file) {
 }
 
 // As shared.machine, which gives Rosetta 2 only for an x86-64 macOS server.
+// Synthetic runs stub both clients so the tests don't depend on the host OS.
+const linuxClient = () => ({ os: 'linux', release: '6.8.0-45-generic', arch: 'x86_64', cpu: 'x86_64', translation: null });
 const macClient = (server) => ({ os: 'macos', release: '15.6', arch: 'arm64', cpu: 'Apple M2', translation: server === 'x86-64-darwin' ? 'rosetta-2' : null });
 
 // A writer, with the launcher's Run as far as its preflight, as
@@ -102,7 +104,7 @@ function begin(t, { repeat = 1, bundled = false, archive = false, target = false
   if (target) values.target = path.join(root, 'target.json');
   const results = new Results({
     file, repeat, command: ['node', 'clients/vscode/test/e2e/remote-ssh/run.cjs'], editorVersion: '1.142.0', pins: PINS, env: {},
-    ...(target ? { machine: macClient } : {}),
+    machine: target ? macClient : linuxClient,
   });
   const work = path.join(root, 'work');
   const run = {
@@ -416,6 +418,8 @@ test('a passing bundled run validates as passed, once per repetition', { skip },
     assert.deepEqual(validate(file), passes(file, count));
     const [start] = events(file);
     assert.equal(start.setup, 'ssh-linux-client');
+    assert.deepEqual(start.provenance.client, linuxClient());
+    assert.deepEqual(start.provenance.host, linuxClient());
     assert.deepEqual(start.provenance.transport, { kind: 'ssh', topology: 'loopback', extensionHost: 'remote' });
     assert.equal(start.provenance.clientMode, 'vsix');
     assert.equal(start.provenance.vsix.version, '0.1.8');
@@ -637,7 +641,9 @@ function standIn(t, { samples = [], broken } = {}) {
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'error', () => {});
   const runner = require('./e2e/remote-ssh/run.cjs');
-  const results = new Results({ file: path.join(root, 'stream.jsonl'), command: ['node'], editorVersion: '1.142.0', pins: PINS, env: {} });
+  const results = new Results({
+    file: path.join(root, 'stream.jsonl'), command: ['node'], editorVersion: '1.142.0', pins: PINS, env: {}, machine: linuxClient,
+  });
   const run = new runner.Run({ out: path.join(root, 'out'), bundled: true });
   Object.assign(run, { results, work: path.join(root, 'work'), env: { PATH: process.env.PATH }, settings: {}, target: { alias: 'stand-in', root: '/remote' } });
   results.run = run;
