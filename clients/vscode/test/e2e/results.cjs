@@ -86,13 +86,14 @@ function plan(manifest, vsix) {
 
 // Replaces the machine's absolute paths in text from VS Code and the suite,
 // longest first, so that the stream names files as the fixture and the
-// repository do.
-function scrubber(work) {
-  const pairs = [[REPO, '<repo>'], [os.homedir(), '~']];
+// repository do. extra has more [path, name] pairs, such as the Remote-SSH
+// test's directories.
+function scrubber(work, extra = []) {
+  const pairs = [[REPO, '<repo>'], [os.homedir(), '~'], ...extra];
   if (work !== undefined) pairs.push([work, '<work>']);
   const forms = [];
   for (const [file, name] of pairs) {
-    if (file.length <= 1) continue;
+    if (typeof file !== 'string' || file.length <= 1) continue;
     const url = pathToFileURL(file).href;
     for (const form of new Set([file, url, decodeURI(url)])) forms.push([form, name]);
   }
@@ -120,8 +121,15 @@ function target(file) {
   } finally {
     fs.closeSync(fd);
   }
+  return targetOf(header.subarray(0, length), () => fs.readFileSync(file, 'latin1'));
+}
+
+// The build target of an executable whose first bytes are header; text reads
+// the whole file, as Latin-1, for a script's second line.
+function targetOf(header, text) {
+  const length = header.length;
   if (header.toString('latin1', 0, 2) === '#!') {
-    const second = fs.readFileSync(file, 'latin1').split('\n')[1]?.replace(/\r$/, '');
+    const second = text().split('\n')[1]?.replace(/\r$/, '');
     if (second === JVM_LAUNCHER_MARKER) return 'jvm';
   }
   if (length >= 20 && header.readUInt32BE(0) === 0x7f454c46 && header[4] === 2 && header.readUInt16LE(18) === 0x3e) {
@@ -240,26 +248,39 @@ function ci(env) {
 // other paths as placeholders, so that no machine's path is published. args
 // are run.cjs's arguments, resolved against cwd.
 function commandOf(args, cwd, env) {
+  return commandWords(args, cwd, {
+    words: env.npm_lifecycle_event === 'test:e2e' ? ['npm', 'run', 'test:e2e', '--']
+      : ['node', 'clients/vscode/test/e2e/run.cjs'],
+    placeholders: { '--vsix': '<vsix>', '--logs': '<logs>' },
+    valued: ['--release', '--purpose'],
+    positional: '<server>',
+  });
+}
+
+// A launcher's command, after words: each option of placeholders with its
+// path relative to the repository's root, if it is inside it, and otherwise
+// the placeholder; --results always as <results>; the options in valued
+// with their values; and a positional argument as a path, or positional.
+function commandWords(args, cwd, { words, placeholders, valued, positional }) {
   const relative = (word, placeholder) => {
     const inside = path.relative(REPO, path.resolve(cwd, word));
     return inside === '..' || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside) ? placeholder
       : inside.split(path.sep).join('/');
   };
-  const placeholders = { '--vsix': '<vsix>', '--logs': '<logs>', '--results': '<results>' };
-  const words = env.npm_lifecycle_event === 'test:e2e' ? ['npm', 'run', 'test:e2e', '--']
-    : ['node', 'clients/vscode/test/e2e/run.cjs'];
+  const paths = { ...placeholders, '--results': '<results>' };
+  const result = [...words];
   for (let i = 0; i < args.length; i++) {
     const [option, inline] = args[i].startsWith('--') ? args[i].split(/=(.*)/s) : [args[i]];
-    if (option in placeholders || option === '--release' || option === '--purpose') {
+    if (option in paths || valued.includes(option)) {
       const value = inline ?? args[++i] ?? '<missing>';
       const shown = option === '--results' ? '<results>'
-        : option in placeholders ? relative(value, placeholders[option]) : value;
-      words.push(option, shown);
+        : option in paths ? relative(value, paths[option]) : value;
+      result.push(option, shown);
     } else {
-      words.push(args[i].startsWith('-') ? args[i] : relative(args[i], '<server>'));
+      result.push(args[i].startsWith('-') ? args[i] : relative(args[i], positional));
     }
   }
-  return words;
+  return result;
 }
 
 class Results {
@@ -495,31 +516,10 @@ class Results {
     }
     const lower = this.launchedAt - 1000;
     const upper = this.now() + 1000;
-    const time = (value) => Number.isFinite(value) && value >= lower && value <= upper;
-    const text1 = (value) => typeof value === 'string' && value !== '';
-    const found = [];
-    const lines = text.split('\n');
-    if (lines.at(-1) !== '') this.issues.push('suite.cjs\'s last observation is incomplete');
-    for (const line of lines.slice(0, -1)) {
-      let entry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        entry = undefined;
-      }
-      const valid = entry !== null && typeof entry === 'object' && text1(entry.id)
-        && time(entry.startedAt) && time(entry.endedAt) && entry.startedAt <= entry.endedAt && text1(entry.observation)
-        && (entry.status === 'pass' || (entry.status === 'fail' && text1(entry.reason) && SUITE_CODES.has(entry.failureCode)));
-      if (valid) {
-        found.push({
-          id: entry.id, status: entry.status, startedAt: entry.startedAt, endedAt: entry.endedAt,
-          observation: entry.observation, reason: entry.status === 'fail' ? entry.reason : null,
-          failureCode: entry.status === 'fail' ? entry.failureCode : null,
-        });
-      } else {
-        this.issues.push(`suite.cjs wrote a malformed observation: ${this.scrub(line.slice(0, 200))}`);
-      }
-    }
+    const { found, issues } = parseObservations(text, {
+      time: (value) => Number.isFinite(value) && value >= lower && value <= upper, scrub: this.scrub, writer: 'suite.cjs',
+    });
+    this.issues.push(...issues);
     return found;
   }
 
@@ -565,6 +565,39 @@ class Results {
   }
 }
 
+// The observations in text, the JSON lines that observations.cjs appends,
+// each with a time that passes time; writer names who wrote them in issues.
+// Returns the valid ones, and an issue for each malformed one and for an
+// incomplete last line.
+function parseObservations(text, { time, scrub, writer }) {
+  const text1 = (value) => typeof value === 'string' && value !== '';
+  const found = [];
+  const issues = [];
+  const lines = text.split('\n');
+  if (lines.at(-1) !== '') issues.push(`${writer}'s last observation is incomplete`);
+  for (const line of lines.slice(0, -1)) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      entry = undefined;
+    }
+    const valid = entry !== null && typeof entry === 'object' && text1(entry.id)
+      && time(entry.startedAt) && time(entry.endedAt) && entry.startedAt <= entry.endedAt && text1(entry.observation)
+      && (entry.status === 'pass' || (entry.status === 'fail' && text1(entry.reason) && SUITE_CODES.has(entry.failureCode)));
+    if (valid) {
+      found.push({
+        id: entry.id, status: entry.status, startedAt: entry.startedAt, endedAt: entry.endedAt,
+        observation: entry.observation, reason: entry.status === 'fail' ? entry.reason : null,
+        failureCode: entry.status === 'fail' ? entry.failureCode : null,
+      });
+    } else {
+      issues.push(`${writer} wrote a malformed observation: ${scrub(line).slice(0, 200)}`);
+    }
+  }
+  return { found, issues };
+}
+
 function seconds({ startedAt, endedAt }) {
   return `${((endedAt - startedAt) / 1000).toFixed(1)} seconds`;
 }
@@ -576,4 +609,7 @@ function code({ error, timedOut, stopped }) {
   return stopped ? 'stopped' : 'exit-status';
 }
 
-module.exports = { MANIFEST, OBSERVATIONS, PURPOSES, Results, commandOf, plan };
+module.exports = {
+  LIMIT, MANIFEST, OBSERVATIONS, PURPOSES, Results, ci, commandOf, commandWords, harness, isUnavailable, machine, parseObservations,
+  plan, scrubber, target, targetOf, unavailable, utc, vsixProvenance,
+};
