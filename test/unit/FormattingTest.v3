@@ -33,6 +33,7 @@ def X = [
 	T("Formatting:unjoined_fun_after_block_comment", unjoined_fun_after_block_comment),
 	T("Formatting:joined_ungrouped_fun_brace", joined_ungrouped_fun_brace),
 	T("Formatting:code_after_comment", code_after_comment),
+	T("Formatting:code_on_comment_close", code_on_comment_close),
 	T("Formatting:block_comment_opener", block_comment_opener),
 	T("Formatting:else_line", else_line),
 	T("Formatting:inline_else", inline_else),
@@ -523,7 +524,9 @@ def unjoined_fun_inside_grouped_brace(t: Tester) {
 	both(t, "def f() {\n\tvar callbacks = [fun () {\n\t\tvar callback =\n\t\t\tfun ()\n\n{\nreturn;\n};\n\t}];\n}\n",
 		"def f() {\n\tvar callbacks = [fun () {\n\t\tvar callback =\n\t\t\tfun ()\n\n\t\t\t{\n\t\t\t\treturn;\n\t\t\t};\n\t}];\n}\n");
 	both(t, "def f() {\n\tg(fun () {\n\t\t/* note\n\t\t\t\t*/ var callback = fun () // keep\n{\nreturn;\n};\n\t});\n}\n",
-		"def f() {\n\tg(fun () {\n\t\t/* note\n\t\t\t\t*/ var callback = fun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n\t});\n}\n");
+		"def f() {\n\tg(fun () {\n\t\t/* note\n\t\t\t\t*/ var callback = fun () // keep\n\t\t\t\t{\n\t\t\t\t\treturn;\n\t\t\t\t};\n\t});\n}\n");
+	both(t, "def f() {\n\tg(fun () {\n\t\t/* note\n\t\t\t\t*/ var callback =\n\t\tfun () // keep\n{\nreturn;\n};\n\t});\n}\n",
+		"def f() {\n\tg(fun () {\n\t\t/* note\n\t\t\t\t*/ var callback =\n\t\tfun () // keep\n\t\t{\n\t\t\treturn;\n\t\t};\n\t});\n}\n");
 }
 def unjoined_fun_after_block_comment(t: Tester) {
 	both(t, "def f() {\n\t/* note\n\t\t\t*/ var callback =\n\t\tfun () // keep\n\t\t{\nreturn;\n};\n}\n",
@@ -558,9 +561,48 @@ def code_after_comment(t: Tester) {
 	// A block comment over two lines with code after it.
 	both(t, "def f() {\n  /* a\n b */ f();\n}\n", "def f() {\n\t/* a\n b */ f();\n}\n");
 	both(t, "def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n   f();\n}\n",
-		"def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n\t\tf();\n}\n");
+		"def f() {\n\tif (true)\n\t\tf(); /* a\r\n b */ /* c */ if (true)\n\tf();\n}\n");
 	both(t, "def f() {\n\tvar x = 1 +\n   // before\n\t/* a\n  b */ 2;\n}\n",
 		"def f() {\n\tvar x = 1 +\n  // before\n  /* a\n  b */ 2;\n}\n");
+}
+// A code line on a multiline block comment's closing line counts from the
+// leading tabs that the line keeps inside the comment, for statements,
+// declarations, control headers, "fun", and match cases.
+def code_on_comment_close(t: Tester) {
+	// A control header's body and '}' count from the kept tabs (#598).
+	both(t, "def f(c: bool) {\n\tif (true) {\n\t\t/* open\n\t\t\tclose */ while (c) {\ng();\n}\n\t}\n}\n",
+		"def f(c: bool) {\n\tif (true) {\n\t\t/* open\n\t\t\tclose */ while (c) {\n\t\t\t\tg();\n\t\t\t}\n\t}\n}\n");
+	// A '{' kept on its own line, and a braceless body.
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ while (c) // keep\n{\ng();\n}\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ while (c) // keep\n\t\t\t{\n\t\t\t\tg();\n\t\t\t}\n}\n");
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ while (c)\ng();\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ while (c)\n\t\t\t\tg();\n}\n");
+	// An if's "else", braced or on its own line, aligns at the kept tabs.
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ if (true) {\nh();\n} else {\nk();\n}\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ if (true) {\n\t\t\t\th();\n\t\t\t} else {\n\t\t\t\tk();\n\t\t\t}\n}\n");
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ if (true)\nh();\nelse\nk();\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ if (true)\n\t\t\t\th();\n\t\t\telse\n\t\t\t\tk();\n}\n");
+	// A match's cases and its "} else {".
+	both(t, "def f(x: int) {\n\t/* open\n\t\t\tclose */ match (x) {\n1 => ;\n} else {\nk();\n}\n}\n",
+		"def f(x: int) {\n\t/* open\n\t\t\tclose */ match (x) {\n\t\t\t\t1 => ;\n\t\t\t} else {\n\t\t\t\tk();\n\t\t\t}\n}\n");
+	// A control header after another statement on the closing line.
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ h(); while (c) {\ng();\n}\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ h(); while (c) {\n\t\t\t\tg();\n\t\t\t}\n}\n");
+	// A declaration, a block statement, a match case, a grouped "fun" with
+	// '{' on its header line, a space-indented closing line (0 kept tabs),
+	// and a '{' on the closing line of a comment that starts after a header.
+	both(t, "def f(c: bool) {\n\t/* open\n\t\t\tclose */ def g() {\nh();\n}\n}\n",
+		"def f(c: bool) {\n\t/* open\n\t\t\tclose */ def g() {\n\t\t\t\th();\n\t\t\t}\n}\n");
+	both(t, "def f() {\n\t/* open\n\t\t\tclose */ {\nh();\n}\n}\n",
+		"def f() {\n\t/* open\n\t\t\tclose */ {\n\t\t\t\th();\n\t\t\t}\n}\n");
+	both(t, "def f(x: int) {\n\tmatch (x) {\n\t\t/* open\n\t\t\tclose */ 1 => {\nh();\n}\n\t\t/* open\n\t\t\tclose */ 2\n=> h();\n\t}\n}\n",
+		"def f(x: int) {\n\tmatch (x) {\n\t\t/* open\n\t\t\tclose */ 1 => {\n\t\t\t\th();\n\t\t\t}\n\t\t/* open\n\t\t\tclose */ 2\n\t\t\t\t=> h();\n\t}\n}\n");
+	both(t, "def f() {\n\t/* open\n\t\t\tclose */ h(fun () {\ng();\n});\n}\n",
+		"def f() {\n\t/* open\n\t\t\tclose */ h(fun () {\n\t\t\t\tg();\n\t\t\t});\n}\n");
+	both(t, "def f(c: bool) {\n\t/* open\n   close */ while (c) {\ng();\n}\n}\n",
+		"def f(c: bool) {\n\t/* open\n   close */ while (c) {\n\tg();\n}\n}\n");
+	both(t, "def f(c: bool) {\n\twhile (c) /* open\n\t\t\tclose */ {\ng();\n}\n}\n",
+		"def f(c: bool) {\n\twhile (c) /* open\n\t\t\tclose */ {\n\t\t\t\tg();\n\t\t\t}\n}\n");
 }
 def block_comment_opener(t: Tester) {
 	// A block comment that starts its line and closes on a code line is a
