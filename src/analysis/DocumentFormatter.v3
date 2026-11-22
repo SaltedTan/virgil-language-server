@@ -394,10 +394,9 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	private var open: bool;
 	// The old indentation range and new tabs of the continuation anchor,
 	// then the tabs of the statement that owns a body. {lineTabs} counts
-	// leading tabs on the current code line.
+	// the leading tabs of the current code line.
 	private var chunk: (int, int, int, int);
 	private var lineTabs: int;
-	private var leadingTabs: int;
 	private var lineStart: int;
 	private var afterElseLine: int;
 	// The leading tabs of the line where the current statement started,
@@ -440,7 +439,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		started = open = closedControl = continues = lastStartsLine = false;
 		last = lastItem = afterElseLine = -1;
 		chunk = (0, 0, 0, 0);
-		lineTabs = leadingTabs = closeTabs = lineStart = statementTabs = 0;
+		lineTabs = closeTabs = lineStart = statementTabs = 0;
 		stack.length = 0;
 		ifs.length = 0;
 		var pos = 0;
@@ -658,18 +657,19 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 	// Chooses the indentation of the code line whose first token is {k} and
 	// whose old indentation is from {begin} to {end}, and makes it the
 	// current line, and the statement's line unless it is a continuation.
+	// {lineTabs} counts the leading tabs of the formatted line, including
+	// kept tabs on a continuation line or a block comment's closing line.
 	private def codeLine(k: int, begin: int, end: int, writable: bool) {
 		lineStart = k;
 		var continuation = codeIndent(k, begin, end, writable) == CONTINUATION;
 		var i = if(writable, keepBegin, begin), limit = if(writable, keepEnd, end);
-		leadingTabs = if(writable, wantTabs);
+		lineTabs = if(writable, wantTabs);
 		while (i < limit && input[i] == '\t') {
-			leadingTabs++;
+			lineTabs++;
 			i++;
 		}
-		lineTabs = if(continuation, leadingTabs, wantTabs);
 		if (!continuation) {
-			chunk = if(writable, (begin, end, wantTabs, wantTabs), (-1, -1, wantTabs, wantTabs));
+			chunk = if(writable, (begin, end, wantTabs, wantTabs), (-1, -1, lineTabs, lineTabs));
 		}
 	}
 	private def codeIndent(k: int, begin: int, end: int, writable: bool) -> int {
@@ -785,7 +785,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		var c = ch(k), m = marks[k];
 		var inner = if(stack.length > 0, stack[stack.length - 1]);
 		var grouped = inner != null && inner.grouped;
-		if (!grouped && startsStatement()) statementTabs = leadingTabs;
+		if (!grouped && startsStatement()) statementTabs = lineTabs;
 		closedControl = false;
 		continues = (m & AnalysisFormatMark.FUN_SEMICOLON) != 0;
 		if ((m & AnalysisFormatMark.CASE_START) != 0 && inner != null) {
@@ -794,13 +794,11 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 		// An "else" anchors only its own body on its if's or match's line; a
 		// control header after it on its line takes that line's tabs, the
 		// ones it keeps on a block comment's closing line.
-		var ifTabs = lineTabs;
 		if (afterElseLine == lineStart && (m & (AnalysisFormatMark.CONTROL | AnalysisFormatMark.MATCH)) != 0) {
-			ifTabs = leadingTabs;
-			chunk = (chunk.0, chunk.1, chunk.2, ifTabs);
+			chunk = (chunk.0, chunk.1, chunk.2, lineTabs);
 			afterElseLine = -1;
 		}
-		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(ifTabs);
+		if ((m & AnalysisFormatMark.IF_ELSE) != 0) ifs.put(lineTabs);
 		if ((m & AnalysisFormatMark.DEFAULT_ELSE) != 0) {
 			afterElseLine = lineStart;
 			chunk = (chunk.0, chunk.1, chunk.2, closeTabs);
@@ -841,7 +839,7 @@ class DocumentFormatter(input: Array<byte>, syntax: SymbolSyntaxIndex, marks: Ar
 			}
 			_ => if (header != null) {
 				header.statementTabs = if(grouped, -1, statementTabs);
-				header.tabs = if(header.statementTabs >= 0, leadingTabs, lineTabs);
+				header.tabs = lineTabs;
 				header.anchor = chunk;
 			}
 		}
