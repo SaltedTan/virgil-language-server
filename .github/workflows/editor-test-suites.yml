@@ -20,9 +20,9 @@ name: Editor test suites
 # runs the bundled runtime's arm64 java. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
 # and the VS Code Server from Microsoft, without a cache. Each job uploads its
-# results and logs, also when it fails. The LazyVim and Extension Host jobs
-# also write and validate a result stream (test/e2e/RESULTS.md), which is in
-# the same artifact; a missing or invalid stream fails the job. See
+# results and logs, also when it fails. The LazyVim, Extension Host, and
+# Remote-SSH jobs also write and validate a result stream (test/e2e/RESULTS.md),
+# which is in the same artifact; a missing or invalid stream fails the job. See
 # test/e2e/lazyvim/README.md#ci, clients/vscode/README.md#remote-ssh-test, and
 # docs/manual-testing.md for coverage.
 
@@ -206,7 +206,8 @@ jobs:
     # through an SSH server of the test's own on 127.0.0.1, installs the VSIX
     # there, and runs the Extension Host suite in the remote extension host
     # with the bundled Linux server, three times. The artifact holds the
-    # test's logs and manifest, never Microsoft's downloads or the test's keys.
+    # test's logs, manifest, and result stream, never Microsoft's downloads or
+    # the test's keys.
     if: inputs.lanes == 'all' || inputs.lanes == 'required'
     name: VS Code Remote-SSH test (bundled VSIX, linux)
     runs-on: ubuntu-24.04
@@ -256,8 +257,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir "$RUNNER_TEMP/remote-ssh"
+          results=(--results "$RUNNER_TEMP/remote-ssh/remote-ssh.jsonl" --purpose "$RESULTS_PURPOSE")
+          [[ -z $RESULTS_RELEASE ]] || results+=(--release "$RESULTS_RELEASE")
           npm run test:e2e:remote-ssh -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --bundled \
-            --repeat 3 --out "$RUNNER_TEMP/remote-ssh/results" 2>&1 | tee "$RUNNER_TEMP/remote-ssh/run.log"
+            --repeat 3 --out "$RUNNER_TEMP/remote-ssh/results" "${results[@]}" 2>&1 |
+            tee "$RUNNER_TEMP/remote-ssh/run.log"
+      - name: Validate the Remote-SSH result stream
+        # Prints the stream's verdict in the log, and fails the job when the
+        # stream is missing or invalid (status 2), since a run without valid
+        # evidence isn't a pass. A valid stream of a run that didn't pass
+        # (status 1) only repeats the test step's failure.
+        if: always()
+        run: python3 scripts/editor-results.py validate "$RUNNER_TEMP/remote-ssh/remote-ssh.jsonl"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
