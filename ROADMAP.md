@@ -312,8 +312,9 @@ Deliverables may include:
 
 Phase 3a's accepted gate is the release scorecard in
 [Semantics during syntax errors](docs/benchmarks.md#semantics-during-syntax-errors):
-in each warm and cold mode, 180 of 185 primary states and 44 of 94 held-out
-states keep definition, hover, references, and diagnostics, with no wrong
+in each warm and cold mode, 180 of 185 primary states and 43 of 94 held-out
+states (on pinned Virgil `4aa91254`; previously 44 of 94 through `b86f43f1`)
+keep definition, hover, references, and diagnostics, with no wrong
 answers. That is the bounded open-body scope that
 [No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing)
 states: rule 2 reads a missing `{` only where the file's indentation places it,
