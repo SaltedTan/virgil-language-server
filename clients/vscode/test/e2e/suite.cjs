@@ -363,7 +363,7 @@ async function singleFile(extension) {
   checks.flush();
 }
 
-async function workspace(extension) {
+async function workspace(extension, workspacePart) {
   const failures = [];
   checks.begin('vscode.startup.workspace-activation');
   // The project file activates the extension before any document opens.
@@ -858,14 +858,51 @@ async function workspace(extension) {
   await noVirgilRoot(failures, words);
   await missingServer(failures, words);
   await missingWorker(failures, words);
+  // The workspace-recovery launch runs these six scenarios, keeping each
+  // workspace launch well under the 120-second limit. A Remote-SSH launch,
+  // which has no workspace part, runs them here as it always has.
+  if (workspacePart === undefined) {
+    await actionDuringRecovery(failures, words, 'restart');
+    await actionDuringRecovery(failures, words, 'configuration');
+    await writeAfterServerDied(failures, bad, words);
+    await lostFraming(failures, bad, words);
+    await lostFraming(failures, bad, words, true);
+    await crashLimit(failures, bad, words);
+  }
+  await pendingEditRestart(failures, bad, words);
+  await formatting(bad);
+  assert.deepEqual(failures, [], 'scenarios failed');
+}
+
+// The workspace-recovery launch: the six in-session recovery scenarios that
+// the workspace launch leaves out, with the state they need. It opens the
+// project as the workspace launch does, so that the extension starts from the
+// project file, but it reports no startup check of its own: the workspace
+// launch reports those, and both launches share the workspace profile. A
+// setup failure before the first scenario is attributed to the first scenario
+// so the failure message is recorded in the result stream.
+async function workspaceRecovery(extension) {
+  const failures = [];
+  let bad;
+  let words;
+  try {
+    await waitFor('activation by the workspace project file', () => extension.isActive);
+    await waitFor('the server to start', () => channelLog().includes('Started virgil-lsp '));
+    await checkBundledSelection(extension);
+    bad = await open('bad.v3');
+    await expectParserDiagnostic(bad);
+    words = await open('words', 'Words.v3');
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+  } catch (error) {
+    checks.begin('vscode.recovery.restart');
+    throw checks.failed(error);
+  }
   await actionDuringRecovery(failures, words, 'restart');
   await actionDuringRecovery(failures, words, 'configuration');
   await writeAfterServerDied(failures, bad, words);
   await lostFraming(failures, bad, words);
   await lostFraming(failures, bad, words, true);
   await crashLimit(failures, bad, words);
-  await pendingEditRestart(failures, bad, words);
-  await formatting(bad);
   assert.deepEqual(failures, [], 'scenarios failed');
 }
 
@@ -1930,24 +1967,36 @@ async function closeDuringRecovery(extension, directory) {
 async function run() {
   try {
     const recovery = process.env.VIRGIL_E2E_RECOVERY;
+    const workspacePart = process.env.VIRGIL_E2E_WORKSPACE_PART;
+    if (workspacePart !== undefined && workspacePart !== 'main' && workspacePart !== 'recovery') {
+      throw new Error(`VIRGIL_E2E_WORKSPACE_PART takes 'main' or 'recovery', not ${workspacePart}`);
+    }
     // run.cjs sets this when it installed the extension from a VSIX.
     const installed = process.env.VIRGIL_E2E_EXTENSIONS_DIR;
     // The recovery-close launch has no checks of the suite's own: run.cjs
-    // checks it once the window has closed.
-    if (installed !== undefined && recovery === undefined) checks.begin('vscode.startup.installed-copy');
+    // checks it once the window has closed. The workspace-recovery launch
+    // shares the workspace profile, so its workspace launch reports this check.
+    const installedCopy = installed !== undefined && recovery === undefined && workspacePart !== 'recovery';
+    if (installedCopy) checks.begin('vscode.startup.installed-copy');
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
-    assert.ok(extension, `${EXTENSION_ID} is not loaded`);
-    if (installed !== undefined) {
-      assert.equal(path.dirname(extension.extensionPath), installed,
-        `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
-      // Reported once the output channel's startup checks have passed: a
-      // launch that fails before the extension activates can be retried, and
-      // would report it again.
-      if (recovery === undefined) checks.passLater();
+    try {
+      assert.ok(extension, `${EXTENSION_ID} is not loaded`);
+      if (installed !== undefined) {
+        assert.equal(path.dirname(extension.extensionPath), installed,
+          `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
+        // Reported once the output channel's startup checks have passed: a
+        // launch that fails before the extension activates can be retried, and
+        // would report it again.
+        if (installedCopy) checks.passLater();
+      }
+    } catch (error) {
+      if (workspacePart === 'recovery' && checks.current === undefined) checks.begin('vscode.recovery.restart');
+      throw error;
     }
     if (recovery !== undefined) await closeDuringRecovery(extension, recovery);
     else if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
-    else await workspace(extension);
+    else if (workspacePart === 'recovery') await workspaceRecovery(extension);
+    else await workspace(extension, workspacePart);
   } catch (error) {
     // An inline assertion fails the check that began last, if it hasn't ended.
     throw checks.failed(error);

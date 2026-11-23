@@ -108,8 +108,10 @@ async function run() {
     process.env.VIRGIL_E2E_PROJECT = config.project;
     process.env.VIRGIL_E2E_LOGS = result.logs;
     process.env.VIRGIL_E2E_EXTENSIONS_DIR = path.dirname(config.extensionPath);
-    // Keep the host environment from overriding the library selected by the test mode.
+    // Keep the host environment from overriding the library or launch mode.
     delete process.env.VIRGIL_LOC;
+    delete process.env.VIRGIL_E2E_WORKSPACE_PART;
+    delete process.env.VIRGIL_E2E_RECOVERY;
     // suite.cjs's reporter reads this when it is loaded.
     if (config.observations !== undefined) process.env.VIRGIL_E2E_OBSERVATIONS = config.observations;
     write();

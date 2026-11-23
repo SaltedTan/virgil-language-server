@@ -27,10 +27,14 @@ const SHUTDOWN = 'vscode.shutdown.window-close';
 const RECOVERY = 'vscode.recovery.window-close';
 // The checks that run.cjs observes; suite.cjs observes the others.
 const LAUNCHER = new Set([PREFLIGHT, INSTALL, LAUNCH, SHUTDOWN, RECOVERY]);
-// The profile of each launch. The third launch, which closes the window
-// during a recovery, opens the fixture as the workspace launch does, and
-// RECOVERY alone observes it.
-const PROFILES = { 'single-file': 'single-file', workspace: 'workspace', 'recovery-close': 'workspace' };
+// The profile of each launch. The workspace and workspace-recovery launches
+// split the workspace checks, so that neither approaches the 120-second limit,
+// and together report the profile's launcher checks. The recovery-close launch,
+// which closes the window during a recovery, opens the fixture as the workspace
+// launches do, and RECOVERY alone observes it.
+const PROFILES = {
+  'single-file': 'single-file', workspace: 'workspace', 'workspace-recovery': 'workspace', 'recovery-close': 'workspace',
+};
 const OBSERVATIONS = 'observations.jsonl';
 // The failure codes that suite.cjs gives (see observations.cjs).
 const SUITE_CODES = new Set(['wait-timeout', 'error', 'restore-failed']);
@@ -314,6 +318,9 @@ class Results {
     this.firstFailure = undefined;
     this.issues = [];
     this.attempts = {};
+    // The workspace launch's outcome, when it passed and deferred its launcher
+    // checks to the workspace-recovery launch, which shares its profile.
+    this.pendingWorkspace = undefined;
     this.unavailableProvenance = false;
   }
 
@@ -415,7 +422,10 @@ class Results {
   }
 
   // Writes the observations of the launch called name, from its last attempt,
-  // once it has ended or thrown error.
+  // once it has ended or thrown error. The workspace and workspace-recovery
+  // launches share the workspace profile: a workspace launch that passed
+  // defers its launcher checks, and the workspace-recovery launch reports them
+  // once, over both launches.
   launch(name, error) {
     const outcome = this.attempts[name];
     if (outcome === undefined) return;
@@ -453,6 +463,35 @@ class Results {
       }
       return;
     }
+    if (name === 'workspace') {
+      // A workspace launch that failed at any stage reports the profile's
+      // launcher checks at once. One that passed leaves them to the
+      // workspace-recovery launch, which shares the profile.
+      const incomplete = error !== undefined || installation?.passed === false
+        || !launch?.passed || close === undefined || close.problem !== undefined;
+      if (incomplete) {
+        this.pendingWorkspace = undefined;
+        this.emitLaunch(name, profile, lines, outcome, error, retried);
+      } else {
+        this.suiteLaunchObservations(name, profile, lines);
+        this.pendingWorkspace = { outcome, retried };
+      }
+      return;
+    }
+    if (name === 'workspace-recovery') {
+      this.emitRecoveryLaunch(profile, lines, outcome, error, retried);
+      return;
+    }
+    this.emitLaunch(name, profile, lines, outcome, error, retried);
+  }
+
+  // Writes a launch's installation, suite observations, and launcher checks,
+  // for a launch that reports them itself: single-file, and a workspace launch
+  // that failed before a workspace-recovery launch could combine them.
+  emitLaunch(name, profile, lines, { installation, launch, close }, error, retried) {
+    const failed = (id, observation, failureCode, startedAt) => this.check(id, profile, 'fail', {
+      startedAt, observation, reason: observation, failureCode,
+    });
     if (installation !== undefined) {
       if (installation.passed) {
         this.check(INSTALL, profile, 'pass', {
@@ -463,15 +502,7 @@ class Results {
         failed(INSTALL, `--install-extension ${installation.detail}`, code(installation), installation.startedAt);
       }
     }
-    for (const entry of lines) {
-      if (!this.planned(entry.id, profile) || LAUNCHER.has(entry.id)) {
-        this.issues.push(`suite.cjs reported ${entry.id}, which the ${name} launch doesn't plan`);
-      } else if (entry.status === 'pass') {
-        this.check(entry.id, profile, 'pass', entry);
-      } else {
-        this.check(entry.id, profile, 'fail', entry);
-      }
-    }
+    this.suiteLaunchObservations(name, profile, lines);
     if (launch === undefined) {
       if (error !== undefined && (installation === undefined || installation.passed)) {
         failed(LAUNCH, `the launch failed: ${error.message}`, 'error', installation?.endedAt);
@@ -498,6 +529,95 @@ class Results {
         observation: 'no virgil-lsp or virgil-lsp-worker was left in VS Code\'s process group within 5 seconds of VS Code\'s exit, and '
           + (close.exit === undefined ? 'the output channel logged no server exit' : `the last server exit logged was clean: ${close.exit}`),
       });
+    }
+  }
+
+  // Writes the workspace profile's launcher checks and the workspace-recovery
+  // launch's suite observations, combining the deferred workspace launch's
+  // installation, start of VS Code, and clean exit with the recovery launch's.
+  // Combined events record the workspace-recovery launch's timestamps and
+  // duration, so idle time between the two launches is not counted as part of
+  // a single installation, launch, or shutdown window; each observation text
+  // reports both launches' results.
+  emitRecoveryLaunch(profile, lines, { installation, launch, close }, error, retried) {
+    const first = this.pendingWorkspace;
+    this.pendingWorkspace = undefined;
+    const failed = (id, observation, failureCode, startedAt, endedAt) => this.check(id, profile, 'fail', {
+      startedAt, endedAt, observation, reason: observation, failureCode,
+    });
+    const firstInstallation = first?.outcome.installation;
+    const firstLaunch = first?.outcome.launch;
+    const firstClose = first?.outcome.close;
+    const retryNotes = [
+      first?.retried ? 'the workspace launch in its retry' : undefined,
+      retried ? 'the workspace-recovery launch in its retry' : undefined,
+    ].filter((note) => note !== undefined);
+    const retryNote = retryNotes.length === 0 ? '' : `, ${retryNotes.join(' and ')}`;
+    if (installation !== undefined || firstInstallation !== undefined) {
+      if (installation === undefined) {
+        if (error !== undefined) {
+          failed(INSTALL, `the workspace-recovery launch failed before installing the VSIX: ${error.message}`, 'error');
+          return;
+        }
+      } else if (!installation.passed) {
+        failed(INSTALL, `--install-extension ${installation.detail} in the workspace-recovery launch`, code(installation),
+          installation.startedAt, installation.endedAt);
+      } else {
+        const observation = firstInstallation === undefined
+          ? `--install-extension installed the VSIX into the workspace-recovery launch's empty extensions directory and exited with status 0 after ${seconds(installation)}${retryNote}`
+          : `--install-extension installed the VSIX into the workspace and workspace-recovery launches' empty extensions directories and exited with status 0 after ${seconds(firstInstallation)} and ${seconds(installation)}${retryNote}`;
+        this.check(INSTALL, profile, 'pass', {
+          startedAt: installation.startedAt, endedAt: installation.endedAt, observation,
+        });
+      }
+    }
+    this.suiteLaunchObservations('workspace-recovery', profile, lines);
+    if (launch === undefined) {
+      if (error !== undefined && (installation === undefined || installation.passed)) {
+        failed(LAUNCH, `the launch failed in the workspace-recovery launch: ${error.message}`, 'error',
+          installation?.endedAt);
+      }
+      return;
+    }
+    if (!launch.passed) {
+      failed(LAUNCH, `VS Code ${launch.detail} in the workspace-recovery launch`,
+        launch.serverExitFailed ? 'servers-left' : code(launch), launch.startedAt, launch.endedAt);
+    } else {
+      const observation = firstLaunch === undefined
+        ? `the workspace-recovery launch exited with status 0 after ${seconds(launch)}, within 120 seconds, and its process group exited${retryNote}`
+        : `the workspace launch exited with status 0 after ${seconds(firstLaunch)} and the workspace-recovery launch after ${seconds(launch)}, each within 120 seconds, and their process groups exited${retryNote}`;
+      this.check(LAUNCH, profile, 'pass', { startedAt: launch.startedAt, endedAt: launch.endedAt, observation });
+    }
+    if (launch.serverExitFailed) {
+      failed(SHUTDOWN, `${launch.detail} in the workspace-recovery launch`, 'servers-left', launch.endedAt);
+    } else if (launch.passed && close === undefined && error !== undefined) {
+      failed(SHUTDOWN, `the launch failed after VS Code exited in the workspace-recovery launch: ${error.message}`, 'error', launch.endedAt);
+    } else if (close?.problem !== undefined) {
+      failed(SHUTDOWN, close.problem, close.unreadable ? 'evidence-unreadable' : 'unclean-exit', close.startedAt, close.endedAt);
+    } else if (close !== undefined) {
+      const exitNote = (entry) => (entry.exit === undefined
+        ? 'the output channel logged no server exit'
+        : `the last server exit logged was clean: ${entry.exit}`);
+      const observation = firstClose === undefined
+        ? `no virgil-lsp or virgil-lsp-worker was left in VS Code's process group within 5 seconds of the workspace-recovery launch's exit, and ${exitNote(close)}`
+        : `no virgil-lsp or virgil-lsp-worker was left in VS Code's process group within 5 seconds of either the workspace or workspace-recovery launch's exit; workspace: ${exitNote(firstClose)}; workspace-recovery: ${exitNote(close)}`;
+      this.check(SHUTDOWN, profile, 'pass', {
+        startedAt: launch.endedAt, endedAt: close.endedAt, observation,
+      });
+    }
+  }
+
+  // Writes the suite's observations of a launch, after checking that its
+  // profile plans each one and that it wasn't reported before.
+  suiteLaunchObservations(name, profile, lines) {
+    for (const entry of lines) {
+      if (!this.planned(entry.id, profile) || LAUNCHER.has(entry.id)) {
+        this.issues.push(`suite.cjs reported ${entry.id}, which the ${name} launch doesn't plan`);
+      } else if (entry.status === 'pass') {
+        this.check(entry.id, profile, 'pass', entry);
+      } else {
+        this.check(entry.id, profile, 'fail', entry);
+      }
     }
   }
 
