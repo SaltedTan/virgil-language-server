@@ -71,6 +71,11 @@ function events(file) {
   return fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line));
 }
 
+// The check event of id in profile, from a run's stream.
+function checkOf(stream, id, profile = 'workspace') {
+  return stream.find((event) => event.id === id && event.profile === profile);
+}
+
 // A writer for a run, with its run-start written, as run.cjs makes one.
 function begin(t, { vsix = false, bundled = false } = {}) {
   const root = scratch(t);
@@ -96,25 +101,52 @@ function suiteChecks(results, profile) {
 }
 
 // One attempt of a launch: the suite's observations, as observations.cjs
-// writes them, then what run.cjs observed.
-function launch(results, root, name, { vsix = false, observations, installation = true, exit = true, close = {}, server } = {}) {
+// writes them, then what run.cjs observed. times overrides the start and end
+// timestamps for install, launch, and close when a test verifies durations.
+function launch(results, root, name, { vsix = false, observations, installation = true, exit = true, close = {},
+  server, serverExitFailed = false, times } = {}) {
   const dir = path.join(root, `${name}-${(results.attempts[name]?.attempt ?? 0) + 1}`);
   fs.mkdirSync(dir, { recursive: true });
   const observed = results.attempt(name, dir);
   const now = Date.now();
-  if (vsix) observed.installation = { startedAt: now, endedAt: now, passed: installation, detail: installation ? 'exited with 0' : 'exited with 1' };
+  const span = (range) => (range === undefined ? { startedAt: now, endedAt: now } : { startedAt: range[0], endedAt: range[1] });
+  if (vsix) {
+    observed.installation = {
+      ...span(times?.install), passed: installation, detail: installation ? 'exited with 0' : 'exited with 1',
+    };
+  }
   if (vsix && !installation) return observed;
   if (server !== undefined) observed.server = server;
   const lines = (observations ?? []).map((entry) => (typeof entry === 'string' ? entry
     : JSON.stringify({ status: 'pass', startedAt: now, endedAt: now, observation: 'every assertion of the check passed', ...entry })));
   fs.writeFileSync(observed.observations, lines.map((line) => `${line}\n`).join(''));
-  observed.launch = { startedAt: now, endedAt: now, passed: exit, detail: exit ? 'exited with 0' : 'exited with 1', error: false, timedOut: false, stopped: false, serverExitFailed: false };
-  if (exit && close !== undefined) observed.close = { startedAt: now, endedAt: now, ...close };
+  observed.launch = {
+    ...span(times?.launch), passed: exit && !serverExitFailed,
+    detail: serverExitFailed ? 'left virgil-lsp (pid 42) running 5 seconds after VS Code exited' : exit ? 'exited with 0' : 'exited with 1',
+    error: false, timedOut: false, stopped: serverExitFailed, serverExitFailed,
+  };
+  if (exit && !serverExitFailed && close !== undefined) observed.close = { ...span(times?.close), ...close };
   return observed;
 }
 
 function passes(results, profile) {
   return suiteChecks(results, profile).map((id) => ({ id }));
+}
+
+// The six in-session recovery scenarios that the workspace-recovery launch runs.
+const WORKSPACE_RECOVERY = new Set([
+  'vscode.recovery.restart', 'vscode.recovery.server-path', 'vscode.recovery.write-error',
+  'vscode.recovery.lost-framing', 'vscode.recovery.lost-framing-request', 'vscode.recovery.crash-limit',
+]);
+
+// The workspace checks that the workspace launch runs, before the split.
+function workspaceMain(results) {
+  return passes(results, 'workspace').filter((entry) => !WORKSPACE_RECOVERY.has(entry.id));
+}
+
+// The workspace checks that the workspace-recovery launch runs.
+function workspaceRecoveryChecks(results) {
+  return passes(results, 'workspace').filter((entry) => WORKSPACE_RECOVERY.has(entry.id));
 }
 
 function passingRun(t, options = {}) {
@@ -124,8 +156,10 @@ function passingRun(t, options = {}) {
   results.launch('single-file');
   // As run.cjs does, once the installation has found a bundled server.
   results.start();
-  launch(results, root, 'workspace', { ...options, observations: passes(results, 'workspace') });
+  launch(results, root, 'workspace', { ...options, observations: workspaceMain(results) });
   results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { ...options, observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
   launch(results, root, 'recovery-close', { ...options });
   results.launch('recovery-close');
   return run;
@@ -218,12 +252,301 @@ test('a passing VSIX run with a bundled server plans the vsix checks, and valida
     assert.ok(start.expected.some((key) => key.id === 'vscode.startup.installed-copy' && key.profile === profile));
     assert.ok(start.expected.some((key) => key.id === 'vscode.infrastructure.vsix-install' && key.profile === profile));
   }
+  // The workspace profile's launcher checks combine both workspace launches.
+  const check = (id) => events(file).find((event) => event.id === id && event.profile === 'workspace');
+  assert.match(check('vscode.infrastructure.vsix-install').observation,
+    /the workspace and workspace-recovery launches' empty extensions directories and exited with status 0 after .* and /);
+  assert.match(check('vscode.infrastructure.launch').observation,
+    /the workspace launch exited with status 0 after .* and the workspace-recovery launch after .*, each within 120 seconds/);
+  assert.match(check('vscode.shutdown.window-close').observation,
+    /within 5 seconds of either the workspace or workspace-recovery launch's exit; workspace: .*; workspace-recovery: /);
+});
+
+test('combined workspace launcher checks exclude inter-launch time from durations and report both launches', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t, { vsix: true });
+  const base = Date.now() - 200000;
+  launch(results, root, 'single-file', { vsix: true, observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  results.start();
+  launch(results, root, 'workspace', {
+    vsix: true,
+    observations: workspaceMain(results),
+    close: { exit: 'Server process exited successfully' },
+    times: {
+      install: [base, base + 5000],
+      launch: [base + 5000, base + 50000],
+      close: [base + 50000, base + 50200],
+    },
+  });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', {
+    vsix: true,
+    observations: workspaceRecoveryChecks(results),
+    close: {},
+    times: {
+      install: [base + 50500, base + 55400],
+      launch: [base + 55400, base + 101400],
+      close: [base + 101400, base + 101650],
+    },
+  });
+  results.launch('workspace-recovery');
+  launch(results, root, 'recovery-close', { vsix: true });
+  results.launch('recovery-close');
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 0);
+  assert.equal(validate(file).status, 0, validate(file).output);
+  const stream = events(file);
+  const install = checkOf(stream, 'vscode.infrastructure.vsix-install');
+  const launched = checkOf(stream, 'vscode.infrastructure.launch');
+  const shutdown = checkOf(stream, 'vscode.shutdown.window-close');
+  assert.equal(install.durationMs, 4900);
+  assert.match(install.observation, /after 5\.0 seconds and 4\.9 seconds$/);
+  assert.equal(launched.durationMs, 46000);
+  assert.match(launched.observation, /after 45\.0 seconds and the workspace-recovery launch after 46\.0 seconds/);
+  assert.equal(shutdown.durationMs, 250);
+  assert.match(shutdown.observation, /workspace: the last server exit logged was clean: Server process exited successfully; workspace-recovery: the output channel logged no server exit$/);
+});
+
+test('a workspace launch that fails reports its launcher checks and skips the recovery launch', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { exit: false, observations: workspaceMain(results) });
+  results.launch('workspace');
+  // run.cjs starts workspace-recovery only when the workspace launch passed.
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  assert.equal(checkOf(stream, 'vscode.infrastructure.launch').status, 'fail');
+  for (const id of WORKSPACE_RECOVERY) assert.equal(checkOf(stream, id).status, 'skip', id);
+  assert.equal(checkOf(stream, 'vscode.shutdown.window-close').status, 'skip');
+  assert.equal(checkOf(stream, 'vscode.recovery.window-close').status, 'skip');
+  // The launcher checks were emitted at once, not left for a launch that never ran.
+  const end = stream.at(-1);
+  assert.equal(end.complete, true);
+  assert.deepEqual(end.issues, []);
+});
+
+test('a failed recovery scenario fails its check in the workspace profile', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  const recovery = workspaceRecoveryChecks(results);
+  const failed = recovery.findIndex((entry) => entry.id === 'vscode.recovery.restart');
+  launch(results, root, 'workspace-recovery', {
+    exit: false,
+    observations: [...recovery.slice(0, failed), {
+      id: recovery[failed].id, status: 'fail', reason: 'the restarted server did not serve the open document', failureCode: 'error',
+    }],
+  });
+  results.launch('workspace-recovery');
+  // run.cjs skips recovery-close when workspace-recovery fails.
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  assert.deepEqual([checkOf(stream, 'vscode.recovery.restart').status, checkOf(stream, 'vscode.recovery.restart').failureCode],
+    ['fail', 'error']);
+  assert.equal(checkOf(stream, 'vscode.infrastructure.launch').status, 'fail');
+  assert.equal(checkOf(stream, 'vscode.recovery.window-close').status, 'skip');
+});
+
+test('a workspace-recovery launch that exits with an error fails the combined launch check', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { exit: false });
+  results.launch('workspace-recovery');
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  const launchCheck = checkOf(stream, 'vscode.infrastructure.launch');
+  assert.equal(launchCheck.status, 'fail');
+  assert.match(launchCheck.reason, /in the workspace-recovery launch/);
+  for (const id of WORKSPACE_RECOVERY) assert.equal(checkOf(stream, id).status, 'skip', id);
+  assert.equal(checkOf(stream, 'vscode.shutdown.window-close').status, 'skip');
+});
+
+test('a workspace-recovery installation that fails uses its own timestamps and fails the combined install check', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t, { vsix: true });
+  const base = Date.now() - 100000;
+  launch(results, root, 'single-file', { vsix: true, observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  results.start();
+  launch(results, root, 'workspace', {
+    vsix: true,
+    observations: workspaceMain(results),
+    times: { install: [base, base + 4000], launch: [base + 4000, base + 50000], close: [base + 50000, base + 50100] },
+  });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', {
+    vsix: true,
+    installation: false,
+    times: { install: [base + 51000, base + 53200] },
+  });
+  results.launch('workspace-recovery');
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  const install = checkOf(stream, 'vscode.infrastructure.vsix-install');
+  assert.equal(install.status, 'fail');
+  assert.equal(install.durationMs, 2200);
+  assert.match(install.reason, /in the workspace-recovery launch/);
+  assert.equal(checkOf(stream, 'vscode.infrastructure.launch').status, 'skip');
+  assert.equal(checkOf(stream, 'vscode.shutdown.window-close').status, 'skip');
+});
+
+test('a workspace-recovery exception before installation or launch fails the right check and skips the rest', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  // VSIX run: exception before --install-extension runs fails vsix-install.
+  const vsixRun = begin(t, { vsix: true });
+  launch(vsixRun.results, vsixRun.root, 'single-file', { vsix: true, observations: passes(vsixRun.results, 'single-file') });
+  vsixRun.results.launch('single-file');
+  vsixRun.results.start();
+  launch(vsixRun.results, vsixRun.root, 'workspace', { vsix: true, observations: workspaceMain(vsixRun.results) });
+  vsixRun.results.launch('workspace');
+  vsixRun.results.attempt('workspace-recovery', path.join(vsixRun.root, 'workspace-recovery-1'));
+  vsixRun.results.launch('workspace-recovery', new Error('mkdir failed'));
+  assert.equal(vsixRun.results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(vsixRun.file).status, 1, validate(vsixRun.file).output);
+  const vsixStream = events(vsixRun.file);
+  assert.equal(checkOf(vsixStream, 'vscode.infrastructure.vsix-install').status, 'fail');
+  assert.match(checkOf(vsixStream, 'vscode.infrastructure.vsix-install').reason, /failed before installing the VSIX: mkdir failed/);
+  assert.equal(checkOf(vsixStream, 'vscode.infrastructure.launch').status, 'skip');
+  assert.equal(checkOf(vsixStream, 'vscode.shutdown.window-close').status, 'skip');
+
+  // Source run: exception before VS Code starts fails launch.
+  const srcRun = begin(t);
+  launch(srcRun.results, srcRun.root, 'single-file', { observations: passes(srcRun.results, 'single-file') });
+  srcRun.results.launch('single-file');
+  launch(srcRun.results, srcRun.root, 'workspace', { observations: workspaceMain(srcRun.results) });
+  srcRun.results.launch('workspace');
+  srcRun.results.attempt('workspace-recovery', path.join(srcRun.root, 'workspace-recovery-1'));
+  srcRun.results.launch('workspace-recovery', new Error('settings write failed'));
+  assert.equal(srcRun.results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(srcRun.file).status, 1, validate(srcRun.file).output);
+  const srcStream = events(srcRun.file);
+  assert.equal(checkOf(srcStream, 'vscode.infrastructure.launch').status, 'fail');
+  assert.match(checkOf(srcStream, 'vscode.infrastructure.launch').reason, /in the workspace-recovery launch: settings write failed/);
+  assert.equal(checkOf(srcStream, 'vscode.shutdown.window-close').status, 'skip');
+});
+
+test('a server left running after workspace-recovery fails both launch and shutdown with servers-left', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results), serverExitFailed: true });
+  results.launch('workspace-recovery');
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  assert.deepEqual([checkOf(stream, 'vscode.infrastructure.launch').status, checkOf(stream, 'vscode.infrastructure.launch').failureCode],
+    ['fail', 'servers-left']);
+  assert.deepEqual([checkOf(stream, 'vscode.shutdown.window-close').status, checkOf(stream, 'vscode.shutdown.window-close').failureCode],
+    ['fail', 'servers-left']);
+});
+
+test('a VSIX run where only workspace-recovery is retried records the retry on install and launch', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t, { vsix: true });
+  launch(results, root, 'single-file', { vsix: true, observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  results.start();
+  launch(results, root, 'workspace', { vsix: true, observations: workspaceMain(results) });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { vsix: true, exit: false });
+  launch(results, root, 'workspace-recovery', { vsix: true, observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
+  launch(results, root, 'recovery-close', { vsix: true });
+  results.launch('recovery-close');
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 0);
+  assert.equal(validate(file).status, 0, validate(file).output);
+  const stream = events(file);
+  assert.match(checkOf(stream, 'vscode.infrastructure.vsix-install').observation, /, the workspace-recovery launch in its retry$/);
+  assert.match(checkOf(stream, 'vscode.infrastructure.launch').observation, /, the workspace-recovery launch in its retry$/);
+});
+
+test('unreadable recovery evidence fails the combined shutdown check', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', {
+    observations: workspaceRecoveryChecks(results),
+    close: { problem: "could not read the output channel's log after the window closed: EACCES", unreadable: true },
+  });
+  results.launch('workspace-recovery');
+  assert.equal(results.end({ exitCode: 1, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  assert.equal(checkOf(stream, 'vscode.infrastructure.launch').status, 'pass');
+  assert.deepEqual([checkOf(stream, 'vscode.shutdown.window-close').status,
+    checkOf(stream, 'vscode.shutdown.window-close').failureCode], ['fail', 'evidence-unreadable']);
+});
+
+test('the combined workspace launcher checks record which launch was retried', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { exit: false });
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { exit: false });
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
+  launch(results, root, 'recovery-close');
+  results.launch('recovery-close');
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 0);
+  assert.equal(validate(file).status, 0, validate(file).output);
+  const launchCheck = checkOf(events(file), 'vscode.infrastructure.launch');
+  assert.match(launchCheck.observation,
+    /, the workspace launch in its retry and the workspace-recovery launch in its retry$/);
+});
+
+test('a check that both workspace launches report is an issue that fails the run', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', {
+    observations: [...workspaceMain(results), { id: 'vscode.recovery.restart' }],
+  });
+  results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
+  launch(results, root, 'recovery-close');
+  results.launch('recovery-close');
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const end = events(file).at(-1);
+  assert.deepEqual(end.issues, ['vscode.recovery.restart (workspace) was observed again']);
+});
+
+test('a workspace launch that defers its checks never passes without the recovery launch', { skip: !python && 'needs Python 3.9+' }, (t) => {
+  const { root, file, results } = begin(t);
+  launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
+  results.launch('single-file');
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
+  results.launch('workspace');
+  // run.cjs starts workspace-recovery only after the workspace launch passed,
+  // so a run that stops here has no launcher checks for the workspace profile.
+  assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 1);
+  assert.equal(validate(file).status, 1, validate(file).output);
+  const stream = events(file);
+  assert.equal(checkOf(stream, 'vscode.infrastructure.launch'), undefined);
+  assert.equal(checkOf(stream, 'vscode.recovery.restart'), undefined);
+  const end = stream.at(-1);
+  assert.equal(end.complete, false);
+  assert.ok(end.issues.some((issue) => /vscode\.infrastructure\.launch \(workspace\).*no check event/.test(issue)),
+    JSON.stringify(end.issues));
 });
 
 test('a failed scenario fails the launch, and the checks that did not run are skipped', { skip: !python && 'needs Python 3.9+' }, (t) => {
   const { root, file, results } = begin(t);
   launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
-  const workspace = suiteChecks(results, 'workspace');
+  const workspace = workspaceMain(results).map((entry) => entry.id);
   const stopped = workspace.indexOf('vscode.configuration.disk-watch');
   launch(results, root, 'workspace', {
     exit: false,
@@ -272,8 +595,10 @@ test('only the last attempt of a retried launch counts', { skip: !python && 'nee
   launch(results, root, 'single-file', { exit: false, observations: [{ id: 'vscode.diagnostics.single-file-parser' }] });
   launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
   results.launch('single-file');
-  launch(results, root, 'workspace', { observations: passes(results, 'workspace') });
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
   results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
   launch(results, root, 'recovery-close');
   results.launch('recovery-close');
   assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 0);
@@ -288,8 +613,10 @@ test('malformed or unplanned observations are issues that fail the run', { skip:
     observations: [...passes(results, 'single-file'), '{"id": "vscode.startup.activation"', { id: 'vscode.rename.apply-undo' }],
   });
   results.launch('single-file');
-  launch(results, root, 'workspace', { observations: passes(results, 'workspace') });
+  launch(results, root, 'workspace', { observations: workspaceMain(results) });
   results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
   launch(results, root, 'recovery-close', { observations: [{ id: 'vscode.recovery.window-close' }] });
   results.launch('recovery-close');
   assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 1);
@@ -305,9 +632,11 @@ test('a planned check that the suite never reported is an issue that fails the r
   const { root, file, results } = begin(t);
   launch(results, root, 'single-file', { observations: passes(results, 'single-file') });
   results.launch('single-file');
-  const workspace = passes(results, 'workspace').filter((entry) => entry.id !== 'vscode.formatting.save');
+  const workspace = workspaceMain(results).filter((entry) => entry.id !== 'vscode.formatting.save');
   launch(results, root, 'workspace', { observations: workspace });
   results.launch('workspace');
+  launch(results, root, 'workspace-recovery', { observations: workspaceRecoveryChecks(results) });
+  results.launch('workspace-recovery');
   launch(results, root, 'recovery-close');
   results.launch('recovery-close');
   assert.equal(results.end({ exitCode: 0, cleanup: 'verified' }), 1);

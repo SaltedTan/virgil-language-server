@@ -4,23 +4,23 @@
   "streams": [
     {
       "path": "lazyvim-linux-0.11.6.jsonl",
-      "sha256": "15fc785d876529f27d0d064aadd018684cc1d9967b46e52135ba195eee677e56"
+      "sha256": "6954fec775a7f460b83be2a89e0926194d4f9f54fcc15708c06f608f73f97191"
     },
     {
       "path": "lazyvim-linux-0.12.6.jsonl",
-      "sha256": "b423716670f1cbe0a0b330aaaae31a609b0dea84063738a45924d9a9234b4132"
+      "sha256": "3ce02f8ab956cd5122e2f8156a499378b68976c039e4f2b5b00db79ac57080be"
     },
     {
       "path": "manual-vscode-linux.jsonl",
-      "sha256": "7cab8b5ea12b28838bf0e980f780a066791e4356375028d47b0a091aad20c964"
+      "sha256": "64f75eeacd50f2f57ac0d7506467e2d9a80d11e9e63d728312697cd575e1b868"
     },
     {
       "path": "nvim-linux.jsonl",
-      "sha256": "70356fedf8f70982a51f166340b52a82625d6866c62f9e5ef979137d8cee3aa0"
+      "sha256": "8c60af1b4e5ccfe7fac445b37fe34a9c1ea68505e269fe0fab2886260ee93819"
     },
     {
       "path": "vscode-macos.jsonl",
-      "sha256": "4776ef22f5ff74c0bc911a664d84109587a68434d0a896b7f1ce175649bcaea1"
+      "sha256": "b2b254ad1f848389a3d861d86ef0ad4fb8db416f6c8722eba58346d8873c6186"
     }
   ]
 }

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Runs suite.cjs in a real VS Code Extension Host against the built server, on
-// a copy of the Neovim smoke test's fixture: once with the fixture's bad.v3
-// opened without a folder, once with the fixture as the workspace folder, and
-// once more with the folder to close the window while the client recovers
-// from a server that the suite killed.
+// a copy of the Neovim smoke test's fixture, in four launches: single-file,
+// with the fixture's bad.v3 opened without a folder; workspace and
+// workspace-recovery, with the fixture as the workspace folder, which split
+// the workspace checks so that neither approaches the 120-second limit; and
+// recovery-close, which closes the window while the client recovers from a
+// server that the suite killed.
 // Usage, from clients/vscode after `npm run compile`:
 //
 //   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [--logs DIR]
@@ -217,8 +219,9 @@ async function main() {
       let passed = (await run('single-file')).passed;
       // The run-start names a bundled server, which the installation found.
       results?.start();
-      if (passed) passed = (await run('workspace', project)).passed;
-      if (passed) passed = (await run('recovery-close', project, true)).passed;
+      if (passed) passed = (await run('workspace', project, { workspacePart: 'main' })).passed;
+      if (passed) passed = (await run('workspace-recovery', project, { workspacePart: 'recovery' })).passed;
+      if (passed) passed = (await run('recovery-close', project, { recovery: true })).passed;
       if (!passed && !controller.signal.aborted) process.exitCode = 1;
     } finally {
       process.off('SIGINT', sigint).off('SIGTERM', sigterm);
@@ -276,6 +279,9 @@ function isolatedEnv(variables) {
   delete env.ELECTRON_RUN_AS_NODE;
   // The suite checks that the Virgil root comes from the setting.
   delete env.VIRGIL_LOC;
+  // Only the launch that run.cjs selects a workspace part for gets one; a
+  // Remote-SSH launch, which runs every workspace check, gets none.
+  if (variables.VIRGIL_E2E_WORKSPACE_PART === undefined) delete env.VIRGIL_E2E_WORKSPACE_PART;
   return env;
 }
 
@@ -285,11 +291,13 @@ function isolatedEnv(variables) {
 // whether the extension activated (see failure and retryable). The suite opens
 // a folder only if it is given one. With recovery, the suite closes the
 // window during a recovery, with a virgil.server.path in dir/recovery, whose
-// records are checked after the window has closed. With keep, Chromium's own
-// log goes among VS Code's logs, for keepLogs. With observed, from
-// results.cjs, the launch records there what it observed, and the suite its
-// own observations in observed.observations.
-async function launch({ executable, settings, project, vsix, servers, keep, signal, observed }, dir, folder, recovery = false) {
+// records are checked after the window has closed. With workspacePart, the
+// suite runs only that part of the workspace checks: 'main' or 'recovery'.
+// With keep, Chromium's own log goes among VS Code's logs, for keepLogs. With
+// observed, from results.cjs, the launch records there what it observed, and
+// the suite its own observations in observed.observations.
+async function launch({ executable, settings, project, vsix, servers, keep, signal, observed }, dir, folder,
+  { recovery = false, workspacePart } = {}) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
   const records = recovery ? path.join(dir, 'recovery') : undefined;
@@ -330,6 +338,7 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     // The suite checks that VS Code loaded the installed copy.
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
     ...(records === undefined ? {} : { VIRGIL_E2E_RECOVERY: records }),
+    ...(workspacePart === undefined ? {} : { VIRGIL_E2E_WORKSPACE_PART: workspacePart }),
     ...(observed === undefined ? {} : { VIRGIL_E2E_OBSERVATIONS: observed.observations }),
   });
   if (vsix !== undefined && settings['virgil.server.path'] === undefined) {

@@ -290,7 +290,7 @@
           "id": "workspace",
           "workaround": false,
           "repeated": false,
-          "description": "A launch with the fixture as the workspace folder."
+          "description": "Launches with the fixture as the workspace folder."
         },
         {
           "id": "wrapper",
@@ -1682,7 +1682,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/run.cjs",
-      "description": "The third launch opens the fixture; the suite kills the server and ends while the recovery's start is held, which closes the window, and the script records exactly the killed server's start and the recovery's. Only the extension host's terminating log releases the start, and the client logged the recovery. The recovered server received initialize and initialized, the open bad.v3 in a didOpen before exit, exactly one shutdown and a final exit, and exited with status 0."
+      "description": "The recovery-close launch opens the fixture; the suite kills the server and ends while the recovery's start is held, which closes the window, and the script records exactly the killed server's start and the recovery's. Only the extension host's terminating log releases the start, and the client logged the recovery. The recovered server received initialize and initialized, the open bad.v3 in a didOpen before exit, exactly one shutdown and a final exit, and exited with status 0."
     },
     {
       "id": "ssh.identity.remote-host",
