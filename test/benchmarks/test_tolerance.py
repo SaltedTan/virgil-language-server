@@ -1011,7 +1011,7 @@ class Scorecard(unittest.TestCase):
         self.assertTrue(report["ok"], report["failures"])
         scorecard = checker.format_scorecard(report, capture)
         self.assertIn("baseline 153/185", scorecard)
-        self.assertIn("baseline 40/94", scorecard)
+        self.assertIn("baseline 39/94", scorecard)
 
 
 class Inventory(unittest.TestCase):

@@ -62,10 +62,16 @@ FLOORS = {
         "header": (62, 62),
     },
     "heldout": {
-        "all_features": (44, 94),
+        # Lowered from (44, 94) and (2, 7) after the Virgil pin bump to 4aa91254 (#590):
+        # upstream edits in other Aeneas files shifted the shared BRACE_SEED RNG before
+        # brace-spaces/block-closer/core/Program.v3, moving its deleted "}" from a
+        # recoverable inner block to an ambiguous outer-block local def (line 69), which
+        # ADR-0010 rule 3 refuses. All other 93 held-out states and every primary state
+        # are unchanged, with zero wrong answers.
+        "all_features": (43, 94),
         "body_quarantine": (24, 24),
         "lost_openers": (15, 28),
-        "seed_317_block_closers": (2, 7),
+        "seed_317_block_closers": (1, 7),
         "seed_320_block_closers": (3, 20),
         "method_closers": (0, 15),
     },
@@ -78,9 +84,11 @@ FLOORS = {
 }
 
 # Shown for context, not enforced as floors by this issue.
+# heldout_all_exact moved from (40, 94) at ced30385 to (39, 94) on pin 4aa91254
+# for the same brace-spaces/block-closer/core/Program.v3 state noted above.
 BASELINES = {
     "primary_all_exact": (153, 185),
-    "heldout_all_exact": (40, 94),
+    "heldout_all_exact": (39, 94),
 }
 
 

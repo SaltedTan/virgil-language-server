@@ -3159,6 +3159,33 @@ subgroups were the same in both modes: 24/24 body quarantine, 15/28 lost openers
 The last is an uncovered class, as are the two truncated files; header and
 field-initializer errors and truncated files remain phase 3b.
 
+After the Virgil pin bump from `b86f43f1` to `4aa91254` ([#590](https://github.com/SaltedTan/virgil-language-server/pull/590)),
+the full run on 2026-11-23 at `0c0352b9` (server
+`dd03cc87e22bc44791a7a1dfc60b0c91a749c6061ea2c5ec50805d3376a5471d`,
+484.60 seconds) kept every primary state and 93 of 94 held-out states identical
+in both modes, with zero wrong answers, zero expectation mismatches, all 56
+negative controls, and all 56 stale-predecessor injections rejected, while one
+seed-317 held-out block closer (`brace-spaces/block-closer/core/Program.v3`)
+dropped from available to unrecovered:
+
+| Mode | Primary all four features | Held-out | Exact definition | Exact hover | Exact references | Exact diagnostic sets | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Warm | 180/185 | 43/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+| Cold | 180/185 | 43/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+
+Fully exact states were 153 of 185 primary and 39 of 94 held-out, and held-out
+subgroups were 24/24 body quarantine, 15/28 lost openers, 1/7 seed-317 block
+closers, 3/20 seed-320 block closers, and 0/15 method closers in both modes.
+`vendor/virgil/aeneas/src/core/Program.v3` itself did not change between
+`b86f43f1` and `4aa91254`; upstream changes in earlier Aeneas files advanced
+`scripts/tolerance-corpus.py`'s shared `BRACE_SEED` generator in `reindent()`,
+moving the deleted `}` in `Program.v3` from a recoverable inner block to an
+ambiguous outer-block local `def` on line 69, which ADR-0010 rule 3 refuses.
+Accordingly, `scripts/check-tolerance.py` lowers the `heldout.all_features`
+floor from 44/94 to 43/94, the `heldout.seed_317_block_closers` floor from 2/7
+to 1/7, and the informational `heldout_all_exact` baseline from 40/94 to 39/94
+for pin `4aa91254`.
+
 ## Pinned Virgil revision comparison (2026-10-27)
 
 The bump from `7cf038fc` to `57318d37` ([#311](https://github.com/SaltedTan/virgil-language-server/issues/311))
