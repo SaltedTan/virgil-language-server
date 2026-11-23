@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Extension Host test's copy of a failed launch's logs (keepLogs in
-// e2e/run.cjs) and its retry decision (attempt, retryable, and windowError
-// there), on launch directories that the checks write.
+// e2e/run.cjs), its retry decision (attempt, retryable, and windowError
+// there), and suite.cjs's output-channel log-level helper (level).
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const { attempt, escapeAnnotation, keepLogs, retryable, windowError } = require('./e2e/run.cjs');
+const fakes = require('./support/fakes.cjs');
 
 // A launch directory as VS Code leaves it, under a new directory that the
 // test removes, and keepLogs's messages, once it has run.
@@ -258,4 +259,46 @@ test('the retry evidence is the main log\'s unresponsive window or gone renderer
   write(main, '2026-10-24 16:26:43.345 [error] CodeWindow: renderer process gone (reason: crashed, code: 133)\n');
   assert.equal(windowError(userData), 'a gone renderer process');
   assert.equal(windowError(path.join(root, 'missing')), undefined);
+});
+
+test('suite.cjs level waits until VS Code registers both output-channel commands before executing them', async () => {
+  const switchCommand = 'workbench.output.action.switchBetweenOutputs';
+  const levelCommand = 'workbench.action.output.activeOutputLogLevel.1';
+  let polls = 0;
+  let registered = [];
+  const executed = [];
+  const vscode = {
+    commands: {
+      async getCommands() {
+        polls += 1;
+        if (polls === 3) registered = [switchCommand];
+        else if (polls >= 4) registered = [switchCommand, levelCommand];
+        return [...registered];
+      },
+      async executeCommand(command, ...args) {
+        if (!registered.includes(command)) throw new Error(`command '${command}' not found`);
+        executed.push([command, ...args]);
+      },
+    },
+  };
+  const { level } = fakes.load('suite.cjs', { vscode });
+  await level(1, 1000);
+  assert.equal(polls, 4);
+  assert.deepEqual(executed, [
+    [switchCommand, 'virgil-language-server.virgil-lsp-vscode.Virgil Language Server.log'],
+    [levelCommand],
+  ]);
+});
+
+test('suite.cjs level times out without calling executeCommand if output-channel commands never register', async () => {
+  const executed = [];
+  const vscode = {
+    commands: {
+      async getCommands() { return []; },
+      async executeCommand(command, ...args) { executed.push([command, ...args]); },
+    },
+  };
+  const { level } = fakes.load('suite.cjs', { vscode });
+  await assert.rejects(level(1, 60), /timed out waiting for the output-channel commands/);
+  assert.deepEqual(executed, []);
 });
