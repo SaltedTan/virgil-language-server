@@ -111,7 +111,6 @@ async function run() {
     // Keep the host environment from overriding the library or launch mode.
     delete process.env.VIRGIL_LOC;
     delete process.env.VIRGIL_E2E_WORKSPACE_PART;
-    delete process.env.VIRGIL_E2E_RECOVERY;
     // suite.cjs's reporter reads this when it is loaded.
     if (config.observations !== undefined) process.env.VIRGIL_E2E_OBSERVATIONS = config.observations;
     write();

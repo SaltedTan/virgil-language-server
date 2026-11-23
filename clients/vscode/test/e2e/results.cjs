@@ -545,15 +545,13 @@ class Results {
     const failed = (id, observation, failureCode, startedAt, endedAt) => this.check(id, profile, 'fail', {
       startedAt, endedAt, observation, reason: observation, failureCode,
     });
-    const firstInstallation = first?.outcome.installation;
-    const firstLaunch = first?.outcome.launch;
-    const firstClose = first?.outcome.close;
+    const { installation: firstInstallation, launch: firstLaunch, close: firstClose } = first.outcome;
     const retryNotes = [
-      first?.retried ? 'the workspace launch in its retry' : undefined,
+      first.retried ? 'the workspace launch in its retry' : undefined,
       retried ? 'the workspace-recovery launch in its retry' : undefined,
     ].filter((note) => note !== undefined);
     const retryNote = retryNotes.length === 0 ? '' : `, ${retryNotes.join(' and ')}`;
-    if (installation !== undefined || firstInstallation !== undefined) {
+    if (firstInstallation !== undefined) {
       if (installation === undefined) {
         if (error !== undefined) {
           failed(INSTALL, `the workspace-recovery launch failed before installing the VSIX: ${error.message}`, 'error');
@@ -563,9 +561,7 @@ class Results {
         failed(INSTALL, `--install-extension ${installation.detail} in the workspace-recovery launch`, code(installation),
           installation.startedAt, installation.endedAt);
       } else {
-        const observation = firstInstallation === undefined
-          ? `--install-extension installed the VSIX into the workspace-recovery launch's empty extensions directory and exited with status 0 after ${seconds(installation)}${retryNote}`
-          : `--install-extension installed the VSIX into the workspace and workspace-recovery launches' empty extensions directories and exited with status 0 after ${seconds(firstInstallation)} and ${seconds(installation)}${retryNote}`;
+        const observation = `--install-extension installed the VSIX into the workspace and workspace-recovery launches' empty extensions directories and exited with status 0 after ${seconds(firstInstallation)} and ${seconds(installation)}${retryNote}`;
         this.check(INSTALL, profile, 'pass', {
           startedAt: installation.startedAt, endedAt: installation.endedAt, observation,
         });
@@ -583,9 +579,7 @@ class Results {
       failed(LAUNCH, `VS Code ${launch.detail} in the workspace-recovery launch`,
         launch.serverExitFailed ? 'servers-left' : code(launch), launch.startedAt, launch.endedAt);
     } else {
-      const observation = firstLaunch === undefined
-        ? `the workspace-recovery launch exited with status 0 after ${seconds(launch)}, within 120 seconds, and its process group exited${retryNote}`
-        : `the workspace launch exited with status 0 after ${seconds(firstLaunch)} and the workspace-recovery launch after ${seconds(launch)}, each within 120 seconds, and their process groups exited${retryNote}`;
+      const observation = `the workspace launch exited with status 0 after ${seconds(firstLaunch)} and the workspace-recovery launch after ${seconds(launch)}, each within 120 seconds, and their process groups exited${retryNote}`;
       this.check(LAUNCH, profile, 'pass', { startedAt: launch.startedAt, endedAt: launch.endedAt, observation });
     }
     if (launch.serverExitFailed) {
@@ -598,9 +592,7 @@ class Results {
       const exitNote = (entry) => (entry.exit === undefined
         ? 'the output channel logged no server exit'
         : `the last server exit logged was clean: ${entry.exit}`);
-      const observation = firstClose === undefined
-        ? `no virgil-lsp or virgil-lsp-worker was left in VS Code's process group within 5 seconds of the workspace-recovery launch's exit, and ${exitNote(close)}`
-        : `no virgil-lsp or virgil-lsp-worker was left in VS Code's process group within 5 seconds of either the workspace or workspace-recovery launch's exit; workspace: ${exitNote(firstClose)}; workspace-recovery: ${exitNote(close)}`;
+      const observation = `no virgil-lsp or virgil-lsp-worker was left in VS Code's process group within 5 seconds of either the workspace or workspace-recovery launch's exit; workspace: ${exitNote(firstClose)}; workspace-recovery: ${exitNote(close)}`;
       this.check(SHUTDOWN, profile, 'pass', {
         startedAt: launch.endedAt, endedAt: close.endedAt, observation,
       });
