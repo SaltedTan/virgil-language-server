@@ -1076,10 +1076,18 @@ async function projectFileOnDisk(failures, bad, words) {
 // At the output channel's Trace log level, the channel records the LSP
 // messages. The test sets the level as the Output view's log level menu does,
 // on the channel that VS Code names after the extension and its log file. The
-// menu's commands end in the level's number.
-async function level(value) {
-  await vscode.commands.executeCommand('workbench.output.action.switchBetweenOutputs', `${EXTENSION_ID}.${CHANNEL_LOG}`);
-  await vscode.commands.executeCommand(`workbench.action.output.activeOutputLogLevel.${value}`);
+// menu's commands end in the level's number. VS Code registers these commands
+// in OutputContribution at LifecyclePhase.Restored, which a fast launch such as
+// workspace-recovery can beat, so wait until both are registered.
+async function level(value, timeout) {
+  const switchCommand = 'workbench.output.action.switchBetweenOutputs';
+  const levelCommand = `workbench.action.output.activeOutputLogLevel.${value}`;
+  await waitFor(`the output-channel commands (${switchCommand}, ${levelCommand})`, async () => {
+    const commands = await vscode.commands.getCommands();
+    return commands.includes(switchCommand) && commands.includes(levelCommand);
+  }, timeout);
+  await vscode.commands.executeCommand(switchCommand, `${EXTENSION_ID}.${CHANNEL_LOG}`);
+  await vscode.commands.executeCommand(levelCommand);
 }
 
 async function trace(failures, words) {
@@ -2003,4 +2011,4 @@ async function run() {
   }
 }
 
-module.exports = { run };
+module.exports = { level, run };
