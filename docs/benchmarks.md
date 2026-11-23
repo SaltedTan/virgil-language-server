@@ -1442,10 +1442,11 @@ the maintainer's approval, and the workflow sets `RESOURCE_CHECKS: enforce`.
 `--mode enforce` refuses a policy that isn't approved. The policy holds two
 approved baselines, for the `x86-64-linux` and `x86-64-darwin` CI builds,
 generated with `--resource-baseline` from the scheduled workflow's
-`workflow_dispatch` run 42164416033 on `main` at `f15ec42f`, which compared
-`f15ec42f` with itself; their measurements and ceilings were not edited by
-hand. Their approval strings record the policy approval; the maintainer's
-merge of the baseline addition approves the values. Changing the thresholds,
+`workflow_dispatch` run 45122139826 on `main` at `0c0352b9` (pinned Virgil
+`4aa91254`, replacing the `b86f43f1` baselines from run 42164416033 at
+`f15ec42f`); their measurements and ceilings were not edited by hand. Their
+approval strings record the run and pin; the maintainer's merge of the
+baseline update approves the values. Changing the thresholds,
 or setting `RESOURCE_CHECKS` back to `report`, needs the maintainer's approval,
 and the workflow change needs a human merge.
 

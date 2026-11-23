@@ -64,11 +64,11 @@
   "headroom_warning_bytes": 2097152,
   "baselines": [
     {
-      "approval": "by the maintainer (SaltedTan) on 2026-11-06 with #347's policy, from benchmark run 42164416033 on main",
+      "approval": "by the maintainer (SaltedTan) on 2026-11-23 for Virgil pin 4aa91254, from benchmark run 45122139826 on main",
       "source": {
-        "revision": "f15ec42f802f0bdcc756ea2defffd3da9f98e215",
-        "started_utc": "2026-11-06T04:46:12.391438+00:00",
-        "host": "AMD EPYC 7763 64-Core Processor",
+        "revision": "0c0352b9a627063bb4eeaba9b520625952a8adde",
+        "started_utc": "2026-11-23T06:08:48.034560+00:00",
+        "host": "Intel(R) Xeon(R) 6975P-C",
         "samples": {
           "blocks": 3,
           "operations": 5,
@@ -81,9 +81,9 @@
         }
       },
       "compatibility": {
-        "virgil_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214",
+        "virgil_revision": "4aa91254616288250b79b5456073107848ad6f39",
         "compiler_sha256": "5cb4a2f5e0133fd0fb7ec94f1c938da8560964bad99f1f4ba06252788efac65e",
-        "corpus_sha256": "b2204f108da69144d4d2769e562082244e78533e8f3c578fdc6cf210cd951145",
+        "corpus_sha256": "bd603842ddc94b638349204e87b2b9793574c25f743570b1dfe49bd02fa886ab",
         "target": "x86-64-linux",
         "benchmark_probes": true,
         "worker_heap": "384m",
@@ -102,99 +102,99 @@
       "scenarios": {
         "aeneas/completion_miss": {
           "allocated_bytes": {
-            "min": 145550064,
-            "median": 145563280,
-            "max": 145563344
+            "min": 145651008,
+            "median": 145655136,
+            "max": 145662144
           },
           "result_bytes": {
-            "min": 62959,
-            "median": 62959,
-            "max": 62959
+            "min": 62961,
+            "median": 62961,
+            "max": 62961
           },
           "worker_gc_max": 0,
-          "room_bytes": 52489656,
+          "room_bytes": 52373544,
           "ceiling": {
-            "allocated_bytes": 152841444,
+            "allocated_bytes": 152937893,
             "worker_gc": null
           }
         },
         "aeneas/fresh_analysis": {
           "allocated_bytes": {
-            "min": 188288512,
-            "median": 188288512,
-            "max": 188288512
+            "min": 188384680,
+            "median": 188384680,
+            "max": 188384680
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9945008,
+          "room_bytes": 9846600,
           "ceiling": {
-            "allocated_bytes": 197702938,
+            "allocated_bytes": 197803914,
             "worker_gc": 0
           }
         },
         "aeneas/rename": {
           "allocated_bytes": {
-            "min": 188114808,
-            "median": 188127576,
-            "max": 188131256
+            "min": 188225928,
+            "median": 188231880,
+            "max": 188233864
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9921752,
+          "room_bytes": 9801832,
           "ceiling": {
-            "allocated_bytes": 197533955,
+            "allocated_bytes": 197643474,
             "worker_gc": null
           }
         },
         "aeneas/reused_analysis": {
           "allocated_bytes": {
-            "min": 188115128,
-            "median": 188124984,
-            "max": 188128408
+            "min": 188222536,
+            "median": 188231592,
+            "max": 188239944
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9924600,
+          "room_bytes": 9810824,
           "ceiling": {
-            "allocated_bytes": 197531234,
+            "allocated_bytes": 197643172,
             "worker_gc": 0
           }
         },
         "aeneas/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 185247296,
-            "median": 185249248,
-            "max": 185255968
+            "min": 185349592,
+            "median": 185352280,
+            "max": 185355224
           },
           "result_bytes": {
-            "min": 4379621,
-            "median": 4379621,
-            "max": 4379621
+            "min": 4382120,
+            "median": 4382120,
+            "max": 4382120
           },
           "worker_gc_max": 0,
-          "room_bytes": 12797000,
+          "room_bytes": 12680432,
           "ceiling": {
-            "allocated_bytes": 194511711,
+            "allocated_bytes": 194619894,
             "worker_gc": null
           }
         },
         "small/completion_miss": {
           "allocated_bytes": {
-            "min": 64232,
-            "median": 64232,
-            "max": 64232
+            "min": 64840,
+            "median": 64840,
+            "max": 64840
           },
           "result_bytes": {
             "min": 284,
@@ -202,17 +202,17 @@
             "max": 284
           },
           "worker_gc_max": 0,
-          "room_bytes": 201260296,
+          "room_bytes": 201259680,
           "ceiling": {
-            "allocated_bytes": 67444,
+            "allocated_bytes": 68082,
             "worker_gc": null
           }
         },
         "small/fresh_analysis": {
           "allocated_bytes": {
-            "min": 56464,
-            "median": 56464,
-            "max": 56464
+            "min": 57056,
+            "median": 57056,
+            "max": 57056
           },
           "result_bytes": {
             "min": 651,
@@ -220,53 +220,53 @@
             "max": 651
           },
           "worker_gc_max": 0,
-          "room_bytes": 201268952,
+          "room_bytes": 201268360,
           "ceiling": {
-            "allocated_bytes": 59288,
+            "allocated_bytes": 59909,
             "worker_gc": 0
           }
         },
         "small/rename": {
           "allocated_bytes": {
-            "min": 55440,
-            "median": 55440,
-            "max": 55440
+            "min": 56032,
+            "median": 56032,
+            "max": 56032
           },
           "result_bytes": {
             "min": 665,
             "median": 665,
-            "max": 666
+            "max": 665
           },
           "worker_gc_max": 0,
-          "room_bytes": 201269080,
+          "room_bytes": 201268488,
           "ceiling": {
-            "allocated_bytes": 58212,
+            "allocated_bytes": 58834,
             "worker_gc": null
           }
         },
         "small/reused_analysis": {
           "allocated_bytes": {
-            "min": 55384,
-            "median": 55384,
-            "max": 55384
+            "min": 55976,
+            "median": 55976,
+            "max": 55976
           },
           "result_bytes": {
             "min": 651,
             "median": 651,
-            "max": 651
+            "max": 652
           },
           "worker_gc_max": 0,
-          "room_bytes": 201269144,
+          "room_bytes": 201268552,
           "ceiling": {
-            "allocated_bytes": 58154,
+            "allocated_bytes": 58775,
             "worker_gc": 0
           }
         },
         "small/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 58824,
-            "median": 58824,
-            "max": 58824
+            "min": 59416,
+            "median": 59416,
+            "max": 59416
           },
           "result_bytes": {
             "min": 885,
@@ -274,17 +274,17 @@
             "max": 886
           },
           "worker_gc_max": 0,
-          "room_bytes": 201265672,
+          "room_bytes": 201265080,
           "ceiling": {
-            "allocated_bytes": 61766,
+            "allocated_bytes": 62387,
             "worker_gc": null
           }
         },
         "util/completion_miss": {
           "allocated_bytes": {
-            "min": 8083336,
-            "median": 8084680,
-            "max": 8084840
+            "min": 8088688,
+            "median": 8097888,
+            "max": 8101632
           },
           "result_bytes": {
             "min": 4449,
@@ -292,71 +292,71 @@
             "max": 4449
           },
           "worker_gc_max": 0,
-          "room_bytes": 193031352,
+          "room_bytes": 192996336,
           "ceiling": {
-            "allocated_bytes": 8488914,
+            "allocated_bytes": 8502783,
             "worker_gc": null
           }
         },
         "util/fresh_analysis": {
           "allocated_bytes": {
-            "min": 9799528,
-            "median": 9799528,
-            "max": 9799528
+            "min": 9814488,
+            "median": 9814488,
+            "max": 9814488
           },
           "result_bytes": {
-            "min": 178086,
-            "median": 178086,
-            "max": 178087
+            "min": 178085,
+            "median": 178085,
+            "max": 178085
           },
           "worker_gc_max": 0,
-          "room_bytes": 191361552,
+          "room_bytes": 191346592,
           "ceiling": {
-            "allocated_bytes": 10289505,
+            "allocated_bytes": 10305213,
             "worker_gc": 0
           }
         },
         "util/rename": {
           "allocated_bytes": {
-            "min": 9749616,
-            "median": 9761840,
-            "max": 9768432
+            "min": 9761472,
+            "median": 9762784,
+            "max": 9779696
           },
           "result_bytes": {
             "min": 178125,
             "median": 178125,
-            "max": 178126
+            "max": 178125
           },
           "worker_gc_max": 0,
-          "room_bytes": 191347736,
+          "room_bytes": 191318248,
           "ceiling": {
-            "allocated_bytes": 10249932,
+            "allocated_bytes": 10250924,
             "worker_gc": null
           }
         },
         "util/reused_analysis": {
           "allocated_bytes": {
-            "min": 9747704,
-            "median": 9751768,
-            "max": 9762760
+            "min": 9754696,
+            "median": 9767608,
+            "max": 9777224
           },
           "result_bytes": {
             "min": 178085,
             "median": 178085,
-            "max": 178086
+            "max": 178085
           },
           "worker_gc_max": 0,
-          "room_bytes": 191353440,
+          "room_bytes": 191338976,
           "ceiling": {
-            "allocated_bytes": 10239357,
+            "allocated_bytes": 10255989,
             "worker_gc": 0
           }
         },
         "util/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 9594616,
-            "median": 9598968,
-            "max": 9614952
+            "min": 9599368,
+            "median": 9614072,
+            "max": 9616504
           },
           "result_bytes": {
             "min": 178318,
@@ -364,19 +364,19 @@
             "max": 178318
           },
           "worker_gc_max": 0,
-          "room_bytes": 191501208,
+          "room_bytes": 191481432,
           "ceiling": {
-            "allocated_bytes": 10078917,
+            "allocated_bytes": 10094776,
             "worker_gc": null
           }
         }
       }
     },
     {
-      "approval": "by the maintainer (SaltedTan) on 2026-11-06 with #347's policy, from benchmark run 42164416033 on main",
+      "approval": "by the maintainer (SaltedTan) on 2026-11-23 for Virgil pin 4aa91254, from benchmark run 45122139826 on main",
       "source": {
-        "revision": "f15ec42f802f0bdcc756ea2defffd3da9f98e215",
-        "started_utc": "2026-11-06T04:46:47.714529+00:00",
+        "revision": "0c0352b9a627063bb4eeaba9b520625952a8adde",
+        "started_utc": "2026-11-23T06:09:15.557119+00:00",
         "host": "Apple M1 (Virtual)",
         "samples": {
           "blocks": 3,
@@ -390,9 +390,9 @@
         }
       },
       "compatibility": {
-        "virgil_revision": "b86f43f102406e94dc2ac4a85909c38ef414e214",
+        "virgil_revision": "4aa91254616288250b79b5456073107848ad6f39",
         "compiler_sha256": "034965176ded68f01bc8ecf8250ed9788e9ff648a2f43451b13810142a9fd1f1",
-        "corpus_sha256": "b2204f108da69144d4d2769e562082244e78533e8f3c578fdc6cf210cd951145",
+        "corpus_sha256": "bd603842ddc94b638349204e87b2b9793574c25f743570b1dfe49bd02fa886ab",
         "target": "x86-64-darwin",
         "benchmark_probes": true,
         "worker_heap": "384m",
@@ -411,153 +411,153 @@
       "scenarios": {
         "aeneas/completion_miss": {
           "allocated_bytes": {
-            "min": 145550264,
-            "median": 145563480,
-            "max": 145563544
+            "min": 145651208,
+            "median": 145655336,
+            "max": 145662344
           },
           "result_bytes": {
-            "min": 62959,
-            "median": 62959,
-            "max": 62959
+            "min": 62961,
+            "median": 62961,
+            "max": 62961
           },
           "worker_gc_max": 0,
-          "room_bytes": 52489248,
+          "room_bytes": 52373136,
           "ceiling": {
-            "allocated_bytes": 152841654,
+            "allocated_bytes": 152938103,
             "worker_gc": null
           }
         },
         "aeneas/fresh_analysis": {
           "allocated_bytes": {
-            "min": 188288712,
-            "median": 188288712,
-            "max": 188288712
+            "min": 188384880,
+            "median": 188384880,
+            "max": 188384880
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9944600,
+          "room_bytes": 9846192,
           "ceiling": {
-            "allocated_bytes": 197703148,
+            "allocated_bytes": 197804124,
             "worker_gc": 0
           }
         },
         "aeneas/rename": {
           "allocated_bytes": {
-            "min": 188115008,
-            "median": 188127776,
-            "max": 188131456
+            "min": 188226128,
+            "median": 188232080,
+            "max": 188234064
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9921344,
+          "room_bytes": 9801424,
           "ceiling": {
-            "allocated_bytes": 197534165,
+            "allocated_bytes": 197643684,
             "worker_gc": null
           }
         },
         "aeneas/reused_analysis": {
           "allocated_bytes": {
-            "min": 188115328,
-            "median": 188125184,
-            "max": 188128608
+            "min": 188222736,
+            "median": 188231792,
+            "max": 188240144
           },
           "result_bytes": {
-            "min": 4379351,
-            "median": 4379351,
-            "max": 4379351
+            "min": 4381849,
+            "median": 4381849,
+            "max": 4381849
           },
           "worker_gc_max": 0,
-          "room_bytes": 9924192,
+          "room_bytes": 9810416,
           "ceiling": {
-            "allocated_bytes": 197531444,
+            "allocated_bytes": 197643382,
             "worker_gc": 0
           }
         },
         "aeneas/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 185247496,
-            "median": 185249448,
-            "max": 185256168
+            "min": 185349800,
+            "median": 185352488,
+            "max": 185355432
           },
           "result_bytes": {
-            "min": 4379622,
-            "median": 4379622,
-            "max": 4379622
+            "min": 4382121,
+            "median": 4382121,
+            "max": 4382121
           },
           "worker_gc_max": 0,
-          "room_bytes": 12796592,
+          "room_bytes": 12680016,
           "ceiling": {
-            "allocated_bytes": 194511921,
+            "allocated_bytes": 194620113,
             "worker_gc": null
           }
         },
         "small/completion_miss": {
           "allocated_bytes": {
-            "min": 64232,
-            "median": 64232,
-            "max": 64232
+            "min": 64840,
+            "median": 64840,
+            "max": 64840
           },
           "result_bytes": {
-            "min": 285,
+            "min": 284,
             "median": 285,
             "max": 286
           },
           "worker_gc_max": 0,
-          "room_bytes": 201260288,
+          "room_bytes": 201259680,
           "ceiling": {
-            "allocated_bytes": 67444,
+            "allocated_bytes": 68082,
             "worker_gc": null
           }
         },
         "small/fresh_analysis": {
           "allocated_bytes": {
-            "min": 56464,
-            "median": 56464,
-            "max": 56472
+            "min": 57056,
+            "median": 57056,
+            "max": 57064
           },
           "result_bytes": {
             "min": 654,
-            "median": 654,
+            "median": 655,
             "max": 657
           },
           "worker_gc_max": 0,
-          "room_bytes": 201268944,
+          "room_bytes": 201268352,
           "ceiling": {
-            "allocated_bytes": 59288,
+            "allocated_bytes": 59909,
             "worker_gc": 0
           }
         },
         "small/rename": {
           "allocated_bytes": {
-            "min": 55440,
-            "median": 55440,
-            "max": 55440
+            "min": 56032,
+            "median": 56032,
+            "max": 56032
           },
           "result_bytes": {
-            "min": 667,
+            "min": 665,
             "median": 667,
             "max": 668
           },
           "worker_gc_max": 0,
-          "room_bytes": 201269072,
+          "room_bytes": 201268480,
           "ceiling": {
-            "allocated_bytes": 58212,
+            "allocated_bytes": 58834,
             "worker_gc": null
           }
         },
         "small/reused_analysis": {
           "allocated_bytes": {
-            "min": 55384,
-            "median": 55384,
-            "max": 55384
+            "min": 55976,
+            "median": 55976,
+            "max": 55976
           },
           "result_bytes": {
             "min": 651,
@@ -565,53 +565,53 @@
             "max": 654
           },
           "worker_gc_max": 0,
-          "room_bytes": 201269144,
+          "room_bytes": 201268552,
           "ceiling": {
-            "allocated_bytes": 58154,
+            "allocated_bytes": 58775,
             "worker_gc": 0
           }
         },
         "small/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 58824,
-            "median": 58832,
-            "max": 58832
+            "min": 59416,
+            "median": 59424,
+            "max": 59424
           },
           "result_bytes": {
-            "min": 888,
+            "min": 887,
             "median": 889,
             "max": 889
           },
           "worker_gc_max": 0,
-          "room_bytes": 201265664,
+          "room_bytes": 201265064,
           "ceiling": {
-            "allocated_bytes": 61774,
+            "allocated_bytes": 62396,
             "worker_gc": null
           }
         },
         "util/completion_miss": {
           "allocated_bytes": {
-            "min": 8083392,
-            "median": 8084736,
-            "max": 8084896
+            "min": 8088744,
+            "median": 8097944,
+            "max": 8101688
           },
           "result_bytes": {
             "min": 4449,
-            "median": 4450,
+            "median": 4449,
             "max": 4450
           },
           "worker_gc_max": 0,
-          "room_bytes": 193031264,
+          "room_bytes": 192996248,
           "ceiling": {
-            "allocated_bytes": 8488973,
+            "allocated_bytes": 8502842,
             "worker_gc": null
           }
         },
         "util/fresh_analysis": {
           "allocated_bytes": {
-            "min": 9799584,
-            "median": 9799584,
-            "max": 9799584
+            "min": 9814544,
+            "median": 9814544,
+            "max": 9814544
           },
           "result_bytes": {
             "min": 178088,
@@ -619,63 +619,63 @@
             "max": 178088
           },
           "worker_gc_max": 0,
-          "room_bytes": 191361464,
+          "room_bytes": 191346504,
           "ceiling": {
-            "allocated_bytes": 10289564,
+            "allocated_bytes": 10305272,
             "worker_gc": 0
           }
         },
         "util/rename": {
           "allocated_bytes": {
-            "min": 9749672,
-            "median": 9761896,
-            "max": 9768488
+            "min": 9761528,
+            "median": 9762840,
+            "max": 9779752
           },
           "result_bytes": {
-            "min": 178126,
-            "median": 178126,
+            "min": 178125,
+            "median": 178127,
             "max": 178127
           },
           "worker_gc_max": 0,
-          "room_bytes": 191347648,
+          "room_bytes": 191318160,
           "ceiling": {
-            "allocated_bytes": 10249991,
+            "allocated_bytes": 10250982,
             "worker_gc": null
           }
         },
         "util/reused_analysis": {
           "allocated_bytes": {
-            "min": 9747760,
-            "median": 9751824,
-            "max": 9762816
+            "min": 9754752,
+            "median": 9767664,
+            "max": 9777280
           },
           "result_bytes": {
-            "min": 178086,
+            "min": 178085,
             "median": 178086,
-            "max": 178088
+            "max": 178087
           },
           "worker_gc_max": 0,
-          "room_bytes": 191353352,
+          "room_bytes": 191338888,
           "ceiling": {
-            "allocated_bytes": 10239416,
+            "allocated_bytes": 10256048,
             "worker_gc": 0
           }
         },
         "util/semantic_diagnostic": {
           "allocated_bytes": {
-            "min": 9594680,
-            "median": 9599032,
-            "max": 9615016
+            "min": 9599424,
+            "median": 9614136,
+            "max": 9616568
           },
           "result_bytes": {
-            "min": 178320,
+            "min": 178319,
             "median": 178321,
             "max": 178322
           },
           "worker_gc_max": 0,
-          "room_bytes": 191501112,
+          "room_bytes": 191481336,
           "ceiling": {
-            "allocated_bytes": 10078984,
+            "allocated_bytes": 10094843,
             "worker_gc": null
           }
         }
