@@ -153,15 +153,24 @@ sys.exit(scenario.get("exit", 0))
 """
 
 
+def finalizer_running(listing, pid):
+    for row in listing.splitlines():
+        parts = row.split(None, 1)
+        if len(parts) < 2:
+            continue
+        parent, command = parts
+        if parent.isdigit() and int(parent) == pid and f"{RESULTS} end " in command:
+            return True
+    return False
+
+
 def wait_for_finalizer(pid):
     limit = time.monotonic() + 20
     while time.monotonic() < limit:
         listing = subprocess.run(["ps", "-A", "-o", "ppid=,args="], check=True,
                                  stdout=subprocess.PIPE, text=True).stdout
-        for row in listing.splitlines():
-            parent, command = row.split(None, 1)
-            if int(parent) == pid and f"{RESULTS} end " in command:
-                return
+        if finalizer_running(listing, pid):
+            return
         time.sleep(0.02)
     raise AssertionError("run.sh did not start its finalizer")
 
@@ -713,6 +722,15 @@ class StreamTest(Case):
         self.assertStopped()
         self.assertEqual(run.end["cleanup"], "verified")
         self.assertNoWork()
+
+    def test_finalizer_listing_skips_rows_without_command(self):
+        # On macOS, ps -A -o ppid=,args= can emit a row with only a ppid when
+        # a process has no readable command line (e.g. an exiting or kernel
+        # process). Such rows and blank lines must be skipped rather than fail.
+        listing = f"\n   \n  123\n  456 python3 other.py\n  789 python3 {RESULTS} end --stream x\n"
+        self.assertFalse(finalizer_running(listing, 123))
+        self.assertFalse(finalizer_running(listing, 456))
+        self.assertTrue(finalizer_running(listing, 789))
 
     def test_signal_during_finalization(self):
         for failed in (False, True):
