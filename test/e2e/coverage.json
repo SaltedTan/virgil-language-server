@@ -755,6 +755,16 @@
       "description": "The client initializes on bad.v3 with the fixture's root directory, the server's name, the command virgil-lsp --stdio, and VIRGIL_LOC as virgilRoot."
     },
     {
+      "id": "lazyvim.startup.tab-indent",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "bad.v3, of the virgil filetype, has expandtab off, while LazyVim's global expandtab stays on."
+    },
+    {
       "id": "lazyvim.diagnostics.parser",
       "suites": ["lazyvim"],
       "profiles": ["main"],

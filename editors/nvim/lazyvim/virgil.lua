@@ -2,6 +2,15 @@
 -- Copy to ~/.config/nvim/lua/plugins/virgil.lua
 vim.filetype.add({ extension = { v3 = "virgil" } })
 
+-- Virgil sources indent with tabs. LazyVim turns on expandtab, which would
+-- indent new lines with spaces; the VS Code extension sets
+-- editor.insertSpaces to false for the same reason.
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "virgil",
+  group = vim.api.nvim_create_augroup("virgil_lsp_indent", { clear = true }),
+  callback = function(args) vim.bo[args.buf].expandtab = false end,
+})
+
 local root_markers = { ".virgil-lsp.json", "DEPS", ".git" }
 
 return {
