@@ -15,7 +15,8 @@ name: Release
 # upgrade from the previous published release to this run's Linux archive and
 # VSIX and the rollback, writes SHA256SUMS
 # over them and the JVM runtime's source archive,
-# and publishes them as a GitHub prerelease. Running the workflow by hand, on
+# and publishes them as a GitHub release (marked as a prerelease when the
+# version has a SemVer prerelease identifier). Running the workflow by hand, on
 # a pull request that changes a file whose release use pull request CI doesn't
 # fully test, or on a push to main that changes another file it uses, is a dry
 # run: the same jobs without publishing, with the release files kept as a
@@ -82,6 +83,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       changelog: ${{ steps.version.outputs.changelog }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
       - name: Check the tag against VERSION and CHANGELOG.md
@@ -96,10 +98,16 @@ jobs:
           else
             version=$(tr -d '[:space:]' < VERSION)
             changelog=Unreleased
-            echo "Dry run from branch $REF_NAME: version $version, no tag"
+          fi
+          prerelease=$(scripts/check-release.sh --is-prerelease "$version")
+          if [ "$REF_TYPE" = tag ]; then
+            echo "Tag $REF_NAME: version $version, prerelease=$prerelease"
+          else
+            echo "Dry run from branch $REF_NAME: version $version, prerelease=$prerelease, no tag"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "changelog=$changelog" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
   build:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
@@ -526,7 +534,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish prerelease
+    name: Publish release
     needs: [check, build, build-jvm, test-jvm, vsix, editor-tests, upgrade-rehearsal, checksums]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
@@ -543,6 +551,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.check.outputs.version }}
+      PRERELEASE: ${{ needs.check.outputs.prerelease }}
     steps:
       # Only for scripts/release-assets.sh, scripts/check-release.sh, and the
       # pin file they read; nothing is built here.
@@ -583,7 +592,10 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ steps.assets.outputs.subjects }}
-      - name: Create the prerelease
+      - name: Create the release
         run: |
-          gh release create "$TAG" release/assets/* --verify-tag --prerelease \
-            --title "virgil-lsp $VERSION" --notes-file release/notes.md
+          args=(--verify-tag --title "virgil-lsp $VERSION" --notes-file release/notes.md)
+          if [ "$PRERELEASE" = true ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" release/assets/* "${args[@]}"

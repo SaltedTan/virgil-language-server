@@ -130,7 +130,7 @@
     "test": "npm run compile && node --test test/*.cjs",
     "test:e2e": "npm run compile && node test/e2e/run.cjs",
     "test:e2e:remote-ssh": "node test/e2e/remote-ssh/run.cjs",
-    "package": "vsce package --pre-release --baseContentUrl https://github.com/SaltedTan/virgil-language-server/blob/main/clients/vscode --baseImagesUrl https://github.com/SaltedTan/virgil-language-server/raw/main/clients/vscode"
+    "package": "node -e \"const { execFileSync } = require('node:child_process'); const pkg = require('./package.json'); const args = ['package']; if (pkg.preview === true) args.push('--pre-release'); args.push('--baseContentUrl', 'https://github.com/SaltedTan/virgil-language-server/blob/main/clients/vscode', '--baseImagesUrl', 'https://github.com/SaltedTan/virgil-language-server/raw/main/clients/vscode', ...process.argv.slice(1)); execFileSync('vsce', args, { stdio: 'inherit' });\" --"
   },
   "dependencies": {
     "vscode-languageclient": "11.0.0"

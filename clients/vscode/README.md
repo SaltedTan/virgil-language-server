@@ -66,7 +66,7 @@ VS Code doesn't update an extension installed from a VSIX. To upgrade, install t
 The extension's versions are a sequence of their own, independent of the server's; [compatibility](../../docs/compatibility.md#editors) records which server versions each one works with. They are plain `major.minor.patch` numbers, starting at `0.1.0`, without a suffix such as `-alpha.1`, because the Visual Studio Marketplace rejects those. Bump the extension version whenever its client or bundled server contents change; never publish different contents under an existing version and target. Every VSIX is a prerelease for now, marked in two ways:
 
 - `package.json` sets `"preview": true`. VS Code shows a "Preview" label for the extension, including when it's installed from a VSIX.
-- `npm run package` passes `--pre-release` to vsce, which marks the package as a pre-release in its manifest. VS Code doesn't use this mark for a VSIX installed by hand; it takes effect only if the package is published to a marketplace, where it puts the version on the pre-release channel. VS Code's own `--pre-release` option for `--install-extension` likewise only applies to extensions installed from a marketplace.
+- `npm run package` passes `--pre-release` to vsce when `package.json` sets `"preview": true`, which marks the package as a pre-release in its manifest, and omits it otherwise. VS Code doesn't use this mark for a VSIX installed by hand; it takes effect only if the package is published to a marketplace, where it puts the version on the pre-release channel. VS Code's own `--pre-release` option for `--install-extension` likewise only applies to extensions installed from a marketplace.
 
 ## Setup
 
@@ -195,7 +195,7 @@ scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha
 scripts/package-vsix.py universal --out build/vsix
 ```
 
-Use `darwin-arm64` or `darwin-x64` with the Darwin archive. The script stages the archive's executables, `virgil/`, notices, and manifest under `server/`, packages with `--target` and `--pre-release`, checks the bytes and permissions against the archive, and removes the staging files. Run packages sequentially in a checkout. No compiler or first-run download is needed by the installed extension.
+Use `darwin-arm64` or `darwin-x64` with the Darwin archive. The script stages the archive's executables, `virgil/`, notices, and manifest under `server/`, packages with `--target` (and `--pre-release` when `package.json` sets `"preview": true`), checks the bytes and permissions against the archive, and removes the staging files. Run packages sequentially in a checkout. No compiler or first-run download is needed by the installed extension.
 
 In the packaged README, vsce turns relative links into links to `main` on GitHub. It also warns that the extension isn't bundled: the runtime dependencies stay separate files, so that their license files ship unchanged. `"private": true` in `package.json` only stops `npm publish`; vsce ignores it.
 

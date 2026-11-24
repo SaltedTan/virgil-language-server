@@ -111,20 +111,20 @@ class PayloadTests(unittest.TestCase):
         return archive, entries
 
     @staticmethod
-    def xml(target):
+    def xml(target, prerelease=True):
         attribute = '' if target is None else f' TargetPlatform="{target}"'
+        prop = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/>' if prerelease else ''
         return (f'<PackageManifest><Metadata><Identity{attribute}/><Properties>'
-                '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/>'
-                '</Properties></Metadata></PackageManifest>').encode()
+                f'{prop}</Properties></Metadata></PackageManifest>').encode()
 
-    def check(self, entries, target, archive):
+    def check(self, entries, target, archive, preview=True):
         vsix = self.root / 'extension.vsix'
         with zipfile.ZipFile(vsix, 'w') as z:
             for name, (data, mode) in entries.items():
                 info = zipfile.ZipInfo(name)
                 info.external_attr = (stat.S_IFREG | mode) << 16
                 z.writestr(info, data)
-        check.check_payload(vsix, target, archive)
+        check.check_payload(vsix, target, archive, preview=preview)
 
     def test_each_target_and_universal(self):
         for target in ('linux-x64', 'darwin-arm64', 'darwin-x64'):
@@ -132,6 +132,22 @@ class PayloadTests(unittest.TestCase):
                 archive, entries = self.fixture(target)
                 self.check(entries, target, archive)
         self.check({'extension.vsixmanifest': (self.xml(None), 0o644)}, 'universal', None)
+
+    def test_non_preview_vsix_forbids_prerelease_mark(self):
+        archive, entries = self.fixture('linux-x64')
+        entries['extension.vsixmanifest'] = (self.xml('linux-x64', prerelease=False), 0o644)
+        self.check(entries, 'linux-x64', archive, preview=False)
+        self.check({'extension.vsixmanifest': (self.xml(None, prerelease=False), 0o644)},
+                   'universal', None, preview=False)
+        for target, arch, bad in (
+            ('linux-x64', archive, {**entries, 'extension.vsixmanifest': (self.xml('linux-x64', prerelease=True), 0o644)}),
+            ('universal', None, {'extension.vsixmanifest': (self.xml(None, prerelease=True), 0o644)}),
+        ):
+            with self.subTest(target=target):
+                err = io.StringIO()
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(err):
+                    self.check(bad, target, arch, preview=False)
+                self.assertIn('not a preview', str(raised.exception) + err.getvalue())
 
     def test_wrong_archive_revision_is_rejected(self):
         wrong_revision = '0' * len(self.revision)

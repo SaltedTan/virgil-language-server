@@ -123,6 +123,17 @@ expect "changelog subsection heading" 1 "" "no '## \[0.1.0-alpha.1\]' section" \
 expect "changelog mention outside a heading" 1 "" "no '## \[0.1.0-alpha.1\]' section" \
     "0.1.0-alpha.1" 'See ## [0.1.0-alpha.1] below.' v0.1.0-alpha.1
 
+for version in 0.1.0-alpha.9 1.0.0-rc.1 1.0.0-rc.1+build.1; do
+    expect_run "check-release.sh --is-prerelease: $version" 0 "^true$" "" \
+        "$CHECK" --is-prerelease "$version"
+done
+for version in 1.0.0 1.0.0+linux.5 1.0.0+2026-11-24; do
+    expect_run "check-release.sh --is-prerelease: $version" 0 "^false$" "" \
+        "$CHECK" --is-prerelease "$version"
+done
+expect_run "check-release.sh --is-prerelease: invalid version" 1 - "not a semantic version" \
+    "$CHECK" --is-prerelease "0.1"
+
 # vsix <path> <package.json|@<file>|-> [<file>...]: writes a zip file like a
 # VSIX, with <package.json>, or the bytes of <file> for @<file>, as
 # extension/package.json, or none for "-", and an empty extension/<file> for
@@ -135,7 +146,8 @@ vsix() {
 import sys, zipfile
 path, package, files = sys.argv[1], sys.argv[2], sys.argv[3:]
 with zipfile.ZipFile(path, "w") as z:
-    z.writestr("extension.vsixmanifest", '<PackageManifest><Metadata><Identity/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties></Metadata></PackageManifest>')
+    if not any(f.startswith("text:extension.vsixmanifest=") for f in files):
+        z.writestr("extension.vsixmanifest", '<PackageManifest><Metadata><Identity/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties></Metadata></PackageManifest>')
     if package.startswith("@"):
         with open(package[1:], "rb") as f:
             z.writestr("extension/package.json", f.read())
@@ -266,6 +278,29 @@ check_vsix "another version" 1 "version is '7\.8\.10', but .*/package\.json has 
     "${package/7.8.9/7.8.10}"
 check_vsix "another name" 1 "name is 'virgil-lsp', but" "${package/virgil-lsp-vscode/virgil-lsp}"
 check_vsix "another publisher" 1 "publisher is 'someone', but" "${package/virgil-language-server/someone}"
+check_vsix "mismatched preview flag" 1 "preview is False, but .*/package\.json has True" "${package/\"preview\": true/\"preview\": false}"
+name_clean="check-vsix.py: non-preview extension accepts VSIX without PreRelease"
+name_marked="check-vsix.py: non-preview extension rejects VSIX marked PreRelease"
+if selected "$name_clean" || selected "$name_marked"; then
+    extension_fixture
+    nonpreview_ext=$TMP/nonpreview-ext
+    rm -rf "$nonpreview_ext"
+    cp -r "$EXT" "$nonpreview_ext"
+    nonpreview_pkg='{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "1.0.0", "main": "./out/extension.js", "dependencies": {"vscode-languageclient": "1.0.0"}}'
+    echo "$nonpreview_pkg" > "$nonpreview_ext/package.json"
+    nonpreview_vsix=$TMP/virgil-lsp-vscode-1.0.0.vsix
+    if selected "$name_clean"; then
+        vsix "$nonpreview_vsix" "$nonpreview_pkg" "${files[@]}" \
+            'text:extension.vsixmanifest=<PackageManifest><Metadata><Identity/><Properties/></Metadata></PackageManifest>'
+        expect_run "$name_clean" 0 '^virgil-lsp-vscode-1\.0\.0\.vsix: virgil-language-server\.virgil-lsp-vscode 1\.0\.0, 11 files$' "" \
+            "$CHECK_VSIX" "$nonpreview_vsix" "$nonpreview_ext"
+    fi
+    if selected "$name_marked"; then
+        vsix "$nonpreview_vsix" "$nonpreview_pkg" "${files[@]}"
+        expect_run "$name_marked" 1 - "VSIX is marked as a prerelease, but package\.json is not a preview" \
+            "$CHECK_VSIX" "$nonpreview_vsix" "$nonpreview_ext"
+    fi
+fi
 check_vsix "no extension/package.json" 1 "has no extension/package\.json" -
 check_vsix "malformed extension/package.json" 1 "extension/package\.json is not valid JSON" '{"name":'
 check_vsix "a non-JSON constant in extension/package.json" 1 \
