@@ -331,6 +331,13 @@ local function main_checks()
     return
   end
 
+  step("lazyvim.startup.tab-indent", function()
+    assert(vim.bo[bufnr].filetype == "virgil", "unexpected filetype: " .. vim.bo[bufnr].filetype)
+    assert(vim.go.expandtab, "LazyVim's global expandtab is off, so the check proves nothing")
+    assert(not vim.bo[bufnr].expandtab, "bad.v3 has expandtab set")
+    return "expandtab off in bad.v3, on globally"
+  end)
+
   local initial
   step("lazyvim.diagnostics.parser", function()
     wait_for("published parser diagnostic", function()

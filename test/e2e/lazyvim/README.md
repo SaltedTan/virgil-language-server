@@ -57,7 +57,7 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
 
 - **`main`** opens `bad.v3` with `VIRGIL_LOC` set to the checkout's `vendor/virgil`, and checks:
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
-  - the client that LazyVim starts from the spec: its command, root, and `virgilRoot`;
+  - the client that LazyVim starts from the spec: its command, root, and `virgilRoot`; and that the spec turns off LazyVim's `expandtab` in Virgil buffers;
   - parser diagnostics, cleared by an unsaved edit and back after undo; document symbols; and the project's semantic `TypeError` in `words/Words.v3`, which needs `lib/util` from the Virgil root;
   - definition and hover, by request and through LazyVim's `gd` and `K`; type definition by request and `gy`, checking the exact `StringBuilder` class destination of a call result and no location for the `int` local; and signature help, workspace symbols, and references by request;
   - document highlights in snacks.nvim words: exactly the declaration and four uses of `count` in `words/Highlights.v3`, with `]]` moving to the next use and `[[` returning to the previous use;
