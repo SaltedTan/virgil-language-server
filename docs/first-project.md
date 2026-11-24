@@ -91,4 +91,4 @@ This project names no `virgilDependencies`, so it needs neither a [Virgil root](
 - [Troubleshooting](troubleshooting.md): the server doesn't start, or a file gets no diagnostics or navigation.
 - [Supported platforms and editors](compatibility.md#host-platforms).
 - [Project configuration](configuration.md): the full `.virgil-lsp.json` format.
-- [Known limitations](known-limitations.md): what the alpha doesn't do yet.
+- [Known limitations](known-limitations.md): what the server doesn't do yet.

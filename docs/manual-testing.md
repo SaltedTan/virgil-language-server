@@ -140,6 +140,10 @@ The second, third, and fourth runs of 2026-10-31 show that the rehearsal fails w
 
 The run of 2026-11-03 crosses the pin change from Virgil `57318d37` to `b86f43f1`. An attempt before it, with the same driver and assets, stopped in the install phase's VS Code part after its archive part passed: VS Code exited with status 1 and `listen EINVAL` because it couldn't listen on its IPC socket, whose 118-byte path under that attempt's `TMPDIR` was longer than Linux allows. With a shorter `TMPDIR`, the recorded run passed.
 
+### 1.0.0
+
+This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
+
 ### 1.0.0-rc.1
 
 This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.

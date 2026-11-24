@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This guide is organized by symptom. Each entry says how to confirm the cause, usually from a message in the editor's log, and how to fix it. [Logs and restarting](#logs-and-restarting) says where each editor keeps those messages. Check the [known limitations](known-limitations.md) too: some behavior that looks like a bug is a limitation of the alpha.
+This guide is organized by symptom. Each entry says how to confirm the cause, usually from a message in the editor's log, and how to fix it. [Logs and restarting](#logs-and-restarting) says where each editor keeps those messages. Check the [known limitations](known-limitations.md) too: some behavior that looks like a bug is a known limitation.
 
 Messages are quoted as the extension and server print them. A part in angle brackets, such as `<path>`, stands for a value that varies. The server writes its log to its standard error, and each line that it writes starts with `virgil-lsp:` or, for a warning, `virgil-lsp: warning:`. VS Code shows those lines in the "Virgil Language Server" output channel, with its own; Neovim keeps them in its LSP log.
 
@@ -55,7 +55,7 @@ See [macOS](releasing.md#macos) in the installation instructions.
 The server's executables are unsigned and not notarized. A web browser marks what it downloads as quarantined, and macOS then blocks `virgil-lsp` and `virgil-lsp-worker` from an archive that was downloaded that way. The server doesn't fail with an error: `virgil-lsp --version` in a terminal prints nothing and doesn't exit, an editor waits for the server to start, and macOS shows a dialog, "“virgil-lsp” Not Opened". Click **Done**, which changes no settings, then remove the attribute from the extracted directory, replacing the version with yours, and try again:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-1.0.0-rc.1-x86-64-darwin
+xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-1.0.0-x86-64-darwin
 ```
 
 Downloading with `curl` or `gh` instead doesn't set the attribute. Verify the download against `SHA256SUMS` first ([Verifying a download](releasing.md#verifying-a-download), [macOS](releasing.md#macos)).

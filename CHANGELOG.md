@@ -6,8 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-25
+
 ### Changed
 
+- `1.0.0` is the first stable release. Its server code is that of `1.0.0-rc.1`, on the same pinned Virgil revision, `4aa91254`. From 1.0, the public API that [ADR-0014](docs/decisions/0014-compatibility-and-support-policy.md) declares follows Semantic Versioning: an intentional incompatible change to the server's public command line or its documented initialization options needs a new server major version, and one to the extension's client settings a new major version of the extension. The project file keeps its own [contract](docs/configuration.md#stability-and-evolution). A change to the advertised capabilities is announced here but isn't part of the declared API ([How changes are announced](docs/compatibility.md#how-changes-are-announced)).
+- The VS Code extension's version is now 1.0.0, and it is no longer marked as a preview: `package.json` no longer sets `"preview": true`, so VS Code shows no "Preview" label for it, and its VSIX files aren't marked as pre-release. Its platform VSIX files bundle the `1.0.0` server. Its code is the same as 0.1.9's. With an external server, it works with the same servers as 0.1.9, and with `1.0.0` ([compatibility](docs/compatibility.md#editors), [versions](clients/vscode/README.md#versions)).
 - The macOS installation instructions, the troubleshooting guide, and the `x86-64-darwin` archive's `README.md` now say to remove a browser download's quarantine attribute before the first run. A quarantined server isn't refused with an error: it waits behind a "“virgil-lsp” Not Opened" dialog, and so does the editor that starts it ([Installing on macOS](docs/releasing.md#macos), [macOS quarantine](docs/troubleshooting.md#macos-quarantine-on-an-archive-install)).
 - The configuration guide and the VS Code and Neovim setup now say to set the Virgil root to a Virgil checkout when you work in one. Without a root, its projects analyze the bundled `lib/`, so go to definition opens the installation's copy and a rename in the checkout's `lib/` can miss uses in `aeneas/` ([The Virgil root](docs/configuration.md#the-virgil-root)).
 - The LazyVim configuration (`editors/nvim/lazyvim/virgil.lua`) turns off LazyVim's `expandtab` in Virgil buffers, so that new lines in `.v3` files indent with tabs, as Virgil's sources do and as the VS Code extension's `editor.insertSpaces: false` already does. The LazyVim test checks it ([LazyVim](editors/nvim/README.md#lazyvim)).
