@@ -134,6 +134,11 @@ expect "version" 0 '^virgil-lsp [0-9]+\.[0-9]+\.[0-9]+' "" -- --version
 expect "version reports virgil revision" 0 'virgil revision: [0-9a-f]{40}' "" -- --version
 expect "help" 0 'Usage: virgil-lsp' "" -- --help
 expect "help lists format as a command" 0 '^  format \[options\] <file\.v3>\.\.\.$' "" -- --help
+# The default analysis time limit is the target's: 30 s on the JVM, which runs
+# the Aeneas sources several times slower than native (HostRuntime).
+if [ "$JVM" -eq 1 ]; then timeout_ms=30000; else timeout_ms=10000; fi
+expect "help gives the target's default analysis time limit" 0 \
+    "^ +Kill an analysis worker after n ms \\(default $timeout_ms\\)\\.$" "" -- --help
 expect "no arguments keeps stdout clean" 2 "" 'Usage: virgil-lsp' --
 expect "unknown argument keeps stdout clean" 2 "" "unknown argument" -- --bogus
 expect "parse clean file" 0 'ok, 2 top-level declarations' "" -- parse "$FIXTURES/syntax/clean.v3"

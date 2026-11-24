@@ -12,6 +12,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import subprocess
@@ -33,6 +34,15 @@ def jvm_target(exe):
             return False
         file.readline()
         return file.readline().rstrip(b"\r\n") == JVM_LAUNCHER_MARKER
+
+
+def default_timeout_ms(exe):
+    """The default analysis time limit that {exe} prints in its --help: each
+    target has its own (HostRuntime.ANALYSIS_TIMEOUT_MS)."""
+    out = subprocess.run([str(exe), "--help"], capture_output=True, text=True, timeout=30, check=True).stdout
+    limits = re.findall(r"Kill an analysis worker after n ms \(default (\d+)\)", out)
+    assert len(limits) == 1, out
+    return int(limits[0])
 
 
 class Session:
@@ -546,6 +556,7 @@ def aeneas_repeats(exe):
     # Match the CLI's Aeneas file set and default time limit: 20 full
     # parse/verify/index analyses, crossing multiple forced replacements while
     # stdio keeps responding. Report each analysis's time against the limit.
+    limit = default_timeout_ms(exe)
     s = Session(exe, "--worker-max-analyses=8")
     try:
         s.initialize()
@@ -564,7 +575,7 @@ def aeneas_repeats(exe):
         assert log.count("after 8 analyses (limit 8)") == 2, log
         ms = sorted(round(t * 1000) for t in times)
         print(f"protocol worker: {len(ms)} Aeneas analyses took {ms[0]}-{ms[-1]} ms "
-              f"(median {ms[len(ms) // 2]} ms) against the default limit of 10000 ms")
+              f"(median {ms[len(ms) // 2]} ms) against the default limit of {limit} ms")
     except BaseException:
         print(json.dumps(s.transcript, indent=2), file=sys.stderr)
         print(s.logs(), file=sys.stderr)

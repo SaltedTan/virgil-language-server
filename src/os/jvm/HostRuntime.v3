@@ -6,6 +6,14 @@
 // native ones; see each. Commands reach src/os/jvm/V3S_System.java as
 // src/os/jvm/HostOs.v3 describes.
 component HostRuntime {
+	// The default wall-clock limit of one analysis in milliseconds
+	// (AnalysisWorkerLimits.timeoutMs). On macOS CI runners, 20 analyses of
+	// the Aeneas sources took a median of 1.4-2.4 s and at most 6.0 s, the
+	// first on a fresh worker being the slowest, where native takes about
+	// 0.35 s. Runners 1.5-1.9 times slower than usual ran past the native
+	// 10 s limit, so 30 s leaves five times the slowest normal analysis and
+	// still stops a hang.
+	def ANALYSIS_TIMEOUT_MS = 30000;
 	// A Java program can read its stack only as a count of frames, and
 	// Thread.getStackTrace() caps that count at 1,024, so the marks are
 	// virtual positions: minus the current thread's frame depth times

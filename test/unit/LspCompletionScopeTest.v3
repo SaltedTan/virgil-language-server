@@ -583,7 +583,7 @@ def test_time_limit(t: Tester) {
 	s.settle();
 	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a timeout");
 	t.asserti(1, s.count(id));
-	s.limits.timeoutMs = 10000;
+	s.limits.timeoutMs = AnalysisWorkerLimits.new().timeoutMs;
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once the worker answers");
 	s.server.close();
 }

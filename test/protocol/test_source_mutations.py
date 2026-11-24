@@ -1291,15 +1291,20 @@ class RealServer(unittest.TestCase):
     def test_contained_worker_failure(self):
         # The stall worker never finishes an analysis of marked source; the
         # supervisor kills it, and a replacement analyzes the restored source.
+        # The limit applies to every analysis, including the first on each
+        # fresh worker, which the JVM build runs cold: on a slow macOS runner
+        # one of those ran past 1 s, so this uses the runner's own 5 s limit,
+        # and the stalling analysis stays the only death.
         stalled = self.directory / "stalled"
         stalled.mkdir()
         shutil.copy2(EXE, stalled / "virgil-lsp")
         shutil.copy2(STALL, stalled / "virgil-lsp-worker")
         result, _, _, log = self.run_record(single_case("// workerStallsHere\ncomponent Mutant {}\n"),
-                                            stalled / "virgil-lsp", worker_timeout_ms=1000)
+                                            stalled / "virgil-lsp", worker_timeout_ms=sm.WORKER_TIMEOUT_MS)
         self.assertEqual(result["outcome"], "worker-failure", (result, log))
+        self.assertEqual(len(result["worker_deaths"]), 1, (result["worker_deaths"], log))
         death, = result["worker_deaths"]
-        self.assertIn("exceeded the analysis time limit of 1000 ms", death["what"])
+        self.assertIn("exceeded the analysis time limit of %d ms" % sm.WORKER_TIMEOUT_MS, death["what"])
         self.assertEqual((death["known"], death["replacement"]), (None, "verified"))
         self.assertIn("timed out", result["messages"][0])
         self.assertTrue(result["restored"])

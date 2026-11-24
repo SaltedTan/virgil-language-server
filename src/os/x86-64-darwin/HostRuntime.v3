@@ -1,11 +1,16 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Operations on the native runtime's stack, heap, and memory that code outside
-// src/os/ needs. Each target supplies this component: this is the x86-64 Darwin
-// version, src/os/x86-64-linux/HostRuntime.v3 is the same, and
+// Operations on the native runtime's stack, heap, and memory, and the default
+// analysis time limit, that code outside src/os/ needs. Each target supplies
+// this component: this is the x86-64 Darwin version,
+// src/os/x86-64-linux/HostRuntime.v3 is the same, and
 // src/os/jvm/HostRuntime.v3 approximates what the JVM can't do.
 component HostRuntime {
+	// The default wall-clock limit of one analysis in milliseconds
+	// (AnalysisWorkerLimits.timeoutMs): an analysis of the Aeneas sources
+	// takes about 0.35 s, so the limit stops a hang and spares slow machines.
+	def ANALYSIS_TIMEOUT_MS = 10000;
 	// A mark of the current stack position, in bytes. The stack grows down,
 	// so {base - stackMark()} is the stack used since {base} was taken.
 	def stackMark() -> long {

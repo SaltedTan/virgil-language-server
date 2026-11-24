@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The JVM build's default analysis time limit is now 30 seconds instead of 10. Its analyses of a large program run several times more slowly than the native build's: on macOS CI runners, an analysis of the Aeneas sources took up to 6 seconds, and on runners slower than usual it ran past 10 seconds and was killed, so the project's semantic results weren't updated. The native builds keep 10 seconds, and `--help` prints the build's default for `--worker-timeout-ms` ([Supported program size](docs/known-limitations.md#supported-program-size)).
+
 ## [1.0.0] - 2026-11-25
 
 ### Changed
