@@ -333,7 +333,7 @@ def required(entry):
     return not any(entry.get(k) for k in ("optional", "devOptional", "os", "cpu", "link"))
 
 
-def check_payload(vsix, target, archive):
+def check_payload(vsix, target, archive, preview=True):
     """Check target metadata and the complete archive-derived runtime payload."""
     with zipfile.ZipFile(vsix) as z:
         try:
@@ -348,8 +348,11 @@ def check_payload(vsix, target, archive):
                 fail("VSIX target is %r, expected %r" % (actual, wanted))
             properties = {p.attrib.get("Id"): p.attrib.get("Value")
                           for p in xml.findall("{*}Metadata/{*}Properties/{*}Property")}
-            if properties.get("Microsoft.VisualStudio.Code.PreRelease") != "true":
+            prerelease = properties.get("Microsoft.VisualStudio.Code.PreRelease") == "true"
+            if preview and not prerelease:
                 fail("VSIX is not marked as a prerelease")
+            if not preview and prerelease:
+                fail("VSIX is marked as a prerelease, but package.json is not a preview")
             bundled = {n for n in z.namelist() if n.startswith("extension/server/") and not n.endswith("/")}
             marker = "extension/server-target.json"
             if target == "universal":
@@ -412,6 +415,9 @@ def main():
         if manifest.get(key) != expected[key]:
             problems.append("%s is %r, but %s/package.json has %r"
                             % (key, manifest.get(key), source, expected[key]))
+    if (manifest.get("preview") is True) != (expected.get("preview") is True):
+        problems.append("preview is %r, but %s/package.json has %r"
+                        % (manifest.get("preview"), source, expected.get("preview")))
     want = "%s-%s%s.vsix" % (expected["name"], expected["version"],
                                    "" if args.target == "universal" else "-" + args.target)
     if name != want:
@@ -449,7 +455,7 @@ def main():
         for p in problems:
             print("check-vsix.py: error: %s: %s" % (name, p), file=sys.stderr)
         sys.exit(1)
-    check_payload(vsix, args.target, args.archive)
+    check_payload(vsix, args.target, args.archive, preview=expected.get("preview") is True)
     print("%s: %s.%s %s, %d files" % (name, expected["publisher"], expected["name"],
                                       expected["version"], len(entries)))
 

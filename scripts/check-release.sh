@@ -6,8 +6,11 @@
 # tag must be "v" followed by VERSION, VERSION must be a semantic version, and
 # CHANGELOG.md must have a "## [<version>]" section. See docs/releasing.md.
 # Usage: check-release.sh <tag> [<repository-root>]
+#        check-release.sh --is-prerelease <version>
 #        check-release.sh --archive <archive>
 #        check-release.sh --runtime-source <file>
+# --is-prerelease validates a semantic version and prints "true" if it carries
+# a SemVer prerelease identifier or "false" otherwise.
 # --runtime-source checks that a file is the pinned source archive of the JVM
 # archive's Java runtime (scripts/jvm-runtime.json), by name and SHA-256.
 set -euo pipefail
@@ -22,20 +25,32 @@ if [ "${1:-}" = --runtime-source ]; then
     exec python3 "$ROOT/scripts/jvm-runtime.py" check-source "${2:?usage: check-release.sh --runtime-source <file>}"
 fi
 
-TAG=${1:?usage: check-release.sh <tag> [<repository-root>]}
-ROOT=${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+id='[0-9A-Za-z-]+'
+prerelease_id='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+semver="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-$prerelease_id(\.$prerelease_id)*)?(\+$id(\.$id)*)?$"
 
 fail() {
     echo "error: $1" >&2
     exit 1
 }
 
+if [ "${1:-}" = --is-prerelease ]; then
+    version=${2:?usage: check-release.sh --is-prerelease <version>}
+    [[ $version =~ $semver ]] || fail "VERSION '$version' is not a semantic version"
+    if [ -n "${BASH_REMATCH[4]}" ]; then
+        echo true
+    else
+        echo false
+    fi
+    exit 0
+fi
+
+TAG=${1:?usage: check-release.sh <tag> [<repository-root>]}
+ROOT=${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+
 [ -f "$ROOT/VERSION" ] || fail "$ROOT/VERSION not found"
 version=$(tr -d '[:space:]' < "$ROOT/VERSION")
 
-id='[0-9A-Za-z-]+'
-prerelease_id='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
-semver="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-$prerelease_id(\.$prerelease_id)*)?(\+$id(\.$id)*)?$"
 [[ $version =~ $semver ]] || fail "VERSION '$version' is not a semantic version"
 [ "$TAG" = "v$version" ] || fail "tag '$TAG' does not match VERSION '$version'; expected 'v$version'"
 
