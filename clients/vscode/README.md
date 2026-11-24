@@ -1,6 +1,6 @@
 # VS Code extension
 
-> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. The Linux x64 and macOS VSIX files include the tested server, worker, and pinned Virgil library. The universal VSIX needs an external server. See the [project status](../../README.md) for current server features, [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions, and [known limitations](../../docs/known-limitations.md) for what the alpha doesn't do yet. Once the extension is installed, [walk through your first project](../../docs/first-project.md): a small example with a deliberate type error, its one-word fix, and a hover and go-to-definition to check.
+> The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. The Linux x64 and macOS VSIX files include the tested server, worker, and pinned Virgil library. The universal VSIX needs an external server. See the [project status](../../README.md) for current server features, [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions, and [known limitations](../../docs/known-limitations.md) for what it doesn't do yet. Once the extension is installed, [walk through your first project](../../docs/first-project.md): a small example with a deliberate type error, its one-word fix, and a hover and go-to-definition to check.
 
 A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
@@ -21,13 +21,13 @@ If the server doesn't start, or a file gets no diagnostics or navigation, see [T
 
 Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl` and `sha256sum` for the Linux commands below. The editor and server versions must work with the extension's version, as listed in [compatibility](../../docs/compatibility.md#editors). Choose `linux-x64`, `darwin-arm64`, or `darwin-x64` for the workspace host. Both macOS packages carry an Intel server; Apple Silicon requires Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). On Apple Silicon without Rosetta 2, install the `darwin-arm64-jvm` VSIX instead, which carries the [JVM build](../../docs/releasing.md#the-jvm-build-for-apple-silicon) and its own Java runtime; VS Code doesn't choose it for you. The executables are unsigned and not notarized; see [macOS installation](../../docs/releasing.md#installing).
 
-1. Get `virgil-lsp-vscode-<version>-<target>.vsix`: from a [GitHub prerelease](https://github.com/SaltedTan/virgil-language-server/releases), which attaches the VSIX that the release workflow tested against that release's server, and lists it in `SHA256SUMS` ([Releases](../../docs/releasing.md#vs-code-extension)); from a `vsix-<target>` artifact of a [release dry run](../../docs/releasing.md#dry-runs) (GitHub downloads artifacts as a zip file that contains the VSIX); or by [packaging](#packaging) it yourself.
+1. Get `virgil-lsp-vscode-<version>-<target>.vsix`: from a [GitHub release](https://github.com/SaltedTan/virgil-language-server/releases), which attaches the VSIX that the release workflow tested against that release's server, and lists it in `SHA256SUMS` ([Releases](../../docs/releasing.md#vs-code-extension)); from a `vsix-<target>` artifact of a [release dry run](../../docs/releasing.md#dry-runs) (GitHub downloads artifacts as a zip file that contains the VSIX); or by [packaging](#packaging) it yourself.
 2. For a **release download** on Linux x64, download, verify, and install the platform VSIX. No separate server install is needed. Replace the two versions with those in the release notes; they are independent. On macOS, choose the appropriate Darwin target and verify the download with `shasum -a 256 --check` instead of `sha256sum --check --strict`.
 
    <!-- clean-install: vsix-download -->
    ```sh
-   server_version=1.0.0-rc.1
-   extension_version=0.1.9
+   server_version=1.0.0
+   extension_version=1.0.0
    download_url=https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version
    vsix=virgil-lsp-vscode-$extension_version-linux-x64.vsix
    mkdir -p "$HOME/Downloads/virgil-lsp" &&
@@ -54,7 +54,7 @@ To use an explicit Virgil root, set `virgil.virgilRoot` in user settings, or exp
 
 <!-- clean-install: vscode-root -->
 ```sh
-export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-1.0.0-rc.1-x86-64-linux/virgil"
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-1.0.0-x86-64-linux/virgil"
 ```
 
 With Remote-SSH or Remote-WSL, the extension runs on the remote machine, next to the server and the files, so install the VSIX for that host there. A mismatched package is rejected by VS Code or reported in the output channel before a bundled binary is started. In a window connected to the remote, either run **Extensions: Install from VSIX...**, or copy the VSIX to the remote machine and run `code --install-extension` in that window's integrated terminal. The Extensions view then lists the extension under the remote, such as "SSH: host" or "WSL: Ubuntu", not under "Local". Set any needed `virgil.server.path` or `virgil.virgilRoot` override in the remote settings.
@@ -63,9 +63,9 @@ VS Code doesn't update an extension installed from a VSIX. To upgrade, install t
 
 ### Versions
 
-The extension's versions are a sequence of their own, independent of the server's; [compatibility](../../docs/compatibility.md#editors) records which server versions each one works with. They are plain `major.minor.patch` numbers, starting at `0.1.0`, without a suffix such as `-alpha.1`, because the Visual Studio Marketplace rejects those. Bump the extension version whenever its client or bundled server contents change; never publish different contents under an existing version and target. Every VSIX is a prerelease for now, marked in two ways:
+The extension's versions are a sequence of their own, independent of the server's; [compatibility](../../docs/compatibility.md#editors) records which server versions each one works with. They are plain `major.minor.patch` numbers, starting at `0.1.0`, without a suffix such as `-alpha.1`, because the Visual Studio Marketplace rejects those. Bump the extension version whenever its client or bundled server contents change; never publish different contents under an existing version and target. Versions `0.1.0` through `0.1.9` were previews. From `1.0.0`, `package.json` doesn't set `"preview"`, so VS Code shows no "Preview" label for the extension and the VSIX carries no pre-release mark. `scripts/check-vsix.py` checks that a VSIX's marks agree with `package.json`. A preview is marked in two ways:
 
-- `package.json` sets `"preview": true`. VS Code shows a "Preview" label for the extension, including when it's installed from a VSIX.
+- `package.json` sets `"preview": true`. VS Code then shows a "Preview" label for the extension, including when it's installed from a VSIX.
 - `npm run package` passes `--pre-release` to vsce when `package.json` sets `"preview": true`, which marks the package as a pre-release in its manifest, and omits it otherwise. VS Code doesn't use this mark for a VSIX installed by hand; it takes effect only if the package is published to a marketplace, where it puts the version on the pre-release channel. VS Code's own `--pre-release` option for `--install-extension` likewise only applies to extensions installed from a marketplace.
 
 ## Setup
@@ -191,7 +191,7 @@ CI type-checks and tests the client, and runs the Extension Host suite from sour
 To package a platform VSIX from a tested archive, run from the repository root after `npm ci` in `clients/vscode`:
 
 ```sh
-scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-1.0.0-rc.1-x86-64-linux.tar.gz --out build/vsix
+scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-1.0.0-x86-64-linux.tar.gz --out build/vsix
 scripts/package-vsix.py universal --out build/vsix
 ```
 
@@ -255,7 +255,7 @@ A line on the server's output that isn't a message, as from a wrapper script, le
 
 The check of a restart with an unsaved edit pending starts the server from the same script, with a file that makes every start copy the server's input and record its exit status, so that the test can tell what reached the old server and the new one. The client sends a full-text change 250 milliseconds after an edit, or with its next request or notification, so the test makes no request or notification between the edit and the restart, and fails if the old server got the edit anyway, because the check would then prove nothing. After the restart, it waits at least two debounce intervals and asserts that the output channel logs neither `Delivering pending changes failed` nor `this.task is not a function`, the `vscode-languageclient` bug fixed in 11.0.1 ([#211](https://github.com/SaltedTan/virgil-language-server/issues/211)).
 
-To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.9.vsix ../../build/virgil-lsp`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
+To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-1.0.0.vsix ../../build/virgil-lsp`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
 
 The first download of VS Code has a ten-minute timeout; each start of VS Code and each installation of a VSIX has a 120-second timeout. Each runs in a process group of its own, including the `tar` that extracts a download. On a timeout, SIGINT, or SIGTERM, the test sends SIGTERM to the whole group, then SIGKILL if it remains after five seconds. An interrupt exits with status 130 for SIGINT or 143 for SIGTERM after stopping the group. The group's first process is a small Node.js keeper, [`keeper.cjs`](test/e2e/keeper.cjs), which starts the command in the group and stays until the test has seen the rest of the group exit, or until the group's SIGKILL. While the keeper is in the group, no other process or group can have the group's number. The test never signals the group by that number itself: it asks the keeper, which signals its own group. If the keeper has exited or its output ends before confirming a signal, the test instead signals each process that it saw in the group, by its PID and start time, as the [Remote-SSH test](#remote-ssh-test) does; if the keeper doesn't answer within a second, as when it has been stopped, the test signals those processes and the keeper itself the same way for the rest of the run, even if a late reply arrives. On macOS, the runner chooses its identity source once per run, on its first native probe. When that probe succeeds, Python 3 reads microsecond start times through libproc's `proc_pidinfo(PROC_PIDTBSDINFO)` for both recording and checking throughout the run. Native group scans read only that group, so inaccessible processes belonging to other users cannot block it. A later failed or partial native read of the group leaves the scan inconclusive, without losing ownership or changing remembered identities; a signal to a single process requires a fresh native identity check. If the first probe finds Python or libproc unavailable, the runner uses `ps` throughout the run. Its start times have one-second resolution: a process given a recorded PID within the original process's start second could then get the signal too. Without pidfds, the identity check and the signal remain separate system calls, with a PID-reuse race between them. If the test itself is killed, the keeper stops its group: SIGTERM, then SIGKILL five seconds later. When VS Code exits, closing its window, the servers that it started are in its group: if a `virgil-lsp` or `virgil-lsp-worker` process remains there five seconds later, the test fails and stops the group the same way. The JVM build's launchers replace themselves with their bundled runtime's `java`, so for them the check looks for that `java`, beside the launcher's physical path, with the launcher named in its `-Dvirgil.lsp.executable` option. The checks that kill a server by its PID recognize it the same way. The check ends early if the keeper has gone and no process that the test saw in the group is left there, since another group may then have the group's number. It also fails if the output channel's log records an unclean exit of the last server, but the channel usually closes before the server exits. It waits for the group to exit before removing its temporary directory, unless processes remain in the group 30 seconds after its SIGKILL, such as one that the test's user may not signal or one in an uninterruptible sleep, even the keeper: the test then fails, and stops waiting for them, so that it can exit while they run on. On a launch failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward. With `--logs DIR`, a new or empty directory, the test first copies the VS Code logs of a launch or installation that fails, including on a timeout, SIGINT, or SIGTERM, into `DIR/<launch>`, such as `DIR/single-file`: those of the main process, the shared process, the window, and its extension host, and `chromium.log`, which holds the renderer's console messages and, instead of the test's output, Chromium's warnings and errors. Passing launches keep no files. If logs are missing or cannot be copied, the test reports that without changing the original failure or its exit status. Every CI job that runs the test passes it, and uploads what it kept as an artifact.
 
@@ -274,9 +274,9 @@ Use `npm run test:e2e:remote-ssh -- --vsix <linux-x64.vsix> --bundled` to test t
 ```sh
 npm run package
 npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-*.vsix
-npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-0.1.9.vsix \
-  --archive virgil-lsp-1.0.0-rc.1-x86-64-linux.tar.gz --repeat 3 --out results
-npm run test:e2e:remote-ssh -- --vsix /path/to/virgil-lsp-vscode-0.1.9-linux-x64.vsix \
+npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-1.0.0.vsix \
+  --archive virgil-lsp-1.0.0-x86-64-linux.tar.gz --repeat 3 --out results
+npm run test:e2e:remote-ssh -- --vsix /path/to/virgil-lsp-vscode-1.0.0-linux-x64.vsix \
   --bundled --repeat 3 --out bundled-results
 ```
 
@@ -319,10 +319,10 @@ For example, from `clients/vscode` on the Linux host, with the Mac reachable as 
 git -C ../.. archive HEAD clients/vscode test/e2e/nvim/fixture \
   | ssh mac 'mkdir -p virgil-rssh/repo && tar -x -f - -C virgil-rssh/repo'
 ssh mac 'cd virgil-rssh/repo/clients/vscode && PATH=/opt/homebrew/bin:$PATH npm ci'
-scp virgil-lsp-vscode-0.1.9-linux-x64.vsix virgil-lsp-vscode-0.1.9-darwin-arm64.vsix mac:virgil-rssh/
+scp virgil-lsp-vscode-1.0.0-linux-x64.vsix virgil-lsp-vscode-1.0.0-darwin-arm64.vsix mac:virgil-rssh/
 test/e2e/remote-ssh/mac-client.sh --mac mac --study /Users/me/virgil-rssh --listen 100.64.0.1 \
-  --host-name linux-host --allow-from 100.64.0.2 --vsix virgil-lsp-vscode-0.1.9-linux-x64.vsix \
-  --client-vsix virgil-lsp-vscode-0.1.9-darwin-arm64.vsix --work-dir ~/vrs --out mac-results
+  --host-name linux-host --allow-from 100.64.0.2 --vsix virgil-lsp-vscode-1.0.0-linux-x64.vsix \
+  --client-vsix virgil-lsp-vscode-1.0.0-darwin-arm64.vsix --work-dir ~/vrs --out mac-results
 ```
 
 `--host-name` is the host's name or address as the Mac reaches it, and `--work-dir` an existing directory with a short path on the host, for the host's files. The SSH server accepts only the run's key, and only from the `--allow-from` address. `--vsix` and `--client-vsix` are relative to the study directory. `--client-vsix` installs that VSIX in the client's own extensions too, as a Mac user who has the extension locally would have it. The driver also accepts `--repeat N` and `--keep-work`.

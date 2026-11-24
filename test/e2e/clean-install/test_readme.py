@@ -26,8 +26,10 @@ class ReadmeTests(unittest.TestCase):
 
     def test_next_release_substitutions(self):
         # A release preparation changes every example before its tag exists.
-        steps = {key: body.replace(self.values["server_version"], "8.9.0-alpha.4").replace(
-            "extension_version=" + self.values["extension_version"], "extension_version=7.8.9")
+        # Replace the extension version first: it can equal the server's.
+        steps = {key: body.replace(
+            "extension_version=" + self.values["extension_version"], "extension_version=7.8.9").replace(
+            self.values["server_version"], "8.9.0-alpha.4")
             for key, body in self.steps.items()}
         values = examples(steps)
         actual = substitute(steps, values, "9.0.0-alpha.1", "8.0.0", "http://127.0.0.1:12345")

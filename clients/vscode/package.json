@@ -2,10 +2,9 @@
   "name": "virgil-lsp-vscode",
   "displayName": "Virgil Language Server",
   "description": "Virgil language support with a bundled language server on Linux x64 and macOS.",
-  "version": "0.1.9",
+  "version": "1.0.0",
   "private": true,
   "publisher": "virgil-language-server",
-  "preview": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
