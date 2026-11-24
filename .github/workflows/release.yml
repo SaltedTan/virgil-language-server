@@ -105,9 +105,11 @@ jobs:
           else
             echo "Dry run from branch $REF_NAME: version $version, prerelease=$prerelease, no tag"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "changelog=$changelog" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "changelog=$changelog"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
