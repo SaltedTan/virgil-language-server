@@ -19,9 +19,10 @@ type AnalysisOutcome {
 
 // Defaults measured in docs/decisions/0004-analysis-worker-process.md.
 class AnalysisWorkerLimits {
-	// Wall clock for one analysis, including writing its request.
-	var timeoutMs = 10000;
-	// Includes first-start Rosetta translation.
+	// Wall clock for one analysis, including writing its request. Each target
+	// sets its own default: 10 s natively, longer on the slower JVM.
+	var timeoutMs = HostRuntime.ANALYSIS_TIMEOUT_MS;
+	// Includes first-start Rosetta translation, and a JVM's start.
 	var startTimeoutMs = 10000;
 	var maxAnalyses = 100;
 	// Verification fails at 2^29; leave at least 2^28 IDs of headroom.

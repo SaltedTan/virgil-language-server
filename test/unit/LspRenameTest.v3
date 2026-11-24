@@ -1247,7 +1247,7 @@ def test_stale_snapshot(t: Tester) {
 	s.limits.timeoutMs = 0;
 	s.change("Open.v3", 2, Arrays.concat(OPEN, "\n"));
 	s.settle();
-	s.limits.timeoutMs = 10000;
+	s.limits.timeoutMs = AnalysisWorkerLimits.new().timeoutMs;
 	s.refused(t, "Kinds.v3", "var area", 4, "surface", "the project's analysis is stale; it does not describe the current sources");
 	s.server.close();
 }
@@ -1265,7 +1265,7 @@ def test_preflight_time_limit(t: Tester) {
 		t.assert(Strings.startsWith(message, "the rename could not be checked: the analysis worker timed out"), message);
 	}
 	t.assert(s.server.projects.renameSnapshot == null, "timeout releases the snapshot pin");
-	s.limits.timeoutMs = 10000;
+	s.limits.timeoutMs = AnalysisWorkerLimits.new().timeoutMs;
 	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
 		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
 		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));

@@ -571,7 +571,7 @@ def test_time_limit(t: Tester) {
 	s.settle();
 	t.assert(isNull(s, id), "null after a timeout");
 	t.asserti(1, s.count(id));
-	s.limits.timeoutMs = 10000;
+	s.limits.timeoutMs = AnalysisWorkerLimits.new().timeoutMs;
 	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1, $")));
 	s.server.close();
 }
