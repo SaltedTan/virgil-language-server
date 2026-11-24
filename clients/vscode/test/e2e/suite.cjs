@@ -1849,15 +1849,13 @@ async function crashLimit(failures, bad, words) {
 // server: if the old server got the edit, the restart didn't find it pending,
 // so the scenario fails rather than pass without testing that.
 //
-// vscode-languageclient, 11.0.0 included, can then log "Delivering pending
-// changes failed" and "TypeError: this.task is not a function" in the output
-// channel, about half a second after the edit, often after the scenario has
-// ended: the stopped client's timer for the change outlives it, and its retry
-// fails (https://github.com/microsoft/vscode-languageserver-node/issues/1916).
-// Any restart with a change pending can log it, as other scenarios' restarts
-// and this one's restore sometimes do. It loses nothing, depends on timing,
-// and goes away with a fixed release, so the scenario neither requires nor
-// forbids it, and no check of this suite counts it as a failure.
+// vscode-languageclient 11.0.0 and earlier left the stopped client's 250 ms
+// pending-change timer running after stop, logging "Delivering pending changes
+// failed" and "TypeError: this.task is not a function" about half a second
+// after the edit (https://github.com/microsoft/vscode-languageserver-node/issues/1916).
+// 11.0.1 cancels that delayer on cleanup (#211), so this scenario waits at
+// least two 250 ms debounce intervals after the restart and asserts that
+// neither error appears in the output channel.
 async function pendingEditRestart(failures, bad, words) {
   const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
@@ -1881,6 +1879,7 @@ async function pendingEditRestart(failures, bad, words) {
     const { pid } = await startRecoveryServer(server, directory);
     await expectParserDiagnostic(editor);
     await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    const log = logFromHere();
     // Nothing may send a request or a notification between the edit and the
     // restart. VS Code runs the command in this extension host before
     // executeCommand returns, and the queued restart starts to stop the old
@@ -1890,6 +1889,7 @@ async function pendingEditRestart(failures, bad, words) {
     ));
     const [text, version] = [document.getText(), document.version];
     await vscode.commands.executeCommand('virgil.server.restart');
+    const restartedAt = Date.now();
     const starts = recorded(directory, 'starts').map(Number);
     assert.equal(starts.length, 2, `expected the old server's start and its replacement's, not ${starts.join(', ')}`);
     // The script records an exit once the server and the copy of its input are
@@ -1923,6 +1923,14 @@ async function pendingEditRestart(failures, bad, words) {
         && m.params.textDocument.version === next));
     assert.deepEqual(change.params.contentChanges, [{ text: later }]);
     assert.deepEqual(await symbols(editor), [{ name: 'RestartLater', kind: vscode.SymbolKind.Namespace }]);
+    // Wait at least two 250 ms debounce intervals after the restart so any
+    // uncancelled timer from the stopped client would have fired, then verify
+    // the output channel logged no pending-change delivery failure (#211).
+    const remaining = 600 - (Date.now() - restartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    const output = log();
+    assert.ok(!output.includes('Delivering pending changes failed') && !output.includes('this.task is not a function'),
+      `unexpected pending-change delivery failure after restart:\n${output}`);
   }, async () => {
     try {
       if (document.isDirty) {

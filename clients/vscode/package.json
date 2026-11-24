@@ -133,7 +133,7 @@
     "package": "vsce package --pre-release --baseContentUrl https://github.com/SaltedTan/virgil-language-server/blob/main/clients/vscode --baseImagesUrl https://github.com/SaltedTan/virgil-language-server/raw/main/clients/vscode"
   },
   "dependencies": {
-    "vscode-languageclient": "11.0.0"
+    "vscode-languageclient": "11.0.1"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
