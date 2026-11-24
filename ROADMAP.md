@@ -1,8 +1,8 @@
 # Virgil Language Server: Roadmap
 
-_Revised 2026-11-01. This document is the project's roadmap: the milestones delivered through `0.1.0-alpha.5`, the remaining path to v1.0, and the original August 2026 plan, kept at the end for its reasoning._
+_Revised 2026-11-24. This document is the project's roadmap: the milestones delivered through `1.0.0`, the work that remains after it, and the original August 2026 plan, kept at the end for its reasoning._
 
-## Current state (2026-11-01)
+## Current state (2026-11-24)
 
 | Milestone | State |
 | --- | --- |
@@ -17,7 +17,7 @@ _Revised 2026-11-01. This document is the project's roadmap: the milestones deli
 | M6 — full incrementality | Evidence-driven, and no incremental analysis has shipped: every analysis checks the whole program again. Incremental parsing, invalidation, and scheduling wait for measurements that identify a bottleneck ([M6](#m6--error-tolerance-and-incrementality)). |
 | M7 — distribution and ecosystem integration | Packages, testing, and docs delivered; Marketplace publishing ([#192](https://github.com/SaltedTan/virgil-language-server/issues/192)), native Apple Silicon ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)), and the Mac Remote-SSH check ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)) are tracked separately. |
 
-The [configuration contract](docs/configuration.md#stability-and-evolution) now defines the version 1 stability boundary ([#339](https://github.com/SaltedTan/virgil-language-server/issues/339)), and the [support policy](docs/compatibility.md#support-policy) records the supported combinations and release maintenance rules ([#340](https://github.com/SaltedTan/virgil-language-server/issues/340)). What remains is the path to the [v1.0 gates](#v10-is-ready-when): completion and rename suitable for everyday use, error recovery that doesn't routinely lose all language intelligence, performance budgets based on published benchmarks, release artifacts and clean-install tests for the documented platforms, and a release cycle that has tested upgrades, rollback, and newer Virgil revisions. The [v1.0 milestone](https://github.com/SaltedTan/virgil-language-server/milestone/6) tracks that work, for example measurements toward performance budgets ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)), an upgrade and rollback rehearsal ([#344](https://github.com/SaltedTan/virgil-language-server/issues/344)), and an evidence-based release checklist ([#337](https://github.com/SaltedTan/virgil-language-server/issues/337)).
+The [configuration contract](docs/configuration.md#stability-and-evolution) defines the version 1 stability boundary ([#339](https://github.com/SaltedTan/virgil-language-server/issues/339)), and the [support policy](docs/compatibility.md#support-policy) records the supported combinations and release maintenance rules ([#340](https://github.com/SaltedTan/virgil-language-server/issues/340)). `1.0.0` is the first stable release, made against the [v1.0 gates](#v10-is-ready-when): completion and rename suitable for everyday use, error recovery that doesn't routinely lose all language intelligence, performance budgets based on published benchmarks, release artifacts and clean-install tests for the documented platforms, and a release cycle that has tested upgrades, rollback, and newer Virgil revisions. The [v1.0 readiness ledger](docs/v1-readiness.md) is the release gate and records the evidence for the tagged commit. The [v1.0 milestone](https://github.com/SaltedTan/virgil-language-server/milestone/6) tracked that work, for example measurements toward performance budgets ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338), [#345](https://github.com/SaltedTan/virgil-language-server/issues/345)), an upgrade and rollback rehearsal ([#344](https://github.com/SaltedTan/virgil-language-server/issues/344)), and an evidence-based release checklist ([#337](https://github.com/SaltedTan/virgil-language-server/issues/337)).
 
 ## Executive recommendation
 
@@ -81,7 +81,7 @@ The August plan named v0.2, v0.3, and v0.5 as later releases. What shipped, and 
 - v0.2's prepare-rename and rename, and v0.3's context-aware completion, shipped in `0.1.0-alpha.2`, together with signature help for calls still being typed (signature help for complete calls shipped in `0.1.0-alpha.1`); v0.3's better behavior on incomplete syntax shipped as M6 phase 3a in `0.1.0-alpha.4` and `0.1.0-alpha.5`. The faster reanalysis that v0.3 also named remains part of M6's evidence-driven incrementality work, and no incremental analysis has shipped.
 - v0.5's platform-specific VS Code packages shipped in `0.1.0-alpha.4` ([#267](https://github.com/SaltedTan/virgil-language-server/issues/267), [PR #268](https://github.com/SaltedTan/virgil-language-server/pull/268)). Compatibility tests already exist: the pinned Virgil revision is required CI and current Virgil `master` runs in scheduled advisory CI, captured VS Code and Neovim initialization messages replay in the protocol suite ([#231](https://github.com/SaltedTan/virgil-language-server/issues/231)), and a clean-install test follows the README commands ([#250](https://github.com/SaltedTan/virgil-language-server/issues/250)).
 - An upstream `nvim-lspconfig` configuration and a Mason entry have not been submitted; both wait for a stable release command, release URL, root markers, and documentation. Mason's admission rules make `nvim-lspconfig` acceptance the realistic route for a small new project.
-- The next stability preview has no agreed name or date. It will be the first release that meets the remaining v1.0 criteria.
+- `1.0.0` is the release made against the v1.0 criteria below, with the evidence for its tagged commit in the [v1.0 readiness ledger](docs/v1-readiness.md). The work that remains after it, such as M6 phase 3b, incrementality, Marketplace publishing, and native Apple Silicon, is in the [current state](#current-state-2026-11-24) table.
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.
 
 ### Non-goals for the first release
@@ -386,7 +386,7 @@ The project provides a LazyVim-specific copy-paste file, a minimal `nvim --clean
 
 ### Visual Studio Code
 
-The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). See the [Extension Host test](clients/vscode/README.md#extension-host-test) for its checks and requirements.
+The thin TypeScript client is present, with [VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). See the [Extension Host test](clients/vscode/README.md#extension-host-test) for its checks and requirements.
 
 Do not couple the core server release to the VS Code extension version. Record a compatibility range so either can receive fixes independently.
 
@@ -539,7 +539,7 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 ### v1.0 is ready when
 
-The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; the maintainer adopted it as the v1.0 release gate on 2026-11-21, and no candidate has met a clause yet.
+The [v1.0 readiness ledger](docs/v1-readiness.md) traces each clause below to its scope, pass condition, commands or policy, and the evidence a candidate needs; the maintainer adopted it as the v1.0 release gate on 2026-11-21. `1.0.0` is the release made against these gates, and the ledger records the evidence for its tagged commit.
 
 - The configuration schema and compatibility policy are stable.
 - References, safe rename, signature help, and useful completion are shipped. See the [everyday-use clause](docs/v1-readiness.md#2-everyday-use) for the formatter's scope.
@@ -602,7 +602,7 @@ Estimates below assume one developer working part-time while learning the codeba
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
 16. Implement hover. *(present for indexed uses, declaration names, and builtin uses; [display data](docs/architecture.md#display-text) [#105](https://github.com/SaltedTan/virgil-language-server/issues/105), handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106); see [Hover](docs/architecture.md#hover))*
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
+18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
 
 Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 
