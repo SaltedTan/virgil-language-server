@@ -40,7 +40,7 @@ const WORKER_NAME = 'virgil-lsp-worker';
 // Files whose changes on disk the server needs to hear about: project files
 // and sources. The server registers the same watchers dynamically.
 const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
-// Matches vscode-languageclient 11.0.0's default stop() shutdown timeout.
+// Matches vscode-languageclient 11.0.1's default stop() shutdown timeout.
 const NOTIFICATION_DRAIN_TIMEOUT_MS = 2000;
 // The codes of the errors after which the connection to the server closes: a
 // read or a write of the server's pipe that fails, as when the server has
