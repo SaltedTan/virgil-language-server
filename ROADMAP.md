@@ -437,7 +437,7 @@ Keep this as a monorepo through v0.1 so the server, editor integrations, fixture
 
 ### Milestones
 
-The live milestones on 2026-10-29 are:
+The live milestones on 2026-11-24 are:
 
 | Milestone | Open | Closed | State |
 | --- | ---: | ---: | --- |
@@ -446,7 +446,7 @@ The live milestones on 2026-10-29 are:
 | `semantic-navigation` | 0 | 13 | Complete; closed on 2026-10-29. |
 | `rich-language-features` | 0 | 19 | Complete; closed on 2026-10-29. |
 | `v0.1-alpha` | 0 | 8 | Closed; it stays as it is. |
-| `v1.0` | 16 | 4 | Open; it holds the remaining work. |
+| `v1.0` | 0 | 21 | Open; all tracked work items are closed, awaiting the v1.0 release. |
 
 Only `v1.0` stays open. The maintainer makes these GitHub edits; this document doesn't change GitHub metadata.
 
