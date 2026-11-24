@@ -56,7 +56,7 @@ nvim --clean -u editors/nvim/virgil_lsp.lua path/to/file.v3
 
 ## The Virgil root
 
-Project files name Virgil's own libraries relative to a Virgil checkout or installation, as in `"virgilDependencies": ["lib/util/*.v3"]` ([Configuration](../../docs/configuration.md#the-virgil-root)). Both configurations send its location as `init_options = { virgilRoot = vim.env.VIRGIL_LOC }`, so an unset `VIRGIL_LOC` omits the option and lets the server use its bundled library. To override it, set `VIRGIL_LOC` before starting Neovim to the absolute physical path of the directory that holds `lib/`:
+Project files name Virgil's own libraries relative to a Virgil checkout or installation, as in `"virgilDependencies": ["lib/util/*.v3"]` ([Configuration](../../docs/configuration.md#the-virgil-root)). Both configurations send its location as `init_options = { virgilRoot = vim.env.VIRGIL_LOC }`, so an unset `VIRGIL_LOC` omits the option and lets the server use its bundled library. To override it, set `VIRGIL_LOC` before starting Neovim to the absolute physical path of the directory that holds `lib/`. In a Virgil checkout, set it to that checkout, so that its own `lib/` is analyzed instead of the bundle's ([working in a Virgil checkout](../../docs/configuration.md#the-virgil-root)):
 
 ```sh
 export VIRGIL_LOC=$HOME/virgil

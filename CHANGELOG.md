@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The macOS installation instructions, the troubleshooting guide, and the `x86-64-darwin` archive's `README.md` now say to remove a browser download's quarantine attribute before the first run. A quarantined server isn't refused with an error: it waits behind a "“virgil-lsp” Not Opened" dialog, and so does the editor that starts it ([Installing on macOS](docs/releasing.md#macos), [macOS quarantine](docs/troubleshooting.md#macos-quarantine-on-an-archive-install)).
+- The configuration guide and the VS Code and Neovim setup now say to set the Virgil root to a Virgil checkout when you work in one. Without a root, its projects analyze the bundled `lib/`, so go to definition opens the installation's copy and a rename in the checkout's `lib/` can miss uses in `aeneas/` ([The Virgil root](docs/configuration.md#the-virgil-root)).
+
 ## [1.0.0-rc.1] - 2026-11-24
 
 ### Added

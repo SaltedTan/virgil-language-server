@@ -141,6 +141,7 @@ fi
 cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 python3 scripts/release-library.py stage "$virgil" "$stage/virgil" "$virgil_revision"
 
+quarantine_step=
 case $target in
     x86-64-linux)
         platform="Linux x86-64. WSL 2 on x86-64 Windows is expected to run it, on a best-effort
@@ -149,7 +150,16 @@ basis: it isn't tested there."
     x86-64-darwin)
         platform="macOS. This is an Intel (x86-64) build, not a native arm64 one: Apple Silicon
 Macs run it under Rosetta 2, which you can install with
-\`softwareupdate --install-rosetta --agree-to-license\`."
+\`softwareupdate --install-rosetta --agree-to-license\`.
+
+The executables are unsigned and not notarized. If a web browser downloaded
+this archive, remove its quarantine attribute after extracting and before the
+first run, as the install steps below do. Otherwise macOS blocks the server
+behind a \"Not Opened\" dialog, and the server and your editor wait instead of
+failing. If the dialog appears, click Done, remove the attribute, and run
+\`virgil-lsp --version\` again."
+        quarantine_step="
+    xattr -dr com.apple.quarantine ~/.local/opt/$name"
         ;;
     jvm)
         case $jvm_platform in
@@ -212,7 +222,7 @@ $platform
 To install:
 
     mkdir -p ~/.local/opt ~/.local/bin
-    tar -xzf $name.tar.gz -C ~/.local/opt
+    tar -xzf $name.tar.gz -C ~/.local/opt$quarantine_step
     ln -sf ~/.local/opt/$name/virgil-lsp ~/.local/bin/virgil-lsp
     virgil-lsp --version
 

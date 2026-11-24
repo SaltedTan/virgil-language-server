@@ -294,11 +294,13 @@ On Apple Silicon, install Rosetta 2 first, unless you install the [JVM archive](
 softwareupdate --install-rosetta --agree-to-license
 ```
 
-The executables are unsigned. A web browser marks what it downloads as quarantined, and macOS may then refuse to run them. Download with `curl` or `gh`, which don't set the quarantine attribute, or remove it after extracting:
+The executables are unsigned and not notarized. A web browser marks what it downloads as quarantined. Download with `curl` or `gh`, which don't set the quarantine attribute, or remove it after extracting and before you run anything from the archive:
 
 ```sh
 xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-1.0.0-rc.1-x86-64-darwin
 ```
+
+A quarantined server isn't refused with an error. On macOS 27.0.1, `virgil-lsp --version` printed nothing and didn't exit while macOS showed a dialog, "“virgil-lsp” Not Opened", and an editor that starts the server would wait the same way. Removing the attribute while that dialog was open didn't let the same file run. If the dialog appears, click **Done**, which changes no settings, remove the attribute, and run `virgil-lsp --version` again. This was tested on an archive given the attribute with `xattr -w`, not on a browser download.
 
 The same applies to the [JVM archive](#the-jvm-build-for-apple-silicon), which needs no Rosetta 2. On macOS 27.0.1, with network access, `tar -xzf` of a quarantined JVM archive marked every extracted file as quarantined, and the server and worker still ran: Gatekeeper accepted the runtime's signed `java`, while it killed a quarantined unsigned program in the same test. This was tested with network access; offline Gatekeeper behavior was not tested. The runtime's binaries had no stapled notarization ticket. Remove the attribute as above if macOS refuses to run the JVM archive. The JVM VSIX, installed from a quarantined download with `code --install-extension` in VS Code 1.144.1, had no quarantined files.
 
@@ -327,7 +329,7 @@ or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update a
 
 New archives include the complete pinned `lib/` and the supported targets' runtime sources under executable-adjacent `virgil/`. With no client root, projects selecting `lib/util/*.v3` and projects with the `x86-64-linux` [target](configuration.md#target) work without a checkout. See [The Virgil root](configuration.md#the-virgil-root) for root selection and errors.
 
-Projects selecting other sources outside `lib/`, such as `aeneas/` or files of `rt/` that the bundle lacks, and development builds without a bundle still need a checkout. Use the Virgil revision that `virgil-lsp --version` prints:
+Projects selecting other sources outside `lib/`, such as `aeneas/` or files of `rt/` that the bundle lacks, and development builds without a bundle still need a checkout. Use the Virgil revision that `virgil-lsp --version` prints. When you work in a Virgil checkout of your own, set the root to it, so that its `lib/` is analyzed instead of the bundle's ([The Virgil root](configuration.md#the-virgil-root)):
 
 ```sh
 git clone https://github.com/titzer/virgil.git ~/src/virgil
