@@ -149,7 +149,14 @@ basis: it isn't tested there."
     x86-64-darwin)
         platform="macOS. This is an Intel (x86-64) build, not a native arm64 one: Apple Silicon
 Macs run it under Rosetta 2, which you can install with
-\`softwareupdate --install-rosetta --agree-to-license\`."
+\`softwareupdate --install-rosetta --agree-to-license\`.
+
+The executables are unsigned and not notarized. If a web browser downloaded
+this archive, remove its quarantine attribute after extracting and before the
+first run, or macOS blocks the server behind a \"Not Opened\" dialog and the
+server and your editor wait instead of failing:
+
+    xattr -dr com.apple.quarantine ~/.local/opt/$name"
         ;;
     jvm)
         case $jvm_platform in

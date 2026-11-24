@@ -52,7 +52,7 @@ See [macOS](releasing.md#macos) in the installation instructions.
 
 ### macOS quarantine on an archive install
 
-The server's executables are unsigned and not notarized. A web browser marks what it downloads as quarantined, and macOS may then refuse to run `virgil-lsp` or `virgil-lsp-worker` from an archive that was downloaded that way. If `virgil-lsp --version` is refused in a terminal, remove the attribute from the extracted directory, replacing the version with yours:
+The server's executables are unsigned and not notarized. A web browser marks what it downloads as quarantined, and macOS then blocks `virgil-lsp` and `virgil-lsp-worker` from an archive that was downloaded that way. The server doesn't fail with an error: `virgil-lsp --version` in a terminal prints nothing and doesn't exit, an editor waits for the server to start, and macOS shows a dialog, "“virgil-lsp” Not Opened". Click **Done**, which changes no settings, then remove the attribute from the extracted directory, replacing the version with yours, and try again:
 
 ```sh
 xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-1.0.0-rc.1-x86-64-darwin

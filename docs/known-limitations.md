@@ -206,7 +206,7 @@ The server parses an open document itself for its syntax diagnostics, outline, f
 
 ## Installation
 
-- The server executables are unsigned and not notarized. On macOS, a browser marks a download as quarantined, and macOS may then refuse to run it: download with `curl` or `gh`, or remove the attribute as [Installing on macOS](releasing.md#macos) shows. [Verifying a download](releasing.md#verifying-a-download) checks an archive against `SHA256SUMS`.
+- The server executables are unsigned and not notarized. On macOS, a browser marks a download as quarantined, and macOS then blocks the server behind a "Not Opened" dialog, so the server and the editor that starts it wait instead of failing: download with `curl` or `gh`, or remove the attribute before the first run, as [Installing on macOS](releasing.md#macos) shows. [Verifying a download](releasing.md#verifying-a-download) checks an archive against `SHA256SUMS`.
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the extension from its platform VSIX by hand ([Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)), and the server for Neovim, LazyVim, or an external-server setup from a release archive ([Installing](releasing.md#installing)). VS Code doesn't update an extension installed from a VSIX: install the next release's VSIX to update.
 
 ## Protocol numbers and synchronization
